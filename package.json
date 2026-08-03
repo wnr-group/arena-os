@@ -1,0 +1,49 @@
+{
+  "name": "arena-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Arena OS — multi-tenant Smart Booking & POS platform",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit",
+    "format": "prettier --write .",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "seed:demo": "tsx scripts/seed-demo.ts"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "class-variance-authority": "0.7.0",
+    "clsx": "2.1.0",
+    "drizzle-orm": "^0.36.4",
+    "lucide-react": "0.344.0",
+    "next": "16.2.9",
+    "pg": "^8.13.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "2.2.1",
+    "zod": "3.22.4"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.1.0",
+    "@tailwindcss/postcss": "4.3.0",
+    "@types/node": "20.11.24",
+    "@types/pg": "^8.11.10",
+    "@types/react": "19.0.0",
+    "@types/react-dom": "19.0.0",
+    "drizzle-kit": "^0.30.1",
+    "eslint": "9.0.0",
+    "eslint-config-next": "15.1.3",
+    "prettier": "3.2.5",
+    "tailwindcss": "4.3.0",
+    "tsx": "^4.22.4",
+    "typescript": "5.3.3"
+  }
+}
