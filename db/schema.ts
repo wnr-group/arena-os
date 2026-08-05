@@ -13,6 +13,7 @@ import {
   boolean,
   timestamp,
   date,
+  time,
   numeric,
   integer,
   smallint,
@@ -305,4 +306,49 @@ export const attendance = pgTable(
     index('idx_attendance_date').on(t.tenantId, t.workDate),
     index('idx_attendance_member').on(t.membershipId),
   ],
+)
+
+// ── shifts & roster (migration 0007) ─────────────────────────────────────────
+export const shiftType = pgEnum('shift_type', ['morning', 'evening', 'night'])
+
+export const rosters = pgTable(
+  'rosters',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    weekStart: date('week_start').notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('rosters_branch_week_key').on(t.branchId, t.weekStart)],
+)
+
+export const shifts = pgTable(
+  'shifts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    rosterId: uuid('roster_id').references(() => rosters.id, { onDelete: 'set null' }),
+    shiftDate: date('shift_date').notNull(),
+    type: shiftType('type').notNull(),
+    starts: time('starts').notNull(),
+    ends: time('ends').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_shifts_member_date').on(t.membershipId, t.shiftDate)],
 )
