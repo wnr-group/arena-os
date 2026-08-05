@@ -181,18 +181,18 @@ RLS: member `select`; owner `update`.
 
 ---
 
-## M4 — Employee management `[M4]`
+## M4 — Employee management
 
-### `attendance` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `work_date date` · `clock_in timestamptz` · `clock_out timestamptz null` · `is_manual boolean` · `note text` · timestamps. Index `(tenant_id, work_date)`, `(membership_id)`.
+### `attendance` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `work_date date` · `clock_in timestamptz` · `clock_out timestamptz null` · `is_manual boolean` · `note text` · timestamps. Index `(tenant_id, work_date)`, `(membership_id)`. One row per (membership, work_date) in the common case — staff clock in/out their own row; managers may add/correct any row (marks `is_manual = true`). RLS: any active member rw (tenant-scoped); action layer restricts staff to their own membership.
 
-### `shifts` `[T/B]`
+### `shifts` `[M4]` `[T/B]`
 `id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `shift_date date` · `type(morning|evening|night)` · `starts time` · `ends time` · `roster_id → rosters null` · timestamps.
 
-### `rosters` `[T/B]`
+### `rosters` `[M4]` `[T/B]`
 `id` · `tenant_id` · `branch_id` · `week_start date` · `note text` · timestamps. Unique `(branch_id, week_start)`.
 
-### `tasks` `[T/B]`
+### `tasks` `[M4]` `[T/B]`
 `id` · `tenant_id` · `branch_id` · `title` · `description` · `assigned_to → memberships null` · `status(open|in_progress|done)` · `due_date date null` · `created_by → memberships` · timestamps.
 
 *(Performance metrics are **derived** — no table — from `payments.collected_by`, `bookings.created_by`, `attendance`.)*
@@ -238,3 +238,5 @@ Mostly non-schema (infra, security, ops). Schema touches:
 - 2026-08-01 — Initial full spec. Built tables reflect migrations 0001–0005;
   M1–M8 are the target schema per their data-model tickets. Update table blocks
   to `[built]` as migrations land, keeping `db/schema.ts` in sync.
+- 2026-08-05 — Migration 0006 adds `attendance` (M4-A): clock in/out, manager
+  correction, marked `[built]`.

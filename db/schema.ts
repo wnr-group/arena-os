@@ -12,6 +12,7 @@ import {
   text,
   boolean,
   timestamp,
+  date,
   numeric,
   integer,
   smallint,
@@ -275,5 +276,33 @@ export const bookingSlots = pgTable(
   (t) => [
     index('idx_booking_slots_booking').on(t.bookingId),
     index('idx_booking_slots_resource_time').on(t.resourceId, t.startsAt),
+  ],
+)
+
+// ── employee management (migration 0006) ────────────────────────────────────
+export const attendance = pgTable(
+  'attendance',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    workDate: date('work_date').notNull(),
+    clockIn: timestamp('clock_in', { withTimezone: true }),
+    clockOut: timestamp('clock_out', { withTimezone: true }),
+    isManual: boolean('is_manual').notNull().default(false),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('idx_attendance_date').on(t.tenantId, t.workDate),
+    index('idx_attendance_member').on(t.membershipId),
   ],
 )
