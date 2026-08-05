@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
-import { ROLE_LABELS, isManager } from '@/lib/auth/roles'
+import { ROLE_LABELS } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
 import { Sidebar } from '@/components/Sidebar'
 
@@ -49,7 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </p>
           <p className="truncate font-semibold">{tenant.name}</p>
         </div>
-        <Sidebar isManager={isManager(role)} />
+        <Sidebar role={role} />
         <div className="mt-auto border-t p-3">
           <p className="truncate px-2 text-sm font-medium">{user.email}</p>
           <p className="px-2 text-xs text-muted-foreground">{ROLE_LABELS[role]}</p>

@@ -15,6 +15,7 @@ import {
   numeric,
   integer,
   smallint,
+  date,
   unique,
   index,
 } from 'drizzle-orm/pg-core'
@@ -225,9 +226,13 @@ export const bookings = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
     bookingNumber: text('booking_number').notNull(),
+    // Snapshot of what the guest gave at the time (migration 0003) …
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
     customerEmail: text('customer_email'),
+    // … and the directory entry it belongs to (migration 0007). Nullable: a
+    // booking taken without a phone, or one whose customer was later removed.
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     status: bookingStatus('status').notNull().default('confirmed'),
     source: bookingSource('source').notNull().default('staff'),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
@@ -247,6 +252,7 @@ export const bookings = pgTable(
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
     index('idx_bookings_status').on(t.tenantId, t.status),
+    index('idx_bookings_customer').on(t.tenantId, t.customerId),
   ],
 )
 
@@ -276,4 +282,89 @@ export const bookingSlots = pgTable(
     index('idx_booking_slots_booking').on(t.bookingId),
     index('idx_booking_slots_resource_time').on(t.resourceId, t.startsAt),
   ],
+)
+
+// ── customer module (migration 0006) ─────────────────────────────────────────
+// `phone` is stored NORMALISED to E.164 by lib/customers/phone.ts and is the
+// tenant-scoped identity key — see the unique index below.
+export const customers = pgTable(
+  'customers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    phone: text('phone').notNull(),
+    name: text('name'),
+    email: text('email'),
+    dob: date('dob'),
+    tags: text('tags').array().notNull().default([]),
+    membershipStatus: text('membership_status'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('customers_tenant_phone_key').on(t.tenantId, t.phone),
+    index('idx_customers_tenant').on(t.tenantId),
+  ],
+)
+
+export const customerNotes = pgTable(
+  'customer_notes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_customer_notes_customer').on(t.customerId)],
+)
+
+// Append-only ledger. `amount` is signed (+ credit / − debit); the wallet
+// balance is sum(amount) — there is deliberately no balance column.
+export const walletTransactions = pgTable(
+  'wallet_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: uuid('source_id'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_wallet_tx_customer').on(t.customerId)],
+)
+
+// Append-only ledger. `points` is signed (+ earned / − redeemed); the loyalty
+// balance is sum(points) — there is deliberately no total column.
+export const loyaltyTransactions = pgTable(
+  'loyalty_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    points: integer('points').notNull(),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: uuid('source_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_loyalty_tx_customer').on(t.customerId)],
 )

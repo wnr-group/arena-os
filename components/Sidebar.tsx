@@ -2,20 +2,30 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { CalendarDays, LayoutDashboard, Settings, Boxes, Clock, Users } from 'lucide-react'
+import { CalendarDays, LayoutDashboard, Settings, Boxes, Clock, Users, Contact } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { canViewCustomers, isManager, type MemberRole } from '@/lib/auth/roles'
 
-const NAV = [
+// `can` gates an entry on the member's role. Omit it for surfaces every member
+// may reach (Dashboard, Bookings). Keep it a predicate rather than a flag so a
+// module with its own access rule — like Customers — doesn't need a new prop.
+const NAV: {
+  href: string
+  label: string
+  icon: typeof LayoutDashboard
+  can?: (role: MemberRole) => boolean
+}[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, managerOnly: true },
-  { href: '/settings/hours', label: 'Working Hours', icon: Clock, managerOnly: true },
-  { href: '/settings/team', label: 'Team', icon: Users, managerOnly: true },
+  { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
+  { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
+  { href: '/settings/team', label: 'Team', icon: Users, can: isManager },
 ]
 
-export function Sidebar({ isManager }: { isManager: boolean }) {
+export function Sidebar({ role }: { role: MemberRole }) {
   const pathname = usePathname()
-  const items = NAV.filter((n) => !n.managerOnly || isManager)
+  const items = NAV.filter((n) => !n.can || n.can(role))
 
   return (
     <nav className="flex flex-col gap-1 p-3">

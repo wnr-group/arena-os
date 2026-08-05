@@ -24,3 +24,18 @@ export const MANAGER_ROLES: MemberRole[] = ['owner', 'manager']
 export function isManager(role: MemberRole | null | undefined): boolean {
   return role === 'owner' || role === 'manager'
 }
+
+/**
+ * Roles that may view and edit the customer directory, per the permissions.
+ */
+export const CUSTOMER_ROLES: MemberRole[] = [
+  'owner',
+  'manager',
+  'cashier',
+  'receptionist',
+  'floor_staff',
+]
+
+export function canViewCustomers(role: MemberRole | null | undefined): boolean {
+  return !!role && CUSTOMER_ROLES.includes(role)
+}

@@ -8,6 +8,7 @@ import { resources, resourceTypes, bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
+import { resolveBookingCustomer } from '@/lib/booking/customer'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
 type Result = { error?: string }
@@ -95,6 +96,15 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
 
       const total = Math.max(0, subtotal - v.discount)
 
+      // Attach the booking to the customer directory so it shows on their
+      // profile. Same transaction as the booking, so the two commit together.
+      // Returns null when there's no usable phone — see resolveBookingCustomer.
+      const customerId = await resolveBookingCustomer(tx, ctx.tenant.id, {
+        phone: v.customerPhone,
+        name: v.customerName,
+        email: v.customerEmail,
+      })
+
       // Booking number: BK-YYYYMMDD-NNN, sequential per tenant per creation day.
       const compact = todayInZone(ctx.tenant.timezone).replace(/-/g, '')
       const prefix = `BK-${compact}`
@@ -113,6 +123,7 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
           customerName: v.customerName || null,
           customerPhone: v.customerPhone || null,
           customerEmail: v.customerEmail || null,
+          customerId,
           status: 'confirmed',
           source: v.source,
           subtotal: subtotal.toFixed(2),

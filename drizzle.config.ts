@@ -1,11 +1,18 @@
 import type { Config } from 'drizzle-kit'
+import { loadEnv } from './scripts/env'
 
 /**
  * drizzle-kit config — used for `drizzle-kit studio` (schema browser) and type
  * introspection. Migrations themselves are authoritative SQL in db/migrations,
  * applied by scripts/migrate.ts as the OWNER role (they create roles, functions,
  * RLS policies and grants that a schema-diff tool can't express).
+ *
+ * drizzle-kit auto-loads `.env` but not Next's `.env.local`, so the credentials
+ * below would be empty without this — same gap the standalone scripts have, so
+ * we reuse their loader rather than adding a second mechanism.
  */
+loadEnv()
+
 export default {
   schema: './db/schema.ts',
   out: './db/migrations',
