@@ -352,3 +352,26 @@ export const shifts = pgTable(
   },
   (t) => [index('idx_shifts_member_date').on(t.membershipId, t.shiftDate)],
 )
+
+// ── tasks (migration 0008) ───────────────────────────────────────────────────
+export const taskStatus = pgEnum('task_status', ['open', 'in_progress', 'done'])
+
+export const tasks = pgTable(
+  'tasks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id').references(() => branches.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    assignedTo: uuid('assigned_to').references(() => memberships.id, { onDelete: 'set null' }),
+    status: taskStatus('status').notNull().default('open'),
+    dueDate: date('due_date'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_tasks_assignee').on(t.assignedTo)],
+)

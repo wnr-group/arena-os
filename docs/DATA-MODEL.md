@@ -194,8 +194,10 @@ RLS: member `select`; owner `update`.
 
 **Enums:** `shift_type(morning|evening|night)`.
 
-### `tasks` `[M4]` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `title` · `description` · `assigned_to → memberships null` · `status(open|in_progress|done)` · `due_date date null` · `created_by → memberships` · timestamps.
+### `tasks` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id null` · `title` · `description` · `assigned_to → memberships null` · `status task_status(open|in_progress|done)` · `due_date date null` · `created_by → memberships null` · timestamps. Index `(assigned_to)`. RLS: any active member rw; action layer restricts create/reassign/delete to managers, status updates to the assignee or a manager.
+
+**Enums:** `task_status(open|in_progress|done)`.
 
 *(Performance metrics are **derived** — no table — from `payments.collected_by`, `bookings.created_by`, `attendance`.)*
 
@@ -244,3 +246,5 @@ Mostly non-schema (infra, security, ops). Schema touches:
   correction, marked `[built]`.
 - 2026-08-05 — Migration 0007 adds `rosters`/`shifts` (M4-B): weekly roster
   builder, staff shift assignment, marked `[built]`.
+- 2026-08-05 — Migration 0008 adds `tasks` (M4-C): manager assigns, assignee
+  tracks status, marked `[built]`.
