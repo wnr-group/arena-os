@@ -34,7 +34,16 @@ const NAV: NavItem[] = [
       { href: '/menu/items', label: 'Items' },
     ],
   },
-  { href: '/settings/tax-rates', label: 'Tax Rates', icon: HandCoins, managerOnly: true },
+  {
+    href: '/settings/pricing',
+    label: 'Pricing',
+    icon: HandCoins,
+    managerOnly: true,
+    children: [
+      { href: '/settings/tax-rates', label: 'Tax Rates' },
+      { href: '/settings/happy-hours', label: 'Happy Hours' },
+    ],
+  },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, managerOnly: true },
   { href: '/settings/team', label: 'Team', icon: Users, managerOnly: true },
 ]
