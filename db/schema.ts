@@ -500,3 +500,30 @@ export const orderItems = pgTable(
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
+
+// ── kots (migration 0013) ────────────────────────────────────────────────────
+export const kotStatus = pgEnum('kot_status', ['pending', 'preparing', 'ready', 'served', 'cancelled'])
+
+export const kots = pgTable(
+  'kots',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    kotNumber: text('kot_number').notNull(),
+    status: kotStatus('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('kots_tenant_number_key').on(t.tenantId, t.kotNumber),
+    index('idx_kots_open').on(t.tenantId, t.branchId, t.status),
+  ],
+)
