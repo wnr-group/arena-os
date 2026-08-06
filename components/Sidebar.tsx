@@ -13,7 +13,7 @@ const NAV = [
   { href: '/settings/team', label: 'Team', icon: Users, managerOnly: true },
 ]
 
-export function Sidebar({ isManager }: { isManager: boolean }) {
+export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapsed?: boolean }) {
   const pathname = usePathname()
   const items = NAV.filter((n) => !n.managerOnly || isManager)
 
@@ -26,21 +26,27 @@ export function Sidebar({ isManager }: { isManager: boolean }) {
           <Link
             key={item.href}
             href={item.href}
+            title={collapsed ? item.label : undefined}
             className={cn(
-              'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition',
+              'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
               active
-                ? 'bg-primary text-primary-foreground'
+                ? 'bg-primary text-primary-foreground shadow-md shadow-primary/10'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              collapsed && 'justify-center px-2',
             )}
           >
-            <Icon size={16} />
-            {item.label}
+            <Icon size={18} className={cn('shrink-0 transition-transform duration-200 group-hover:scale-110')} />
+            {!collapsed && <span className="truncate">{item.label}</span>}
           </Link>
         )
       })}
-      <div className="mt-2 flex items-center gap-3 rounded-md px-3 py-2 text-xs text-muted-foreground">
-        <Settings size={14} /> More modules coming
-      </div>
+      {!collapsed && (
+        <div className="mt-4 flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground/80 border border-dashed border-border/50">
+          <Settings size={14} className="shrink-0 animate-spin-slow" />
+          <span className="truncate">More modules coming</span>
+        </div>
+      )}
     </nav>
   )
 }
+

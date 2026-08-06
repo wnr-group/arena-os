@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
     dangerouslyAllowLocalIP: process.env.NODE_ENV === 'development',
     formats: ['image/webp', 'image/avif'],
   },
+  // Allow development connections from lvh.me subdomains for multi-tenant dev
+  allowedDevOrigins: ['demo.lvh.me', 'lvh.me', 'localhost:3000'],
 }
 
 export default nextConfig
