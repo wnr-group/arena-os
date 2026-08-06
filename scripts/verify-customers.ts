@@ -256,6 +256,48 @@ async function main() {
   check('…the booking’s customer_id is set to null', survivor.rows[0]?.customer_id === null)
   check('…and its phone snapshot is preserved', survivor.rows[0]?.customer_phone === PHONE)
 
+  // ── 9. customer_notes are editable and cannot cross tenants (0009) ────────
+  const noteCustomer = (
+    await owner.query<{ id: string }>(
+      `insert into customers (tenant_id,phone,name) values ($1,'+919876500123','Notes') returning id`,
+      [a.tenantId],
+    )
+  ).rows[0].id
+
+  const noteId = (
+    await owner.query<{ id: string }>(
+      `insert into customer_notes (tenant_id,customer_id,body) values ($1,$2,'first') returning id`,
+      [a.tenantId, noteCustomer],
+    )
+  ).rows[0].id
+
+  const fresh = await owner.query<{ same: boolean }>(
+    'select created_at = updated_at as same from customer_notes where id=$1',
+    [noteId],
+  )
+  check('a new note starts with updated_at equal to created_at', fresh.rows[0].same === true)
+
+  await owner.query('update customer_notes set body=$1 where id=$2', ['edited', noteId])
+  const touched = await owner.query<{ moved: boolean; created_by: string | null }>(
+    'select updated_at > created_at as moved, created_by from customer_notes where id=$1',
+    [noteId],
+  )
+  check('editing a note moves updated_at via the trigger', touched.rows[0].moved === true)
+  check('…and leaves created_by alone', touched.rows[0].created_by === null)
+
+  // RLS's WITH CHECK passes here (the tenant_id IS tenant B's); the composite FK
+  // added in 0009 is what refuses a note pointing at another tenant's customer.
+  const smuggledNote = await tryAsUser(
+    b.userId,
+    'insert into customer_notes (tenant_id,customer_id,body) values ($1,$2,$3)',
+    [b.tenantId, noteCustomer, 'smuggled'],
+  )
+  check('a note in one tenant CANNOT reference another tenant’s customer', !smuggledNote)
+
+  await owner.query('delete from customers where id=$1', [noteCustomer])
+  const cascaded = await owner.query('select id from customer_notes where id=$1', [noteId])
+  check('deleting a customer cascades their notes away', cascaded.rows.length === 0)
+
   // ── cleanup ───────────────────────────────────────────────────────────────
   await owner.query('delete from tenants where id = any($1)', [[a.tenantId, b.tenantId]])
   await owner.end()

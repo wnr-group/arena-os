@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
+import { canViewCustomers } from '@/lib/auth/roles'
 import { getCustomerProfile } from '@/lib/customers/profile'
 import { CustomerProfile } from '@/components/customers/CustomerProfile'
 
@@ -21,6 +22,13 @@ export default async function CustomerProfilePage({
   if (!data) notFound()
 
   return (
-    <CustomerProfile data={data} timeZone={ctx.tenant.timezone} currency={ctx.tenant.currency} />
+    <CustomerProfile
+      data={data}
+      timeZone={ctx.tenant.timezone}
+      currency={ctx.tenant.currency}
+      // Hides the controls for a role that cannot use them. The server actions
+      // re-check this themselves — hiding a button is not authorization.
+      canManage={canViewCustomers(ctx.role)}
+    />
   )
 }

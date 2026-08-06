@@ -38,6 +38,8 @@ export type ProfileNote = {
   id: string
   body: string
   createdAt: Date
+  /** Equal to createdAt until the note is edited (migration 0009). */
+  updatedAt: Date
   createdByName: string | null
 }
 
@@ -174,6 +176,7 @@ export async function getCustomerProfile(
         id: customerNotes.id,
         body: customerNotes.body,
         createdAt: customerNotes.createdAt,
+        updatedAt: customerNotes.updatedAt,
         createdByName: memberships.fullName,
       })
       .from(customerNotes)

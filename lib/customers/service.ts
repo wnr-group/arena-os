@@ -6,6 +6,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { customers } from '@/db/schema'
 import { normalizePhone } from './phone'
+import { normalizeTags } from './tags'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -97,4 +98,39 @@ export async function findCustomerByRawPhone(
   const phone = normalizePhone(rawPhone)
   if (!phone) return null
   return findCustomerByPhone(tx, tenantId, phone)
+}
+
+/**
+ * Confirm a customer id belongs to this tenant, or throw.
+ */
+export async function assertCustomerInTenant(
+  tx: Db,
+  tenantId: string,
+  customerId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: customers.id })
+    .from(customers)
+    .where(and(eq(customers.tenantId, tenantId), eq(customers.id, customerId)))
+    .limit(1)
+
+  if (!row) throw new CustomerError('That customer no longer exists.')
+}
+
+export async function setCustomerTags(
+  tx: Db,
+  tenantId: string,
+  customerId: string,
+  tags: readonly (string | null | undefined)[],
+): Promise<string[]> {
+  const normalized = normalizeTags(tags)
+
+  const [updated] = await tx
+    .update(customers)
+    .set({ tags: normalized })
+    .where(and(eq(customers.tenantId, tenantId), eq(customers.id, customerId)))
+    .returning({ tags: customers.tags })
+
+  if (!updated) throw new CustomerError('That customer no longer exists.')
+  return updated.tags
 }

@@ -3,6 +3,8 @@ import { ArrowLeft, CalendarDays, Coins, Sparkles, Wallet } from 'lucide-react'
 import type { CustomerProfileData } from '@/lib/customers/profile'
 import { formatMoney, prettyDate, timeInZone } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
+import { CustomerNotes } from './CustomerNotes'
+import { CustomerTags } from './CustomerTags'
 
 const STATUS_STYLE: Record<string, string> = {
   confirmed: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
@@ -33,13 +35,20 @@ export function CustomerProfile({
   data,
   timeZone,
   currency,
+  canManage,
 }: {
   data: CustomerProfileData
   timeZone: string
   currency: string
+  /** May this member edit notes and tags? (Read-only otherwise.) */
+  canManage: boolean
 }) {
   const { customer: c, stats } = data
   const day = (d: Date) => prettyDate(todayInZone(timeZone, d), timeZone)
+  // Notes need the time of day too — several can land on one date. Formatting
+  // here (not in the client component) keeps the tenant timezone server-side,
+  // the same way the directory passes a ready-made `createdLabel`.
+  const stamp = (d: Date) => `${day(d)}, ${timeInZone(d, timeZone)}`
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -67,15 +76,7 @@ export function CustomerProfile({
             {' · '}
             {c.email || 'No email'}
           </p>
-          {c.tags.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {c.tags.map((t) => (
-                <span key={t} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
+          <CustomerTags customerId={c.id} tags={c.tags} canManage={canManage} />
         </div>
         {c.membershipStatus && (
           <span className="rounded-full border px-3 py-1 text-xs font-medium capitalize">
@@ -173,21 +174,20 @@ export function CustomerProfile({
 
       {/* ── notes ──────────────────────────────────────────────────────── */}
       <Section title="Notes">
-        {data.notes.length === 0 ? (
-          <Empty>No notes about this customer yet.</Empty>
-        ) : (
-          <ul className="space-y-2">
-            {data.notes.map((n) => (
-              <li key={n.id} className="rounded-lg border p-3">
-                <p className="whitespace-pre-wrap text-sm">{n.body}</p>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {day(n.createdAt)}
-                  {n.createdByName && ` · ${n.createdByName}`}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
+        <CustomerNotes
+          customerId={c.id}
+          canManage={canManage}
+          notes={data.notes.map((n) => ({
+            id: n.id,
+            body: n.body,
+            authorName: n.createdByName,
+            createdLabel: stamp(n.createdAt),
+            // The trigger only moves updated_at on a real UPDATE, so anything
+            // later than created_at means the note was genuinely edited.
+            editedLabel:
+              n.updatedAt.getTime() > n.createdAt.getTime() ? stamp(n.updatedAt) : null,
+          }))}
+        />
       </Section>
 
       {/* ── wallet + loyalty ───────────────────────────────────────────── */}

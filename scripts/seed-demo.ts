@@ -10,6 +10,7 @@
  *   - Company manager       manager@demo.test   / demo1234
  *   - Company cashier       cashier@demo.test   / demo1234
  *   - Resource types (PS5 Station, Snooker Table), 5 resources, 10:00–23:00 hours
+ *   - 5 customers with tags and a few staff notes
  *
  * All demo passwords are "demo1234"; the platform admin is "admin1234".
  *
@@ -71,13 +72,15 @@ async function main() {
     console.log('✓ owner user', userId)
 
     // 4. Membership
-    await client.query(
+    const ownerMembership = await client.query<{ id: string }>(
       `insert into public.memberships (tenant_id, user_id, branch_id, role, status, full_name, email)
        values ($1, $2, $3, 'owner', 'active', 'Demo Owner', $4)
        on conflict (tenant_id, user_id)
-       do update set role = 'owner', status = 'active', email = excluded.email`,
+       do update set role = 'owner', status = 'active', email = excluded.email
+       returning id`,
       [tenantId, userId, branchId, EMAIL],
     )
+    const ownerMembershipId = ownerMembership.rows[0].id
     console.log('✓ membership owner')
 
     // 4b. Staff members (so new devs can test non-owner roles). Password: demo1234
@@ -144,7 +147,90 @@ async function main() {
     }
     console.log('✓ working hours (10:00–23:00 daily)')
 
-    // 8. Platform admin (operates Arena OS itself; not a tenant member)
+    // 8. Customers — a small directory to click through, with tags and notes.
+    // Phones are already E.164 because that is what the CHECK on customers.phone
+    // (migration 0006) accepts; the app normalises to this shape on the way in.
+    type SeedCustomer = {
+      phone: string
+      name: string
+      email: string | null
+      tags: string[]
+      membershipStatus: string | null
+      notes: string[]
+    }
+
+    const demoCustomers: SeedCustomer[] = [
+      {
+        phone: '+919876543210',
+        name: 'Asha Iyer',
+        email: 'asha@example.test',
+        tags: ['VIP', 'Regular'],
+        membershipStatus: 'gold',
+        notes: [
+          'Prefers PS5 #1 by the window. Books most Friday evenings.',
+          'Allergic to peanuts — keep the snack platter away from her table.',
+        ],
+      },
+      {
+        phone: '+919812345678',
+        name: 'Rohit Menon',
+        email: 'rohit@example.test',
+        tags: ['Regular'],
+        membershipStatus: null,
+        notes: ['Usually brings a group of four for snooker.'],
+      },
+      {
+        phone: '+919900112233',
+        name: 'Fatima Sheikh',
+        email: null,
+        tags: ['Student', 'Weekday'],
+        membershipStatus: null,
+        notes: [],
+      },
+      {
+        phone: '+919845001122',
+        name: 'Vikram Nair',
+        email: 'vikram@example.test',
+        tags: [],
+        membershipStatus: 'silver',
+        notes: ['Paid a ₹500 advance in cash on his last visit — adjust on the next bill.'],
+      },
+      {
+        phone: '+919701234567',
+        name: 'Meera Krishnan',
+        email: 'meera@example.test',
+        tags: ['Birthday party'],
+        membershipStatus: null,
+        notes: [],
+      },
+    ]
+
+    for (const c of demoCustomers) {
+      const row = await client.query<{ id: string }>(
+        `insert into public.customers (tenant_id, phone, name, email, tags, membership_status)
+         values ($1,$2,$3,$4,$5,$6)
+         on conflict (tenant_id, phone)
+         do update set name = excluded.name, email = excluded.email,
+                       tags = excluded.tags, membership_status = excluded.membership_status
+         returning id`,
+        [tenantId, c.phone, c.name, c.email, c.tags, c.membershipStatus],
+      )
+      const customerId = row.rows[0].id
+
+      // Notes have no natural key, so clear this customer's notes before
+      // re-inserting — otherwise re-running the seed would stack duplicates.
+      await client.query('delete from public.customer_notes where customer_id = $1', [customerId])
+      for (const body of c.notes) {
+        await client.query(
+          `insert into public.customer_notes (tenant_id, customer_id, body, created_by)
+           values ($1,$2,$3,$4)`,
+          [tenantId, customerId, body, ownerMembershipId],
+        )
+      }
+    }
+    console.log(`✓ ${demoCustomers.length} customers (with tags + notes)`)
+
+    // 9. Platform admin (operates Arena OS itself; not a tenant member)
     const adminHash = await hash('admin1234', ARGON)
     await client.query(
       `insert into public.users (email, password_hash, full_name, is_platform_admin)

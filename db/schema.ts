@@ -322,6 +322,9 @@ export const customerNotes = pgTable(
     body: text('body').notNull(),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // Notes are editable (migration 0009); the set_updated_at() trigger keeps
+    // this fresh, so app code never writes it.
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('idx_customer_notes_customer').on(t.customerId)],
 )
