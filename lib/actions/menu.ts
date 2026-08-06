@@ -43,7 +43,8 @@ export async function upsertMenuCategory(input: z.input<typeof categoryInput>): 
         await tx.insert(menuCategories).values(values)
       }
     })
-    revalidatePath('/settings/menu')
+    revalidatePath('/menu/categories')
+    revalidatePath('/menu/items')
     return {}
   } catch (e) {
     return fail(e)
@@ -56,7 +57,8 @@ export async function deleteMenuCategory(id: string): Promise<Result> {
     await withUser(ctx.user.id, (tx) =>
       tx.delete(menuCategories).where(and(eq(menuCategories.id, id), eq(menuCategories.tenantId, ctx.tenant.id))),
     )
-    revalidatePath('/settings/menu')
+    revalidatePath('/menu/categories')
+    revalidatePath('/menu/items')
     return {}
   } catch (e) {
     return fail(e) // restrict violation if items still reference this category
@@ -101,7 +103,7 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
         await tx.insert(menuItems).values(values)
       }
     })
-    revalidatePath('/settings/menu')
+    revalidatePath('/menu/items')
     return {}
   } catch (e) {
     return fail(e)
@@ -121,7 +123,7 @@ export async function deleteMenuItem(id: string): Promise<Result> {
       return existing
     })
     if (row) void deleteImage(row.imageUrl)
-    revalidatePath('/settings/menu')
+    revalidatePath('/menu/items')
     return {}
   } catch (e) {
     return fail(e)

@@ -28,7 +28,7 @@ const taxRateInput = z.object({
 
 function revalidateTaxRatePaths() {
   revalidatePath('/settings/tax-rates')
-  revalidatePath('/settings/menu')
+  revalidatePath('/menu/items')
 }
 
 export async function upsertTaxRate(input: z.input<typeof taxRateInput>): Promise<Result> {
