@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
-type NavChild = { href: string; label: string }
+type NavChild = { href: string; label: string; managerOnly?: boolean }
 type NavItem = { href: string; label: string; icon: LucideIcon; managerOnly?: boolean; children?: NavChild[] }
 
 const NAV: NavItem[] = [
@@ -45,7 +45,17 @@ const NAV: NavItem[] = [
     ],
   },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, managerOnly: true },
-  { href: '/settings/team', label: 'Team', icon: Users, managerOnly: true },
+  {
+    href: '/employees',
+    label: 'Employees',
+    icon: Users,
+    children: [
+      { href: '/settings/team', label: 'Staff', managerOnly: true },
+      { href: '/attendance', label: 'Attendance' },
+      { href: '/roster', label: 'Roster' },
+      { href: '/tasks', label: 'Tasks' },
+    ],
+  },
 ]
 
 function isChildActive(pathname: string, children: NavChild[]) {
@@ -72,12 +82,14 @@ export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapse
         const Icon = item.icon
 
         if (item.children) {
-          const childActive = isChildActive(pathname, item.children)
+          const visibleChildren = item.children.filter((c) => !c.managerOnly || isManager)
+          if (visibleChildren.length === 0) return null
+          const childActive = isChildActive(pathname, visibleChildren)
           if (collapsed) {
             return (
               <Link
                 key={item.href}
-                href={item.children[0].href}
+                href={visibleChildren[0].href}
                 title={item.label}
                 className={cn(
                   'flex items-center justify-center rounded-lg px-2 py-2.5 text-sm font-medium transition-all duration-200',
@@ -109,7 +121,7 @@ export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapse
               </button>
               {open && (
                 <div className="ml-[1.15rem] mt-1 flex flex-col gap-1 border-l border-border pl-4">
-                  {item.children.map((child) => {
+                  {visibleChildren.map((child) => {
                     const active = pathname === child.href || pathname.startsWith(child.href + '/')
                     return (
                       <Link

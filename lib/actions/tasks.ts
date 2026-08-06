@@ -18,8 +18,11 @@ const taskInput = z.object({
   branchId: z.string().uuid().optional(),
   title: z.string().trim().min(1, 'Title is required'),
   description: z.string().trim().optional(),
-  assignedTo: z.string().uuid().optional(),
-  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Union with '' (rather than plain .optional()) lets an edit explicitly clear the
+  // field: undefined means "don't touch" (see updateTask's `!== undefined` guards),
+  // '' means "set to null".
+  assignedTo: z.union([z.string().uuid(), z.literal('')]).optional(),
+  dueDate: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.literal('')]).optional(),
 })
 
 export async function createTask(input: z.input<typeof taskInput>): Promise<Result> {
