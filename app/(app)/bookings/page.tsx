@@ -4,7 +4,9 @@ import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
-import { BookingsView } from '@/components/bookings/BookingsView'
+import { listMenuItems } from '@/lib/menu/data'
+import { listOrdersForBookings } from '@/lib/orders/data'
+import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number)
@@ -31,11 +33,48 @@ export default async function BookingsPage({
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [allResources, hours, slots] = await Promise.all([
+  const [allResources, hours, slots, menuItemRows] = await Promise.all([
     listResources(ctx, branch.id),
     getWorkingHours(ctx, branch.id),
     listDayBookings(ctx, branch.id, date, tz),
+    listMenuItems(ctx),
   ])
+
+  const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
+  const orderRows = await listOrdersForBookings(ctx, bookingIds)
+
+  const ordersByBooking: Record<string, OrderSummary[]> = {}
+  for (const row of orderRows) {
+    if (!row.bookingId) continue
+    const list = (ordersByBooking[row.bookingId] ??= [])
+    let order = list.find((o) => o.orderId === row.orderId)
+    if (!order) {
+      order = { orderId: row.orderId, orderNumber: row.orderNumber, status: row.status, items: [] }
+      list.push(order)
+    }
+    if (row.itemId) {
+      order.items.push({
+        itemId: row.itemId,
+        itemName: row.itemName!,
+        unitPrice: row.unitPrice!,
+        qty: row.qty!,
+        specialInstructions: row.specialInstructions,
+      })
+    }
+  }
+
+  const availableItems = menuItemRows.filter((i) => i.status === 'available')
+  const categoryMap = new Map<string, string>()
+  for (const i of availableItems) categoryMap.set(i.categoryId, i.categoryName)
+  const categories = [...categoryMap.entries()].map(([id, name]) => ({ id, name }))
+  const menuItems = availableItems.map((i) => ({
+    id: i.id,
+    name: i.name,
+    price: i.price,
+    categoryId: i.categoryId,
+    categoryName: i.categoryName,
+    taxPercent: i.taxPercent,
+  }))
 
   const dow = weekdayInZone(date, tz)
   const dayHours = hours.find((h) => h.dayOfWeek === dow)
@@ -74,6 +113,9 @@ export default async function BookingsPage({
         source: s.source,
         total: s.total,
       }))}
+      categories={categories}
+      menuItems={menuItems}
+      ordersByBooking={ordersByBooking}
     />
   )
 }
