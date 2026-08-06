@@ -452,3 +452,51 @@ export const happyHours = pgTable('happy_hours', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// ── orders (migration 0012) ──────────────────────────────────────────────────
+export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'])
+
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
+    orderNumber: text('order_number').notNull(),
+    status: orderStatus('status').notNull().default('open'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
+    index('idx_orders_branch').on(t.tenantId, t.branchId),
+    index('idx_orders_booking').on(t.bookingId),
+  ],
+)
+
+export const orderItems = pgTable(
+  'order_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    menuItemId: uuid('menu_item_id').references(() => menuItems.id, { onDelete: 'set null' }),
+    itemName: text('item_name').notNull(),
+    unitPrice: numeric('unit_price', { precision: 10, scale: 2 }).notNull(),
+    taxRate: numeric('tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    qty: integer('qty').notNull(),
+    lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull(),
+    specialInstructions: text('special_instructions'),
+  },
+  (t) => [index('idx_order_items_order').on(t.orderId)],
+)
