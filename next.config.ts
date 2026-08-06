@@ -4,6 +4,8 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '*.supabase.co' },
+      { protocol: 'https', hostname: '*.neon.tech' },
+      { protocol: 'https', hostname: '*.amazonaws.com' },
       {
         // Local Supabase storage during development
         protocol: 'http',

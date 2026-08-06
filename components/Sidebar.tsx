@@ -2,13 +2,14 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { CalendarDays, LayoutDashboard, Settings, Boxes, Clock, Users } from 'lucide-react'
+import { CalendarDays, LayoutDashboard, Settings, Boxes, Clock, Users, UtensilsCrossed } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
   { href: '/settings/resources', label: 'Resources', icon: Boxes, managerOnly: true },
+  { href: '/settings/menu', label: 'Menu', icon: UtensilsCrossed, managerOnly: true },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, managerOnly: true },
   { href: '/settings/team', label: 'Team', icon: Users, managerOnly: true },
 ]

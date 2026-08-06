@@ -428,6 +428,8 @@ export const menuItems = pgTable(
     taxRateId: uuid('tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
     status: menuItemStatus('status').notNull().default('available'),
     imageUrl: text('image_url'),
+    description: text('description'),
+    sortOrder: integer('sort_order').notNull().default(0),
     happyHourEligible: boolean('happy_hour_eligible').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
