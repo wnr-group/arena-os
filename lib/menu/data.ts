@@ -4,6 +4,8 @@ import { withUser } from '@/db'
 import { menuCategories, menuItems, taxRates } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 
+export { listTaxRates } from '@/lib/tax-rates/data'
+
 export function listMenuCategories(ctx: ActiveContext) {
   return withUser(ctx.user.id, (tx) =>
     tx
@@ -11,12 +13,6 @@ export function listMenuCategories(ctx: ActiveContext) {
       .from(menuCategories)
       .where(eq(menuCategories.tenantId, ctx.tenant.id))
       .orderBy(asc(menuCategories.sortOrder), asc(menuCategories.name)),
-  )
-}
-
-export function listTaxRates(ctx: ActiveContext) {
-  return withUser(ctx.user.id, (tx) =>
-    tx.select().from(taxRates).where(eq(taxRates.tenantId, ctx.tenant.id)).orderBy(asc(taxRates.name)),
   )
 }
 

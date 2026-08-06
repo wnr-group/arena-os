@@ -2,12 +2,11 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Pencil, Trash2, X } from 'lucide-react'
+import Link from 'next/link'
+import { Plus, Pencil, Trash2, X, ArrowUpRight } from 'lucide-react'
 import {
   upsertMenuCategory,
   deleteMenuCategory,
-  upsertTaxRate,
-  deleteTaxRate,
   upsertMenuItem,
   deleteMenuItem,
   uploadMenuItemImage,
@@ -88,14 +87,17 @@ export function MenuManager({
 
       {/* ── tax rates ── */}
       <section>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Tax rates</h2>
-        <div className="mt-3 space-y-2">
-          {taxRates.length === 0 && <p className="text-sm text-muted-foreground">No tax rates yet. Add one below.</p>}
-          {taxRates.map((t) => (
-            <TaxRateItem key={t.id} row={t} pending={pending} run={run} />
-          ))}
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Tax rates</h2>
+          <Link href="/settings/tax-rates" className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+            Manage tax rates <ArrowUpRight size={14} />
+          </Link>
         </div>
-        <TaxRateForm pending={pending} run={run} />
+        <p className="mt-1 text-sm text-muted-foreground">
+          {taxRates.length === 0
+            ? 'No tax rates yet.'
+            : `${taxRates.length} rate${taxRates.length === 1 ? '' : 's'} configured, used below to tax menu items.`}
+        </p>
       </section>
 
       {/* ── items ── */}
@@ -174,81 +176,6 @@ function CategoryForm({ row, pending, run, onDone }: { row?: CategoryRow; pendin
     <div className="mt-3 grid grid-cols-2 gap-2 rounded-md border border-dashed p-3 sm:grid-cols-4">
       <input className={input} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
       <input className={input} placeholder="Sort order" type="number" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} />
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-        Active
-      </label>
-      <div className="flex gap-2">
-        <button className={`${btn} flex-1 bg-primary text-primary-foreground`} disabled={pending || !name} onClick={submit}>
-          {row ? 'Save' : <span className="inline-flex items-center gap-1"><Plus size={15} /> Add</span>}
-        </button>
-        {onDone && (
-          <button className={`${btn} border`} onClick={onDone} aria-label="Cancel">
-            <X size={15} />
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── tax rate row + form ─────────────────────────────────────────────────────
-function TaxRateItem({ row, pending, run }: { row: TaxRateRow; pending: boolean; run: Run }) {
-  const [editing, setEditing] = useState(false)
-  if (editing) return <TaxRateForm row={row} pending={pending} run={run} onDone={() => setEditing(false)} />
-  return (
-    <div className="flex items-center justify-between rounded-md border px-4 py-3">
-      <div>
-        <span className="font-medium">{row.name}</span>
-        <span className="ml-3 text-sm text-muted-foreground">
-          {row.percent}%{!row.isActive ? ' · Inactive' : ''}
-        </span>
-      </div>
-      <div className="flex gap-1">
-        <button className={btn} onClick={() => setEditing(true)} aria-label="Edit">
-          <Pencil size={15} />
-        </button>
-        <button
-          className={`${btn} text-destructive`}
-          disabled={pending}
-          onClick={() => run(() => deleteTaxRate(row.id))}
-          aria-label="Delete"
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function TaxRateForm({ row, pending, run, onDone }: { row?: TaxRateRow; pending: boolean; run: Run; onDone?: () => void }) {
-  const [name, setName] = useState(row?.name ?? '')
-  const [percent, setPercent] = useState(row?.percent ?? '')
-  const [isActive, setIsActive] = useState(row?.isActive ?? true)
-
-  function submit() {
-    run(async () => {
-      const r = await upsertTaxRate({
-        id: row?.id,
-        name,
-        percent: percent === '' ? 0 : Number(percent),
-        isActive,
-      })
-      if (!r.error) {
-        if (onDone) onDone()
-        else {
-          setName('')
-          setPercent('')
-        }
-      }
-      return r
-    })
-  }
-
-  return (
-    <div className="mt-3 grid grid-cols-2 gap-2 rounded-md border border-dashed p-3 sm:grid-cols-4">
-      <input className={input} placeholder="Name e.g. GST 5%" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className={input} placeholder="Percent" type="number" min="0" max="100" step="0.01" value={percent} onChange={(e) => setPercent(e.target.value)} />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
         Active

@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems, taxRates } from '@/db/schema'
+import { menuCategories, menuItems } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 
@@ -60,54 +60,6 @@ export async function deleteMenuCategory(id: string): Promise<Result> {
     return {}
   } catch (e) {
     return fail(e) // restrict violation if items still reference this category
-  }
-}
-
-// ── tax rates ───────────────────────────────────────────────────────────────
-const taxRateInput = z.object({
-  id: z.string().uuid().optional(),
-  name: z.string().trim().min(1, 'Name is required'),
-  percent: z.coerce.number().min(0).max(100),
-  isActive: z.boolean().default(true),
-})
-
-export async function upsertTaxRate(input: z.input<typeof taxRateInput>): Promise<Result> {
-  try {
-    const ctx = await requireManager()
-    const v = taxRateInput.parse(input)
-    await withUser(ctx.user.id, async (tx) => {
-      const values = {
-        tenantId: ctx.tenant.id,
-        name: v.name,
-        percent: v.percent.toFixed(2),
-        isActive: v.isActive,
-      }
-      if (v.id) {
-        await tx
-          .update(taxRates)
-          .set(values)
-          .where(and(eq(taxRates.id, v.id), eq(taxRates.tenantId, ctx.tenant.id)))
-      } else {
-        await tx.insert(taxRates).values(values)
-      }
-    })
-    revalidatePath('/settings/menu')
-    return {}
-  } catch (e) {
-    return fail(e)
-  }
-}
-
-export async function deleteTaxRate(id: string): Promise<Result> {
-  try {
-    const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) =>
-      tx.delete(taxRates).where(and(eq(taxRates.id, id), eq(taxRates.tenantId, ctx.tenant.id))),
-    )
-    revalidatePath('/settings/menu')
-    return {}
-  } catch (e) {
-    return fail(e)
   }
 }
 
