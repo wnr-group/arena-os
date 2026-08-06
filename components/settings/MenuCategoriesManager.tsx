@@ -10,6 +10,8 @@ type Modal = { mode: 'add' } | { mode: 'edit'; row: CategoryRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
 
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
+const inputInvalid = 'border-destructive focus:ring-destructive/30'
+const errorText = 'mt-1 text-xs text-destructive'
 const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
 
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
@@ -167,13 +169,25 @@ function CategoryModal({
   const [name, setName] = useState(row?.name ?? '')
   const [sortOrder, setSortOrder] = useState(String(row?.sortOrder ?? 0))
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
+  const [submitted, setSubmitted] = useState(false)
+
+  const errors = useMemo(() => {
+    const e: { name?: string; sortOrder?: string } = {}
+    if (!name.trim()) e.name = 'Name is required.'
+    if (sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
+      e.sortOrder = 'Sort order must be a whole number.'
+    return e
+  }, [name, sortOrder])
+  const isValid = Object.keys(errors).length === 0
 
   function submit() {
+    setSubmitted(true)
+    if (!isValid) return
     run(
       () =>
         upsertMenuCategory({
           id: row?.id,
-          name,
+          name: name.trim(),
           sortOrder: sortOrder === '' ? 0 : Number(sortOrder),
           isActive,
         }),
@@ -195,21 +209,23 @@ function CategoryModal({
           <div>
             <label className="text-xs font-medium text-muted-foreground">Name</label>
             <input
-              className={input}
+              className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
               placeholder="e.g. Starters"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
             />
+            {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">Sort order</label>
             <input
-              className={input}
+              className={`${input} ${submitted && errors.sortOrder ? inputInvalid : ''}`}
               type="number"
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value)}
             />
+            {submitted && errors.sortOrder && <p className={errorText}>{errors.sortOrder}</p>}
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
@@ -218,7 +234,7 @@ function CategoryModal({
         </div>
 
         <div className="mt-5 flex gap-2">
-          <button className={`${btn} flex-1 bg-primary text-primary-foreground`} disabled={pending || !name} onClick={submit}>
+          <button className={`${btn} flex-1 bg-primary text-primary-foreground`} disabled={pending} onClick={submit}>
             {row ? 'Save changes' : 'Add category'}
           </button>
           <button className={`${btn} border`} onClick={onClose}>

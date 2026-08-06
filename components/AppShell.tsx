@@ -52,7 +52,7 @@ export function AppShell({
   }
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground transition-colors duration-200">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground transition-colors duration-200">
       {/* Desktop Sidebar */}
       <aside
         className={cn(

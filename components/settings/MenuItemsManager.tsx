@@ -18,6 +18,7 @@ import {
   Search,
   Filter,
   ChevronDown,
+  Loader2,
 } from 'lucide-react'
 import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
@@ -39,12 +40,14 @@ type ItemRow = {
   taxRateName: string | null
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: ItemRow }
-type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
+type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
 type View = 'table' | 'grid'
 
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
+const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
+const errorText = 'mt-1 text-sm text-destructive'
 const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 
 const STATUS_LABELS: Record<ItemStatus, string> = {
@@ -73,12 +76,13 @@ export function MenuItemsManager({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [view, setView] = useState<View>('grid')
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | ItemStatus>('all')
 
-  const run: Run = (fn, onSuccess) => {
+  const run: Run = (fn, onSuccess, onSettled) => {
     setError(null)
     start(async () => {
       const r = await fn()
@@ -87,6 +91,7 @@ export function MenuItemsManager({
         router.refresh()
         onSuccess?.()
       }
+      onSettled?.()
     })
   }
 
@@ -118,7 +123,12 @@ export function MenuItemsManager({
 
   function handleDelete(row: ItemRow) {
     if (!window.confirm(`Delete item "${row.name}"? This cannot be undone.`)) return
-    run(() => deleteMenuItem(row.id))
+    setDeletingId(row.id)
+    run(
+      () => deleteMenuItem(row.id),
+      undefined,
+      () => setDeletingId(null),
+    )
   }
 
   return (
@@ -249,6 +259,7 @@ export function MenuItemsManager({
               row={row}
               currency={currency}
               pending={pending}
+              deleting={deletingId === row.id}
               onEdit={() => setModal({ mode: 'edit', row })}
               onDelete={() => handleDelete(row)}
             />
@@ -292,7 +303,12 @@ export function MenuItemsManager({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
-                        <button className={btn} onClick={() => setModal({ mode: 'edit', row })} aria-label="Edit">
+                        <button
+                          className={btn}
+                          disabled={pending}
+                          onClick={() => setModal({ mode: 'edit', row })}
+                          aria-label="Edit"
+                        >
                           <Pencil size={16} />
                         </button>
                         <button
@@ -301,7 +317,7 @@ export function MenuItemsManager({
                           onClick={() => handleDelete(row)}
                           aria-label="Delete"
                         >
-                          <Trash2 size={16} />
+                          {deletingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                         </button>
                       </div>
                     </td>
@@ -438,22 +454,29 @@ function ItemCard({
   row,
   currency,
   pending,
+  deleting,
   onEdit,
   onDelete,
 }: {
   row: ItemRow
   currency: string
   pending: boolean
+  deleting: boolean
   onEdit: () => void
   onDelete: () => void
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg">
       <ItemVisual imageUrl={row.imageUrl} status={row.status} />
-      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
+      <div
+        className={`absolute right-2 top-2 flex gap-1 transition ${
+          deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        }`}
+      >
         <button
           type="button"
-          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary"
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={pending}
           onClick={onEdit}
           aria-label="Edit"
         >
@@ -461,12 +484,12 @@ function ItemCard({
         </button>
         <button
           type="button"
-          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-destructive shadow-sm backdrop-blur-sm hover:bg-destructive/10"
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-destructive shadow-sm backdrop-blur-sm hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={pending}
           onClick={onDelete}
           aria-label="Delete"
         >
-          <Trash2 size={13} />
+          {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
         </button>
       </div>
       <ItemCardBody
@@ -508,10 +531,24 @@ function ItemModal({
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [submitted, setSubmitted] = useState(false)
 
   const previewCategoryName = categories.find((c) => c.id === categoryId)?.name
   const selectedTax = taxRates.find((t) => t.id === taxRateId)
   const previewTaxLabel = selectedTax ? `${selectedTax.name} · ${selectedTax.percent}%` : null
+
+  const errors = useMemo(() => {
+    const e: { name?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
+    if (!name.trim()) e.name = 'Name is required.'
+    if (!categoryId) e.categoryId = 'Select a category.'
+    if (price === '') e.price = 'Price is required.'
+    else if (Number.isNaN(Number(price))) e.price = 'Enter a valid price.'
+    else if (Number(price) < 0) e.price = "Price can't be negative."
+    if (sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
+      e.sortOrder = 'Sort order must be a whole number.'
+    return e
+  }, [name, categoryId, price, sortOrder])
+  const isValid = Object.keys(errors).length === 0
 
   useEffect(() => {
     const original = document.body.style.overflow
@@ -536,14 +573,16 @@ function ItemModal({
   }
 
   function submit() {
+    setSubmitted(true)
+    if (!isValid) return
     run(
       () =>
         upsertMenuItem({
           id: row?.id,
           categoryId,
-          name,
+          name: name.trim(),
           description,
-          price: price === '' ? 0 : Number(price),
+          price: Number(price),
           taxRateId: taxRateId || null,
           status,
           imageUrl,
@@ -576,23 +615,35 @@ function ItemModal({
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
             <div>
               <label className={label}>Name</label>
-              <input className={input} placeholder="e.g. Margherita Pizza" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              <input
+                className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
+                placeholder="e.g. Margherita Pizza"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+              />
+              {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={label}>Category</label>
-                <select className={input} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                <select
+                  className={`${input} ${submitted && errors.categoryId ? inputInvalid : ''}`}
+                  value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                >
                   {categories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
                   ))}
                 </select>
+                {submitted && errors.categoryId && <p className={errorText}>{errors.categoryId}</p>}
               </div>
               <div>
                 <label className={label}>Price</label>
                 <input
-                  className={input}
+                  className={`${input} ${submitted && errors.price ? inputInvalid : ''}`}
                   placeholder="0.00"
                   type="number"
                   min="0"
@@ -600,6 +651,7 @@ function ItemModal({
                   value={price}
                   onChange={(e) => setPrice(e.target.value)}
                 />
+                {submitted && errors.price && <p className={errorText}>{errors.price}</p>}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -625,7 +677,13 @@ function ItemModal({
             </div>
             <div>
               <label className={label}>Sort order</label>
-              <input className={input} type="number" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} />
+              <input
+                className={`${input} ${submitted && errors.sortOrder ? inputInvalid : ''}`}
+                type="number"
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+              />
+              {submitted && errors.sortOrder && <p className={errorText}>{errors.sortOrder}</p>}
             </div>
             <div>
               <label className={label}>Description (optional)</label>
@@ -653,7 +711,10 @@ function ItemModal({
                     </button>
                   </div>
                 )}
-                <label className={`${btn} cursor-pointer border ${uploading ? 'opacity-50' : ''}`}>
+                <label
+                  className={`${btn} inline-flex cursor-pointer items-center gap-2 border ${uploading ? 'cursor-not-allowed opacity-50' : ''}`}
+                >
+                  {uploading && <Loader2 size={15} className="animate-spin" />}
                   {uploading ? 'Uploading…' : imageUrl ? 'Replace image' : 'Upload image'}
                   <input
                     type="file"
@@ -669,13 +730,14 @@ function ItemModal({
 
           <div className="mt-5 flex gap-2">
             <button
-              className={`${btn} flex-1 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
-              disabled={pending || uploading || !name || !categoryId}
+              className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
+              disabled={pending || uploading}
               onClick={submit}
             >
-              {row ? 'Save changes' : 'Add item'}
+              {pending && <Loader2 size={16} className="animate-spin" />}
+              {pending ? 'Saving…' : row ? 'Save changes' : 'Add item'}
             </button>
-            <button className={`${btn} border`} onClick={onClose}>
+            <button className={`${btn} border`} disabled={pending} onClick={onClose}>
               Cancel
             </button>
           </div>

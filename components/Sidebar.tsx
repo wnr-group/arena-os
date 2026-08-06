@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
@@ -45,13 +45,20 @@ function isChildActive(pathname: string, children: NavChild[]) {
 
 export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapsed?: boolean }) {
   const pathname = usePathname()
-  const items = NAV.filter((n) => !n.managerOnly || isManager)
+  const items = useMemo(() => NAV.filter((n) => !n.managerOnly || isManager), [isManager])
   const [openLabel, setOpenLabel] = useState<string | null>(
     () => items.find((n) => n.children && isChildActive(pathname, n.children))?.label ?? null,
   )
 
+  useEffect(() => {
+    const activeItem = items.find((n) => n.children && isChildActive(pathname, n.children))
+    if (activeItem) {
+      setOpenLabel(activeItem.label)
+    }
+  }, [pathname, items])
+
   return (
-    <nav className="flex flex-col gap-1 p-3">
+    <nav className="flex flex-col gap-1 p-3 flex-1 overflow-y-auto">
       {items.map((item) => {
         const Icon = item.icon
 
@@ -74,7 +81,7 @@ export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapse
               </Link>
             )
           }
-          const open = openLabel === item.label || childActive
+          const open = openLabel === item.label
           return (
             <div key={item.href}>
               <button
