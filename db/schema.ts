@@ -375,3 +375,78 @@ export const tasks = pgTable(
   },
   (t) => [index('idx_tasks_assignee').on(t.assignedTo)],
 )
+
+// ── tax rates (migration 0009) ───────────────────────────────────────────────
+export const taxRates = pgTable(
+  'tax_rates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    percent: numeric('percent', { precision: 5, scale: 2 }).notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('tax_rates_tenant_name_key').on(t.tenantId, t.name)],
+)
+
+// ── menu (migration 0010) ────────────────────────────────────────────────────
+export const menuItemStatus = pgEnum('menu_item_status', ['available', 'out_of_stock', 'hidden'])
+export const discountType = pgEnum('discount_type', ['percentage', 'fixed'])
+
+export const menuCategories = pgTable(
+  'menu_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('menu_categories_tenant_name_key').on(t.tenantId, t.name)],
+)
+
+export const menuItems = pgTable(
+  'menu_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => menuCategories.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    price: numeric('price', { precision: 10, scale: 2 }).notNull(),
+    taxRateId: uuid('tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
+    status: menuItemStatus('status').notNull().default('available'),
+    imageUrl: text('image_url'),
+    happyHourEligible: boolean('happy_hour_eligible').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_menu_items_tenant').on(t.tenantId, t.categoryId)],
+)
+
+export const happyHours = pgTable('happy_hours', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  daysOfWeek: smallint('days_of_week').array().notNull().default([]),
+  startTime: time('start_time').notNull(),
+  endTime: time('end_time').notNull(),
+  discountType: discountType('discount_type').notNull(),
+  discountValue: numeric('discount_value', { precision: 10, scale: 2 }).notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
