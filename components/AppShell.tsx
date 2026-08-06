@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, LogOut, Menu, X } from 'lucide-react'
+import { LogOut, Menu, X, PanelRightOpen, PanelRightClose } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { cn } from '@/lib/utils/cn'
 
@@ -110,7 +110,7 @@ export function AppShell({
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="absolute -right-3 top-16 z-20 flex size-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-md hover:text-foreground hover:bg-muted transition-all"
         >
-          {collapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
+          {collapsed ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
         </button>
       </aside>
 
