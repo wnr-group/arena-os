@@ -1,31 +1,61 @@
 @import 'tailwindcss';
 
-:root {
+/*
+ * Arena OS theme.
+ *
+ * LIGHT is the active theme app-wide — we intentionally do NOT auto-switch to
+ * dark based on the OS `prefers-color-scheme`. The dark tokens are defined below
+ * so a theme toggle can enable them later by setting `data-theme="dark"` on
+ * <html>; until then everything renders light.
+ *
+ * Brand colour: purple / violet.
+ *
+ * All components consume these tokens via Tailwind (`bg-primary`, `text-primary`,
+ * `bg-muted`, `border`, …), so restyling happens here, not per component.
+ */
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
   --background: #ffffff;
-  --foreground: #0a0a0b;
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --border: #e4e4e7;
+  --foreground: #1b1524; /* near-black with a faint purple tint */
+  --muted: #f6f4fb; /* very light purple-grey */
+  --muted-foreground: #6c6580;
+  --border: #e9e4f4;
   --card: #ffffff;
-  --primary: #4f46e5;
+
+  --primary: #7c3aed; /* violet-600 — brand */
+  --primary-hover: #6d28d9; /* violet-700 */
   --primary-foreground: #ffffff;
+
+  --accent: #f3e8ff; /* purple-100, subtle fills */
+  --accent-foreground: #6d28d9;
+
   --destructive: #dc2626;
-  --ring: #4f46e5;
+  --ring: #7c3aed;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0b;
-    --foreground: #fafafa;
-    --muted: #18181b;
-    --muted-foreground: #a1a1aa;
-    --border: #27272a;
-    --card: #111113;
-    --primary: #6366f1;
-    --primary-foreground: #ffffff;
-    --destructive: #ef4444;
-    --ring: #6366f1;
-  }
+/* Dark theme — defined for later; INACTIVE until <html data-theme="dark">. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --background: #140f1c;
+  --foreground: #f5f2fb;
+  --muted: #1f1830;
+  --muted-foreground: #a99fc0;
+  --border: #2a2140;
+  --card: #1a1428;
+
+  --primary: #a78bfa; /* violet-400 — lighter on dark */
+  --primary-hover: #c4b5fd;
+  --primary-foreground: #1b1524;
+
+  --accent: #2a2140;
+  --accent-foreground: #ddd6fe;
+
+  --destructive: #ef4444;
+  --ring: #a78bfa;
 }
 
 @theme inline {
@@ -37,6 +67,8 @@
   --color-card: var(--card);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-ring: var(--ring);
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
