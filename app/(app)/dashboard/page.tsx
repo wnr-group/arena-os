@@ -13,7 +13,7 @@ export default async function DashboardPage() {
       {/* Welcome Banner */}
       <div className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-card to-muted/20 p-6 sm:p-8 shadow-sm">
         <div className="absolute -right-10 -top-10 size-40 rounded-full bg-primary/5 blur-3xl" />
-        <div className="absolute -left-10 -bottom-10 size-40 rounded-full bg-indigo-500/5 blur-3xl" />
+        <div className="absolute -left-10 -bottom-10 size-40 rounded-full bg-primary/5 blur-3xl" />
         
         <div className="relative">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
@@ -55,7 +55,7 @@ export default async function DashboardPage() {
               className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5"
             >
               <div>
-                <div className="inline-flex size-12 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-500 transition-all duration-300 group-hover:bg-primary group-hover:text-primary-foreground">
+                <div className="inline-flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary transition-all duration-300 group-hover:bg-primary group-hover:text-primary-foreground">
                   <Boxes size={22} className="transition-transform duration-300 group-hover:scale-110" />
                 </div>
                 <h2 className="mt-4 text-lg font-semibold tracking-tight text-foreground group-hover:text-primary transition-colors">Resources</h2>

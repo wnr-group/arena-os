@@ -64,7 +64,7 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
           icon={Percent}
           label="Average rate"
           value={`${stats.avgPercent.toFixed(2)}%`}
-          accent="bg-indigo-500/10 text-indigo-500"
+          accent="bg-primary/10 text-primary"
         />
       </div>
 

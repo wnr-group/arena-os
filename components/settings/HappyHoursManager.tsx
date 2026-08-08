@@ -90,7 +90,7 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
         <StatCard icon={Clock} label="Total rules" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
         <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
-        <StatCard icon={Percent} label="Percentage-based" value={stats.percentage} accent="bg-indigo-500/10 text-indigo-500" />
+        <StatCard icon={Percent} label="Percentage-based" value={stats.percentage} accent="bg-primary/10 text-primary" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
