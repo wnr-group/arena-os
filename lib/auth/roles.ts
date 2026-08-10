@@ -25,6 +25,11 @@ export function isManager(role: MemberRole | null | undefined): boolean {
   return role === 'owner' || role === 'manager'
 }
 
+/** Strictly the owner. Used for the business's legal identity (migration 0012). */
+export function isOwner(role: MemberRole | null | undefined): boolean {
+  return role === 'owner'
+}
+
 /**
  * Roles that may view and edit the customer directory, per the permissions.
  */
@@ -38,4 +43,14 @@ export const CUSTOMER_ROLES: MemberRole[] = [
 
 export function canViewCustomers(role: MemberRole | null | undefined): boolean {
   return !!role && CUSTOMER_ROLES.includes(role)
+}
+
+/**
+ * Roles that may raise a bill — "cashier and up". Kitchen, floor and reception
+ * staff work bookings and orders but never issue a GST invoice.
+ */
+export const BILLING_ROLES: MemberRole[] = ['owner', 'manager', 'cashier']
+
+export function canBill(role: MemberRole | null | undefined): boolean {
+  return !!role && BILLING_ROLES.includes(role)
 }

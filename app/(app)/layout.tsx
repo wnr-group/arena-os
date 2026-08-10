@@ -3,7 +3,7 @@ import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
 import { ROLE_LABELS } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
-import { Sidebar } from '@/components/Sidebar'
+import { AppShell } from '@/components/AppShell'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -41,35 +41,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const { tenant, role } = ctx
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="hidden w-60 shrink-0 flex-col border-r sm:flex">
-        <div className="border-b px-5 py-4">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
-            {INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
-          </p>
-          <p className="truncate font-semibold">{tenant.name}</p>
-        </div>
-        <Sidebar role={role} />
-        <div className="mt-auto border-t p-3">
-          <p className="truncate px-2 text-sm font-medium">{user.email}</p>
-          <p className="px-2 text-xs text-muted-foreground">{ROLE_LABELS[role]}</p>
-          <form action={signOut} className="mt-2">
-            <button className="w-full rounded-md border px-3 py-1.5 text-sm hover:bg-muted">
-              Sign out
-            </button>
-          </form>
-        </div>
-      </aside>
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b px-6 py-3 sm:hidden">
-          <span className="font-semibold">{tenant.name}</span>
-          <form action={signOut}>
-            <button className="text-sm text-muted-foreground">Sign out</button>
-          </form>
-        </header>
-        <main className="min-w-0 flex-1">{children}</main>
-      </div>
-    </div>
+    // Merge note: the responsive AppShell (from main) replaced the inline
+    // sidebar/header this file used to render. The `no-print` chrome-hiding that
+    // the invoice receipt depends on therefore lives inside AppShell now.
+    <AppShell
+      industryLabel={INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
+      tenantName={tenant.name}
+      role={role}
+      userEmail={user.email}
+      roleLabel={ROLE_LABELS[role]}
+      signOutAction={signOut}
+    >
+      {children}
+    </AppShell>
   )
 }

@@ -160,9 +160,16 @@ data-model ticket.
 npx tsx scripts/verify-rls.ts       # tenant isolation (reads + writes) via arena_app — 6 assertions
 npx tsx scripts/verify-booking.ts   # exclusion constraint, cancel-frees-time trigger, RLS on bookings — 5 assertions
 npx tsx scripts/verify-customers.ts # unique(tenant_id,phone), E.164 check, RLS on customers + ledgers,
-                                    #   and that no balance is ever stored — 20 assertions
+                                    #   note edit/cascade/cross-tenant FK, and that no balance is ever
+                                    #   stored — 30 assertions
 npx tsx scripts/test-customers.ts   # findOrCreateCustomer: normalisation, idempotency (incl. concurrent
                                     #   callers), per-tenant identity, isolation — 20 assertions
+npx tsx scripts/test-customer-notes.ts # customer notes CRUD (author, timestamps, edited marker) and tag
+                                    #   add/remove/de-duplication, all tenant-scoped — 48 assertions
+npx tsx scripts/verify-billing.ts   # billing objects (tables/enums/indexes/triggers), db/schema.ts ↔ SQL
+                                    #   drift, unique(tenant_id,invoice_number), numeric(10,2) money, RLS
+                                    #   on all six tables, manager-only refunds, append-only audit log,
+                                    #   composite-FK tenant safety — 72 assertions
 npm run type-check && npm run build # must be clean before a PR
 ```
 

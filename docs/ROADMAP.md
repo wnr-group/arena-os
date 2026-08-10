@@ -36,6 +36,16 @@ Pairs with `docs/ARCHITECTURE.md` (design of record).
 | **M6** | Reports & Analytics | Operational dashboards | Dashboards reconcile with seeded source data; CSV export |
 | **M7** | Production Hardening | Security, infra/CI, observability, perf, backups | Launch checklist green; staging soak passes |
 | **M8** | Launch / Go-live | Onboard first real tenant on production | Smoke tests pass; rollback rehearsed; support live |
+| | | *— MVP-2 (post-launch; label `mvp2`) —* | |
+| **M9** | Customer Accounts & Portal | Phone/OTP login, self-service portal, loyalty tiers | Customer logs in (OTP) → sees history → rebooks; tier derived from points |
+| **M10** | Platform Capabilities | Real-time board/kitchen, inventory, multi-currency + i18n | Live updates <~1s; stock deducts on sale; money in tenant currency |
+| **M11** | Payroll & Salary | Salary structures, advances, payroll runs + payslips | Run a period → attendance-driven payslips; staff sees own payslip |
+| **M12** | Expense Tracker | Expenses, recurring, receipts, P&L | P&L = revenue − expenses − payroll reconciles on seeded data |
+
+**M0–M8 = MVP-1** (the production launch). **M9–M12 = MVP-2** (post-launch),
+already ticketed in Jira (epics AROS-83…86). MVP-2 milestones depend on MVP-1
+modules — see the dependency notes in each section below; don't start a blocked
+story before its dependency ships.
 
 ---
 
@@ -178,6 +188,44 @@ Pairs with `docs/ARCHITECTURE.md` (design of record).
 
 ---
 
+# MVP-2 (post-launch)
+
+Ticketed in Jira as epics **AROS-83…86** (label `mvp2`). Build after MVP-1 ships;
+respect the **Depends on** notes.
+
+## M9 — Customer Accounts & Portal  (AROS-83)
+
+**Depends on:** M1 Customers · M3 public booking + SMS. Turns the account-less
+hybrid booking into real customer accounts.
+- Customer **OTP auth** (`customer_sessions`; OTP via M3 SMS) — separate surface from staff/platform.
+- Portal shell + guard (`/account` on the tenant subdomain).
+- Booking history + upcoming; self-service **rebook/cancel** (policy-gated).
+- Profile & preferences; wallet & loyalty balance view.
+- **Loyalty tiers** (`loyalty_tiers`, tier derived from the M1 points ledger).
+
+## M10 — Platform Capabilities  (AROS-84)
+
+**Depends on:** M0 booking, M2 food/kitchen, tenant `currency`. Cross-cutting upgrades.
+- **Real-time** transport (WS/SSE, tenant-scoped) → live booking board + live kitchen queue (replaces polling).
+- **Inventory:** `stock_items` + `stock_movements` (ledger); link menu items → stock, auto-deduct on sale; stock UI + low-stock alerts.
+- **Multi-currency** (per-tenant, no FX) end-to-end; **i18n** scaffolding (locale, catalog, RTL).
+
+## M11 — Payroll & Salary  (AROS-85)
+
+**Depends on:** M4 Employee Management (attendance/shifts).
+- `salary_structures` (base + allowances + deductions); employee advances/loans.
+- **Payroll run** → `payslips` computed from structure + M4 attendance; snapshotted, idempotent per period.
+- Payslip view/export (owner + self-service); payroll cost report (feeds M12 P&L).
+
+## M12 — Expense Tracker  (AROS-86)
+
+**Depends on:** M1 (revenue) + M11 (payroll) for the P&L; the model/entry stories are standalone.
+- `expense_categories`, `vendors`, `expenses`; entry + list/filter UI; receipt upload.
+- Recurring expenses (auto-generation).
+- **Expense + P&L report** = revenue (M1 invoices) − expenses − payroll (M11), via the security-barrier view pattern (AROS-64).
+
+---
+
 ## Continuous workstreams (labels, not milestones)
 
 - **QA/Testing:** grow `verify-*.ts` per invariant; add E2E (Playwright) for
@@ -185,19 +233,21 @@ Pairs with `docs/ARCHITECTURE.md` (design of record).
 - **Accessibility & responsiveness:** keyboard, contrast, mobile POS/kitchen.
 - **i18n / currency:** groundwork only (INR/en-IN now).
 
-## Deferred (post-MVP-1)
+## Deferred (beyond MVP-2)
 
-Self-serve tenant signup + **SaaS subscription billing of tenants**; customer
-accounts/portal & login; **full multi-branch** (switcher, per-branch reports);
-custom tenant domains; websocket real-time; multi-currency; loyalty tiers;
-inventory/stock management.
+Still parked (not yet ticketed):
+- Self-serve tenant signup + **SaaS subscription billing of tenants** (plan tiers, gating, tenant-billing gateway).
+- **Full multi-branch** — branch switcher, per-branch staff/resources/reports, cross-branch owner views.
+- **Custom tenant domains** (`tenant_domains` + Vercel Domains API + TLS).
+
+*(Previously listed here and now promoted to MVP-2: customer accounts/portal & loyalty tiers → M9; websocket real-time, inventory, multi-currency + i18n → M10. Payroll → M11 and expense tracker → M12 were added as new MVP-2 epics.)*
 
 ---
 
 ## Ticket taxonomy
 
 - **Type:** `epic` · `feature` · `chore` · `bug` · `spike`.
-- **Milestone:** `M0`…`M8`.
+- **Milestone:** `M0`…`M8` (MVP-1) · `M9`…`M12` (MVP-2, also labelled `mvp2`).
 - **Area:** `tenancy` `auth` `booking` `pos` `customers` `food` `kitchen`
   `payments` `notifications` `staff` `membership` `reports` `infra` `security`
   `observability` `docs`.

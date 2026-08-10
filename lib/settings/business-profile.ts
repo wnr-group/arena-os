@@ -1,0 +1,129 @@
+/**
+ * The tenant's business profile — legal identity for GST invoices.
+ *
+ * Takes a `tx` (like lib/billing/invoice.ts and lib/customers/service.ts) so
+ * the billing transaction can read the invoice prefix without opening a second
+ * connection, and so this is testable without a request context.
+ *
+ * lib/settings/business.ts is the ctx-taking reader on top of it.
+ */
+import { eq } from 'drizzle-orm'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { z } from 'zod'
+import type * as schema from '@/db/schema'
+import { businessProfiles } from '@/db/schema'
+
+type Db = NodePgDatabase<typeof schema>
+
+export type BusinessProfile = typeof businessProfiles.$inferSelect
+
+/**
+ * Prefix used when a tenant has not configured one (and the column default).
+ *
+ * This is the ONLY place the string 'INV' appears in the codebase.
+ */
+export const DEFAULT_INVOICE_PREFIX = 'INV'
+
+/**
+ * A GST invoice number may not exceed 16 characters, and the format in
+ * lib/billing/invoice.ts is `PREFIX/YYYY/NNNNNN` — 12 characters plus the
+ * prefix. Mirrored by a CHECK constraint in migration 0012.
+ */
+export const MAX_INVOICE_PREFIX_LENGTH = 4
+
+/** Trim to null so '' and '   ' never reach the database as empty strings. */
+function blankToNull(v: string | null | undefined): string | null {
+  const t = v?.trim()
+  return t ? t : null
+}
+
+const optionalText = (max: number, label: string) =>
+  z.string().trim().max(max, `${label} is too long.`).optional().nullable()
+
+/**
+ * The save contract. GSTIN is deliberately loose — the project has no GSTIN
+ * validator, and inventing one would reject legitimate edge cases (SEZ,
+ * UIN-holders) for no benefit at this stage. Length only.
+ */
+export const businessProfileSchema = z.object({
+  legalName: optionalText(200, 'Legal name'),
+  gstin: optionalText(20, 'GSTIN'),
+  address: optionalText(500, 'Address'),
+  logoUrl: z
+    .string()
+    .trim()
+    .max(2000, 'That logo URL is too long.')
+    .url('Enter a valid logo URL.')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
+  invoicePrefix: z
+    .string()
+    .trim()
+    .min(1, 'An invoice prefix is required.')
+    .max(
+      MAX_INVOICE_PREFIX_LENGTH,
+      `Keep the prefix to ${MAX_INVOICE_PREFIX_LENGTH} characters — a GST invoice number cannot exceed 16.`,
+    ),
+  placeOfSupply: optionalText(100, 'Place of supply'),
+})
+
+export type BusinessProfileInput = z.infer<typeof businessProfileSchema>
+
+/** The tenant's profile, or null when it has never been configured. */
+export async function loadBusinessProfile(
+  tx: Db,
+  tenantId: string,
+): Promise<BusinessProfile | null> {
+  const [row] = await tx
+    .select()
+    .from(businessProfiles)
+    .where(eq(businessProfiles.tenantId, tenantId))
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * The prefix invoice numbering should use, falling back to the default when the
+ * tenant has not configured a profile. Read inside the billing transaction, so
+ * a prefix change and an invoice raised at the same moment cannot interleave.
+ */
+export async function loadInvoicePrefix(tx: Db, tenantId: string): Promise<string> {
+  const [row] = await tx
+    .select({ prefix: businessProfiles.invoicePrefix })
+    .from(businessProfiles)
+    .where(eq(businessProfiles.tenantId, tenantId))
+    .limit(1)
+  const prefix = row?.prefix?.trim()
+  return prefix ? prefix : DEFAULT_INVOICE_PREFIX
+}
+
+/**
+ * Create or update the tenant's single profile.
+ *
+ * `tenant_id` is the primary key and the conflict target, so this can only ever
+ * touch the caller's own row — and `created_at` is never in the update set, so
+ * the original configuration date survives every edit.
+ */
+export async function upsertBusinessProfile(
+  tx: Db,
+  tenantId: string,
+  input: BusinessProfileInput,
+): Promise<BusinessProfile> {
+  const values = {
+    legalName: blankToNull(input.legalName),
+    gstin: blankToNull(input.gstin),
+    address: blankToNull(input.address),
+    logoUrl: blankToNull(input.logoUrl),
+    invoicePrefix: input.invoicePrefix.trim(),
+    placeOfSupply: blankToNull(input.placeOfSupply),
+  }
+
+  const [row] = await tx
+    .insert(businessProfiles)
+    .values({ tenantId, ...values })
+    .onConflictDoUpdate({ target: businessProfiles.tenantId, set: values })
+    .returning()
+
+  return row
+}
