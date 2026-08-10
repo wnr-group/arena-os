@@ -19,6 +19,7 @@
     "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1104.0",
     "@node-rs/argon2": "^2.0.2",
     "class-variance-authority": "0.7.0",
     "clsx": "2.1.0",

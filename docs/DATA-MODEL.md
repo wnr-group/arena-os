@@ -181,19 +181,23 @@ RLS: member `select`; owner `update`.
 
 ---
 
-## M4 — Employee management `[M4]`
+## M4 — Employee management
 
-### `attendance` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `work_date date` · `clock_in timestamptz` · `clock_out timestamptz null` · `is_manual boolean` · `note text` · timestamps. Index `(tenant_id, work_date)`, `(membership_id)`.
+### `attendance` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `work_date date` · `clock_in timestamptz` · `clock_out timestamptz null` · `is_manual boolean` · `note text` · timestamps. Index `(tenant_id, work_date)`, `(membership_id)`. One row per (membership, work_date) in the common case — staff clock in/out their own row; managers may add/correct any row (marks `is_manual = true`). RLS: any active member rw (tenant-scoped); action layer restricts staff to their own membership.
 
-### `shifts` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `shift_date date` · `type(morning|evening|night)` · `starts time` · `ends time` · `roster_id → rosters null` · timestamps.
+### `rosters` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id` · `week_start date` · `note text` · timestamps. Unique `(branch_id, week_start)` — one roster per branch per week; the builder upserts on this key.
 
-### `rosters` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `week_start date` · `note text` · timestamps. Unique `(branch_id, week_start)`.
+### `shifts` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id` · `membership_id → memberships` · `roster_id → rosters null` · `shift_date date` · `type shift_type(morning|evening|night)` · `starts time` · `ends time` · timestamps. Index `(membership_id, shift_date)`. RLS: any active member rw (staff can see the whole roster); action layer restricts building/editing to managers.
 
-### `tasks` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `title` · `description` · `assigned_to → memberships null` · `status(open|in_progress|done)` · `due_date date null` · `created_by → memberships` · timestamps.
+**Enums:** `shift_type(morning|evening|night)`.
+
+### `tasks` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id null` · `title` · `description` · `assigned_to → memberships null` · `status task_status(open|in_progress|done)` · `due_date date null` · `created_by → memberships null` · timestamps. Index `(assigned_to)`. RLS: any active member rw; action layer restricts create/reassign/delete to managers, status updates to the assignee or a manager.
+
+**Enums:** `task_status(open|in_progress|done)`.
 
 *(Performance metrics are **derived** — no table — from `payments.collected_by`, `bookings.created_by`, `attendance`.)*
 
@@ -238,3 +242,9 @@ Mostly non-schema (infra, security, ops). Schema touches:
 - 2026-08-01 — Initial full spec. Built tables reflect migrations 0001–0005;
   M1–M8 are the target schema per their data-model tickets. Update table blocks
   to `[built]` as migrations land, keeping `db/schema.ts` in sync.
+- 2026-08-05 — Migration 0006 adds `attendance` (M4-A): clock in/out, manager
+  correction, marked `[built]`.
+- 2026-08-05 — Migration 0007 adds `rosters`/`shifts` (M4-B): weekly roster
+  builder, staff shift assignment, marked `[built]`.
+- 2026-08-05 — Migration 0008 adds `tasks` (M4-C): manager assigns, assignee
+  tracks status, marked `[built]`.

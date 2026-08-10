@@ -12,6 +12,8 @@ import {
   text,
   boolean,
   timestamp,
+  date,
+  time,
   numeric,
   integer,
   smallint,
@@ -275,5 +277,253 @@ export const bookingSlots = pgTable(
   (t) => [
     index('idx_booking_slots_booking').on(t.bookingId),
     index('idx_booking_slots_resource_time').on(t.resourceId, t.startsAt),
+  ],
+)
+
+// ── employee management (migration 0006) ────────────────────────────────────
+export const attendance = pgTable(
+  'attendance',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    workDate: date('work_date').notNull(),
+    clockIn: timestamp('clock_in', { withTimezone: true }),
+    clockOut: timestamp('clock_out', { withTimezone: true }),
+    isManual: boolean('is_manual').notNull().default(false),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('idx_attendance_date').on(t.tenantId, t.workDate),
+    index('idx_attendance_member').on(t.membershipId),
+  ],
+)
+
+// ── shifts & roster (migration 0007) ─────────────────────────────────────────
+export const shiftType = pgEnum('shift_type', ['morning', 'evening', 'night'])
+
+export const rosters = pgTable(
+  'rosters',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    weekStart: date('week_start').notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('rosters_branch_week_key').on(t.branchId, t.weekStart)],
+)
+
+export const shifts = pgTable(
+  'shifts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    rosterId: uuid('roster_id').references(() => rosters.id, { onDelete: 'set null' }),
+    shiftDate: date('shift_date').notNull(),
+    type: shiftType('type').notNull(),
+    starts: time('starts').notNull(),
+    ends: time('ends').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_shifts_member_date').on(t.membershipId, t.shiftDate)],
+)
+
+// ── tasks (migration 0008) ───────────────────────────────────────────────────
+export const taskStatus = pgEnum('task_status', ['open', 'in_progress', 'done'])
+
+export const tasks = pgTable(
+  'tasks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id').references(() => branches.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    assignedTo: uuid('assigned_to').references(() => memberships.id, { onDelete: 'set null' }),
+    status: taskStatus('status').notNull().default('open'),
+    dueDate: date('due_date'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_tasks_assignee').on(t.assignedTo)],
+)
+
+// ── tax rates (migration 0009) ───────────────────────────────────────────────
+export const taxRates = pgTable(
+  'tax_rates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    percent: numeric('percent', { precision: 5, scale: 2 }).notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('tax_rates_tenant_name_key').on(t.tenantId, t.name)],
+)
+
+// ── menu (migration 0010) ────────────────────────────────────────────────────
+export const menuItemStatus = pgEnum('menu_item_status', ['available', 'out_of_stock', 'hidden'])
+export const discountType = pgEnum('discount_type', ['percentage', 'fixed'])
+
+export const menuCategories = pgTable(
+  'menu_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('menu_categories_tenant_name_key').on(t.tenantId, t.name)],
+)
+
+export const menuItems = pgTable(
+  'menu_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => menuCategories.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    price: numeric('price', { precision: 10, scale: 2 }).notNull(),
+    taxRateId: uuid('tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
+    status: menuItemStatus('status').notNull().default('available'),
+    imageUrl: text('image_url'),
+    description: text('description'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    happyHourEligible: boolean('happy_hour_eligible').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_menu_items_tenant').on(t.tenantId, t.categoryId)],
+)
+
+export const happyHours = pgTable('happy_hours', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  daysOfWeek: smallint('days_of_week').array().notNull().default([]),
+  startTime: time('start_time').notNull(),
+  endTime: time('end_time').notNull(),
+  discountType: discountType('discount_type').notNull(),
+  discountValue: numeric('discount_value', { precision: 10, scale: 2 }).notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── orders (migration 0012) ──────────────────────────────────────────────────
+export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'])
+
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
+    orderNumber: text('order_number').notNull(),
+    status: orderStatus('status').notNull().default('open'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
+    index('idx_orders_branch').on(t.tenantId, t.branchId),
+    index('idx_orders_booking').on(t.bookingId),
+  ],
+)
+
+export const orderItems = pgTable(
+  'order_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    menuItemId: uuid('menu_item_id').references(() => menuItems.id, { onDelete: 'set null' }),
+    itemName: text('item_name').notNull(),
+    unitPrice: numeric('unit_price', { precision: 10, scale: 2 }).notNull(),
+    taxRate: numeric('tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    qty: integer('qty').notNull(),
+    lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull(),
+    specialInstructions: text('special_instructions'),
+  },
+  (t) => [index('idx_order_items_order').on(t.orderId)],
+)
+
+// ── kots (migration 0013) ────────────────────────────────────────────────────
+export const kotStatus = pgEnum('kot_status', ['pending', 'preparing', 'ready', 'served', 'cancelled'])
+
+export const kots = pgTable(
+  'kots',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    kotNumber: text('kot_number').notNull(),
+    status: kotStatus('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('kots_tenant_number_key').on(t.tenantId, t.kotNumber),
+    index('idx_kots_open').on(t.tenantId, t.branchId, t.status),
   ],
 )
