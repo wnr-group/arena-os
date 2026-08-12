@@ -149,7 +149,7 @@ async function main() {
 
     // 8. Customers — a small directory to click through, with tags and notes.
     // Phones are already E.164 because that is what the CHECK on customers.phone
-    // (migration 0006) accepts; the app normalises to this shape on the way in.
+    // (migration 0014) accepts; the app normalises to this shape on the way in.
     type SeedCustomer = {
       phone: string
       name: string

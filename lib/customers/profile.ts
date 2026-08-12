@@ -38,7 +38,7 @@ export type ProfileNote = {
   id: string
   body: string
   createdAt: Date
-  /** Equal to createdAt until the note is edited (migration 0009). */
+  /** Equal to createdAt until the note is edited (migration 0017). */
   updatedAt: Date
   createdByName: string | null
 }
@@ -224,7 +224,7 @@ export async function getCustomerProfile(
 
     // Balances are summed over the WHOLE ledger by the canonical helpers in
     // ./ledger.ts — never over the truncated lists above, and never read from a
-    // stored column, because no such column exists (migration 0006).
+    // stored column, because no such column exists (migration 0014).
     const [balance, points] = await Promise.all([
       walletBalance(tx, tenantId, customerId),
       loyaltyPoints(tx, tenantId, customerId),

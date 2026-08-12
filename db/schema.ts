@@ -236,7 +236,7 @@ export const bookings = pgTable(
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
     customerEmail: text('customer_email'),
-    // … and the directory entry it belongs to (migration 0007). Nullable: a
+    // … and the directory entry it belongs to (migration 0015). Nullable: a
     // booking taken without a phone, or one whose customer was later removed.
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     status: bookingStatus('status').notNull().default('confirmed'),
@@ -540,7 +540,7 @@ export const kots = pgTable(
   ],
 )
 
-// ── customer module (migration 0006) ─────────────────────────────────────────
+// ── customer module (migration 0014) ─────────────────────────────────────────
 // `phone` is stored NORMALISED to E.164 by lib/customers/phone.ts and is the
 // tenant-scoped identity key — see the unique index below.
 export const customers = pgTable(
