@@ -5,6 +5,7 @@
  * grants that Drizzle cannot express) is authored as SQL in db/migrations. Keep
  * the table/column shapes here in sync with those migrations.
  */
+import { relations, sql } from 'drizzle-orm'
 import {
   pgTable,
   pgEnum,
@@ -17,8 +18,12 @@ import {
   numeric,
   integer,
   smallint,
+  jsonb,
   unique,
+  uniqueIndex,
   index,
+  primaryKey,
+  foreignKey,
 } from 'drizzle-orm/pg-core'
 
 // ── enums ────────────────────────────────────────────────────────────────────
@@ -227,9 +232,13 @@ export const bookings = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
     bookingNumber: text('booking_number').notNull(),
+    // Snapshot of what the guest gave at the time (migration 0003) …
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
     customerEmail: text('customer_email'),
+    // … and the directory entry it belongs to (migration 0015). Nullable: a
+    // booking taken without a phone, or one whose customer was later removed.
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     status: bookingStatus('status').notNull().default('confirmed'),
     source: bookingSource('source').notNull().default('staff'),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
@@ -247,8 +256,11 @@ export const bookings = pgTable(
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
+    // Target of the composite (tenant_id, booking_id) FK on invoices (0010).
+    unique('bookings_tenant_id_key').on(t.tenantId, t.id),
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
     index('idx_bookings_status').on(t.tenantId, t.status),
+    index('idx_bookings_customer').on(t.tenantId, t.customerId),
   ],
 )
 
@@ -527,3 +539,441 @@ export const kots = pgTable(
     index('idx_kots_open').on(t.tenantId, t.branchId, t.status),
   ],
 )
+
+// ── customer module (migration 0014) ─────────────────────────────────────────
+// `phone` is stored NORMALISED to E.164 by lib/customers/phone.ts and is the
+// tenant-scoped identity key — see the unique index below.
+export const customers = pgTable(
+  'customers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    phone: text('phone').notNull(),
+    name: text('name'),
+    email: text('email'),
+    dob: date('dob'),
+    tags: text('tags').array().notNull().default([]),
+    membershipStatus: text('membership_status'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('customers_tenant_phone_key').on(t.tenantId, t.phone),
+    index('idx_customers_tenant').on(t.tenantId),
+  ],
+)
+
+export const customerNotes = pgTable(
+  'customer_notes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // Notes are editable (migration 0009); the set_updated_at() trigger keeps
+    // this fresh, so app code never writes it.
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_customer_notes_customer').on(t.customerId)],
+)
+
+// Append-only ledger. `amount` is signed (+ credit / − debit); the wallet
+// balance is sum(amount) — there is deliberately no balance column.
+export const walletTransactions = pgTable(
+  'wallet_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: uuid('source_id'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_wallet_tx_customer').on(t.customerId)],
+)
+
+// Append-only ledger. `points` is signed (+ earned / − redeemed); the loyalty
+// balance is sum(points) — there is deliberately no total column.
+export const loyaltyTransactions = pgTable(
+  'loyalty_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    points: integer('points').notNull(),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: uuid('source_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_loyalty_tx_customer').on(t.customerId)],
+)
+
+// ── business profile (migration 0012) ────────────────────────────────────────
+// The tenant's legal identity, as printed on a GST invoice. `tenantId` is the
+// primary key, so there is exactly one row per tenant by construction.
+export const businessProfiles = pgTable('business_profiles', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  legalName: text('legal_name'),
+  gstin: text('gstin'),
+  address: text('address'),
+  logoUrl: text('logo_url'),
+  /** Feeds invoice numbering. Capped at 4 chars — see the migration's CHECK. */
+  invoicePrefix: text('invoice_prefix').notNull().default('INV'),
+  placeOfSupply: text('place_of_supply'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const businessProfilesRelations = relations(businessProfiles, ({ one }) => ({
+  tenant: one(tenants, { fields: [businessProfiles.tenantId], references: [tenants.id] }),
+}))
+
+// ── promo codes (migration 0011) ─────────────────────────────────────────────
+// Declared before `invoices` because invoices carries the composite FK onto it.
+// `discountType` is the SAME Postgres enum the happy-hours module declares above
+// (both are 'percentage' | 'fixed'), so it is declared once and shared — and
+// migration 0011 creates the type guarded, in case 0010_menu got there first.
+//
+// `code` is matched case-insensitively: the unique index is on upper(code), so
+// WELCOME10 / welcome10 / Welcome10 are one promo per tenant, while the same
+// string in another tenant is a different promo.
+export const promoCodes = pgTable(
+  'promo_codes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    code: text('code').notNull(),
+    discountType: discountType('discount_type').notNull(),
+    discountValue: numeric('discount_value', { precision: 10, scale: 2 }).notNull(),
+    validFrom: timestamp('valid_from', { withTimezone: true }).notNull(),
+    validUntil: timestamp('valid_until', { withTimezone: true }).notNull(),
+    /** null = unlimited. */
+    maxUses: integer('max_uses'),
+    uses: integer('uses').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite (tenant_id, promo_code_id) FK on invoices.
+    unique('promo_codes_tenant_id_key').on(t.tenantId, t.id),
+    uniqueIndex('idx_promo_code').on(t.tenantId, sql`upper(${t.code})`),
+  ],
+)
+
+// ── billing module (migration 0010) ──────────────────────────────────────────
+export const invoiceStatus = pgEnum('invoice_status', ['draft', 'issued', 'paid', 'void'])
+export const paymentMethod = pgEnum('payment_method', [
+  'cash',
+  'card',
+  'upi',
+  'online',
+  'wallet',
+])
+export const paymentStatus = pgEnum('payment_status', [
+  'pending',
+  'captured',
+  'failed',
+  'refunded',
+])
+
+/**
+ * One line of `invoices.tax_breakup` — the per-rate GST split that adds up to
+ * `tax_total`. Intra-state sales carry cgst+sgst; inter-state carry igst.
+ * Amounts are strings for the same reason numeric columns are: no float money.
+ *
+ * `taxable` is optional: priceBill() (lib/billing/pricing.ts) returns the tax
+ * split per rate but not the discounted taxable value behind each rate, and the
+ * billing path must never recompute money it did not get from priceBill. When
+ * per-rate taxable value is needed on the printed invoice, widen PricingResult
+ * to carry it rather than deriving it at the write site.
+ */
+export type TaxBreakupLine = {
+  rate: number
+  taxable?: string
+  cgst?: string
+  sgst?: string
+  igst?: string
+}
+
+// Money is snapshotted here and never recomputed from live prices. The
+// booking/customer links are composite (tenant_id, …) FKs so a row can never
+// point at another tenant's record — FKs are not subject to RLS.
+export const invoices = pgTable(
+  'invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    invoiceNumber: text('invoice_number').notNull(),
+    // Nullable: a counter sale has no booking, and an invoice outlives the
+    // booking/customer it was raised for (both FKs are ON DELETE SET NULL).
+    bookingId: uuid('booking_id'),
+    customerId: uuid('customer_id'),
+    subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
+    discount: numeric('discount', { precision: 10, scale: 2 }).notNull().default('0'),
+    // Composite FK onto promo_codes (migration 0011) — see below.
+    promoCodeId: uuid('promo_code_id'),
+    taxTotal: numeric('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    taxBreakup: jsonb('tax_breakup').$type<TaxBreakupLine[]>().notNull().default([]),
+    total: numeric('total', { precision: 10, scale: 2 }).notNull().default('0'),
+    status: invoiceStatus('status').notNull().default('draft'),
+    placeOfSupply: text('place_of_supply'),
+    issuedAt: timestamp('issued_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('invoices_tenant_number_key').on(t.tenantId, t.invoiceNumber),
+    // Target of the composite FKs on invoice_items and payments.
+    unique('invoices_tenant_id_key').on(t.tenantId, t.id),
+    foreignKey({
+      name: 'invoices_booking_tenant_fkey',
+      columns: [t.tenantId, t.bookingId],
+      foreignColumns: [bookings.tenantId, bookings.id],
+    }),
+    foreignKey({
+      name: 'invoices_customer_tenant_fkey',
+      columns: [t.tenantId, t.customerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }),
+    // Composite so an invoice can never cite another tenant's promo (0011).
+    foreignKey({
+      name: 'invoices_promo_fk',
+      columns: [t.tenantId, t.promoCodeId],
+      foreignColumns: [promoCodes.tenantId, promoCodes.id],
+    }),
+    index('idx_invoices_branch').on(t.tenantId, t.branchId),
+  ],
+)
+
+// Every column is a snapshot. `sourceId` is a soft pointer at whatever produced
+// the line (booking slot, order item, membership) — deliberately no FK, so the
+// line survives that row's deletion.
+export const invoiceItems = pgTable(
+  'invoice_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id').notNull(),
+    kind: text('kind').$type<'booking' | 'food' | 'membership' | 'adjustment'>().notNull(),
+    sourceId: uuid('source_id'),
+    description: text('description').notNull(),
+    qty: numeric('qty', { precision: 10, scale: 2 }).notNull().default('1'),
+    unitPrice: numeric('unit_price', { precision: 10, scale: 2 }).notNull().default('0'),
+    // A percentage, not money — hence numeric(5,2), matching tax_rates.percent.
+    taxRate: numeric('tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'invoice_items_invoice_tenant_fkey',
+      columns: [t.tenantId, t.invoiceId],
+      foreignColumns: [invoices.tenantId, invoices.id],
+    }).onDelete('cascade'),
+    index('idx_invoice_items_invoice').on(t.invoiceId),
+  ],
+)
+
+// One row per TENDER — a bill settled part-cash part-UPI is two rows against the
+// same invoice (split payments). `amount > 0` is a CHECK in the migration.
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    invoiceId: uuid('invoice_id').notNull(),
+    method: paymentMethod('method').notNull(),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    status: paymentStatus('status').notNull().default('pending'),
+    gateway: text('gateway'),
+    gatewayOrderId: text('gateway_order_id'),
+    gatewayPaymentId: text('gateway_payment_id'),
+    gatewaySignature: text('gateway_signature'),
+    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite FK on refunds.
+    unique('payments_tenant_id_key').on(t.tenantId, t.id),
+    foreignKey({
+      name: 'payments_invoice_tenant_fkey',
+      columns: [t.tenantId, t.invoiceId],
+      foreignColumns: [invoices.tenantId, invoices.id],
+    }).onDelete('cascade'),
+    index('idx_payments_invoice').on(t.invoiceId),
+  ],
+)
+
+// Append-only, owner/manager only — `arena_app` is granted select+insert alone,
+// so there is no path that updates or deletes a refund record.
+export const refunds = pgTable(
+  'refunds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    paymentId: uuid('payment_id').notNull(),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    reason: text('reason'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'refunds_payment_tenant_fkey',
+      columns: [t.tenantId, t.paymentId],
+      foreignColumns: [payments.tenantId, payments.id],
+    }).onDelete('cascade'),
+    index('idx_refunds_payment').on(t.paymentId),
+  ],
+)
+
+// The counter behind booking/invoice/KOT numbers. `period` scopes the run
+// ('2026', '20260807', or '-' for never-resetting); an upsert on the primary key
+// is what makes the increment atomic and the numbering gap-free per scope.
+export const sequences = pgTable(
+  'sequences',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<'booking' | 'invoice' | 'kot'>().notNull(),
+    period: text('period').notNull(),
+    value: integer('value').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ name: 'sequences_pkey', columns: [t.tenantId, t.kind, t.period] }),
+  ],
+)
+
+// Append-only trail of sensitive actions (refunds, voids, role changes). Only
+// select + insert policies exist, and only those two are granted.
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Nullable so the entry survives the staff member leaving.
+    actorMembershipId: uuid('actor_membership_id').references(() => memberships.id, {
+      onDelete: 'set null',
+    }),
+    action: text('action').notNull(),
+    entityType: text('entity_type').notNull(),
+    entityId: uuid('entity_id'),
+    before: jsonb('before').$type<Record<string, unknown>>(),
+    after: jsonb('after').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_audit_log_tenant_created').on(t.tenantId, t.createdAt)],
+)
+
+// ── billing relations ────────────────────────────────────────────────────────
+// Declared for the billing tables only; the `one()` sides carry their own
+// fields/references, so no reverse declaration is needed on the older tables.
+export const invoicesRelations = relations(invoices, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [invoices.tenantId], references: [tenants.id] }),
+  branch: one(branches, { fields: [invoices.branchId], references: [branches.id] }),
+  booking: one(bookings, {
+    fields: [invoices.tenantId, invoices.bookingId],
+    references: [bookings.tenantId, bookings.id],
+  }),
+  customer: one(customers, {
+    fields: [invoices.tenantId, invoices.customerId],
+    references: [customers.tenantId, customers.id],
+  }),
+  promo: one(promoCodes, {
+    fields: [invoices.tenantId, invoices.promoCodeId],
+    references: [promoCodes.tenantId, promoCodes.id],
+  }),
+  items: many(invoiceItems),
+  payments: many(payments),
+}))
+
+export const promoCodesRelations = relations(promoCodes, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [promoCodes.tenantId], references: [tenants.id] }),
+  invoices: many(invoices),
+}))
+
+export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceItems.tenantId, invoiceItems.invoiceId],
+    references: [invoices.tenantId, invoices.id],
+  }),
+}))
+
+export const paymentsRelations = relations(payments, ({ one, many }) => ({
+  invoice: one(invoices, {
+    fields: [payments.tenantId, payments.invoiceId],
+    references: [invoices.tenantId, invoices.id],
+  }),
+  branch: one(branches, { fields: [payments.branchId], references: [branches.id] }),
+  collectedByMembership: one(memberships, {
+    fields: [payments.collectedBy],
+    references: [memberships.id],
+  }),
+  refunds: many(refunds),
+}))
+
+export const refundsRelations = relations(refunds, ({ one }) => ({
+  payment: one(payments, {
+    fields: [refunds.tenantId, refunds.paymentId],
+    references: [payments.tenantId, payments.id],
+  }),
+  createdByMembership: one(memberships, {
+    fields: [refunds.createdBy],
+    references: [memberships.id],
+  }),
+}))
+
+export const auditLogRelations = relations(auditLog, ({ one }) => ({
+  tenant: one(tenants, { fields: [auditLog.tenantId], references: [tenants.id] }),
+  actor: one(memberships, {
+    fields: [auditLog.actorMembershipId],
+    references: [memberships.id],
+  }),
+}))
+
+export const sequencesRelations = relations(sequences, ({ one }) => ({
+  tenant: one(tenants, { fields: [sequences.tenantId], references: [tenants.id] }),
+}))

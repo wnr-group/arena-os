@@ -84,3 +84,91 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
+
+/* ── print ───────────────────────────────────────────────────────────────────
+   Everything below is inside @media print, so it cannot affect the app on
+   screen. Used by the GST receipt at /invoices/[id]:
+     .no-print   — app chrome and controls that must never reach paper
+     .print-sheet — the receipt card: drops its card styling and fills the page
+     .print-keep  — a block that should not be split across pages
+     .print-flat  — a scroll container that must lay flat when printed
+   ------------------------------------------------------------------------- */
+@media print {
+  /* Print on plain white whatever the screen theme is: the app follows
+     prefers-color-scheme, and dark mode would otherwise print white-on-black. */
+  :root {
+    --background: #ffffff;
+    --foreground: #000000;
+    --muted: #ffffff;
+    --muted-foreground: #3f3f46;
+    --border: #a1a1aa;
+    --card: #ffffff;
+    --primary: #000000;
+    --primary-foreground: #ffffff;
+    --destructive: #b91c1c;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Sidebar, mobile header, back link, print button — off the page. */
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  /* The app shell is a flex row with a fixed-width sidebar; with the sidebar
+     hidden, let the remaining content use the full sheet. */
+  body > div,
+  main {
+    display: block !important;
+    min-height: 0 !important;
+  }
+
+  /* The receipt fills the paper instead of floating in a card. */
+  .print-sheet {
+    max-width: none !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  /* No horizontal scrollbars or clipped columns on paper. */
+  .print-flat {
+    overflow: visible !important;
+  }
+
+  .print-flat table {
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Repeat the item-table header on every page; never split a row. */
+  thead {
+    display: table-header-group;
+  }
+
+  tr,
+  .print-keep {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Legible on paper, and no wasted ink on backgrounds. */
+  .print-sheet {
+    font-size: 12pt;
+    line-height: 1.4;
+  }
+}

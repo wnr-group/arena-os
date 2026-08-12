@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
-import { ROLE_LABELS, isManager } from '@/lib/auth/roles'
+import { ROLE_LABELS } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
 import { AppShell } from '@/components/AppShell'
 
@@ -41,10 +41,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const { tenant, role } = ctx
 
   return (
+    // Merge note: the responsive AppShell (from main) replaced the inline
+    // sidebar/header this file used to render. The `no-print` chrome-hiding that
+    // the invoice receipt depends on therefore lives inside AppShell now.
     <AppShell
       industryLabel={INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
       tenantName={tenant.name}
-      isManager={isManager(role)}
+      role={role}
       userEmail={user.email}
       roleLabel={ROLE_LABELS[role]}
       signOutAction={signOut}

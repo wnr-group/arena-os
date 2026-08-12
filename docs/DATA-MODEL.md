@@ -1,7 +1,7 @@
 # Arena OS — Data Model (authoritative schema spec)
 
 Column-level schema for **every MVP-1 table**, across all modules. Built tables
-(`[built]`) reflect the live migrations (`db/migrations/0001–0005`); planned
+(`[built]`) reflect the live migrations (`db/migrations/0001–0010`); planned
 tables (`[M1]`…`[M8]`) are the design each module's data-model ticket implements.
 
 Pairs with `docs/ARCHITECTURE.md` (rationale) and `docs/ROADMAP.md` (sequencing).
@@ -40,8 +40,11 @@ erDiagram
   ORDERS ||--o{ KOTS : "sent to kitchen"
   MENU_ITEMS ||--o{ ORDER_ITEMS : "snapshot of"
   BOOKINGS ||--o{ INVOICES : billed
+  CUSTOMERS ||--o{ INVOICES : "billed to"
+  INVOICES ||--o{ INVOICE_ITEMS : "lines"
   INVOICES ||--o{ PAYMENTS : "settled by"
-  INVOICES ||--o{ REFUNDS : "refunded by"
+  PAYMENTS ||--o{ REFUNDS : "refunded by"
+  MEMBERSHIPS ||--o{ AUDIT_LOG : "acted"
   CUSTOMERS ||--o{ WALLET_TRANSACTIONS : ledger
   CUSTOMERS ||--o{ CUSTOMER_MEMBERSHIPS : holds
   MEMBERSHIP_PLANS ||--o{ CUSTOMER_MEMBERSHIPS : "instance of"
@@ -99,7 +102,8 @@ RLS: member `select`; owner `update`.
 `id` · `tenant_id` · `phone text not null` · `name` · `email` · `dob date` · `tags text[]` · `membership_status text` · `created_at` · `updated_at`. **Unique `(tenant_id, phone)`**; index `(tenant_id)`. RLS member rw.
 
 ### `customer_notes` `[T]`
-`id` · `tenant_id` · `customer_id → customers on delete cascade` · `body text` · `created_by → memberships null` · `created_at`. Index `(customer_id)`.
+`id` · `tenant_id` · `customer_id` · `body text` · `created_by → memberships null` · `created_at` · `updated_at`. Index `(customer_id)`. RLS member rw.
+Editable, so it carries `updated_at` under the `set_updated_at()` trigger; an edit changes `body` only, keeping the original author and time (a note whose `updated_at` is later than its `created_at` is shown as edited). The customer link is the **composite FK** `(tenant_id, customer_id) → customers(tenant_id, id) on delete cascade` — referential integrity is not subject to RLS, so keying on the tenant too is what makes a note against another tenant's customer unwritable (same device as `bookings` in 0008).
 
 ### `wallet_transactions` `[T]`  (append-only ledger)
 `id` · `tenant_id` · `customer_id → customers` · `amount numeric(10,2)` (signed: + credit / − debit) · `reason text` · `source_type text` (topup|booking|refund…) · `source_id uuid null` · `created_by → memberships null` · `created_at`. Balance = `sum(amount)`. Index `(customer_id)`.
@@ -107,19 +111,21 @@ RLS: member `select`; owner `update`.
 ### `loyalty_transactions` `[T]`  (append-only ledger)
 `id` · `tenant_id` · `customer_id` · `points int` (signed) · `reason` · `source_type/source_id` · `created_at`. Balance = `sum(points)`.
 
-## M1 — POS / Billing `[M1]`
+## M1 — POS / Billing
 
-### `invoices` `[T/B]`
-`id` · `tenant_id` · `branch_id` · `invoice_number text` · `booking_id → bookings null` · `customer_id → customers null` · `subtotal` · `discount` · `promo_code_id → promo_codes null` · `tax_total` · `tax_breakup jsonb` (CGST/SGST lines) · `total` · `status invoice_status(draft|issued|paid|void)` · `place_of_supply text` · `issued_at` · timestamps. **Unique `(tenant_id, invoice_number)`**. RLS member rw; void = owner/manager.
+### `invoices` `[T/B]` `[built]`
+`id` · `tenant_id` · `branch_id → branches on delete restrict` · `invoice_number text` · `booking_id null` · `customer_id null` · `subtotal` · `discount` · `promo_code_id uuid null` · `tax_total` · `tax_breakup jsonb not null default '[]'` (CGST/SGST lines) · `total` · `status invoice_status(draft|issued|paid|void)` · `place_of_supply text` · `issued_at` · timestamps. **Unique `(tenant_id, invoice_number)`** (the GST per-tenant numbering rule); unique `(tenant_id, id)`; index `(tenant_id, branch_id)`; `set_updated_at()` trigger. Money columns CHECK `>= 0`.
+RLS member rw (void = owner/manager, enforced in the action layer). The booking and customer links are **composite FKs** `(tenant_id, booking_id) → bookings(tenant_id, id)` and `(tenant_id, customer_id) → customers(tenant_id, id)`, both `on delete set null` — an invoice outlives the booking/customer it was raised for, and cannot point at another tenant's row (same device as `bookings` in 0008). `promo_code_id` carries no FK until `promo_codes` lands.
 
-### `invoice_items` `[T]`
-`id` · `tenant_id` · `invoice_id → invoices on delete cascade` · `kind text(booking|food|membership|adjustment)` · `source_id uuid null` · `description text` · `qty numeric` · `unit_price` · `tax_rate numeric` · `line_total` (all snapshot). Index `(invoice_id)`.
+### `invoice_items` `[T]` `[built]`
+`id` · `tenant_id` · `invoice_id` · `kind text(booking|food|membership|adjustment)` (CHECK) · `source_id uuid null` · `description text` · `qty numeric(10,2) > 0` · `unit_price` · `tax_rate numeric(5,2)` (a **percentage**, so it mirrors `tax_rates.percent`, not money) · `line_total` · `created_at` (all snapshot). Index `(invoice_id)`. Composite FK `(tenant_id, invoice_id) → invoices(tenant_id, id) on delete cascade`. `source_id` is a deliberate soft pointer — the line must survive deletion of whatever produced it.
 
-### `payments` `[T/B]`  (split payments = many rows per invoice)
-`id` · `tenant_id` · `branch_id` · `invoice_id → invoices` · `method payment_method(cash|card|upi|online|wallet)` · `amount numeric(10,2)` · `status payment_status(pending|captured|failed|refunded)` · `gateway text null` · `gateway_order_id/gateway_payment_id/gateway_signature text null` · `collected_by → memberships null` · `created_at`. Index `(invoice_id)`. CHECK `sum(amount) ≤ invoice.total` enforced in service.
+### `payments` `[T/B]` `[built]`  (split payments = many rows per invoice)
+`id` · `tenant_id` · `branch_id` · `invoice_id` · `method payment_method(cash|card|upi|online|wallet)` · `amount numeric(10,2)` CHECK `> 0` · `status payment_status(pending|captured|failed|refunded)` · `gateway text null` · `gateway_order_id/gateway_payment_id/gateway_signature text null` · `collected_by → memberships null` · `created_at` · `updated_at`. Unique `(tenant_id, id)`; index `(invoice_id)`; `set_updated_at()` trigger (a tender moves pending → captured). Composite FK `(tenant_id, invoice_id) → invoices(tenant_id, id) on delete cascade`. That `sum(amount) ≤ invoice.total` stays a service rule, not a constraint — a partial settlement is legitimate.
 
-### `refunds` `[T]`
-`id` · `tenant_id` · `payment_id → payments` · `amount` · `reason` · `created_by → memberships` · `created_at`. Owner/manager only.
+### `refunds` `[T]` `[built]`
+`id` · `tenant_id` · `payment_id` · `amount numeric(10,2)` CHECK `> 0` · `reason` · `created_by → memberships null` · `created_at`. Index `(payment_id)`. Composite FK `(tenant_id, payment_id) → payments(tenant_id, id) on delete cascade`.
+RLS: member `select`, **owner/manager write** via `auth_is_manager()`. Append-only — `arena_app` is granted `select, insert` only, so no code path can update or delete a refund record.
 
 ### `promo_codes` `[T]`
 `id` · `tenant_id` · `code text` · `discount_type(percentage|fixed)` · `discount_value numeric` · `valid_from/valid_until timestamptz` · `max_uses int null` · `uses int default 0` · `is_active boolean` · timestamps. Unique `(tenant_id, upper(code))`.
@@ -127,18 +133,19 @@ RLS: member `select`; owner `update`.
 ### `tax_rates` `[T]`
 `id` · `tenant_id` · `name text` · `percent numeric(5,2)` · `is_active boolean` · timestamps.
 
-### `sequences` `[T]`  (per-tenant human numbers)
-`tenant_id` · `kind text(booking|invoice|kot)` · `period text` (e.g. YYYYMMDD or YYYY) · `value int`. PK `(tenant_id, kind, period)`. Atomic increment for gap-free per-scope numbering.
+### `sequences` `[T]` `[built]`  (per-tenant human numbers)
+`tenant_id` · `kind text(booking|invoice|kot)` (CHECK) · `period text` (e.g. YYYYMMDD or YYYY, `-` for never-resetting) · `value int >= 0`. PK `(tenant_id, kind, period)` — an upsert on that key is what serialises the increment, giving gap-free per-scope numbering. RLS tenant-scoped; granted `select, insert, update` (a counter is reset by writing 0, never deleted).
 
-### `audit_log` `[T]`
-`id` · `tenant_id` · `actor_membership_id → memberships null` · `action text` · `entity_type/entity_id` · `before jsonb` · `after jsonb` · `created_at`. Index `(tenant_id, created_at)`.
+### `audit_log` `[T]` `[built]`
+`id` · `tenant_id` · `actor_membership_id → memberships null` (nullable so the entry survives the staff member leaving) · `action text` · `entity_type text` · `entity_id uuid null` · `before jsonb` · `after jsonb` · `created_at`. Index `(tenant_id, created_at desc)`.
+RLS: tenant `select` + tenant `insert` — deliberately **no update or delete policy**, and `arena_app` is granted `select, insert` only, so the trail cannot be rewritten or erased from the app path.
 
 ## M1 — Settings `[M1]`
 
 ### `business_profiles` `[T]`
 `tenant_id pk → tenants` · `legal_name` · `gstin text` · `address` · `logo_url` · `invoice_prefix text` · `place_of_supply` · timestamps. Owner-only writes.
 
-**Enums:** `invoice_status`, `payment_method`, `payment_status` (above).
+**Enums** `[built]`**:** `invoice_status(draft|issued|paid|void)`, `payment_method(cash|card|upi|online|wallet)`, `payment_status(pending|captured|failed|refunded)`.
 
 ---
 
@@ -248,3 +255,17 @@ Mostly non-schema (infra, security, ops). Schema touches:
   builder, staff shift assignment, marked `[built]`.
 - 2026-08-05 — Migration 0008 adds `tasks` (M4-C): manager assigns, assignee
   tracks status, marked `[built]`.
+- 2026-08-06 — `customer_notes` gains `updated_at` (notes are now editable from
+  the profile) and a composite `(tenant_id, customer_id)` FK — migration 0009.
+- 2026-08-07 — Billing data model built — migration 0010: `invoices`,
+  `invoice_items`, `payments`, `refunds`, `sequences`, `audit_log` plus the
+  `invoice_status` / `payment_method` / `payment_status` enums. `bookings` gains
+  a `unique (tenant_id, id)` key so invoices can use the composite-FK device.
+- 2026-08-07 — `promo_codes` (0011) and `business_profiles` (0012) built, so an
+  invoice's `promo_code_id` now carries a composite FK and the invoice prefix
+  comes from the tenant's profile rather than a constant.
+- NOTE — the customer/billing branch and the employee/menu/orders branch were
+  developed in parallel and BOTH numbered their migrations 0006–0013, so the
+  directory currently holds two files per number (e.g. `0010_billing.sql` and
+  `0010_menu.sql`). The runner applies them in filename order, which happens to
+  satisfy every dependency, but the numbering needs reconciling.

@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
+  Building2,
   CalendarDays,
   LayoutDashboard,
   Settings,
@@ -13,22 +14,40 @@ import {
   UtensilsCrossed,
   HandCoins,
   ChevronDown,
+  Contact,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { canViewCustomers, isManager, isOwner, type MemberRole } from '@/lib/auth/roles'
 
-type NavChild = { href: string; label: string; managerOnly?: boolean }
-type NavItem = { href: string; label: string; icon: LucideIcon; managerOnly?: boolean; children?: NavChild[] }
+/**
+ * `can` gates an entry on the member's role. Omit it for surfaces every member
+ * may reach (Dashboard, Bookings, Attendance). It is a PREDICATE rather than a
+ * `managerOnly` flag because two modules have their own rule: Customers is open
+ * to cashiers/receptionists/floor staff, and Business Profile is owner-only.
+ *
+ * Hiding an entry is convenience, never security — every page re-checks the
+ * role, every server action guards itself, and RLS guards the tables.
+ */
+type NavChild = { href: string; label: string; can?: (role: MemberRole) => boolean }
+type NavItem = {
+  href: string
+  label: string
+  icon: LucideIcon
+  can?: (role: MemberRole) => boolean
+  children?: NavChild[]
+}
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, managerOnly: true },
+  { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
     href: '/menu',
     label: 'Menu',
     icon: UtensilsCrossed,
-    managerOnly: true,
+    can: isManager,
     children: [
       { href: '/menu/categories', label: 'Categories' },
       { href: '/menu/items', label: 'Items' },
@@ -38,33 +57,36 @@ const NAV: NavItem[] = [
     href: '/settings/pricing',
     label: 'Pricing',
     icon: HandCoins,
-    managerOnly: true,
+    can: isManager,
     children: [
       { href: '/settings/tax-rates', label: 'Tax Rates' },
       { href: '/settings/happy-hours', label: 'Happy Hours' },
+      { href: '/settings/promo-codes', label: 'Promo Codes' },
     ],
   },
-  { href: '/settings/hours', label: 'Working Hours', icon: Clock, managerOnly: true },
+  { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
     href: '/employees',
     label: 'Employees',
     icon: Users,
     children: [
-      { href: '/settings/team', label: 'Staff', managerOnly: true },
+      { href: '/settings/team', label: 'Staff', can: isManager },
       { href: '/attendance', label: 'Attendance' },
       { href: '/roster', label: 'Roster' },
       { href: '/tasks', label: 'Tasks' },
     ],
   },
+  // Owner-only: the business's legal identity (migration 0012).
+  { href: '/settings/business', label: 'Business Profile', icon: Building2, can: isOwner },
 ]
 
 function isChildActive(pathname: string, children: NavChild[]) {
   return children.some((c) => pathname === c.href || pathname.startsWith(c.href + '/'))
 }
 
-export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapsed?: boolean }) {
+export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boolean }) {
   const pathname = usePathname()
-  const items = useMemo(() => NAV.filter((n) => !n.managerOnly || isManager), [isManager])
+  const items = useMemo(() => NAV.filter((n) => !n.can || n.can(role)), [role])
   const [openLabel, setOpenLabel] = useState<string | null>(
     () => items.find((n) => n.children && isChildActive(pathname, n.children))?.label ?? null,
   )
@@ -82,7 +104,7 @@ export function Sidebar({ isManager, collapsed }: { isManager: boolean; collapse
         const Icon = item.icon
 
         if (item.children) {
-          const visibleChildren = item.children.filter((c) => !c.managerOnly || isManager)
+          const visibleChildren = item.children.filter((c) => !c.can || c.can(role))
           if (visibleChildren.length === 0) return null
           const childActive = isChildActive(pathname, visibleChildren)
           if (collapsed) {

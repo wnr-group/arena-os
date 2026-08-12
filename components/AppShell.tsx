@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { LogOut, Menu, X, PanelRightOpen, PanelRightClose } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
+import type { MemberRole } from '@/lib/auth/roles'
 import { cn } from '@/lib/utils/cn'
 
 const STORAGE_KEY = 'arena-os:sidebar-collapsed'
@@ -22,7 +23,7 @@ function initialsOf(name: string) {
 export function AppShell({
   industryLabel,
   tenantName,
-  isManager,
+  role,
   userEmail,
   roleLabel,
   signOutAction,
@@ -30,7 +31,7 @@ export function AppShell({
 }: {
   industryLabel: string
   tenantName: string
-  isManager: boolean
+  role: MemberRole
   userEmail: string
   roleLabel: string
   signOutAction: () => void | Promise<void>
@@ -56,7 +57,7 @@ export function AppShell({
       {/* Desktop Sidebar */}
       <aside
         className={cn(
-          'relative hidden shrink-0 flex-col border-r border-border bg-card/65 backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
+          'no-print relative hidden shrink-0 flex-col border-r border-border bg-card/65 backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
           collapsed ? 'w-[76px]' : 'w-64',
         )}
       >
@@ -79,7 +80,7 @@ export function AppShell({
           )}
         </div>
 
-        <Sidebar isManager={isManager} collapsed={collapsed} />
+        <Sidebar role={role} collapsed={collapsed} />
 
         <div className={cn('mt-auto border-t border-border p-3 bg-muted/20', collapsed && 'flex flex-col items-center')}>
           {!collapsed && (
@@ -116,7 +117,7 @@ export function AppShell({
 
       {/* Mobile Drawer Sidebar Overlay */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 flex sm:hidden">
+        <div className="no-print fixed inset-0 z-50 flex sm:hidden">
           {/* Backdrop */}
           <div
             className="fixed inset-0 bg-black/40 backdrop-blur-sm transition-opacity duration-300"
@@ -147,7 +148,7 @@ export function AppShell({
             </div>
 
             <div className="flex-1 overflow-y-auto" onClick={() => setMobileOpen(false)}>
-              <Sidebar isManager={isManager} collapsed={false} />
+              <Sidebar role={role} collapsed={false} />
             </div>
 
             <div className="border-t border-border p-4 bg-muted/20">
@@ -172,7 +173,7 @@ export function AppShell({
       {/* Main Content Area */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile Header */}
-        <header className="flex h-14 items-center justify-between border-b border-border bg-card/65 backdrop-blur-md px-4 sm:hidden">
+        <header className="no-print flex h-14 items-center justify-between border-b border-border bg-card/65 backdrop-blur-md px-4 sm:hidden">
           <div className="flex items-center gap-3">
             <button
               type="button"
