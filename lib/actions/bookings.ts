@@ -9,6 +9,7 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { resolveBookingCustomer } from '@/lib/booking/customer'
+import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
 type Result = { error?: string }
@@ -165,10 +166,19 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
     else if (status === 'completed') set.completedAt = now
     else if (status === 'cancelled') set.cancelledAt = now
 
-    await withUser(ctx.user.id, (tx) =>
-      tx.update(bookings).set(set).where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id))),
-    )
+    await withUser(ctx.user.id, async (tx) => {
+      await tx.update(bookings).set(set).where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+
+      // Cancelling a booking must not leave the kitchen cooking for it, or a
+      // food order sitting there waiting to be billed for a booking that
+      // never happened — same transaction, so the booking and its orders
+      // cancel together or not at all.
+      if (status === 'cancelled') {
+        await cancelOpenOrdersForBooking(tx, { tenantId: ctx.tenant.id }, id)
+      }
+    })
     revalidatePath('/bookings')
+    revalidatePath('/kitchen')
     return {}
   } catch (e) {
     return fail(e)

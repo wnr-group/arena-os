@@ -54,3 +54,13 @@ export const BILLING_ROLES: MemberRole[] = ['owner', 'manager', 'cashier']
 export function canBill(role: MemberRole | null | undefined): boolean {
   return !!role && BILLING_ROLES.includes(role)
 }
+
+/**
+ * Roles that may advance a kitchen ticket's status — kitchen staff and up.
+ * Matches the kots_update RLS policy (migration 0013).
+ */
+export const KITCHEN_ROLES: MemberRole[] = ['owner', 'manager', 'kitchen_staff']
+
+export function canManageKitchen(role: MemberRole | null | undefined): boolean {
+  return !!role && KITCHEN_ROLES.includes(role)
+}
