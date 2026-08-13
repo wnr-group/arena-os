@@ -76,6 +76,7 @@ const NAV: NavItem[] = [
       { href: '/attendance', label: 'Attendance' },
       { href: '/roster', label: 'Roster' },
       { href: '/tasks', label: 'Tasks' },
+      { href: '/performance', label: 'Performance', can: isManager },
     ],
   },
   // Owner-only: the business's legal identity (migration 0012).
