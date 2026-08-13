@@ -1,8 +1,8 @@
 import 'server-only'
-import { and, eq, gte, lt } from 'drizzle-orm'
+import { and, eq, gte, inArray, lt } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
-import { availableStartTimes } from './availability'
+import { availableStartTimes, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
 
 export type PublicBranch = { id: string; name: string }
@@ -146,6 +146,104 @@ export async function getPublicAvailableStarts(
       slotMinutes: 30,
       bufferMinutes: res.buffer,
     })
+
+    return { starts }
+  })
+}
+
+export type PublicTypeAvailabilityInput = {
+  tenantId: string
+  branchId: string
+  resourceTypeId: string
+  timeZone: string
+  date: string
+  durationMinutes: number
+}
+
+export type PublicTypeSlot = { start: Date; resourceId: string }
+
+/**
+ * Same math as getPublicAvailableStarts, but for a whole resource TYPE — the
+ * shape the booking wizard actually needs: a customer picks "PS5 Station",
+ * not a specific unit. For each candidate start time, the first (lowest
+ * sort_order) resource of the type still free at that time is the one
+ * offered; createPublicBooking (lib/actions/public-booking.ts) re-validates
+ * that exact resource+slot at submit time, so a stale read here can only
+ * ever fail closed (the exclusion constraint), never double-book.
+ */
+export async function getPublicAvailableStartsForType(
+  input: PublicTypeAvailabilityInput,
+): Promise<{ starts: PublicTypeSlot[] } | { error: string }> {
+  const { tenantId, branchId, resourceTypeId, timeZone, date, durationMinutes } = input
+
+  return withPublicTenant(tenantId, async (tx) => {
+    const resourceRows = await tx
+      .select({ id: resources.id, buffer: resourceTypes.bufferMinutes })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resources.resourceTypeId, resourceTypeId),
+          eq(resources.tenantId, tenantId),
+          eq(resources.branchId, branchId),
+          eq(resources.status, 'available'),
+        ),
+      )
+      .orderBy(resources.sortOrder)
+    if (resourceRows.length === 0) return { error: 'This is not bookable right now.' }
+
+    const dow = weekdayInZone(date, timeZone)
+    const [hours] = await tx
+      .select({
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.branchId, branchId), eq(workingHours.dayOfWeek, dow)))
+
+    const dayStart = zonedTimeToUtc(date, '00:00', timeZone)
+    const dayEnd = zonedTimeToUtc(date, '00:00', timeZone)
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1)
+
+    const resourceIds = resourceRows.map((r) => r.id)
+    const existingRows = await tx
+      .select({ resourceId: bookingSlots.resourceId, startsAt: bookingSlots.startsAt, endsAt: bookingSlots.endsAt })
+      .from(bookingSlots)
+      .where(
+        and(
+          inArray(bookingSlots.resourceId, resourceIds),
+          eq(bookingSlots.active, true),
+          gte(bookingSlots.startsAt, dayStart),
+          lt(bookingSlots.startsAt, dayEnd),
+        ),
+      )
+
+    const existingByResource = new Map<string, Interval[]>()
+    for (const row of existingRows) {
+      const list = existingByResource.get(row.resourceId) ?? []
+      list.push({ startsAt: row.startsAt, endsAt: row.endsAt })
+      existingByResource.set(row.resourceId, list)
+    }
+
+    // First-free-unit-wins, keyed by start-time ISO, so each shown time maps
+    // to exactly one resource under the hood.
+    const byStart = new Map<string, string>()
+    for (const r of resourceRows) {
+      const starts = availableStartTimes(date, timeZone, hours ?? DEFAULT_HOURS, existingByResource.get(r.id) ?? [], {
+        durationMinutes,
+        slotMinutes: 30,
+        bufferMinutes: r.buffer,
+      })
+      for (const s of starts) {
+        const key = s.toISOString()
+        if (!byStart.has(key)) byStart.set(key, r.id)
+      }
+    }
+
+    const starts = [...byStart.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([start, resourceId]) => ({ start: new Date(start), resourceId }))
 
     return { starts }
   })
