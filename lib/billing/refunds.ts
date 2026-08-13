@@ -10,10 +10,10 @@
  * manager must refund first. That keeps each movement of money its own
  * decision with its own audit row.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { auditLog, invoices, payments, refunds } from '@/db/schema'
+import { auditLog, invoices, invoiceItems, orderItems, orders, payments, refunds } from '@/db/schema'
 import { paise } from './payments'
 import { round2 } from './pricing'
 
@@ -308,6 +308,47 @@ export async function voidInvoiceRecord(
     .update(invoices)
     .set({ status: 'void' })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId)))
+
+  // Release any food orders this invoice claimed, so a re-bill of the booking
+  // can pick them up again — otherwise they would sit at 'billed' forever,
+  // invisible to loadFoodLines, and the food charge would be lost for good.
+  // Safe to scope by "currently billed": only issueInvoiceForBooking ever sets
+  // that status, and findLiveInvoice blocks a second live invoice for the same
+  // booking, so no other invoice could have claimed these orders meanwhile.
+  const foodSourceIds = (
+    await tx
+      .select({ sourceId: invoiceItems.sourceId })
+      .from(invoiceItems)
+      .where(
+        and(
+          eq(invoiceItems.tenantId, actor.tenantId),
+          eq(invoiceItems.invoiceId, invoice.id),
+          eq(invoiceItems.kind, 'food'),
+        ),
+      )
+  )
+    .map((i) => i.sourceId)
+    .filter((id): id is string => id !== null)
+
+  if (foodSourceIds.length > 0) {
+    const billedOrders = await tx
+      .selectDistinct({ orderId: orderItems.orderId })
+      .from(orderItems)
+      .where(and(eq(orderItems.tenantId, actor.tenantId), inArray(orderItems.id, foodSourceIds)))
+    await tx
+      .update(orders)
+      .set({ status: 'open' })
+      .where(
+        and(
+          eq(orders.tenantId, actor.tenantId),
+          inArray(
+            orders.id,
+            billedOrders.map((o) => o.orderId),
+          ),
+          eq(orders.status, 'billed'),
+        ),
+      )
+  }
 
   await writeAudit(tx, actor, {
     action: 'void_invoice',

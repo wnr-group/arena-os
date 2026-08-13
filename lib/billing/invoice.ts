@@ -15,7 +15,7 @@ import { and, eq, ne } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { bookings, bookingSlots, invoices, invoiceItems } from '@/db/schema'
+import { bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
@@ -149,14 +149,49 @@ export async function loadBookingLines(
 }
 
 /**
- * Every billable line for a booking.
+ * The booking's food & beverage charges, as priceBill lines.
  *
- * FOOD CHARGES BELONG HERE and are not yet possible: `orders` / `order_items`
- * do not exist — food ordering is milestone M2 (docs/ROADMAP.md epic M2-B) — so
- * there is no table to read and no cancelled/voided rule to honour. This is the
- * single seam for them: concatenate the food lines onto this array and the rest
- * of the pipeline (priceBill, invoice_items, the bill screen's Food section)
- * already handles `kind: 'food'` with no further change.
+ * Only `open` orders count: `billed` means a previous invoice already charged
+ * for them (see the status flip at the end of issueInvoiceForBooking below),
+ * and `cancelled` orders were never served. Reading `status = 'open'` here is
+ * what makes double-billing structurally impossible — once an order is
+ * flipped to `billed` it stops appearing in every future bill for this
+ * booking, this function included.
+ *
+ * unit_price and tax_rate are read straight off order_items, unchanged: they
+ * were already snapshotted at order time (including any happy-hour discount),
+ * so this never re-prices a menu item against today's rate.
+ */
+export async function loadFoodLines(tx: Db, tenantId: string, bookingId: string): Promise<BillLine[]> {
+  const rows = await tx
+    .select({
+      id: orderItems.id,
+      itemName: orderItems.itemName,
+      unitPrice: orderItems.unitPrice,
+      taxRate: orderItems.taxRate,
+      qty: orderItems.qty,
+    })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.bookingId, bookingId), eq(orders.status, 'open')))
+    .orderBy(orderItems.id)
+
+  return rows.map((r) => ({
+    description: r.itemName,
+    kind: 'food' as const,
+    sourceId: r.id,
+    qty: r.qty,
+    unitPrice: Number(r.unitPrice),
+    taxPercent: Number(r.taxRate),
+  }))
+}
+
+/**
+ * Every billable line for a booking: its time charges plus any food &
+ * beverage ordered against it. One booking, one bill — the rest of the
+ * pipeline (priceBill, invoice_items, the bill screen's sections) already
+ * handles a mix of `kind: 'booking'` and `kind: 'food'` lines with no further
+ * change.
  */
 export async function loadBillLines(
   tx: Db,
@@ -164,7 +199,48 @@ export async function loadBillLines(
   bookingId: string,
   timeZone: string,
 ): Promise<BillLine[]> {
-  return loadBookingLines(tx, tenantId, bookingId, timeZone)
+  // Sequential, not Promise.all: both share ONE transaction client, and a
+  // Postgres connection cannot run two queries at once (see lib/billing/receipt.ts).
+  const bookingLines = await loadBookingLines(tx, tenantId, bookingId, timeZone)
+  const foodLines = await loadFoodLines(tx, tenantId, bookingId)
+  return [...bookingLines, ...foodLines]
+}
+
+/**
+ * A live invoice's own line items, read back as BillLine — the frozen
+ * snapshot, not a recomputation.
+ *
+ * Once a booking is billed, its food orders flip to `status='billed'` (see
+ * step 7 of issueInvoiceForBooking) precisely so loadFoodLines stops
+ * returning them — that is what makes double-billing impossible. But it also
+ * means loadBillLines() can no longer be used to DISPLAY an already-issued
+ * bill: it would silently drop the food lines from the screen the moment
+ * they're billed, even though the invoice itself still charges for them. Any
+ * caller showing an EXISTING invoice (the bill screen once it has one, a
+ * reprint, …) must read the lines from here instead.
+ */
+export async function loadInvoiceLines(tx: Db, tenantId: string, invoiceId: string): Promise<BillLine[]> {
+  const rows = await tx
+    .select({
+      description: invoiceItems.description,
+      kind: invoiceItems.kind,
+      sourceId: invoiceItems.sourceId,
+      qty: invoiceItems.qty,
+      unitPrice: invoiceItems.unitPrice,
+      taxRate: invoiceItems.taxRate,
+    })
+    .from(invoiceItems)
+    .where(and(eq(invoiceItems.tenantId, tenantId), eq(invoiceItems.invoiceId, invoiceId)))
+    .orderBy(invoiceItems.createdAt)
+
+  return rows.map((r) => ({
+    description: r.description,
+    kind: r.kind,
+    sourceId: r.sourceId ?? undefined,
+    qty: Number(r.qty),
+    unitPrice: Number(r.unitPrice),
+    taxPercent: Number(r.taxRate),
+  }))
 }
 
 export type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
@@ -367,6 +443,16 @@ export async function issueInvoiceForBooking(
       lineTotal: item.lineTotal.toFixed(2),
     })),
   )
+
+  // ── 7. mark the food orders billed ────────────────────────────────────────
+  // The other half of double-billing prevention: loadFoodLines only reads
+  // status='open' orders, so flipping these to 'billed' here — in the same
+  // transaction as the invoice itself — means the same fries can never end up
+  // on a second bill, and a failure anywhere above rolls this back too.
+  await tx
+    .update(orders)
+    .set({ status: 'billed' })
+    .where(and(eq(orders.tenantId, tenant.id), eq(orders.bookingId, booking.id), eq(orders.status, 'open')))
 
   return { invoiceId: invoice.id, invoiceNumber, pricing }
 }
