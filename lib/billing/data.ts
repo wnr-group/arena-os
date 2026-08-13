@@ -7,6 +7,7 @@ import {
   findLiveInvoice,
   isBillableBookingStatus,
   loadBillLines,
+  loadInvoiceLines,
   type ExistingInvoice,
 } from './invoice'
 import {
@@ -107,8 +108,15 @@ export async function getBillableForBooking(
 
     if (!row) return null
 
-    const lines = await loadBillLines(tx, ctx.tenant.id, row.id, ctx.tenant.timezone)
+    // Once a bill exists, its own invoice_items are the source of truth for
+    // what to display — loadBillLines() recomputes from LIVE booking_slots /
+    // orders, and a billed order has deliberately dropped out of that (see
+    // loadInvoiceLines' doc comment), so re-running it here would make the
+    // food section vanish from a bill that already charged for it.
     const existingInvoice = await findLiveInvoice(tx, ctx.tenant.id, row.id)
+    const lines = existingInvoice
+      ? await loadInvoiceLines(tx, ctx.tenant.id, existingInvoice.id)
+      : await loadBillLines(tx, ctx.tenant.id, row.id, ctx.tenant.timezone)
     const settlement = existingInvoice
       ? await getInvoiceSettlement(tx, ctx.tenant.id, existingInvoice.id)
       : null

@@ -25,8 +25,11 @@ import {
   financialYearPeriod,
   isBillableBookingStatus,
   issueInvoiceForBooking,
+  loadFoodLines,
+  loadInvoiceLines,
   nextInvoiceNumber,
 } from '../lib/billing/invoice'
+import { voidInvoiceRecord } from '../lib/billing/refunds'
 import { canBill } from '../lib/auth/roles'
 import { todayInZone } from '../lib/booking/time'
 import { loadEnv } from './env'
@@ -100,9 +103,9 @@ async function main() {
        on conflict (email) do update set email=excluded.email returning id`,
       [`owner@${slug}.test`],
     )
-    await ownerPool.query(
+    const m = await ownerPool.query<{ id: string }>(
       `insert into memberships (tenant_id,user_id,role,status) values ($1,$2,'owner','active')
-       on conflict (tenant_id,user_id) do update set role='owner', status='active'`,
+       on conflict (tenant_id,user_id) do update set role='owner', status='active' returning id`,
       [tenantId, u.rows[0].id],
     )
     const rt = await ownerPool.query<{ id: string }>(
@@ -119,6 +122,7 @@ async function main() {
       tenantId,
       branchId: b.rows[0].id,
       userId: u.rows[0].id,
+      membershipId: m.rows[0].id,
       resourceTypeId: rt.rows[0].id,
       resourceId: res.rows[0].id,
     }
@@ -165,14 +169,45 @@ async function main() {
     return { bookingId, customerId }
   }
 
+  let orderSeq = 0
+  /** A food order attached to a booking, with the given items (mirrors what createOrder snapshots onto order_items). */
+  async function makeFoodOrder(
+    t: { tenantId: string; branchId: string },
+    bookingId: string,
+    items: { name: string; unitPrice: string; qty: number; taxRate?: string }[],
+    opts: { status?: string } = {},
+  ) {
+    const { status = 'open' } = opts
+    const n = ++orderSeq
+    const ord = await ownerPool.query<{ id: string }>(
+      `insert into orders (tenant_id,branch_id,booking_id,order_number,status)
+       values ($1,$2,$3,$4,$5) returning id`,
+      [t.tenantId, t.branchId, bookingId, `FO-${n}`, status],
+    )
+    const orderId = ord.rows[0].id
+    for (const it of items) {
+      const taxRate = it.taxRate ?? '0.00'
+      const lineTotal = (Number(it.unitPrice) * it.qty).toFixed(2)
+      await ownerPool.query(
+        `insert into order_items (tenant_id,order_id,item_name,unit_price,tax_rate,qty,line_total)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [t.tenantId, orderId, it.name, it.unitPrice, taxRate, it.qty, lineTotal],
+      )
+    }
+    return { orderId }
+  }
+
   const A = await makeTenant('testbilla')
   const B = await makeTenant('testbillb')
 
   // A clean slate, so the run is repeatable even if a previous one was killed
   // before its cleanup: invoice numbering must start from 1 and booking numbers
-  // must be free. Invoices first — bookings only NULL their booking_id.
+  // must be free. Invoices and order_items/orders first — bookings only NULL
+  // their booking_id and order_id foreign keys.
   const bothTenants = [[A.tenantId, B.tenantId]]
   await ownerPool.query('delete from invoices where tenant_id = any($1)', bothTenants)
+  await ownerPool.query('delete from order_items where tenant_id = any($1)', bothTenants)
+  await ownerPool.query('delete from orders where tenant_id = any($1)', bothTenants)
   await ownerPool.query('delete from bookings where tenant_id = any($1)', bothTenants)
   await ownerPool.query('delete from sequences where tenant_id = any($1)', bothTenants)
 
@@ -448,6 +483,131 @@ async function main() {
     const normalBooking = await makeBooking(A)
     const normal = await bill(A.userId, A.tenantId, { bookingId: normalBooking.bookingId })
     check("a bill with money owing still starts as 'issued'", normal.ok && (await ownerPool.query('select status from invoices where id=$1', [normal.invoiceId])).rows[0].status === 'issued')
+  }
+
+  // ── 14. food & beverage folds into ONE bill ───────────────────────────────
+  // A PS5 booking plus 2 cokes + fries: one Food & Beverage section, correct
+  // tax, folded into the same grand total as the console time — no separate
+  // food bill, no separate math.
+  {
+    const fb = await makeBooking(A) // 2h × ₹450 = ₹900, taxPercent 0
+    await makeFoodOrder(A, fb.bookingId, [
+      { name: 'Coke', unitPrice: '50.00', qty: 2, taxRate: '5.00' }, // 100.00
+      { name: 'Fries', unitPrice: '120.00', qty: 1, taxRate: '5.00' }, // 120.00
+    ])
+    const rFood = await bill(A.userId, A.tenantId, { bookingId: fb.bookingId })
+    check('a booking with food orders bills successfully', rFood.ok)
+
+    if (rFood.ok) {
+      const inv = (
+        await ownerPool.query('select subtotal, tax_total, total from invoices where id=$1', [rFood.invoiceId])
+      ).rows[0]
+      check('subtotal = 1120.00 (900 booking + 100 + 120 food)', inv.subtotal === '1120.00')
+      check('tax_total = 11.00 (5% GST on the 220.00 taxable food lines)', inv.tax_total === '11.00')
+      check('total = 1131.00, booking + food in ONE grand total', inv.total === '1131.00')
+
+      const items = (
+        await ownerPool.query(
+          `select kind, description, qty, unit_price, tax_rate, line_total
+             from invoice_items where invoice_id=$1 order by kind, description`,
+          [rFood.invoiceId],
+        )
+      ).rows
+      check('3 invoice lines: 1 booking + 2 food', items.length === 3)
+      const food = items.filter((i) => i.kind === 'food')
+      check('2 lines are tagged kind=food', food.length === 2)
+      const coke = food.find((i) => i.description === 'Coke')
+      const fries = food.find((i) => i.description === 'Fries')
+      check(
+        'Coke: qty 2.00 @ 50.00, 5% tax, line 100.00',
+        !!coke && coke.qty === '2.00' && coke.unit_price === '50.00' && coke.tax_rate === '5.00' && coke.line_total === '100.00',
+      )
+      check(
+        'Fries: qty 1.00 @ 120.00, 5% tax, line 120.00',
+        !!fries && fries.qty === '1.00' && fries.unit_price === '120.00' && fries.tax_rate === '5.00' && fries.line_total === '120.00',
+      )
+
+      // ── no double-bill ───────────────────────────────────────────────────
+      const orderStatus = (
+        await ownerPool.query('select status from orders where booking_id=$1', [fb.bookingId])
+      ).rows[0].status
+      check("the food order is marked 'billed' the moment the invoice is raised", orderStatus === 'billed')
+
+      const reload = await withUser(A.userId, (tx) => loadFoodLines(tx, A.tenantId, fb.bookingId))
+      check('…and structurally disappears from loadFoodLines — it can never be billed again', reload.length === 0)
+
+      // ── REGRESSION: the bill screen must still SHOW the food it billed ────
+      // loadFoodLines correctly hides a billed order from future bills, but
+      // that must not make an ALREADY-ISSUED invoice look like it forgot the
+      // food — the screen has to read the frozen invoice_items back, not
+      // recompute from live (now-billed) orders.
+      const invoiceLines = await withUser(A.userId, (tx) => loadInvoiceLines(tx, A.tenantId, rFood.invoiceId))
+      check('loadInvoiceLines still returns all 3 lines for the issued invoice', invoiceLines.length === 3)
+      check(
+        '…including both food lines, unit price and tax intact',
+        invoiceLines.filter((l) => l.kind === 'food').length === 2 &&
+          invoiceLines.some((l) => l.description === 'Coke' && l.unitPrice === 50 && l.taxPercent === 5) &&
+          invoiceLines.some((l) => l.description === 'Fries' && l.unitPrice === 120 && l.taxPercent === 5),
+      )
+
+      // ── void releases the order, so a corrected re-bill isn't left short ──
+      const membershipId = A.membershipId
+      await withUser(A.userId, (tx) =>
+        voidInvoiceRecord(tx, { tenantId: A.tenantId, membershipId }, { invoiceId: rFood.invoiceId, reason: 'Testing' }),
+      )
+      const releasedStatus = (
+        await ownerPool.query('select status from orders where booking_id=$1', [fb.bookingId])
+      ).rows[0].status
+      check("voiding releases the food order back to 'open'", releasedStatus === 'open')
+
+      const reloadAfterVoid = await withUser(A.userId, (tx) => loadFoodLines(tx, A.tenantId, fb.bookingId))
+      check('…so it reappears in loadFoodLines, ready to be billed again', reloadAfterVoid.length === 2)
+
+      const rRebill = await bill(A.userId, A.tenantId, { bookingId: fb.bookingId })
+      check('re-billing after the void succeeds', rRebill.ok)
+      if (rRebill.ok) {
+        const inv2 = (
+          await ownerPool.query('select subtotal, total from invoices where id=$1', [rRebill.invoiceId])
+        ).rows[0]
+        check('…the new invoice carries the SAME food total, not double-counted', inv2.subtotal === '1120.00' && inv2.total === '1131.00')
+        const foodCount = (
+          await ownerPool.query(`select count(*)::int n from invoice_items where invoice_id=$1 and kind='food'`, [rRebill.invoiceId])
+        ).rows[0].n
+        check('…exactly 2 food lines on the re-bill, not 4', foodCount === 2)
+      }
+
+      // The voided invoice keeps its own frozen snapshot — re-billing never
+      // rewrites history.
+      const oldInv = (await ownerPool.query('select subtotal from invoices where id=$1', [rFood.invoiceId])).rows[0]
+      check('the voided invoice keeps its own frozen subtotal (1120.00)', oldInv.subtotal === '1120.00')
+    }
+
+    // A cancelled order was never served and must never reach a bill.
+    const cancelledBooking = await makeBooking(A)
+    await makeFoodOrder(A, cancelledBooking.bookingId, [{ name: 'Mocktail', unitPrice: '90.00', qty: 1 }], {
+      status: 'cancelled',
+    })
+    const rCancelled = await bill(A.userId, A.tenantId, { bookingId: cancelledBooking.bookingId })
+    check('a cancelled food order never reaches the bill', rCancelled.ok)
+    if (rCancelled.ok) {
+      const foodCount = (
+        await ownerPool.query(`select count(*)::int n from invoice_items where invoice_id=$1 and kind='food'`, [rCancelled.invoiceId])
+      ).rows[0].n
+      check('…0 food lines — only the booking charge was billed', foodCount === 0)
+    }
+
+    // A walk-in order (no booking_id) must never bleed onto an unrelated bill.
+    const walkinBooking = await makeBooking(A)
+    const unrelatedBooking = await makeBooking(A)
+    await makeFoodOrder(A, walkinBooking.bookingId, [{ name: 'Walk-in Snack', unitPrice: '40.00', qty: 1 }])
+    const rUnrelated = await bill(A.userId, A.tenantId, { bookingId: unrelatedBooking.bookingId })
+    check('billing a different booking is unaffected by another booking’s food order', rUnrelated.ok)
+    if (rUnrelated.ok) {
+      const foodCount = (
+        await ownerPool.query(`select count(*)::int n from invoice_items where invoice_id=$1 and kind='food'`, [rUnrelated.invoiceId])
+      ).rows[0].n
+      check("…0 food lines — another booking's order does not cross over", foodCount === 0)
+    }
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────
