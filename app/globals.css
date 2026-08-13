@@ -87,11 +87,13 @@ body {
 
 /* ── print ───────────────────────────────────────────────────────────────────
    Everything below is inside @media print, so it cannot affect the app on
-   screen. Used by the GST receipt at /invoices/[id]:
+   screen. Used by the GST receipt at /invoices/[id] and the kitchen ticket at
+   /kitchen/[kotId]/print:
      .no-print   — app chrome and controls that must never reach paper
-     .print-sheet — the receipt card: drops its card styling and fills the page
+     .print-sheet — the receipt/ticket card: drops its card styling and fills the page
      .print-keep  — a block that should not be split across pages
      .print-flat  — a scroll container that must lay flat when printed
+     .kot-print-sheet — kitchen ticket only: bumps body text up for a rail slip
    ------------------------------------------------------------------------- */
 @media print {
   /* Print on plain white whatever the screen theme is: the app follows
@@ -170,5 +172,12 @@ body {
   .print-sheet {
     font-size: 12pt;
     line-height: 1.4;
+  }
+
+  /* Kitchen ticket at /kitchen/[kotId]/print: a rail slip, read at a glance
+     from a few feet away — bigger than a GST receipt's body text. */
+  .kot-print-sheet {
+    font-size: 15pt;
+    line-height: 1.5;
   }
 }
