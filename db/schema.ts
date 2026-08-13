@@ -509,6 +509,13 @@ export const orderItems = pgTable(
     qty: integer('qty').notNull(),
     lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull(),
     specialInstructions: text('special_instructions'),
+    // Happy-hour snapshot (migration 0021). Null when no rule applied. Frozen
+    // at order time so an edited/deleted rule never reprices a past line.
+    happyHourId: uuid('happy_hour_id').references(() => happyHours.id, { onDelete: 'set null' }),
+    happyHourName: text('happy_hour_name'),
+    originalUnitPrice: numeric('original_unit_price', { precision: 10, scale: 2 }),
+    happyHourDiscountType: discountType('happy_hour_discount_type'),
+    happyHourDiscountValue: numeric('happy_hour_discount_value', { precision: 10, scale: 2 }),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )

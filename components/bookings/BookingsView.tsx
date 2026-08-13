@@ -20,6 +20,7 @@ import { NewBookingDialog } from './NewBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
+import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
 type Resource = { id: string; name: string; typeName: string; status: string }
 type Slot = {
@@ -41,6 +42,11 @@ export type OrderItemLine = {
   unitPrice: string
   qty: number
   specialInstructions: string | null
+  /** Set only when a happy-hour rule discounted this line at order time. */
+  happyHourName: string | null
+  originalUnitPrice: string | null
+  happyHourDiscountType: 'percentage' | 'fixed' | null
+  happyHourDiscountValue: string | null
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
@@ -94,6 +100,7 @@ export function BookingsView({
   slots,
   categories,
   menuItems,
+  happyHours,
   ordersByBooking,
 }: {
   branchId: string
@@ -111,6 +118,7 @@ export function BookingsView({
   slots: Slot[]
   categories: CategoryOption[]
   menuItems: MenuItemOption[]
+  happyHours: HappyHourRule[]
   ordersByBooking: Record<string, OrderSummary[]>
 }) {
   const router = useRouter()
@@ -552,8 +560,20 @@ export function BookingsView({
                             <span className="truncate">
                               {it.qty}× {it.itemName}
                               {it.specialInstructions ? ` — ${it.specialInstructions}` : ''}
+                              {it.happyHourName && (
+                                <span className="ml-1.5 inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">
+                                  {it.happyHourName}
+                                </span>
+                              )}
                             </span>
-                            <span className="shrink-0">{formatMoney(Number(it.unitPrice) * it.qty, currency)}</span>
+                            <span className="shrink-0 text-right">
+                              {it.originalUnitPrice && Number(it.originalUnitPrice) !== Number(it.unitPrice) && (
+                                <span className="mr-1.5 line-through opacity-60">
+                                  {formatMoney(Number(it.originalUnitPrice) * it.qty, currency)}
+                                </span>
+                              )}
+                              {formatMoney(Number(it.unitPrice) * it.qty, currency)}
+                            </span>
                           </li>
                         ))}
                       </ul>
@@ -575,6 +595,8 @@ export function BookingsView({
           currency={currency}
           categories={categories}
           menuItems={menuItems}
+          happyHours={happyHours}
+          timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={(num) => {
             setOrderDialog(null)
