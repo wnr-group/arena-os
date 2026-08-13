@@ -15,6 +15,7 @@ import {
   HandCoins,
   ChevronDown,
   Contact,
+  ChefHat,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -41,6 +42,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
+  { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
