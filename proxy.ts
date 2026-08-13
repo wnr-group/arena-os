@@ -21,12 +21,16 @@ export function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl
   const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/auth')
+  // The public (no-login) booking site — app/(public) — pinned to the tenant
+  // by subdomain like every other tenant route, but deliberately reachable
+  // with no session at all.
+  const isPublicRoute = pathname.startsWith('/book')
   const hasSession = request.cookies.has(SESSION_COOKIE)
 
   // Protected surfaces: tenant routes on a subdomain, and the platform admin
   // panel on the root domain. Membership/admin authorization is enforced deeper
   // (RLS + page guards); the proxy only bounces the signed-out.
-  const needsSession = (slug || pathname.startsWith('/admin')) && !isAuthRoute
+  const needsSession = (slug || pathname.startsWith('/admin')) && !isAuthRoute && !isPublicRoute
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
