@@ -7,6 +7,7 @@ import { todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { listMenuItems } from '@/lib/menu/data'
 import { listOrdersForBookings } from '@/lib/orders/data'
 import { listDepositStates } from '@/lib/payments/data'
+import { listHappyHours } from '@/lib/happy-hours/data'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
 function toMinutes(hhmm: string): number {
@@ -34,11 +35,12 @@ export default async function BookingsPage({
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [allResources, hours, slots, menuItemRows] = await Promise.all([
+  const [allResources, hours, slots, menuItemRows, happyHourRows] = await Promise.all([
     listResources(ctx, branch.id),
     getWorkingHours(ctx, branch.id),
     listDayBookings(ctx, branch.id, date, tz),
     listMenuItems(ctx),
+    listHappyHours(ctx),
   ])
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
@@ -66,6 +68,10 @@ export default async function BookingsPage({
         unitPrice: row.unitPrice!,
         qty: row.qty!,
         specialInstructions: row.specialInstructions,
+        happyHourName: row.happyHourName,
+        originalUnitPrice: row.originalUnitPrice,
+        happyHourDiscountType: row.happyHourDiscountType,
+        happyHourDiscountValue: row.happyHourDiscountValue,
       })
     }
   }
@@ -81,6 +87,19 @@ export default async function BookingsPage({
     categoryId: i.categoryId,
     categoryName: i.categoryName,
     taxPercent: i.taxPercent,
+  }))
+
+  // Only what the take-order dialog needs to preview a discount client-side;
+  // the server still decides for real when the order is placed.
+  const happyHours = happyHourRows.map((h) => ({
+    id: h.id,
+    name: h.name,
+    daysOfWeek: h.daysOfWeek,
+    startTime: h.startTime,
+    endTime: h.endTime,
+    discountType: h.discountType,
+    discountValue: h.discountValue,
+    isActive: h.isActive,
   }))
 
   const dow = weekdayInZone(date, tz)
@@ -107,6 +126,7 @@ export default async function BookingsPage({
       openMin={openMin}
       closeMin={closeMin}
       resources={resources}
+      happyHours={happyHours}
       slots={slots.map((s) => ({
         slotId: s.slotId,
         resourceId: s.resourceId,

@@ -21,6 +21,10 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
         taxRate: orderItems.taxRate,
         qty: orderItems.qty,
         specialInstructions: orderItems.specialInstructions,
+        happyHourName: orderItems.happyHourName,
+        originalUnitPrice: orderItems.originalUnitPrice,
+        happyHourDiscountType: orderItems.happyHourDiscountType,
+        happyHourDiscountValue: orderItems.happyHourDiscountValue,
       })
       .from(orders)
       .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
