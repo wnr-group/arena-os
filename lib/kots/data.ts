@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, asc, eq, notInArray } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { kots, orders, orderItems } from '@/db/schema'
+import { kots, orders, orderItems, bookings } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 
 /** Flat KOT+item rows for a branch's active tickets — grouped by the caller (see components/kitchen/KitchenQueue.tsx). */
@@ -32,4 +32,64 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
       )
       .orderBy(asc(kots.createdAt), asc(orderItems.id)),
   )
+}
+
+export type KotPrintTicket = {
+  kotId: string
+  kotNumber: string
+  status: (typeof kots.$inferSelect)['status']
+  createdAt: Date
+  orderNumber: string
+  bookingNumber: string | null
+  customerName: string | null
+  items: { itemId: string; itemName: string; qty: number; specialInstructions: string | null }[]
+}
+
+/**
+ * A single ticket for the printable slip at /kitchen/[kotId]/print — same
+ * tenant scoping as listActiveKots, but for one KOT regardless of status (a
+ * served ticket should still be reprintable).
+ */
+export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise<KotPrintTicket | null> {
+  return withUser(ctx.user.id, async (tx) => {
+    const [head] = await tx
+      .select({
+        kotId: kots.id,
+        kotNumber: kots.kotNumber,
+        status: kots.status,
+        createdAt: kots.createdAt,
+        orderId: orders.id,
+        orderNumber: orders.orderNumber,
+        bookingNumber: bookings.bookingNumber,
+        customerName: bookings.customerName,
+      })
+      .from(kots)
+      .innerJoin(orders, eq(orders.id, kots.orderId))
+      .leftJoin(bookings, eq(bookings.id, orders.bookingId))
+      .where(and(eq(kots.id, kotId), eq(kots.tenantId, ctx.tenant.id)))
+      .limit(1)
+    if (!head) return null
+
+    const itemRows = await tx
+      .select({
+        itemId: orderItems.id,
+        itemName: orderItems.itemName,
+        qty: orderItems.qty,
+        specialInstructions: orderItems.specialInstructions,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, head.orderId))
+      .orderBy(asc(orderItems.id))
+
+    return {
+      kotId: head.kotId,
+      kotNumber: head.kotNumber,
+      status: head.status,
+      createdAt: head.createdAt,
+      orderNumber: head.orderNumber,
+      bookingNumber: head.bookingNumber,
+      customerName: head.customerName,
+      items: itemRows,
+    }
+  })
 }

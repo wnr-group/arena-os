@@ -2,9 +2,11 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Clock, Flame, CheckCircle2, Bell, Loader2, type LucideIcon } from 'lucide-react'
+import Link from 'next/link'
+import { Clock, Flame, CheckCircle2, Bell, Loader2, Printer, type LucideIcon } from 'lucide-react'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KotStatus } from '@/lib/kots/service'
+import { STATUS_LABEL } from '@/lib/kots/labels'
 
 export type { KotStatus }
 export type KotTicketItem = {
@@ -29,13 +31,6 @@ const POLL_MS = 5000
 /** How often the "waiting Xm" label re-renders between polls. */
 const CLOCK_MS = 15000
 
-const STATUS_LABEL: Record<KotStatus, string> = {
-  pending: 'Pending',
-  preparing: 'Preparing',
-  ready: 'Ready',
-  served: 'Served',
-  cancelled: 'Cancelled',
-}
 const STATUS_BADGE: Record<KotStatus, string> = {
   pending: 'bg-amber-500/10 text-amber-600',
   preparing: 'bg-blue-500/10 text-blue-600',
@@ -110,11 +105,20 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
             <div key={ticket.kotId} className="rounded-xl border border-border bg-card p-4 shadow-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-base font-semibold">{ticket.kotNumber}</span>
-                <span
-                  className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[ticket.status]}`}
-                >
-                  {STATUS_LABEL[ticket.status]}
-                </span>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/kitchen/${ticket.kotId}/print`}
+                    aria-label={`Print ticket ${ticket.kotNumber}`}
+                    className="text-muted-foreground transition hover:text-foreground"
+                  >
+                    <Printer size={16} />
+                  </Link>
+                  <span
+                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[ticket.status]}`}
+                  >
+                    {STATUS_LABEL[ticket.status]}
+                  </span>
+                </div>
               </div>
               <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock size={12} /> waiting {elapsedLabel(ticket.createdAt, now)} · order {ticket.orderNumber}
