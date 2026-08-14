@@ -197,8 +197,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>

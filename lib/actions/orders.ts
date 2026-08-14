@@ -5,12 +5,14 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { OrderError, createOrderCore, cancelOrderCore } from '@/lib/orders/service'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; orderId?: string; orderNumber?: string }
 type Result = { error?: string }
 
 function fail(e: unknown): { error: string } {
   if (e instanceof AuthError || e instanceof OrderError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 

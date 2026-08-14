@@ -6,7 +6,7 @@ import { getAvailableStarts } from '@/lib/actions/availability'
 import { createBooking } from '@/lib/actions/bookings'
 import { timeInZone } from '@/lib/format'
 
-type Resource = { id: string; name: string; typeName: string }
+type Resource = { id: string; name: string; typeName: string; imageUrl: string | null }
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
 
 const DURATIONS = [
@@ -42,6 +42,7 @@ export function NewBookingDialog({
   const [selectedStart, setSelectedStart] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const selectedResource = resources.find((r) => r.id === resourceId)
 
   function findTimes() {
     setError(null)
@@ -99,21 +100,33 @@ export function NewBookingDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Resource</label>
-              <select
-                className={input}
-                value={resourceId}
-                onChange={(e) => {
-                  setResourceId(e.target.value)
-                  setStarts(null)
-                  setSelectedStart(null)
-                }}
-              >
-                {resources.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} · {r.typeName}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2">
+                {selectedResource?.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={selectedResource.imageUrl}
+                    alt=""
+                    className="size-9 shrink-0 rounded-md border border-border object-cover"
+                  />
+                ) : (
+                  <div className="size-9 shrink-0 rounded-md border border-dashed border-border bg-muted/40" />
+                )}
+                <select
+                  className={input}
+                  value={resourceId}
+                  onChange={(e) => {
+                    setResourceId(e.target.value)
+                    setStarts(null)
+                    setSelectedStart(null)
+                  }}
+                >
+                  {resources.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} · {r.typeName}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Duration</label>

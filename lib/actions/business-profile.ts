@@ -5,13 +5,14 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
 import { businessProfileSchema, upsertBusinessProfile } from '@/lib/settings/business-profile'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type SaveResult = { error?: string; success?: true }
 
 /** Same shape as the other actions — only safe text reaches the UI. */
 function fail(e: unknown): SaveResult {
   if (e instanceof AuthError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   console.error('[business-profile] save failed:', e)
   return { error: 'Could not save the business profile. Please try again.' }
 }

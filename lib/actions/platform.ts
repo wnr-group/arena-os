@@ -8,11 +8,13 @@ import { tenants, branches, memberships } from '@/db/schema'
 import { requirePlatformAdmin, PlatformError } from '@/lib/platform/guard'
 import { findOrCreateUser } from '@/lib/platform/provision'
 import { RESERVED_SLUGS } from '@/lib/tenant/subdomain'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof PlatformError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const msg = e instanceof Error ? e.message : 'Something went wrong.'
   if (/unique|duplicate/i.test(msg)) return { error: 'That subdomain or email is already in use.' }
   return { error: msg }

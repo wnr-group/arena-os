@@ -190,7 +190,9 @@ export function AppShell({
           </div>
         </header>
 
-        <main className="min-w-0 flex-1 bg-background/50 overflow-y-auto">{children}</main>
+        <main id="app-main-scroll" className="min-w-0 flex-1 bg-background/50 overflow-y-auto">
+          {children}
+        </main>
       </div>
     </div>
   )

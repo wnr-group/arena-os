@@ -6,11 +6,14 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { resourceTypes, resources, workingHours } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const msg = e instanceof Error ? e.message : 'Something went wrong.'
   if (/unique|duplicate/i.test(msg)) return { error: 'That name is already in use.' }
   return { error: msg }
@@ -25,6 +28,7 @@ const resourceTypeInput = z.object({
   bufferMinutes: z.coerce.number().int().min(0).default(0),
   capacity: z.coerce.number().int().positive().optional(),
   color: z.string().trim().optional(),
+  imageUrl: z.string().trim().optional(),
   isActive: z.boolean().default(true),
 })
 
@@ -32,6 +36,8 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
   try {
     const ctx = await requireManager()
     const v = resourceTypeInput.parse(input)
+    const newImageUrl = v.imageUrl || null
+    let oldImageUrl: string | null = null
     await withUser(ctx.user.id, async (tx) => {
       const values = {
         tenantId: ctx.tenant.id,
@@ -41,9 +47,16 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         bufferMinutes: v.bufferMinutes,
         capacity: v.capacity ?? null,
         color: v.color || null,
+        imageUrl: newImageUrl,
         isActive: v.isActive,
       }
       if (v.id) {
+        const [existing] = await tx
+          .select({ imageUrl: resourceTypes.imageUrl })
+          .from(resourceTypes)
+          .where(and(eq(resourceTypes.id, v.id), eq(resourceTypes.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (existing && existing.imageUrl !== newImageUrl) oldImageUrl = existing.imageUrl
         await tx
           .update(resourceTypes)
           .set(values)
@@ -52,6 +65,7 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         await tx.insert(resourceTypes).values(values)
       }
     })
+    if (oldImageUrl) void deleteImage(oldImageUrl)
     revalidatePath('/settings/resources')
     return {}
   } catch (e) {
@@ -62,13 +76,33 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
 export async function deleteResourceType(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) =>
-      tx.delete(resourceTypes).where(and(eq(resourceTypes.id, id), eq(resourceTypes.tenantId, ctx.tenant.id))),
-    )
+    const [row] = await withUser(ctx.user.id, async (tx) => {
+      const existing = await tx
+        .select({ imageUrl: resourceTypes.imageUrl })
+        .from(resourceTypes)
+        .where(and(eq(resourceTypes.id, id), eq(resourceTypes.tenantId, ctx.tenant.id)))
+        .limit(1)
+      await tx.delete(resourceTypes).where(and(eq(resourceTypes.id, id), eq(resourceTypes.tenantId, ctx.tenant.id)))
+      return existing
+    })
+    if (row) void deleteImage(row.imageUrl)
     revalidatePath('/settings/resources')
     return {}
   } catch (e) {
     return fail(e) // e.g. restrict violation if resources reference it
+  }
+}
+
+// ── resource type image upload ─────────────────────────────────────────────
+export async function uploadResourceTypeImage(formData: FormData): Promise<{ url?: string; error?: string }> {
+  try {
+    const ctx = await requireManager()
+    const file = formData.get('file')
+    if (!(file instanceof File)) return { error: 'No file provided.' }
+    const url = await uploadImage(file, `tenants/${ctx.tenant.id}/resource-types`)
+    return { url }
+  } catch (e) {
+    return fail(e)
   }
 }
 
@@ -80,6 +114,8 @@ const resourceInput = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   hourlyRateOverride: z.union([z.coerce.number().min(0), z.null()]).optional(),
   status: z.enum(['available', 'maintenance', 'inactive']).default('available'),
+  imageUrl: z.string().trim().optional(),
+  description: z.string().trim().optional(),
   sortOrder: z.coerce.number().int().default(0),
 })
 
@@ -87,6 +123,8 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
   try {
     const ctx = await requireManager()
     const v = resourceInput.parse(input)
+    const newImageUrl = v.imageUrl || null
+    let oldImageUrl: string | null = null
     await withUser(ctx.user.id, async (tx) => {
       const values = {
         tenantId: ctx.tenant.id,
@@ -98,9 +136,17 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
             ? null
             : v.hourlyRateOverride.toFixed(2),
         status: v.status,
+        imageUrl: newImageUrl,
+        description: v.description || null,
         sortOrder: v.sortOrder,
       }
       if (v.id) {
+        const [existing] = await tx
+          .select({ imageUrl: resources.imageUrl })
+          .from(resources)
+          .where(and(eq(resources.id, v.id), eq(resources.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (existing && existing.imageUrl !== newImageUrl) oldImageUrl = existing.imageUrl
         await tx
           .update(resources)
           .set(values)
@@ -109,6 +155,7 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
         await tx.insert(resources).values(values)
       }
     })
+    if (oldImageUrl) void deleteImage(oldImageUrl)
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
@@ -120,12 +167,32 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
 export async function deleteResource(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) =>
-      tx.delete(resources).where(and(eq(resources.id, id), eq(resources.tenantId, ctx.tenant.id))),
-    )
+    const [row] = await withUser(ctx.user.id, async (tx) => {
+      const existing = await tx
+        .select({ imageUrl: resources.imageUrl })
+        .from(resources)
+        .where(and(eq(resources.id, id), eq(resources.tenantId, ctx.tenant.id)))
+        .limit(1)
+      await tx.delete(resources).where(and(eq(resources.id, id), eq(resources.tenantId, ctx.tenant.id)))
+      return existing
+    })
+    if (row) void deleteImage(row.imageUrl)
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── resource (unit) image upload ────────────────────────────────────────────
+export async function uploadResourceImage(formData: FormData): Promise<{ url?: string; error?: string }> {
+  try {
+    const ctx = await requireManager()
+    const file = formData.get('file')
+    if (!(file instanceof File)) return { error: 'No file provided.' }
+    const url = await uploadImage(file, `tenants/${ctx.tenant.id}/resources`)
+    return { url }
   } catch (e) {
     return fail(e)
   }

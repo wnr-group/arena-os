@@ -2,8 +2,10 @@
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, ListTree, CheckCircle2, XCircle } from 'lucide-react'
 import { upsertMenuCategory, deleteMenuCategory } from '@/lib/actions/menu'
+import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 
 type CategoryRow = { id: string; name: string; sortOrder: number; isActive: boolean }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: CategoryRow }
@@ -24,8 +26,10 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
     setError(null)
     start(async () => {
       const r = await fn()
-      if (r.error) setError(r.error)
-      else {
+      if (r.error) {
+        setError(r.error)
+        toast.error(r.error)
+      } else {
         router.refresh()
         onSuccess?.()
       }
@@ -40,7 +44,10 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
 
   function handleDelete(row: CategoryRow) {
     if (!window.confirm(`Delete category "${row.name}"? This cannot be undone.`)) return
-    run(() => deleteMenuCategory(row.id))
+    run(
+      () => deleteMenuCategory(row.id),
+      () => toast.success(`Category "${row.name}" deleted.`),
+    )
   }
 
   return (
@@ -145,8 +152,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
@@ -171,6 +178,8 @@ function CategoryModal({
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
   const [submitted, setSubmitted] = useState(false)
 
+  useBodyScrollLock()
+
   const errors = useMemo(() => {
     const e: { name?: string; sortOrder?: string } = {}
     if (!name.trim()) e.name = 'Name is required.'
@@ -191,7 +200,10 @@ function CategoryModal({
           sortOrder: sortOrder === '' ? 0 : Number(sortOrder),
           isActive,
         }),
-      onClose,
+      () => {
+        toast.success(row ? `Category "${name.trim()}" updated.` : `Category "${name.trim()}" added.`)
+        onClose()
+      },
     )
   }
 

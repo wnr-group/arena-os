@@ -8,11 +8,13 @@ import { attendance, memberships } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { getPrimaryBranch } from '@/lib/attendance/data'
 import { todayInZone, zonedTimeToUtc } from '@/lib/booking/time'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 

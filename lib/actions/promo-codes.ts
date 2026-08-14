@@ -7,6 +7,7 @@ import { withUser } from '@/db'
 import { promoCodes } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { normalizePromoCode } from '@/lib/billing/promo'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
@@ -32,7 +33,7 @@ function pgError(e: unknown): { code?: string; constraint?: string } {
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
 
   const { code, constraint } = pgError(e)
   // 23505 = unique_violation. The index is on (tenant_id, upper(code)), so a

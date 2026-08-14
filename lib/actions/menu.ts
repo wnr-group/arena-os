@@ -7,11 +7,13 @@ import { withUser } from '@/db'
 import { menuCategories, menuItems } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const msg = e instanceof Error ? e.message : 'Something went wrong.'
   if (/unique|duplicate/i.test(msg)) return { error: 'That name is already in use.' }
   if (/foreign key|violates.*constraint/i.test(msg)) {

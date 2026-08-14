@@ -420,8 +420,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border p-4">
-      <div className={`inline-flex size-8 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border p-4 transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
+      <div className={`inline-flex size-8 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={16} />
       </div>
       <p className="mt-3 text-2xl font-semibold tabular-nums">{value}</p>

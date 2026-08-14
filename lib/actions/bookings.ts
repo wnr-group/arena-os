@@ -8,12 +8,14 @@ import { bookings } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof BookingError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   // 23P01 = exclusion_violation: the exclusion constraint caught an overlap.
   if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === '23P01') {
     return { error: 'That time was just taken for one of the selected resources. Please pick another slot.' }

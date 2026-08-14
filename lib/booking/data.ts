@@ -38,6 +38,10 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         bufferMinutes: resourceTypes.bufferMinutes,
         typeRate: resourceTypes.hourlyRate,
         rateOverride: resources.hourlyRateOverride,
+        imageUrl: resources.imageUrl,
+        description: resources.description,
+        typeImageUrl: resourceTypes.imageUrl,
+        typeDescription: resourceTypes.description,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))

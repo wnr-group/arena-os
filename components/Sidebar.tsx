@@ -44,7 +44,16 @@ const NAV: NavItem[] = [
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
+  {
+    href: '/settings/resources',
+    label: 'Resources',
+    icon: Boxes,
+    can: isManager,
+    children: [
+      { href: '/settings/resources/types', label: 'Resource Types' },
+      { href: '/settings/resources/units', label: 'Resources' },
+    ],
+  },
   {
     href: '/menu',
     label: 'Menu',
