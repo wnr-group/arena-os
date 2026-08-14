@@ -6,6 +6,7 @@ import { Clock, LogIn, LogOut, Pencil, Plus, Loader2, UserCheck, UserX, X } from
 import { clockIn, clockOut, managerSaveAttendance, managerDeleteAttendance } from '@/lib/actions/attendance'
 import { ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { timeInZone } from '@/lib/format'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type AttendanceRow = {
   membershipId: string
@@ -40,6 +41,7 @@ export function AttendanceView({
   rows: AttendanceRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal>(null)
@@ -71,10 +73,18 @@ export function AttendanceView({
   function handleClockOut() {
     run(() => clockOut())
   }
-  function handleDelete(row: AttendanceRow) {
+  async function handleDelete(row: AttendanceRow) {
     if (!row.attendanceId) return
-    if (!window.confirm('Delete this attendance entry?')) return
-    run(() => managerDeleteAttendance(row.attendanceId!))
+    const attendanceId = row.attendanceId
+    await confirm({
+      title: 'Delete this attendance entry?',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        const r = await managerDeleteAttendance(attendanceId)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
+    })
   }
 
   return (

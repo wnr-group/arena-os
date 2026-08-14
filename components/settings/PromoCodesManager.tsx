@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Ban, RotateCcw, X, TicketPercent, CheckCircle2, XCircle, Infinity as InfinityIcon } from 'lucide-react'
 import { upsertPromoCode, setPromoCodeActive } from '@/lib/actions/promo-codes'
 import { formatMoney } from '@/lib/format'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 export type PromoRow = {
   id: string
@@ -59,6 +60,7 @@ const shortDate = (iso: string) =>
 
 export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; currency: string }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -86,16 +88,22 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
   const discountOf = (p: PromoRow) =>
     p.discountType === 'percentage' ? `${Number(p.discountValue)}%` : money(p.discountValue)
 
-  function toggleActive(row: PromoRow) {
+  async function toggleActive(row: PromoRow) {
     if (row.isActive) {
-      if (
-        !window.confirm(
-          `Expire ${row.code}? Customers will no longer be able to use this code. It stays on record, so invoices that already used it are unaffected.`,
-        )
-      )
-        return
+      await confirm({
+        title: `Expire ${row.code}?`,
+        description:
+          'Customers will no longer be able to use this code. It stays on record, so invoices that already used it are unaffected.',
+        confirmText: 'Expire code',
+        onConfirm: async () => {
+          const r = await setPromoCodeActive(row.id, false)
+          if (r.error) setError(r.error)
+          else router.refresh()
+        },
+      })
+      return
     }
-    run(() => setPromoCodeActive(row.id, !row.isActive))
+    run(() => setPromoCodeActive(row.id, true))
   }
 
   return (

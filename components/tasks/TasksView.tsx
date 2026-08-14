@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, Circle, Clock, ListTodo, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { createTask, updateTask, updateTaskStatus, deleteTask } from '@/lib/actions/tasks'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type TaskStatus = 'open' | 'in_progress' | 'done'
 type TaskRow = {
@@ -42,6 +43,7 @@ export function TasksView({
   tasks: TaskRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -80,15 +82,19 @@ export function TasksView({
     })
   }
 
-  function handleDelete(task: TaskRow) {
-    if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
-    setError(null)
-    setDeletingId(task.id)
-    start(async () => {
-      const r = await deleteTask(task.id)
-      setDeletingId(null)
-      if (r.error) setError(r.error)
-      else router.refresh()
+  async function handleDelete(task: TaskRow) {
+    await confirm({
+      title: `Delete task "${task.title}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setError(null)
+        setDeletingId(task.id)
+        const r = await deleteTask(task.id)
+        setDeletingId(null)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
     })
   }
 

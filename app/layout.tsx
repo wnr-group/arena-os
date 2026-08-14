@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
+import { ConfirmDialogProvider } from '@/components/ui/ConfirmDialog'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -16,8 +17,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        {children}
-        <Toaster richColors closeButton position="top-right" />
+        <ConfirmDialogProvider>
+          {children}
+          <Toaster richColors closeButton position="top-right" />
+        </ConfirmDialogProvider>
       </body>
     </html>
   )

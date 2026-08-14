@@ -26,6 +26,7 @@ import {
 import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -85,6 +86,7 @@ export function MenuItemsManager({
   items: ItemRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -117,6 +119,11 @@ export function MenuItemsManager({
     return { total, available, outOfStock, hidden }
   }, [items])
 
+  // Inactive categories are retired — don't offer them as a filter, even if
+  // existing items still reference one (those stay visible under "All
+  // categories", they just don't get their own tab).
+  const filterableCategories = useMemo(() => categories.filter((c) => c.isActive), [categories])
+
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase()
     return items.filter((row) => {
@@ -135,14 +142,24 @@ export function MenuItemsManager({
     setStatusFilter('all')
   }
 
-  function handleDelete(row: ItemRow) {
-    if (!window.confirm(`Delete item "${row.name}"? This cannot be undone.`)) return
-    setDeletingId(row.id)
-    run(
-      () => deleteMenuItem(row.id),
-      () => toast.success(`Item "${row.name}" deleted.`),
-      () => setDeletingId(null),
-    )
+  async function handleDelete(row: ItemRow) {
+    await confirm({
+      title: `Delete item "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteMenuItem(row.id)
+        setDeletingId(null)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Item "${row.name}" deleted.`)
+        }
+      },
+    })
   }
 
   return (
@@ -237,7 +254,7 @@ export function MenuItemsManager({
             <CategoryTab active={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')}>
               All categories
             </CategoryTab>
-            {categories.map((c) => (
+            {filterableCategories.map((c) => (
               <CategoryTab key={c.id} active={categoryFilter === c.id} onClick={() => setCategoryFilter(c.id)}>
                 {c.name}
               </CategoryTab>
@@ -537,7 +554,7 @@ function ItemModal({
 }) {
   const [name, setName] = useState(row?.name ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
-  const [categoryId, setCategoryId] = useState(row?.categoryId ?? categories[0]?.id ?? '')
+  const [categoryId, setCategoryId] = useState(row?.categoryId ?? categories.find((c) => c.isActive)?.id ?? '')
   const [price, setPrice] = useState(row?.price ?? '')
   const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? '')
   const [status, setStatus] = useState<ItemStatus>(row?.status ?? 'available')
@@ -551,6 +568,10 @@ function ItemModal({
   const previewCategoryName = categories.find((c) => c.id === categoryId)?.name
   const selectedTax = taxRates.find((t) => t.id === taxRateId)
   const previewTaxLabel = selectedTax ? `${selectedTax.name} · ${selectedTax.percent}%` : null
+  // Retired categories can't be picked for new/other items, but stay in the
+  // list if this item is currently in one — otherwise the select would
+  // silently reassign it on save.
+  const selectableCategories = categories.filter((c) => c.isActive || c.id === categoryId)
 
   const errors = useMemo(() => {
     const e: { name?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
@@ -647,9 +668,10 @@ function ItemModal({
                   value={categoryId}
                   onChange={(e) => setCategoryId(e.target.value)}
                 >
-                  {categories.map((c) => (
+                  {selectableCategories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
+                      {!c.isActive ? ' (inactive)' : ''}
                     </option>
                   ))}
                 </select>

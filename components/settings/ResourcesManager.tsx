@@ -25,6 +25,7 @@ import {
 import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -34,7 +35,7 @@ function fileNameFromUrl(url: string): string {
   }
 }
 
-type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null }
+type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
 type ResourceStatus = 'available' | 'maintenance' | 'inactive'
 type ResourceRow = {
   id: string
@@ -82,6 +83,7 @@ export function ResourcesManager({
   resources: ResourceRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -114,6 +116,11 @@ export function ResourcesManager({
     return { total, available, maintenance, inactive }
   }, [resources])
 
+  // Inactive types are retired — don't offer them as a filter, even if
+  // existing resources still reference one (those stay visible under "All
+  // types", they just don't get their own tab).
+  const filterableTypes = useMemo(() => types.filter((t) => t.isActive), [types])
+
   const filteredResources = useMemo(() => {
     const q = search.trim().toLowerCase()
     return resources.filter((row) => {
@@ -132,14 +139,24 @@ export function ResourcesManager({
     setStatusFilter('all')
   }
 
-  function handleDelete(row: ResourceRow) {
-    if (!window.confirm(`Delete resource "${row.name}"? This cannot be undone.`)) return
-    setDeletingId(row.id)
-    run(
-      () => deleteResource(row.id),
-      () => toast.success(`Resource "${row.name}" deleted.`),
-      () => setDeletingId(null),
-    )
+  async function handleDelete(row: ResourceRow) {
+    await confirm({
+      title: `Delete resource "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteResource(row.id)
+        setDeletingId(null)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Resource "${row.name}" deleted.`)
+        }
+      },
+    })
   }
 
   if (types.length === 0) {
@@ -244,7 +261,7 @@ export function ResourcesManager({
             <TypeTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
               All types
             </TypeTab>
-            {types.map((t) => (
+            {filterableTypes.map((t) => (
               <TypeTab key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)}>
                 {t.name}
               </TypeTab>
@@ -531,7 +548,7 @@ function ResourceModal({
   onClose: () => void
 }) {
   const [name, setName] = useState(row?.name ?? '')
-  const [typeId, setTypeId] = useState(row?.resourceTypeId ?? types[0]?.id ?? '')
+  const [typeId, setTypeId] = useState(row?.resourceTypeId ?? types.find((t) => t.isActive)?.id ?? '')
   const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
   const [override, setOverride] = useState(row?.rateOverride ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
@@ -544,6 +561,10 @@ function ResourceModal({
   const selectedType = types.find((t) => t.id === typeId)
   const previewRate = override !== '' ? Number(override) : selectedType ? Number(selectedType.hourlyRate) : null
   const previewImage = imageUrl || selectedType?.imageUrl || null
+  // Retired types can't be picked for new/other resources, but stay in the
+  // list if this resource is currently assigned to one — otherwise the
+  // select would silently reassign it on save.
+  const selectableTypes = types.filter((t) => t.isActive || t.id === typeId)
 
   const errors = useMemo(() => {
     const e: { name?: string; typeId?: string; override?: string } = {}
@@ -636,9 +657,10 @@ function ResourceModal({
                   value={typeId}
                   onChange={(e) => setTypeId(e.target.value)}
                 >
-                  {types.map((t) => (
+                  {selectableTypes.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
+                      {!t.isActive ? ' (inactive)' : ''}
                     </option>
                   ))}
                 </select>

@@ -6,19 +6,18 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { taxRates } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
-  if (/unique|duplicate/i.test(msg)) return { error: 'That name is already in use.' }
-  if (/foreign key|violates.*constraint/i.test(msg)) {
-    return { error: 'This is still in use elsewhere and cannot be deleted.' }
-  }
-  return { error: msg }
+  const { code } = pgError(e)
+  if (code === '23505') return { error: 'That name is already in use.' }
+  if (code === '23503' || code === '23001') return { error: 'This is still in use elsewhere and cannot be deleted.' }
+  console.error('[tax-rates] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 const taxRateInput = z.object({

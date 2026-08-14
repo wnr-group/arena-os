@@ -41,6 +41,7 @@ export default async function ResourcesUnitsPage() {
           name: t.name,
           hourlyRate: t.hourlyRate,
           imageUrl: t.imageUrl,
+          isActive: t.isActive,
         }))}
         resources={res.map((r) => ({
           id: r.id,

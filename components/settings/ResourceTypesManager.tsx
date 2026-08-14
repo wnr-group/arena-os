@@ -7,6 +7,7 @@ import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOf
 import { upsertResourceType, deleteResourceType, uploadResourceTypeImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -58,6 +59,7 @@ function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number
 
 export function ResourceTypesManager({ currency, types }: { currency: string; types: TypeRow[] }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -83,13 +85,24 @@ export function ResourceTypesManager({ currency, types }: { currency: string; ty
     return { total, active, inactive: total - active }
   }, [types])
 
-  function handleDelete(row: TypeRow) {
-    if (!window.confirm(`Delete resource type "${row.name}"? This cannot be undone.`)) return
-    setDeletingId(row.id)
-    run(
-      () => deleteResourceType(row.id),
-      () => toast.success(`Resource type "${row.name}" deleted.`),
-    )
+  async function handleDelete(row: TypeRow) {
+    await confirm({
+      title: `Delete resource type "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteResourceType(row.id)
+        setDeletingId(null)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Resource type "${row.name}" deleted.`)
+        }
+      },
+    })
   }
 
   return (

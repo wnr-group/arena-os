@@ -12,6 +12,7 @@ import {
   deleteCompany,
 } from '@/lib/actions/platform'
 import { ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type Tenant = {
   id: string
@@ -47,6 +48,7 @@ export function CompanyManager({
   members: Member[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
@@ -148,9 +150,17 @@ export function CompanyManager({
         <button
           disabled={pending}
           onClick={() => {
-            if (confirm(`Delete "${tenant.name}" and all its data? This cannot be undone.`)) {
-              run(() => deleteCompany(tenant.id), () => router.push('/admin'))
-            }
+            confirm({
+              title: `Delete "${tenant.name}" and all its data?`,
+              description: 'This cannot be undone.',
+              confirmText: 'Delete company',
+              onConfirm: async () => {
+                setError(null)
+                const r = await deleteCompany(tenant.id)
+                if (r.error) setError(r.error)
+                else router.push('/admin')
+              },
+            })
           }}
           className="mt-3 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
         >

@@ -7,29 +7,9 @@ import { withUser } from '@/db'
 import { promoCodes } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { normalizePromoCode } from '@/lib/billing/promo'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
-
-/**
- * Postgres error code, dug out of however many wrappers sit on top of it.
- *
- * Drizzle re-throws driver errors wrapped in its own Error whose `message` is
- * just `Failed query: insert into …` — the SQLSTATE and constraint name live on
- * `cause`. Matching on message text (as some older actions here do) therefore
- * silently never fires, and a duplicate surfaces as a generic failure.
- */
-function pgError(e: unknown): { code?: string; constraint?: string } {
-  let cur: unknown = e
-  for (let depth = 0; depth < 5 && cur && typeof cur === 'object'; depth++) {
-    const o = cur as { code?: unknown; constraint?: unknown; cause?: unknown }
-    if (typeof o.code === 'string') {
-      return { code: o.code, constraint: typeof o.constraint === 'string' ? o.constraint : undefined }
-    }
-    cur = o.cause
-  }
-  return {}
-}
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }

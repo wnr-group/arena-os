@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, ListTree, CheckCircle2, XCircle } from 'lucide-react'
 import { upsertMenuCategory, deleteMenuCategory } from '@/lib/actions/menu'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type CategoryRow = { id: string; name: string; sortOrder: number; isActive: boolean }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: CategoryRow }
@@ -18,6 +19,7 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
 
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -42,12 +44,22 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
     return { total, active, inactive: total - active }
   }, [categories])
 
-  function handleDelete(row: CategoryRow) {
-    if (!window.confirm(`Delete category "${row.name}"? This cannot be undone.`)) return
-    run(
-      () => deleteMenuCategory(row.id),
-      () => toast.success(`Category "${row.name}" deleted.`),
-    )
+  async function handleDelete(row: CategoryRow) {
+    await confirm({
+      title: `Delete category "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        const r = await deleteMenuCategory(row.id)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Category "${row.name}" deleted.`)
+        }
+      },
+    })
   }
 
   return (

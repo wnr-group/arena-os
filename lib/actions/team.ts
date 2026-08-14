@@ -8,16 +8,17 @@ import { memberships } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { findOrCreateUser } from '@/lib/platform/provision'
 import type { MemberRole } from '@/lib/auth/roles'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
-  if (/unique|duplicate/i.test(msg)) return { error: 'That person is already on the team.' }
-  return { error: msg }
+  const { code } = pgError(e)
+  if (code === '23505') return { error: 'That person is already on the team.' }
+  console.error('[team] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 const inviteInput = z.object({

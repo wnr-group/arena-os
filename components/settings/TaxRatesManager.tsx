@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Trash2, X, Receipt, CheckCircle2, XCircle, Percent } from 'lucide-react'
 import { upsertTaxRate, deleteTaxRate } from '@/lib/actions/tax-rates'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type TaxRateRow = { id: string; name: string; percent: string; isActive: boolean }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TaxRateRow }
@@ -14,6 +15,7 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
 
 export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -38,9 +40,17 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
     return { total, active, inactive: total - active, avgPercent }
   }, [taxRates])
 
-  function handleDelete(row: TaxRateRow) {
-    if (!window.confirm(`Delete tax rate "${row.name}"? This cannot be undone.`)) return
-    run(() => deleteTaxRate(row.id))
+  async function handleDelete(row: TaxRateRow) {
+    await confirm({
+      title: `Delete tax rate "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        const r = await deleteTaxRate(row.id)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
+    })
   }
 
   return (

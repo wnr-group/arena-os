@@ -7,16 +7,30 @@ import { withUser } from '@/db'
 import { resourceTypes, resources, workingHours } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
-  if (/unique|duplicate/i.test(msg)) return { error: 'That name is already in use.' }
-  return { error: msg }
+  const { code, constraint } = pgError(e)
+  if (code === '23505') return { error: 'That name is already in use.' }
+  // 23503 = foreign_key_violation (default NO ACTION); 23001 = restrict_violation
+  // (explicit ON DELETE RESTRICT, which is what these FKs use) — both mean
+  // "still referenced elsewhere."
+  if (code === '23503' || code === '23001') {
+    // Default Postgres FK naming: `<table>_<column>_fkey`.
+    if (constraint === 'resources_resource_type_id_fkey') {
+      return { error: 'This resource type is used by one or more resources. Remove or reassign those resources first.' }
+    }
+    if (constraint === 'booking_slots_resource_id_fkey') {
+      return { error: 'This resource has existing bookings and cannot be deleted.' }
+    }
+    return { error: 'This is still in use elsewhere and cannot be deleted.' }
+  }
+  console.error('[resources] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 // ── resource types ───────────────────────────────────────────────────────────

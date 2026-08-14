@@ -6,16 +6,17 @@ import { withUser } from '@/db'
 import { rosters, shifts } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { addDays } from '@/lib/booking/data'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string; id?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
-  if (/unique|duplicate/i.test(msg)) return { error: 'A roster already exists for that branch and week.' }
-  return { error: msg }
+  const { code } = pgError(e)
+  if (code === '23505') return { error: 'A roster already exists for that branch and week.' }
+  console.error('[roster] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
