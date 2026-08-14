@@ -5,14 +5,14 @@ import { branches, resourceTypes, resources, workingHours, bookingSlots } from '
 import { availableStartTimes, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
 
-export type PublicBranch = { id: string; name: string }
+export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
 /** The branch a stranger books at — the tenant's primary active branch, same
  * convention app/(app)/kitchen/page.tsx uses for the staff dashboard. */
 export async function getPublicBranch(tenantId: string): Promise<PublicBranch | null> {
   const [branch] = await withPublicTenant(tenantId, (tx) =>
     tx
-      .select({ id: branches.id, name: branches.name })
+      .select({ id: branches.id, name: branches.name, address: branches.address, phone: branches.phone })
       .from(branches)
       .where(and(eq(branches.tenantId, tenantId), eq(branches.isPrimary, true), eq(branches.status, 'active')))
       .limit(1),

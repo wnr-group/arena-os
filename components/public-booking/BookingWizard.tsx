@@ -107,7 +107,7 @@ export function BookingWizard({
   }
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-1px)] max-w-md flex-col px-4 pb-28 pt-4 sm:px-0">
+    <div className="mx-auto flex min-h-[420px] max-w-md flex-col px-4 pb-28 pt-4 sm:px-0">
       {step < 5 && (
         <div className="mb-4 flex items-center gap-3">
           {step > 1 ? (
