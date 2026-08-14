@@ -42,7 +42,6 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
-  { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   {
     href: '/settings/resources',
@@ -75,6 +74,7 @@ const NAV: NavItem[] = [
       { href: '/settings/promo-codes', label: 'Promo Codes' },
     ],
   },
+  { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
     href: '/employees',
