@@ -6,6 +6,15 @@ const nextConfig: NextConfig = {
   // never connects and the browser silently keeps a stale page (including a
   // stale error overlay after a build failure). Allow the local wildcard host.
   allowedDevOrigins: ['lvh.me', '*.lvh.me', 'demo.lvh.me', 'localhost:3000'],
+  experimental: {
+    serverActions: {
+      // lib/storage/s3.ts already caps uploaded images at 5MB (and says so in
+      // the UI) — Next's own default (1MB) sat below that and silently
+      // rejected the request before the upload actions ever ran. Leave
+      // headroom above 5MB for multipart encoding overhead.
+      bodySizeLimit: '6mb',
+    },
+  },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '*.supabase.co' },
