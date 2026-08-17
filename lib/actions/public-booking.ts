@@ -7,6 +7,7 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
+import { findCustomerByRawPhone } from '@/lib/customers/service'
 
 type Fail = { error: string }
 
@@ -93,6 +94,34 @@ export async function getPublicResourceAvailability(
     allStarts: result.allStarts.map((d) => d.toISOString()),
     isClosed: result.isClosed,
   }
+}
+
+const phoneLookupInput = z.object({
+  phone: z.string().trim().min(1),
+})
+
+export type PublicCustomerLookupResult = { found: boolean; name: string | null } | { error: string }
+
+/**
+ * Peek at the customer directory by phone as the guest types it into the
+ * booking form, so the form can skip asking for a name when one is already
+ * on file — and ask for it when the phone is new. Read-only: the actual
+ * find-or-create only happens transactionally inside createBookingCore when
+ * the booking is confirmed (lib/booking/customer.ts); this never creates a
+ * customer by itself.
+ */
+export async function lookupPublicCustomerByPhone(
+  raw: z.input<typeof phoneLookupInput>,
+): Promise<PublicCustomerLookupResult> {
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return tenant
+
+  const v = phoneLookupInput.safeParse(raw)
+  if (!v.success) return { found: false, name: null }
+
+  const customer = await withPublicTenant(tenant.id, (tx) => findCustomerByRawPhone(tx, tenant.id, v.data.phone))
+  if (!customer) return { found: false, name: null }
+  return { found: true, name: customer.name }
 }
 
 const bookingInput = z.object({

@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResource } from '@/lib/booking/public-availability'
-import { getPublicResourceAvailability, createPublicBooking } from '@/lib/actions/public-booking'
+import { getPublicResourceAvailability, createPublicBooking, lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
 
 const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
@@ -100,6 +100,12 @@ export function ResourceBookingPage({
   const [players, setPlayers] = useState(1)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; knownName: string | null }>({
+    checking: false,
+    checked: false,
+    knownName: null,
+  })
+  const [editingKnownName, setEditingKnownName] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [bookingNumber, setBookingNumber] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
@@ -134,6 +140,33 @@ export function ResourceBookingPage({
       cancelled = true
     }
   }, [resource.id, date, duration])
+
+  // Look the phone up (debounced) as soon as it looks complete enough to
+  // match — same minimum length the booking submission itself requires — so
+  // the name field only appears once we know whether to ask for it.
+  useEffect(() => {
+    setEditingKnownName(false)
+    setName('')
+    const digits = phone.replace(/\D/g, '')
+    if (digits.length < 6) {
+      setPhoneLookup({ checking: false, checked: false, knownName: null })
+      return
+    }
+    let cancelled = false
+    setPhoneLookup({ checking: true, checked: false, knownName: null })
+    const timer = setTimeout(() => {
+      lookupPublicCustomerByPhone({ phone }).then((r) => {
+        if (cancelled) return
+        const knownName = 'error' in r ? null : r.found ? r.name : null
+        setPhoneLookup({ checking: false, checked: true, knownName })
+        if (knownName) setName(knownName)
+      })
+    }, 500)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [phone])
 
   function confirm() {
     if (!startsAt || !endsAt) return
@@ -220,10 +253,9 @@ export function ResourceBookingPage({
             )}
           </div>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px] lg:items-start lg:gap-8">
-            <div className="min-w-0 space-y-6">
-            {step === 'select' && (
-              <>
+          {step === 'select' && (
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px] lg:items-start lg:gap-8">
+              <div className="min-w-0 space-y-6">
                 <ResourceCard resource={resource} currency={tenant.currency} />
 
                 <div className="flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 p-4">
@@ -362,11 +394,28 @@ export function ResourceBookingPage({
                     </div>
                   </section>
                 </div>
-              </>
-            )}
+              </div>
 
-            {step === 'details' && startsAt && (
-              <section>
+              <SummaryPanel
+                resource={resource}
+                currency={tenant.currency}
+                timeZone={tenant.timezone}
+                date={date}
+                duration={duration}
+                startsAt={startsAt}
+                endsAt={endsAt}
+                players={players}
+                setPlayers={setPlayers}
+                total={total}
+                hourlyRate={hourlyRate}
+                onContinue={() => setStep('details')}
+              />
+            </div>
+          )}
+
+          {step === 'details' && startsAt && (
+            <div className="mx-auto max-w-lg">
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
                 <div className="flex items-center gap-3">
                   <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     <User size={20} />
@@ -387,20 +436,6 @@ export function ResourceBookingPage({
 
                 <label className="mt-6 block">
                   <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
-                    <User size={14} /> Name
-                  </span>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    autoComplete="name"
-                    placeholder="Your full name"
-                    className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
-                  />
-                </label>
-
-                <label className="mt-4 block">
-                  <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
                     <Phone size={14} /> Phone
                   </span>
                   <input
@@ -412,29 +447,61 @@ export function ResourceBookingPage({
                     className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
                   />
                 </label>
-              </section>
-            )}
-          </div>
 
-          <SummaryPanel
-            resource={resource}
-            currency={tenant.currency}
-            timeZone={tenant.timezone}
-            date={date}
-            duration={duration}
-            startsAt={startsAt}
-            endsAt={endsAt}
-            players={players}
-            setPlayers={setPlayers}
-            total={total}
-            hourlyRate={hourlyRate}
-            step={step}
-            pending={pending}
-            detailsValid={Boolean(name.trim() && phone.trim())}
-              onContinue={() => setStep('details')}
-              onConfirm={confirm}
-            />
-          </div>
+                {phoneLookup.checking ? (
+                  <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <Loader2 size={14} className="animate-spin" /> Checking for an existing profile…
+                  </p>
+                ) : phoneLookup.checked && phoneLookup.knownName && !editingKnownName ? (
+                  <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+                    <p className="text-sm text-foreground">
+                      Welcome back, <span className="font-bold">{phoneLookup.knownName}</span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setEditingKnownName(true)}
+                      className="shrink-0 text-xs font-semibold text-primary transition hover:underline"
+                    >
+                      Not you?
+                    </button>
+                  </div>
+                ) : phoneLookup.checked ? (
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <User size={14} /> Name
+                    </span>
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="name"
+                      placeholder="Your full name"
+                      className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                    />
+                  </label>
+                ) : null}
+
+                <div className="mt-6 space-y-2 rounded-xl border border-border bg-background p-4">
+                  <SummaryRow icon={Boxes} label="Resource" value={resource.name} />
+                  <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
+                  <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
+                  <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
+                    <span>Total</span>
+                    <span className="tabular-nums text-primary">{formatMoney(total, tenant.currency)}</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={confirm}
+                  disabled={pending || !(name.trim() && phone.trim())}
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
+                >
+                  {pending && <Loader2 size={16} className="animate-spin" />}
+                  Confirm booking
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -508,11 +575,7 @@ function SummaryPanel({
   setPlayers,
   total,
   hourlyRate,
-  step,
-  pending,
-  detailsValid,
   onContinue,
-  onConfirm,
 }: {
   resource: PublicResource
   currency: string
@@ -525,11 +588,7 @@ function SummaryPanel({
   setPlayers: (n: number) => void
   total: number
   hourlyRate: number
-  step: Step
-  pending: boolean
-  detailsValid: boolean
   onContinue: () => void
-  onConfirm: () => void
 }) {
   const canContinue = Boolean(startsAt)
 
@@ -588,24 +647,18 @@ function SummaryPanel({
         </div>
       </div>
 
-      {step === 'select' && !canContinue && (
+      {!canContinue && (
         <p className="mt-4 rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
           Select a date, duration and start time to continue.
         </p>
       )}
-      {step === 'details' && !detailsValid && (
-        <p className="mt-4 rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-          Enter your name and phone number to confirm.
-        </p>
-      )}
 
       <button
-        onClick={step === 'select' ? onContinue : onConfirm}
-        disabled={step === 'select' ? !canContinue : pending || !detailsValid}
+        onClick={onContinue}
+        disabled={!canContinue}
         className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
       >
-        {pending && <Loader2 size={16} className="animate-spin" />}
-        {step === 'select' ? 'Confirm & hold slot' : 'Confirm booking'}
+        Continue to your details
       </button>
     </aside>
   )
