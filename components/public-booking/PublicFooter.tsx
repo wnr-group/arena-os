@@ -2,9 +2,16 @@ import { ArrowRight, MapPin, Phone, type LucideIcon } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
+  { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
   { id: 'about', label: 'About' },
 ]
+
+/** Links that live at their own route rather than a homepage anchor. */
+const ROUTES: Record<string, string> = {
+  menu: '/food-menu',
+  resources: '/resources',
+}
 
 export function PublicFooter({
   tenantName,
@@ -80,7 +87,7 @@ export function PublicFooter({
               {NAV_LINKS.map((link) => (
                 <li key={link.id}>
                   <a
-                    href={link.id === 'resources' ? '/resources' : `#${link.id}`}
+                    href={ROUTES[link.id] ?? `#${link.id}`}
                     className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-all duration-200 hover:text-primary hover:translate-x-0.5"
                   >
                     {link.label}

@@ -27,6 +27,7 @@ export function proxy(request: NextRequest) {
   // with no session at all.
   const isPublicRoute =
     pathname === '/' ||
+    pathname === '/food-menu' ||
     pathname.startsWith('/book') ||
     pathname.startsWith('/resources') ||
     pathname.startsWith('/b/')

@@ -6,10 +6,17 @@ import { CalendarCheck, Menu, X } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
+  { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
   { id: 'about', label: 'About' },
   { id: 'contact', label: 'Contact' },
 ]
+
+/** Links that live at their own route rather than a homepage anchor. */
+const ROUTES: Record<string, string> = {
+  menu: '/food-menu',
+  resources: '/resources',
+}
 
 function scrollToId(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -32,12 +39,12 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
-  // "Resources" always lives at its own route. Every other link is a
-  // same-page anchor on the homepage — scroll to it directly when we're
+  // "Menu" and "Resources" always live at their own route. Every other link
+  // is a same-page anchor on the homepage — scroll to it directly when we're
   // already there, otherwise navigate back to the homepage anchor.
   const goTo = (id: string) => {
-    if (id === 'resources') {
-      router.push('/resources')
+    if (ROUTES[id]) {
+      router.push(ROUTES[id])
       return
     }
     if (pathname === '/') {
