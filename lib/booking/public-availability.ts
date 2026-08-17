@@ -25,13 +25,15 @@ export type PublicResourceType = {
   name: string
   description: string | null
   capacity: number | null
+  imageUrl: string | null
   resources: { id: string; name: string }[]
 }
 
 /**
- * The bookable catalogue for one branch, grouped by type — names and seat
- * capacity only. No hourly_rate, no buffer_minutes: nothing a stranger picking
- * a slot needs to know, and per the brief, no financial data on this surface.
+ * The bookable catalogue for one branch, grouped by type — names, seat
+ * capacity and the display image only. No hourly_rate, no buffer_minutes:
+ * nothing a stranger picking a slot needs to know, and per the brief, no
+ * financial data on this surface.
  */
 export async function getPublicResourceTypes(tenantId: string, branchId: string): Promise<PublicResourceType[]> {
   const rows = await withPublicTenant(tenantId, (tx) =>
@@ -41,6 +43,7 @@ export async function getPublicResourceTypes(tenantId: string, branchId: string)
         resourceTypeName: resourceTypes.name,
         description: resourceTypes.description,
         capacity: resourceTypes.capacity,
+        imageUrl: resourceTypes.imageUrl,
         resourceId: resources.id,
         resourceName: resources.name,
       })
@@ -66,6 +69,7 @@ export async function getPublicResourceTypes(tenantId: string, branchId: string)
         name: row.resourceTypeName,
         description: row.description,
         capacity: row.capacity,
+        imageUrl: row.imageUrl,
         resources: [],
       }
       byType.set(row.resourceTypeId, type)

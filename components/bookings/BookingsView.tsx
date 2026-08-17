@@ -69,6 +69,16 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
   no_show: 'No-show',
 }
+const SOURCE_BADGE: Record<string, string> = {
+  online: 'bg-violet-500/10 text-violet-600',
+  walk_in: 'bg-muted text-muted-foreground',
+  staff: 'bg-muted text-muted-foreground',
+}
+const SOURCE_LABELS: Record<string, string> = {
+  online: 'Online',
+  walk_in: 'Walk-in',
+  staff: 'Staff',
+}
 type View = 'timeline' | 'bookings'
 
 function minutesInZone(iso: string, tz: string): number {
@@ -440,7 +450,16 @@ export function BookingsView({
                     <tr key={b.bookingId} className="transition hover:bg-muted/20">
                       <td className="px-4 py-3 font-medium">{b.bookingNumber}</td>
                       <td className="px-4 py-3">
-                        <p className="font-medium">{b.customerName || 'Walk-in'}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">{b.customerName || 'Walk-in'}</p>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                              SOURCE_BADGE[b.source] ?? 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            {SOURCE_LABELS[b.source] ?? b.source}
+                          </span>
+                        </div>
                         {b.customerPhone && <p className="text-sm text-muted-foreground">{b.customerPhone}</p>}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{b.resourceNames.join(', ')}</td>
@@ -509,6 +528,7 @@ export function BookingsView({
             <dl className="mt-3 space-y-1.5 text-sm">
               <Row k="Customer" v={selected.customerName || 'Walk-in'} />
               {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
+              <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
               <Row k="Time" v={`${timeInZone(selected.startsAt, timeZone)}–${timeInZone(selected.endsAt, timeZone)}`} />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
               <Row k="Total" v={formatMoney(selected.total, currency)} />

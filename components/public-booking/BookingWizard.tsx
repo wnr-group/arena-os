@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
-import { ChevronLeft, Loader2, CheckCircle2, Users } from 'lucide-react'
+import { ChevronLeft, Loader2, CheckCircle2, ImageOff, Users } from 'lucide-react'
 import { getPublicAvailability, createPublicBooking, type PublicSlotOption } from '@/lib/actions/public-booking'
 import { timeInZone, prettyDate } from '@/lib/format'
 
@@ -10,6 +10,7 @@ export type WizardResourceType = {
   name: string
   description: string | null
   capacity: number | null
+  imageUrl: string | null
 }
 
 const DURATIONS = [30, 60, 90, 120]
@@ -141,20 +142,35 @@ export function BookingWizard({
       {step === 1 && (
         <div>
           <h2 className="text-lg font-semibold">What would you like to book?</h2>
-          <div className="mt-4 space-y-2.5">
+          <div className="mt-4 grid grid-cols-2 gap-3">
             {resourceTypes.map((t) => (
               <button
                 key={t.id}
                 onClick={() => pickType(t.id)}
-                className="w-full rounded-xl border border-border bg-card p-4 text-left transition hover:border-primary/50 active:scale-[0.99]"
+                className="group overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg active:scale-[0.98]"
               >
-                <p className="text-base font-semibold">{t.name}</p>
-                {t.description && <p className="mt-0.5 text-sm text-muted-foreground">{t.description}</p>}
-                {t.capacity && (
-                  <p className="mt-1.5 inline-flex items-center gap-1 text-xs text-muted-foreground">
-                    <Users size={12} /> Up to {t.capacity}
-                  </p>
-                )}
+                <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-primary/15 to-primary/5">
+                  {t.imageUrl ? (
+                    <img
+                      src={t.imageUrl}
+                      alt=""
+                      className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-primary/40">
+                      <ImageOff size={24} />
+                    </div>
+                  )}
+                  {t.capacity && (
+                    <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-full bg-background/90 px-2 py-1 text-[11px] font-semibold text-foreground shadow-sm backdrop-blur-sm">
+                      <Users size={11} /> {t.capacity}
+                    </span>
+                  )}
+                </div>
+                <div className="p-3">
+                  <p className="text-sm font-semibold leading-tight transition group-hover:text-primary">{t.name}</p>
+                  {t.description && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.description}</p>}
+                </div>
               </button>
             ))}
           </div>
@@ -293,7 +309,7 @@ export function BookingWizard({
 
 function BottomBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="fixed inset-x-0 bottom-0 border-t border-border bg-background/95 p-4 backdrop-blur-sm">
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 p-4 backdrop-blur-sm">
       <div className="mx-auto max-w-md">{children}</div>
     </div>
   )
