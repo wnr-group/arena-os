@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { bookings } from '@/db/schema'
+import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
@@ -91,4 +91,89 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
 
 export async function cancelBooking(id: string): Promise<Result> {
   return setBookingStatus(id, 'cancelled')
+}
+
+const CONFIRMATION_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+
+/** A scanned QR encodes the full confirmation URL; a keyboard-wedge scanner
+ * or manual paste might supply just the bare token. Either way, the
+ * confirmation_token is the only UUID in the string. */
+function extractConfirmationToken(raw: string): string | null {
+  const match = raw.match(CONFIRMATION_TOKEN_RE)
+  return match ? match[0].toLowerCase() : null
+}
+
+export type CheckInResult = Result & {
+  booking?: {
+    bookingNumber: string
+    customerName: string | null
+    resourceName: string | null
+    startsAt: string | null
+    alreadyCheckedIn: boolean
+  }
+}
+
+/**
+ * Staff check-in scan (components/bookings/ScanCheckIn.tsx): resolves a
+ * booking by its confirmation_token — never by bookingNumber, same
+ * unguessable-identifier rule as the public confirmation page (see
+ * 0026_booking_confirmation_token.sql) — and transitions it to checked_in,
+ * the same status write setBookingStatus above does.
+ */
+export async function checkInBookingByToken(raw: string): Promise<CheckInResult> {
+  try {
+    const ctx = await requireContext()
+    const token = extractConfirmationToken(raw)
+    if (!token) return { error: "That doesn't look like a booking QR code." }
+
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const [row] = await tx
+        .select({
+          id: bookings.id,
+          bookingNumber: bookings.bookingNumber,
+          customerName: bookings.customerName,
+          status: bookings.status,
+        })
+        .from(bookings)
+        .where(and(eq(bookings.tenantId, ctx.tenant.id), eq(bookings.confirmationToken, token)))
+        .limit(1)
+      if (!row) return null
+
+      const [slot] = await tx
+        .select({ resourceName: bookingSlots.resourceName, startsAt: bookingSlots.startsAt })
+        .from(bookingSlots)
+        .where(and(eq(bookingSlots.tenantId, ctx.tenant.id), eq(bookingSlots.bookingId, row.id)))
+        .orderBy(bookingSlots.startsAt)
+        .limit(1)
+
+      if (row.status === 'checked_in') {
+        return { row, slot, alreadyCheckedIn: true }
+      }
+      if (row.status !== 'confirmed') {
+        throw new BookingError(`This booking is ${row.status.replace('_', ' ')} — it can't be checked in.`)
+      }
+
+      await tx
+        .update(bookings)
+        .set({ status: 'checked_in', checkedInAt: new Date() })
+        .where(and(eq(bookings.id, row.id), eq(bookings.tenantId, ctx.tenant.id)))
+
+      return { row, slot, alreadyCheckedIn: false }
+    })
+
+    if (!result) return { error: 'No booking found for that code.' }
+
+    revalidatePath('/bookings')
+    return {
+      booking: {
+        bookingNumber: result.row.bookingNumber,
+        customerName: result.row.customerName,
+        resourceName: result.slot?.resourceName ?? null,
+        startsAt: result.slot?.startsAt.toISOString() ?? null,
+        alreadyCheckedIn: result.alreadyCheckedIn,
+      },
+    }
+  } catch (e) {
+    return fail(e)
+  }
 }

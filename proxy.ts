@@ -26,7 +26,10 @@ export function proxy(request: NextRequest) {
   // by subdomain like every other tenant route, but deliberately reachable
   // with no session at all.
   const isPublicRoute =
-    pathname === '/' || pathname.startsWith('/book') || pathname.startsWith('/resources')
+    pathname === '/' ||
+    pathname.startsWith('/book') ||
+    pathname.startsWith('/resources') ||
+    pathname.startsWith('/b/')
   const hasSession = request.cookies.has(SESSION_COOKIE)
 
   // Protected surfaces: tenant routes on a subdomain, and the platform admin

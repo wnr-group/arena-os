@@ -1,12 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
   ArrowLeft,
   Boxes,
   CalendarDays,
-  CheckCircle2,
   Clock,
   ImageOff,
   Loader2,
@@ -26,7 +26,7 @@ const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
 const DATE_WINDOW_DAYS = 7
 
 type Slot = { startsAt: string; available: boolean }
-type Step = 'select' | 'details' | 'confirmed'
+type Step = 'select' | 'details'
 
 function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split('-').map(Number)
@@ -87,6 +87,7 @@ export function ResourceBookingPage({
   resource: PublicResource
   today: string
 }) {
+  const router = useRouter()
   const dates = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
 
   const [step, setStep] = useState<Step>('select')
@@ -107,7 +108,6 @@ export function ResourceBookingPage({
   })
   const [editingKnownName, setEditingKnownName] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
-  const [bookingNumber, setBookingNumber] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
   const hourlyRate = Number(resource.hourlyRate)
@@ -180,61 +180,17 @@ export function ResourceBookingPage({
         customerPhone: phone,
         players: resource.capacity != null ? players : undefined,
       })
-      if (r.error) {
-        setConfirmError(r.error)
+      if (r.error || !r.confirmationToken) {
+        setConfirmError(r.error ?? 'Something went wrong. Please try again.')
         return
       }
-      setBookingNumber(r.bookingNumber ?? null)
-      setStep('confirmed')
+      router.push(`/b/${r.confirmationToken}`)
     })
-  }
-
-  function bookAnother() {
-    setStep('select')
-    setStartsAt(null)
-    setName('')
-    setPhone('')
-    setPlayers(1)
-    setBookingNumber(null)
-    setConfirmError(null)
   }
 
   return (
     <div className="bg-background text-foreground">
-      {step === 'confirmed' ? (
-        <div className="mx-auto flex max-w-md flex-col items-center px-4 py-16 text-center sm:px-6">
-          <div className="flex size-16 items-center justify-center rounded-full bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/25">
-            <CheckCircle2 size={30} />
-          </div>
-          <h1 className="mt-5 text-xl font-bold tracking-tight">You&apos;re booked!</h1>
-          {bookingNumber && (
-            <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-muted-foreground">
-              Booking #{bookingNumber}
-            </p>
-          )}
-          <div className="mt-6 w-full space-y-2.5 rounded-2xl border border-border bg-card p-4 text-left shadow-sm">
-            <SummaryRow icon={Boxes} label="Resource" value={resource.name} />
-            <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
-            {startsAt && <SummaryRow icon={Clock} label="Time" value={time12(startsAt, tenant.timezone)} />}
-            <SummaryRow icon={Sparkles} label="Total" value={formatMoney(total, tenant.currency)} />
-          </div>
-          <div className="mt-8 flex gap-3">
-            <button
-              onClick={bookAnother}
-              className="rounded-xl border border-border px-5 py-3 text-sm font-semibold transition hover:bg-muted active:scale-95"
-            >
-              Book another
-            </button>
-            <Link
-              href="/"
-              className="rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition hover:bg-primary-hover active:scale-95"
-            >
-              Back to venue
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 sm:px-6">
+      <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 sm:px-6">
           <div className="mb-6">
             {step === 'details' ? (
               <button
@@ -503,8 +459,7 @@ export function ResourceBookingPage({
             </div>
           )}
         </div>
-      )}
-    </div>
+      </div>
   )
 }
 

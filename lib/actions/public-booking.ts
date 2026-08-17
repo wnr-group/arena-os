@@ -135,7 +135,7 @@ const bookingInput = z.object({
   players: z.coerce.number().int().min(1).max(100).optional(),
 })
 
-export type CreatePublicBookingResult = { error?: string; bookingNumber?: string }
+export type CreatePublicBookingResult = { error?: string; bookingNumber?: string; confirmationToken?: string }
 
 /**
  * Step 6 (confirm) of the booking wizard. Shares createBookingCore with the
@@ -178,7 +178,7 @@ export async function createPublicBooking(
     )
 
     revalidatePath('/bookings')
-    return { bookingNumber: result.bookingNumber }
+    return { bookingNumber: result.bookingNumber, confirmationToken: result.confirmationToken }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
     // 23P01 = exclusion_violation: someone else took this slot first.

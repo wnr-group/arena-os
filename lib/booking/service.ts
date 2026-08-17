@@ -33,7 +33,7 @@ export type CreateBookingInput = {
   slots: CreateBookingSlotInput[]
 }
 
-export type CreatedBooking = { id: string; bookingNumber: string }
+export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
 
 export async function createBookingCore(
   tx: Db,
@@ -125,7 +125,7 @@ export async function createBookingCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
     })
-    .returning({ id: bookings.id })
+    .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
   // Insert slots — the exclusion constraint rejects any overlap atomically.
   await tx.insert(bookingSlots).values(
@@ -136,5 +136,5 @@ export async function createBookingCore(
     })),
   )
 
-  return { id: booking.id, bookingNumber }
+  return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }

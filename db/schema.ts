@@ -235,6 +235,9 @@ export const bookings = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
     bookingNumber: text('booking_number').notNull(),
+    // Unguessable public identifier — see 0026_booking_confirmation_token.sql
+    // for why this can't just be bookingNumber.
+    confirmationToken: uuid('confirmation_token').notNull().defaultRandom(),
     // Snapshot of what the guest gave at the time (migration 0003) …
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
@@ -259,6 +262,7 @@ export const bookings = pgTable(
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
+    unique('bookings_tenant_token_key').on(t.tenantId, t.confirmationToken),
     // Target of the composite (tenant_id, booking_id) FK on invoices (0010).
     unique('bookings_tenant_id_key').on(t.tenantId, t.id),
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
