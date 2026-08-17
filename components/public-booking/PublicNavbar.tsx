@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { CalendarCheck, Menu, X } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
-  { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
   { id: 'about', label: 'About' },
   { id: 'contact', label: 'Contact' },
@@ -22,6 +22,8 @@ function scrollToId(id: string) {
 export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
+  const router = useRouter()
+  const pathname = usePathname()
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
@@ -29,6 +31,21 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
+
+  // "Resources" always lives at its own route. Every other link is a
+  // same-page anchor on the homepage — scroll to it directly when we're
+  // already there, otherwise navigate back to the homepage anchor.
+  const goTo = (id: string) => {
+    if (id === 'resources') {
+      router.push('/resources')
+      return
+    }
+    if (pathname === '/') {
+      scrollToId(id)
+      return
+    }
+    router.push(id === 'home' ? '/' : `/#${id}`)
+  }
 
   return (
     <header
@@ -44,7 +61,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
         }`}
       >
         <div className="flex flex-1 justify-start min-w-0">
-          <button type="button" onClick={() => scrollToId('home')} className="group flex min-w-0 items-center gap-3">
+          <button type="button" onClick={() => goTo('home')} className="group flex min-w-0 items-center gap-3">
             <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
               {icon}
             </span>
@@ -59,7 +76,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
             <button
               key={link.id}
               type="button"
-              onClick={() => scrollToId(link.id)}
+              onClick={() => goTo(link.id)}
               className="group relative px-4 py-2 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95"
             >
               {link.label}
@@ -71,7 +88,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => scrollToId('book')}
+            onClick={() => router.push('/resources')}
             className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-5 group"
           >
             {/* Shimmer overlay effect */}
@@ -105,7 +122,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
                 type="button"
                 onClick={() => {
                   setOpen(false)
-                  scrollToId(link.id)
+                  goTo(link.id)
                 }}
                 className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
               >

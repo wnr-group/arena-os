@@ -2,7 +2,6 @@ import { ArrowRight, MapPin, Phone, type LucideIcon } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
-  { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
   { id: 'about', label: 'About' },
 ]
@@ -48,7 +47,7 @@ export function PublicFooter({
             </p>
           </div>
           <a
-            href="#book"
+            href="/resources"
             className="relative overflow-hidden mt-5 inline-flex items-center gap-2 rounded-xl bg-primary hover:bg-primary-hover px-5 py-3 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:mt-0 z-10 group/btn"
           >
             {/* Shimmer overlay effect */}
@@ -81,7 +80,7 @@ export function PublicFooter({
               {NAV_LINKS.map((link) => (
                 <li key={link.id}>
                   <a
-                    href={`#${link.id}`}
+                    href={link.id === 'resources' ? '/resources' : `#${link.id}`}
                     className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-all duration-200 hover:text-primary hover:translate-x-0.5"
                   >
                     {link.label}

@@ -96,12 +96,17 @@ export type PublicAvailabilityInput = {
  * lib/actions/availability.ts:getAvailableStarts, but scoped by an explicit
  * tenantId resolved from the subdomain instead of a logged-in ctx.user.id.
  * Callers are expected to have already validated `date`/`durationMinutes`
- * (see the zod schema in app/(public)/book/page.tsx) — this trusts its input
- * exactly like the staff version trusts its own zod-parsed input.
+ * (see the zod schema in lib/actions/public-booking.ts) — this trusts its
+ * input exactly like the staff version trusts its own zod-parsed input.
+ *
+ * Returns both `starts` (bookable now) and `allStarts` (every candidate slot
+ * the working hours allow, ignoring existing bookings) so a caller can render
+ * a full day grid with unavailable times shown-but-disabled, not just omitted
+ * — the resource-booking page (AROS) wants that distinction visible.
  */
 export async function getPublicAvailableStarts(
   input: PublicAvailabilityInput,
-): Promise<{ starts: Date[] } | { error: string }> {
+): Promise<{ starts: Date[]; allStarts: Date[]; isClosed: boolean } | { error: string }> {
   const { tenantId, branchId, resourceId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
@@ -145,14 +150,78 @@ export async function getPublicAvailableStarts(
         ),
       )
 
-    const starts = availableStartTimes(date, timeZone, hours ?? DEFAULT_HOURS, existing, {
+    const resolvedHours = hours ?? DEFAULT_HOURS
+    const starts = availableStartTimes(date, timeZone, resolvedHours, existing, {
       durationMinutes,
       slotMinutes: 30,
       bufferMinutes: res.buffer,
     })
+    const allStarts = availableStartTimes(date, timeZone, resolvedHours, [], {
+      durationMinutes,
+      slotMinutes: 30,
+    })
 
-    return { starts }
+    return { starts, allStarts, isClosed: resolvedHours.isClosed }
   })
+}
+
+export type PublicResource = {
+  id: string
+  name: string
+  description: string | null
+  imageUrl: string | null
+  hourlyRate: string
+  capacity: number | null
+  resourceTypeId: string
+  resourceTypeName: string
+}
+
+/**
+ * One specific bookable unit — the actual thing a customer reserves, not
+ * just its type (contrast getPublicResourceTypes, which groups units under
+ * their type and deliberately hides pricing). The resource-booking page
+ * needs a price before the customer commits, so this surface exposes the
+ * effective hourly rate (the resource's own override, else its type's rate)
+ * — everything else stays the same "no cost/tax internals" discipline.
+ */
+export async function getPublicResource(tenantId: string, resourceId: string): Promise<PublicResource | null> {
+  const [row] = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        id: resources.id,
+        name: resources.name,
+        description: resources.description,
+        imageUrl: resources.imageUrl,
+        hourlyRateOverride: resources.hourlyRateOverride,
+        resourceTypeId: resourceTypes.id,
+        resourceTypeName: resourceTypes.name,
+        typeHourlyRate: resourceTypes.hourlyRate,
+        typeImageUrl: resourceTypes.imageUrl,
+        capacity: resourceTypes.capacity,
+      })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resources.id, resourceId),
+          eq(resources.tenantId, tenantId),
+          eq(resources.status, 'available'),
+          eq(resourceTypes.isActive, true),
+        ),
+      )
+      .limit(1),
+  )
+  if (!row) return null
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    imageUrl: row.imageUrl ?? row.typeImageUrl,
+    hourlyRate: row.hourlyRateOverride ?? row.typeHourlyRate,
+    capacity: row.capacity,
+    resourceTypeId: row.resourceTypeId,
+    resourceTypeName: row.resourceTypeName,
+  }
 }
 
 export type PublicTypeAvailabilityInput = {

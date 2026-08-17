@@ -1,7 +1,19 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
-import { ChevronLeft, Loader2, CheckCircle2, ImageOff, Users } from 'lucide-react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
+import {
+  Boxes,
+  CalendarDays,
+  ChevronLeft,
+  Clock,
+  Loader2,
+  CheckCircle2,
+  ImageOff,
+  Phone,
+  User,
+  Users,
+  type LucideIcon,
+} from 'lucide-react'
 import { getPublicAvailability, createPublicBooking, type PublicSlotOption } from '@/lib/actions/public-booking'
 import { timeInZone, prettyDate } from '@/lib/format'
 
@@ -15,27 +27,37 @@ export type WizardResourceType = {
 
 const DURATIONS = [30, 60, 90, 120]
 
-type Step = 1 | 2 | 3 | 4 | 5
+type Step = 1 | 2 | 3 | 4
 
 /**
- * The public booking flow: resource type → date + duration → start time →
- * name + phone → confirm. One screen at a time, sticky bottom action button —
- * mobile-first, since the ticket is explicit that customers book on phones.
+ * The public booking flow: resource type → date + duration + time + summary
+ * → name + phone → confirm. One screen at a time, sticky bottom action
+ * button — mobile-first, since the ticket is explicit that customers book
+ * on phones. Times refetch automatically whenever the date or duration
+ * changes, so step 2 never needs an explicit "find times" click.
  */
 export function BookingWizard({
   resourceTypes,
   timeZone,
   today,
+  initialTypeId = null,
 }: {
   resourceTypes: WizardResourceType[]
   timeZone: string
   today: string
+  /** Skips straight to step 2 for this type, e.g. when arriving from a
+   * resource card picked on the standalone /resources page. Falls back to
+   * the normal picker if the id doesn't match a bookable type. */
+  initialTypeId?: string | null
 }) {
-  const [step, setStep] = useState<Step>(1)
-  const [typeId, setTypeId] = useState<string | null>(null)
+  const validInitialTypeId =
+    initialTypeId && resourceTypes.some((t) => t.id === initialTypeId) ? initialTypeId : null
+  const [step, setStep] = useState<Step>(validInitialTypeId ? 2 : 1)
+  const [typeId, setTypeId] = useState<string | null>(validInitialTypeId)
   const [date, setDate] = useState(today)
   const [duration, setDuration] = useState(60)
   const [slots, setSlots] = useState<PublicSlotOption[] | null>(null)
+  const [slotsLoading, setSlotsLoading] = useState(false)
   const [slot, setSlot] = useState<PublicSlotOption | null>(null)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -45,34 +67,38 @@ export function BookingWizard({
 
   const selectedType = useMemo(() => resourceTypes.find((t) => t.id === typeId) ?? null, [resourceTypes, typeId])
 
+  // Times load for whichever type/date/duration is current — a fresh
+  // fetch invalidates any previously picked slot, so it's cleared here too.
+  useEffect(() => {
+    if (!typeId) return
+    let cancelled = false
+    setSlot(null)
+    setError(null)
+    setSlots(null)
+    setSlotsLoading(true)
+    getPublicAvailability({ resourceTypeId: typeId, date, durationMinutes: duration }).then((r) => {
+      if (cancelled) return
+      setSlotsLoading(false)
+      if (r.error) {
+        setError(r.error)
+        setSlots([])
+        return
+      }
+      setSlots(r.starts ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [typeId, date, duration])
+
   function back() {
     setError(null)
-    if (step === 3) setSlots(null)
     setStep((s) => (s > 1 ? ((s - 1) as Step) : s))
   }
 
   function pickType(id: string) {
     setTypeId(id)
     setStep(2)
-  }
-
-  function findTimes() {
-    if (!typeId) return
-    setError(null)
-    startTransition(async () => {
-      const r = await getPublicAvailability({ resourceTypeId: typeId, date, durationMinutes: duration })
-      if (r.error) {
-        setError(r.error)
-        return
-      }
-      setSlots(r.starts ?? [])
-      setStep(3)
-    })
-  }
-
-  function pickSlot(s: PublicSlotOption) {
-    setSlot(s)
-    setStep(4)
   }
 
   function confirm() {
@@ -92,7 +118,7 @@ export function BookingWizard({
         return
       }
       setBookingNumber(r.bookingNumber ?? null)
-      setStep(5)
+      setStep(4)
     })
   }
 
@@ -109,8 +135,8 @@ export function BookingWizard({
 
   return (
     <div className="mx-auto flex min-h-[420px] max-w-md flex-col px-4 pb-28 pt-4 sm:px-0">
-      {step < 5 && (
-        <div className="mb-4 flex items-center gap-3">
+      {step < 4 && (
+        <div className="mb-5 flex items-center gap-3">
           {step > 1 ? (
             <button
               onClick={back}
@@ -123,10 +149,12 @@ export function BookingWizard({
             <div className="w-7" />
           )}
           <div className="flex flex-1 gap-1.5">
-            {[1, 2, 3, 4].map((n) => (
+            {[1, 2, 3].map((n) => (
               <div
                 key={n}
-                className={`h-1.5 flex-1 rounded-full transition ${n <= step ? 'bg-primary' : 'bg-muted'}`}
+                className={`h-1.5 flex-1 rounded-full transition-colors duration-300 ${
+                  n <= step ? 'bg-primary' : 'bg-muted'
+                }`}
               />
             ))}
           </div>
@@ -134,20 +162,29 @@ export function BookingWizard({
       )}
 
       {error && (
-        <p className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive">
           {error}
         </p>
       )}
 
       {step === 1 && (
         <div>
-          <h2 className="text-lg font-semibold">What would you like to book?</h2>
-          <div className="mt-4 grid grid-cols-2 gap-3">
+          <div className="flex items-center gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Boxes size={20} />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold leading-tight text-foreground">What would you like to book?</h2>
+              <p className="text-sm text-muted-foreground">Pick a space to get started</p>
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3">
             {resourceTypes.map((t) => (
               <button
                 key={t.id}
                 onClick={() => pickType(t.id)}
-                className="group overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg active:scale-[0.98]"
+                className="group overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm transition duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg active:scale-[0.98]"
               >
                 <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-primary/15 to-primary/5">
                   {t.imageUrl ? (
@@ -179,101 +216,144 @@ export function BookingWizard({
 
       {step === 2 && selectedType && (
         <div>
-          <h2 className="text-lg font-semibold">{selectedType.name}</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">Pick a date and how long you&apos;d like.</p>
+          <div className="flex items-center gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <CalendarDays size={20} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="truncate text-lg font-bold leading-tight text-foreground">{selectedType.name}</h2>
+              <p className="text-sm text-muted-foreground">Choose when you&apos;d like to come in</p>
+            </div>
+          </div>
 
-          <label className="mt-5 block text-sm font-medium">
-            Date
+          <label className="mt-6 block">
+            <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+              <CalendarDays size={14} /> Date
+            </span>
             <input
               type="date"
               value={date}
               min={today}
               onChange={(e) => setDate(e.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base outline-none focus:border-primary focus:ring-2 focus:ring-ring/30"
+              className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
             />
           </label>
 
-          <p className="mt-5 text-sm font-medium">Duration</p>
-          <div className="mt-1.5 grid grid-cols-4 gap-2">
-            {DURATIONS.map((m) => (
-              <button
-                key={m}
-                onClick={() => setDuration(m)}
-                className={`rounded-lg border px-2 py-2.5 text-sm font-medium transition ${
-                  duration === m
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-border text-muted-foreground hover:border-foreground/30'
-                }`}
-              >
-                {m}m
-              </button>
-            ))}
+          <div className="mt-5">
+            <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+              <Clock size={14} /> Duration
+            </span>
+            <div className="grid grid-cols-4 gap-2">
+              {DURATIONS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setDuration(m)}
+                  className={`rounded-xl border px-2 py-3 text-sm font-semibold transition-all duration-200 active:scale-95 ${
+                    duration === m
+                      ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
+                      : 'border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                  }`}
+                >
+                  {m}m
+                </button>
+              ))}
+            </div>
           </div>
 
+          <div className="mt-6">
+            <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+              <Clock size={14} /> Available times
+            </span>
+            {slotsLoading ? (
+              <div className="grid grid-cols-3 gap-2">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="h-11 animate-pulse rounded-xl bg-muted" />
+                ))}
+              </div>
+            ) : !slots || slots.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border p-6 text-center">
+                <p className="text-sm text-muted-foreground">No open times this day. Try another date.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2">
+                {slots.map((s) => {
+                  const isSelected = slot?.startsAt === s.startsAt
+                  return (
+                    <button
+                      key={s.startsAt}
+                      onClick={() => setSlot(s)}
+                      className={`rounded-xl border px-2 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-95 ${
+                        isSelected
+                          ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
+                          : 'border-border bg-card text-foreground hover:border-primary/40'
+                      }`}
+                    >
+                      {timeInZone(s.startsAt, timeZone)}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {slot && (
+            <div className="mt-6 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 to-transparent p-4">
+              <p className="text-xs font-bold uppercase tracking-wide text-primary">Booking summary</p>
+              <div className="mt-3 space-y-2.5">
+                <SummaryRow icon={Boxes} label="Resource" value={selectedType.name} />
+                <SummaryRow icon={CalendarDays} label="Date" value={prettyDate(date, timeZone)} />
+                <SummaryRow icon={Clock} label="Time" value={`${timeInZone(slot.startsAt, timeZone)} · ${duration} min`} />
+              </div>
+            </div>
+          )}
+
           <BottomBar>
-            <PrimaryButton onClick={findTimes} pending={pending}>
-              Find times
+            <PrimaryButton onClick={() => setStep(3)} pending={false} disabled={!slot || slotsLoading}>
+              Continue
             </PrimaryButton>
           </BottomBar>
         </div>
       )}
 
-      {step === 3 && selectedType && (
+      {step === 3 && selectedType && slot && (
         <div>
-          <h2 className="text-lg font-semibold">Pick a time</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {selectedType.name} · {prettyDate(date, timeZone)} · {duration} min
-          </p>
-
-          {!slots || slots.length === 0 ? (
-            <p className="mt-6 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-              No open times this day. Go back and try another date.
-            </p>
-          ) : (
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              {slots.map((s) => (
-                <button
-                  key={s.startsAt}
-                  onClick={() => pickSlot(s)}
-                  className="rounded-lg border border-border bg-card px-2 py-2.5 text-sm font-medium tabular-nums transition hover:border-primary/50 active:scale-[0.97]"
-                >
-                  {timeInZone(s.startsAt, timeZone)}
-                </button>
-              ))}
+          <div className="flex items-center gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <User size={20} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-lg font-bold leading-tight text-foreground">Your details</h2>
+              <p className="truncate text-sm text-muted-foreground">
+                {selectedType.name} · {prettyDate(date, timeZone)} · {timeInZone(slot.startsAt, timeZone)}
+              </p>
             </div>
-          )}
-        </div>
-      )}
+          </div>
 
-      {step === 4 && selectedType && slot && (
-        <div>
-          <h2 className="text-lg font-semibold">Your details</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {selectedType.name} · {prettyDate(date, timeZone)} · {timeInZone(slot.startsAt, timeZone)} · {duration}{' '}
-            min
-          </p>
-
-          <label className="mt-5 block text-sm font-medium">
-            Name
+          <label className="mt-6 block">
+            <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+              <User size={14} /> Name
+            </span>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoComplete="name"
-              placeholder="Your name"
-              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base outline-none focus:border-primary focus:ring-2 focus:ring-ring/30"
+              placeholder="Your full name"
+              className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
             />
           </label>
 
-          <label className="mt-4 block text-sm font-medium">
-            Phone
+          <label className="mt-4 block">
+            <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+              <Phone size={14} /> Phone
+            </span>
             <input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               autoComplete="tel"
               placeholder="Your phone number"
-              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base outline-none focus:border-primary focus:ring-2 focus:ring-ring/30"
+              className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
             />
           </label>
 
@@ -285,24 +365,41 @@ export function BookingWizard({
         </div>
       )}
 
-      {step === 5 && selectedType && slot && (
+      {step === 4 && selectedType && slot && (
         <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
-          <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <CheckCircle2 size={28} />
+          <div className="flex size-16 items-center justify-center rounded-full bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/25">
+            <CheckCircle2 size={30} />
           </div>
-          <h2 className="mt-4 text-lg font-semibold">You&apos;re booked!</h2>
-          {bookingNumber && <p className="mt-1 text-sm text-muted-foreground">Booking {bookingNumber}</p>}
-          <p className="mt-3 text-sm">
-            {selectedType.name} · {prettyDate(date, timeZone)} · {timeInZone(slot.startsAt, timeZone)}
-          </p>
+          <h2 className="mt-5 text-xl font-bold tracking-tight text-foreground">You&apos;re booked!</h2>
+          {bookingNumber && (
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-muted-foreground">
+              Booking #{bookingNumber}
+            </p>
+          )}
+          <div className="mt-6 w-full max-w-xs space-y-2.5 rounded-2xl border border-border bg-card p-4 text-left shadow-sm">
+            <SummaryRow icon={Boxes} label="Resource" value={selectedType.name} />
+            <SummaryRow icon={CalendarDays} label="Date" value={prettyDate(date, timeZone)} />
+            <SummaryRow icon={Clock} label="Time" value={timeInZone(slot.startsAt, timeZone)} />
+          </div>
           <button
             onClick={bookAnother}
-            className="mt-6 rounded-lg border border-border px-4 py-2.5 text-sm font-medium transition hover:bg-muted"
+            className="mt-8 rounded-xl border border-border px-5 py-3 text-sm font-semibold transition hover:bg-muted active:scale-95"
           >
             Book another
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+function SummaryRow({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <span className="flex items-center gap-2 text-muted-foreground">
+        <Icon size={14} className="text-primary" /> {label}
+      </span>
+      <span className="truncate font-semibold text-foreground">{value}</span>
     </div>
   )
 }
@@ -330,7 +427,7 @@ function PrimaryButton({
     <button
       onClick={onClick}
       disabled={pending || disabled}
-      className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-primary-foreground shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-base font-bold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
     >
       {pending && <Loader2 size={18} className="animate-spin" />}
       {children}

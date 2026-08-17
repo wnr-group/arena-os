@@ -36,8 +36,14 @@
   --ring: #7c3aed;
 }
 
-/* Dark theme — defined for later; INACTIVE until <html data-theme="dark">. */
-:root[data-theme='dark'] {
+/* Dark theme — defined for later; INACTIVE until data-theme="dark" is set.
+ * Matches the attribute on ANY element, not just :root, so a single section
+ * (e.g. the public resource-booking page) can opt into the dark palette
+ * without a global toggle — Tailwind's `@theme inline` below compiles
+ * utilities straight to `var(--background)` etc. (not an indirect
+ * `--color-background`), so these custom properties cascade normally to
+ * descendants of whichever element carries the attribute. */
+[data-theme='dark'] {
   color-scheme: dark;
 
   --background: #140f1c;
