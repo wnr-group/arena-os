@@ -21,10 +21,11 @@ export function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl
   const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/auth')
-  // The public (no-login) booking site — app/(public) — pinned to the tenant
+  // The public (no-login) tenant homepage ("/", app/page.tsx when a tenant
+  // slug is present) and booking site — app/(public) — pinned to the tenant
   // by subdomain like every other tenant route, but deliberately reachable
   // with no session at all.
-  const isPublicRoute = pathname.startsWith('/book')
+  const isPublicRoute = pathname === '/' || pathname.startsWith('/book')
   const hasSession = request.cookies.has(SESSION_COOKIE)
 
   // Protected surfaces: tenant routes on a subdomain, and the platform admin

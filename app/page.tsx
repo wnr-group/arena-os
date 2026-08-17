@@ -1,5 +1,9 @@
+import { notFound } from 'next/navigation'
 import { CalendarDays, HandCoins, ChefHat, Boxes, Users, type LucideIcon } from 'lucide-react'
 import { rootDomain } from '@/lib/tenant/subdomain'
+import { currentTenantSlug } from '@/lib/tenant/context'
+import { getPublicTenantBySlug } from '@/lib/tenant/public'
+import { TenantHome } from '@/components/public-booking/TenantHome'
 import { MarketingNavbar } from '@/components/marketing/MarketingNavbar'
 import { MarketingFooter } from '@/components/marketing/MarketingFooter'
 
@@ -32,10 +36,24 @@ const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
 ]
 
 /**
- * Platform landing page — served on the ROOT domain (e.g. arenaos.app), not on a
- * tenant subdomain. Tenants live at {slug}.{rootDomain}.
+ * Root route — served on both the platform root domain and every tenant
+ * subdomain (Next.js route groups don't change the URL, so there is exactly
+ * one "/" for the whole app). On a tenant subdomain this renders that
+ * tenant's public homepage (no session required, same as the old /book
+ * route); on the root domain it renders the platform marketing page.
  */
-export default function PlatformHome() {
+export default async function RootPage() {
+  const slug = await currentTenantSlug()
+  if (slug) {
+    const tenant = await getPublicTenantBySlug(slug)
+    if (!tenant) notFound()
+    return <TenantHome tenant={tenant} />
+  }
+
+  return <PlatformHome />
+}
+
+function PlatformHome() {
   const domain = rootDomain()
 
   return (
