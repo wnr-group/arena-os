@@ -22,13 +22,13 @@ import type { PublicResource } from '@/lib/booking/public-availability'
 import { getPublicResourceAvailability, createPublicBooking, lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
 
-const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
-const DATE_WINDOW_DAYS = 7
+export const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
+export const DATE_WINDOW_DAYS = 7
 
 type Slot = { startsAt: string; available: boolean }
 type Step = 'select' | 'details'
 
-function addDays(dateStr: string, days: number): string {
+export function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split('-').map(Number)
   const dt = new Date(Date.UTC(y, m - 1, d))
   dt.setUTCDate(dt.getUTCDate() + days)
@@ -38,7 +38,7 @@ function addDays(dateStr: string, days: number): string {
 /** Weekday/day/month for a date card — formatted in UTC because the date
  * string is already an anchored calendar date (from todayInZone), not an
  * instant that needs a second timezone conversion. */
-function dateCardParts(dateStr: string) {
+export function dateCardParts(dateStr: string) {
   const [y, m, d] = dateStr.split('-').map(Number)
   const dt = new Date(Date.UTC(y, m - 1, d, 12))
   return {
@@ -48,13 +48,13 @@ function dateCardParts(dateStr: string) {
   }
 }
 
-function prettyDateLong(dateStr: string) {
+export function prettyDateLong(dateStr: string) {
   const [y, m, d] = dateStr.split('-').map(Number)
   const dt = new Date(Date.UTC(y, m - 1, d, 12))
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }).format(dt)
 }
 
-function durationLabel(minutes: number): string {
+export function durationLabel(minutes: number): string {
   const hours = Math.floor(minutes / 60)
   const mins = minutes % 60
   const parts: string[] = []
@@ -65,7 +65,7 @@ function durationLabel(minutes: number): string {
 
 /** 12-hour clock ("08:00 PM") in the tenant's timezone — matches the
  * reference layout's time-slot format. */
-function time12(iso: string, timeZone: string): string {
+export function time12(iso: string, timeZone: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hour12: true }).format(
     new Date(iso),
   )
@@ -463,7 +463,7 @@ export function ResourceBookingPage({
   )
 }
 
-function SectionLabel({ icon: Icon, children }: { icon: typeof CalendarDays; children: React.ReactNode }) {
+export function SectionLabel({ icon: Icon, children }: { icon: typeof CalendarDays; children: React.ReactNode }) {
   return (
     <span className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
       <Icon size={14} /> {children}
@@ -471,7 +471,7 @@ function SectionLabel({ icon: Icon, children }: { icon: typeof CalendarDays; chi
   )
 }
 
-function EmptyNotice({ children }: { children: React.ReactNode }) {
+export function EmptyNotice({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-dashed border-border p-6 text-center">
       <p className="text-sm text-muted-foreground">{children}</p>
@@ -507,7 +507,7 @@ function ResourceCard({ resource, currency }: { resource: PublicResource; curren
   )
 }
 
-function SummaryRow({ icon: Icon, label, value }: { icon: typeof Boxes; label: string; value: string }) {
+export function SummaryRow({ icon: Icon, label, value }: { icon: typeof Boxes; label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3 text-sm">
       <span className="flex items-center gap-2 text-muted-foreground">

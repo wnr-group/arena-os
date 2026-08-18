@@ -1,12 +1,15 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { X } from 'lucide-react'
-import { getAvailableStarts } from '@/lib/actions/availability'
+import { getAvailableStartsForType } from '@/lib/actions/availability'
 import { createBooking } from '@/lib/actions/bookings'
 import { timeInZone } from '@/lib/format'
 
-type Resource = { id: string; name: string; typeName: string; imageUrl: string | null }
+type Resource = { id: string; name: string; resourceTypeId: string; typeName: string; imageUrl: string | null }
+type ResourceTypeOption = { id: string; name: string; imageUrl: string | null }
+type TimeSlot = { startsAt: string; resourceId: string }
+
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
 
 const DURATIONS = [
@@ -22,7 +25,7 @@ export function NewBookingDialog({
   date,
   timeZone,
   resources,
-  presetResourceId,
+  presetResourceTypeId,
   onClose,
   onCreated,
 }: {
@@ -30,42 +33,54 @@ export function NewBookingDialog({
   date: string
   timeZone: string
   resources: Resource[]
-  presetResourceId?: string
+  presetResourceTypeId?: string
   onClose: () => void
   onCreated: (bookingNumber: string) => void
 }) {
+  // Book by resource type — an available unit of that type is assigned
+  // automatically for whichever start time gets picked, no manual unit pick.
+  const resourceTypes = useMemo(() => {
+    const byType = new Map<string, ResourceTypeOption>()
+    for (const r of resources) {
+      if (!byType.has(r.resourceTypeId)) {
+        byType.set(r.resourceTypeId, { id: r.resourceTypeId, name: r.typeName, imageUrl: r.imageUrl })
+      }
+    }
+    return [...byType.values()]
+  }, [resources])
+
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
-  const [resourceId, setResourceId] = useState(presetResourceId ?? resources[0]?.id ?? '')
+  const [resourceTypeId, setResourceTypeId] = useState(presetResourceTypeId ?? resourceTypes[0]?.id ?? '')
   const [duration, setDuration] = useState(60)
-  const [starts, setStarts] = useState<string[] | null>(null)
-  const [selectedStart, setSelectedStart] = useState<string | null>(null)
+  const [slots, setSlots] = useState<TimeSlot[] | null>(null)
+  const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
-  const selectedResource = resources.find((r) => r.id === resourceId)
+  const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
 
   function findTimes() {
     setError(null)
-    setStarts(null)
-    setSelectedStart(null)
+    setSlots(null)
+    setSelectedSlot(null)
     start(async () => {
-      const r = await getAvailableStarts({ branchId, resourceId, date, durationMinutes: duration })
+      const r = await getAvailableStartsForType({ branchId, resourceTypeId, date, durationMinutes: duration })
       if (r.error) setError(r.error)
-      else setStarts(r.starts ?? [])
+      else setSlots(r.starts ?? [])
     })
   }
 
   function submit() {
-    if (!selectedStart) return
+    if (!selectedSlot) return
     setError(null)
-    const endsAt = new Date(new Date(selectedStart).getTime() + duration * 60_000).toISOString()
+    const endsAt = new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     start(async () => {
       const r = await createBooking({
         branchId,
         source: 'walk_in',
         customerName: customerName || undefined,
         customerPhone: customerPhone || undefined,
-        slots: [{ resourceId, startsAt: selectedStart, endsAt }],
+        slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt }],
       })
       if (r.error) setError(r.error)
       else onCreated(r.bookingNumber ?? '')
@@ -99,12 +114,12 @@ export function NewBookingDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Resource</label>
+              <label className="text-xs font-medium text-muted-foreground">Resource type</label>
               <div className="flex items-center gap-2">
-                {selectedResource?.imageUrl ? (
+                {selectedType?.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={selectedResource.imageUrl}
+                    src={selectedType.imageUrl}
                     alt=""
                     className="size-9 shrink-0 rounded-md border border-border object-cover"
                   />
@@ -113,16 +128,16 @@ export function NewBookingDialog({
                 )}
                 <select
                   className={input}
-                  value={resourceId}
+                  value={resourceTypeId}
                   onChange={(e) => {
-                    setResourceId(e.target.value)
-                    setStarts(null)
-                    setSelectedStart(null)
+                    setResourceTypeId(e.target.value)
+                    setSlots(null)
+                    setSelectedSlot(null)
                   }}
                 >
-                  {resources.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} · {r.typeName}
+                  {resourceTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
                     </option>
                   ))}
                 </select>
@@ -135,8 +150,8 @@ export function NewBookingDialog({
                 value={duration}
                 onChange={(e) => {
                   setDuration(Number(e.target.value))
-                  setStarts(null)
-                  setSelectedStart(null)
+                  setSlots(null)
+                  setSelectedSlot(null)
                 }}
               >
                 {DURATIONS.map((d) => (
@@ -150,34 +165,34 @@ export function NewBookingDialog({
 
           <button
             onClick={findTimes}
-            disabled={pending || !resourceId}
+            disabled={pending || !resourceTypeId}
             className="w-full rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
-            {pending && starts === null ? 'Checking…' : 'Find available times'}
+            {pending && slots === null ? 'Checking…' : 'Find available times'}
           </button>
 
-          {starts !== null && (
+          {slots !== null && (
             <div>
               <label className="text-xs font-medium text-muted-foreground">
                 Available start times ({date})
               </label>
-              {starts.length === 0 ? (
+              {slots.length === 0 ? (
                 <p className="mt-1 text-sm text-muted-foreground">
-                  No free times for this resource and duration. Try a shorter duration or another day.
+                  No free times for this resource type and duration. Try a shorter duration or another day.
                 </p>
               ) : (
                 <div className="mt-2 grid grid-cols-4 gap-2">
-                  {starts.map((s) => (
+                  {slots.map((s) => (
                     <button
-                      key={s}
-                      onClick={() => setSelectedStart(s)}
+                      key={s.startsAt}
+                      onClick={() => setSelectedSlot(s)}
                       className={`rounded-md border px-2 py-1.5 text-sm transition ${
-                        selectedStart === s
+                        selectedSlot?.startsAt === s.startsAt
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'hover:bg-muted'
                       }`}
                     >
-                      {timeInZone(s, timeZone)}
+                      {timeInZone(s.startsAt, timeZone)}
                     </button>
                   ))}
                 </div>
@@ -189,12 +204,12 @@ export function NewBookingDialog({
 
           <button
             onClick={submit}
-            disabled={pending || !selectedStart}
+            disabled={pending || !selectedSlot}
             className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
-            {selectedStart
-              ? `Book ${timeInZone(selectedStart, timeZone)}–${timeInZone(
-                  new Date(new Date(selectedStart).getTime() + duration * 60_000).toISOString(),
+            {selectedSlot
+              ? `Book ${timeInZone(selectedSlot.startsAt, timeZone)}–${timeInZone(
+                  new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString(),
                   timeZone,
                 )}`
               : 'Select a time'}

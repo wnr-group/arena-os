@@ -22,7 +22,14 @@ import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
-type Resource = { id: string; name: string; typeName: string; status: string; imageUrl: string | null }
+type Resource = {
+  id: string
+  name: string
+  resourceTypeId: string
+  typeName: string
+  status: string
+  imageUrl: string | null
+}
 type Slot = {
   slotId: string
   resourceId: string
@@ -134,7 +141,7 @@ export function BookingsView({
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
   const [showNew, setShowNew] = useState(false)
-  const [presetResource, setPresetResource] = useState<string | undefined>(undefined)
+  const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -228,8 +235,8 @@ export function BookingsView({
     })
   }
 
-  function openNew(resourceId?: string) {
-    setPresetResource(resourceId)
+  function openNew(resourceTypeId?: string) {
+    setPresetResourceTypeId(resourceTypeId)
     setShowNew(true)
   }
 
@@ -340,8 +347,8 @@ export function BookingsView({
                   </div>
                   <button
                     className="relative h-16 flex-1 cursor-copy"
-                    onClick={() => openNew(r.id)}
-                    title="Click to add a booking on this resource"
+                    onClick={() => openNew(r.resourceTypeId)}
+                    title="Click to add a booking of this resource type"
                   >
                     {/* hour gridlines */}
                     {hourTicks.map((h) => (
@@ -501,8 +508,14 @@ export function BookingsView({
           branchId={branchId}
           date={date}
           timeZone={timeZone}
-          resources={resources.map((r) => ({ id: r.id, name: r.name, typeName: r.typeName, imageUrl: r.imageUrl }))}
-          presetResourceId={presetResource}
+          resources={resources.map((r) => ({
+            id: r.id,
+            name: r.name,
+            resourceTypeId: r.resourceTypeId,
+            typeName: r.typeName,
+            imageUrl: r.imageUrl,
+          }))}
+          presetResourceTypeId={presetResourceTypeId}
           onClose={() => setShowNew(false)}
           onCreated={(num) => {
             setShowNew(false)

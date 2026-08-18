@@ -106,6 +106,7 @@ export default async function BookingsPage({
     .map((r) => ({
       id: r.id,
       name: r.name,
+      resourceTypeId: r.resourceTypeId,
       typeName: r.typeName,
       status: r.status,
       imageUrl: r.imageUrl ?? r.typeImageUrl,

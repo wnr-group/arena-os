@@ -26,14 +26,14 @@ export type PublicResourceType = {
   description: string | null
   capacity: number | null
   imageUrl: string | null
+  hourlyRate: string
   resources: { id: string; name: string }[]
 }
 
 /**
  * The bookable catalogue for one branch, grouped by type — names, seat
- * capacity and the display image only. No hourly_rate, no buffer_minutes:
- * nothing a stranger picking a slot needs to know, and per the brief, no
- * financial data on this surface.
+ * capacity, the display image and hourly rate (shown on the browse-grid
+ * cards so a customer can gauge cost before picking a type).
  */
 export async function getPublicResourceTypes(tenantId: string, branchId: string): Promise<PublicResourceType[]> {
   const rows = await withPublicTenant(tenantId, (tx) =>
@@ -44,6 +44,7 @@ export async function getPublicResourceTypes(tenantId: string, branchId: string)
         description: resourceTypes.description,
         capacity: resourceTypes.capacity,
         imageUrl: resourceTypes.imageUrl,
+        hourlyRate: resourceTypes.hourlyRate,
         resourceId: resources.id,
         resourceName: resources.name,
       })
@@ -70,6 +71,7 @@ export async function getPublicResourceTypes(tenantId: string, branchId: string)
         description: row.description,
         capacity: row.capacity,
         imageUrl: row.imageUrl,
+        hourlyRate: row.hourlyRate,
         resources: [],
       }
       byType.set(row.resourceTypeId, type)
@@ -77,6 +79,45 @@ export async function getPublicResourceTypes(tenantId: string, branchId: string)
     type.resources.push({ id: row.resourceId, name: row.resourceName })
   }
   return [...byType.values()]
+}
+
+export type PublicResourceTypeDetail = {
+  id: string
+  name: string
+  description: string | null
+  imageUrl: string | null
+  capacity: number | null
+  hourlyRate: string
+}
+
+/**
+ * One resource type by id, for the type-level booking page (/book-type/[id])
+ * — a customer books "PS5 Station", not a specific unit; the actual unit is
+ * assigned automatically at slot-selection time (see
+ * getPublicAvailableStartsForType below). Unlike getPublicResourceTypes
+ * (the browse-grid list), this exposes the hourly rate — the booking page
+ * needs a price before the customer commits, same discipline getPublicResource
+ * already follows for single-unit bookings.
+ */
+export async function getPublicResourceType(
+  tenantId: string,
+  resourceTypeId: string,
+): Promise<PublicResourceTypeDetail | null> {
+  const [row] = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        id: resourceTypes.id,
+        name: resourceTypes.name,
+        description: resourceTypes.description,
+        imageUrl: resourceTypes.imageUrl,
+        capacity: resourceTypes.capacity,
+        hourlyRate: resourceTypes.hourlyRate,
+      })
+      .from(resourceTypes)
+      .where(and(eq(resourceTypes.id, resourceTypeId), eq(resourceTypes.tenantId, tenantId), eq(resourceTypes.isActive, true)))
+      .limit(1),
+  )
+  return row ?? null
 }
 
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
