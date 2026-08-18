@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { CalendarCheck, Menu, X } from 'lucide-react'
+import { ArrowRight, Menu, X } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
@@ -101,8 +101,8 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
             {/* Shimmer overlay effect */}
             <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
             
-            <CalendarCheck size={15} className="hidden sm:inline transition-transform duration-300 group-hover:rotate-6" />
             <span>Book Now</span>
+            <ArrowRight size={15} className="hidden sm:inline transition-transform duration-300 group-hover:translate-x-1" />
           </button>
           <button
             type="button"
