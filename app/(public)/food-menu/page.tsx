@@ -4,9 +4,9 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicMenu } from '@/lib/menu/public'
-import { formatMoney } from '@/lib/format'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
+import { FoodMenuClient } from '@/components/public-booking/FoodMenuClient'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -79,48 +79,7 @@ export default async function MenuPage() {
               <p className="text-lg text-muted-foreground">The menu isn&apos;t available online yet.</p>
             </div>
           ) : (
-            <div className="space-y-12">
-              {categories.map((category) => (
-                <div key={category.id}>
-                  <h2 className="text-2xl font-bold tracking-tight text-foreground">{category.name}</h2>
-                  <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {category.items.map((item) => (
-                      <div
-                        key={item.id}
-                        className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-4 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg"
-                      >
-                        <div className="relative size-20 shrink-0 overflow-hidden rounded-xl bg-primary/10">
-                          {item.imageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={item.imageUrl}
-                              alt=""
-                              loading="lazy"
-                              className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-                            />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-primary/30">
-                              <UtensilsCrossed size={24} />
-                            </div>
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <p className="font-bold text-foreground transition group-hover:text-primary">{item.name}</p>
-                            <p className="shrink-0 font-bold text-primary">{formatMoney(item.price, tenant.currency)}</p>
-                          </div>
-                          {item.description && (
-                            <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                              {item.description}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <FoodMenuClient categories={categories} tenant={tenant} />
           )}
         </div>
       </main>
@@ -135,3 +94,4 @@ export default async function MenuPage() {
     </div>
   )
 }
+
