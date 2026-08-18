@@ -30,6 +30,7 @@ const KIND_LABEL: Record<string, string> = {
   food: 'Food',
   membership: 'Membership',
   adjustment: 'Adjustment',
+  wallet_topup: 'Wallet top-up',
 }
 
 export function BillScreen({
@@ -37,6 +38,9 @@ export function BillScreen({
   lines,
   existingInvoice,
   settlement,
+  membership,
+  wallet,
+  loyalty,
   timeZone,
   currency,
 }: {
@@ -45,12 +49,27 @@ export function BillScreen({
   existingInvoice: ExistingInvoice | null
   /** Present once a bill exists — drives the payment panel. */
   settlement: SettlementView | null
+  /**
+   * The membership benefit this bill is entitled to (AROS-61), resolved
+   * server-side from the customer's purchased snapshot. DISPLAY ONLY — the
+   * action re-resolves and re-applies it, and receives nothing from here.
+   */
+  membership: { planName: string; discountPercent: number; discountAmount: number } | null
+  /** Ledger balance and spendable amount for the wallet tender. */
+  wallet: { balance: number; maxSpendable: number } | null
+  /**
+   * Points balance and the tenant's rule, for the redemption control. DISPLAY
+   * ONLY: the client sends a point COUNT, and the server prices it, caps it at
+   * what is still owed and takes the debit.
+   */
+  loyalty: { balance: number; pointValue: number; minRedeemPoints: number } | null
   timeZone: string
   currency: string
 }) {
   const router = useRouter()
   const [discountText, setDiscountText] = useState('')
   const [promoCode, setPromoCode] = useState('')
+  const [redeemText, setRedeemText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
@@ -60,9 +79,38 @@ export function BillScreen({
   // PREVIEW ONLY. The same priceBill the server uses, so what the cashier sees
   // matches what gets written — but the action recomputes everything from the
   // database and never receives a single figure from this component.
-  const preview = useMemo(
-    () => priceBill({ lines, discount: discountValid ? discount || 0 : 0 }),
-    [lines, discount, discountValid],
+  // Mirrors the server precedence exactly (lib/billing/membership-benefit.ts):
+  // membership first, then the keyed-in figure against what remains.
+  const membershipDiscount = membership?.discountAmount ?? 0
+
+  // Points the cashier has asked to redeem. Validated here for feedback only —
+  // the server re-reads the balance under a lock and caps the discount itself.
+  const redeemPoints = Number(redeemText)
+  const redeemValid =
+    redeemText.trim() === '' ||
+    (Number.isInteger(redeemPoints) && redeemPoints >= 0 && redeemPoints <= (loyalty?.balance ?? 0))
+  const redeemError =
+    redeemText.trim() === '' || redeemValid
+      ? null
+      : !Number.isInteger(redeemPoints) || redeemPoints < 0
+        ? 'Enter a whole number of points.'
+        : `Only ${loyalty?.balance ?? 0} points available.`
+
+  // Mirrors the server precedence exactly (lib/billing/loyalty.ts):
+  // membership → promo/keyed-in → loyalty, all before GST.
+  const preview = useMemo(() => {
+    const gross = priceBill({ lines })
+    const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
+    const typed = discountValid ? Math.min(discount || 0, afterMembership) : 0
+    const afterTyped = Math.max(0, afterMembership - typed)
+    const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
+    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
+    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff })
+  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+
+  const loyaltyPreviewDiscount = Math.max(
+    0,
+    preview.discount - membershipDiscount - (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0),
   )
 
   const bookingItems = preview.items.filter((i) => i.kind === 'booking')
@@ -81,6 +129,10 @@ export function BillScreen({
       setError('Enter a discount of zero or more.')
       return
     }
+    if (!redeemValid) {
+      setError(redeemError ?? 'Check the points to redeem.')
+      return
+    }
     setError(null)
     start(async () => {
       const r = await createInvoiceForBooking({
@@ -88,6 +140,8 @@ export function BillScreen({
         // Only the discount travels. No prices, no totals, no tax.
         discount: discountText === '' ? undefined : discount,
         promoCode: promoCode.trim() || undefined,
+        // Only a COUNT of points travels. No rupee value, no balance.
+        redeemPoints: redeemText.trim() === '' ? undefined : redeemPoints,
       })
       if (r.error || !r.invoiceId) {
         setError(r.error ?? 'Could not raise the bill.')
@@ -170,6 +224,7 @@ export function BillScreen({
           <PaymentPanel
             key={settlement.paid}
             settlement={settlement}
+            wallet={wallet}
             timeZone={timeZone}
             currency={currency}
           />
@@ -222,9 +277,59 @@ export function BillScreen({
             </p>
           </div>
 
+          {/* ── loyalty redemption ──
+              Only a point COUNT is sent. The server re-reads the balance under
+              a lock, caps the discount at what is still owed after the
+              membership benefit and the promo, and debits only the points that
+              funded it — so the figure below is a preview, not an instruction. */}
+          {loyalty && (
+            <div>
+              <label htmlFor="redeem" className="text-sm font-medium">
+                Redeem points
+              </label>
+              <input
+                id="redeem"
+                type="number"
+                min={0}
+                step="1"
+                value={redeemText}
+                onChange={(e) => setRedeemText(e.target.value)}
+                disabled={blocked || pending || loyalty.balance <= 0}
+                placeholder="0"
+                className={`mt-1 ${input} disabled:cursor-not-allowed disabled:opacity-60`}
+              />
+              {redeemError ? (
+                <p className="mt-1 text-xs text-destructive">{redeemError}</p>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {loyalty.balance > 0
+                    ? `${loyalty.balance} available · 1 point = ${money(loyalty.pointValue)}`
+                    : 'No points available.'}
+                  {loyalty.minRedeemPoints > 0 && ` · minimum ${loyalty.minRedeemPoints}`}
+                </p>
+              )}
+            </div>
+          )}
+
           <dl className="space-y-1.5 border-t pt-4 text-sm">
             <Total k="Subtotal" v={money(preview.subtotal)} />
             <Total k="Discount" v={`− ${money(preview.discount)}`} />
+            {/* Itemises the line above rather than adding to it: the membership
+                benefit is one component of the discount, applied before GST. */}
+            {membership && (
+              <Total
+                k={`${membership.planName} member · ${membership.discountPercent}%`}
+                v={`− ${money(membership.discountAmount)}`}
+                muted
+              />
+            )}
+            {loyaltyPreviewDiscount > 0 && (
+              <Total
+                k={`Loyalty · ${redeemPoints} points`}
+                v={`− ${money(loyaltyPreviewDiscount)}`}
+                muted
+              />
+            )}
             <Total k="Taxable value" v={money(preview.taxableValue)} muted />
             <Total k="CGST" v={money(gst.cgst)} muted />
             <Total k="SGST" v={money(gst.sgst)} muted />

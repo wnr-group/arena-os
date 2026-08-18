@@ -120,6 +120,77 @@ async function main() {
     check('demo owner CAN insert a branch into demo', ok)
   })
 
+  // 7. customer_memberships (AROS-60) — a membership carries money and benefits,
+  //    so it gets the same isolation treatment as any other tenant row.
+  //    Opens its own owner connection: the one above is closed by this point.
+  {
+    const prov = new Client({ connectionString: ownerUrl })
+    await prov.connect()
+
+    const plan = await prov.query<{ id: string }>(
+      `insert into membership_plans (tenant_id,name,price,duration_months,discount_percent,
+                                     free_hours,wallet_credit)
+       values ($1,'RLS Probe','1000.00',1,'10.00','2.00','500.00') returning id`,
+      [acme.tenantId],
+    )
+    const cust = await prov.query<{ id: string }>(
+      `insert into customers (tenant_id,phone,name) values ($1,'+919900000001','RLS Probe')
+       on conflict (tenant_id,phone) do update set name=excluded.name returning id`,
+      [acme.tenantId],
+    )
+    const cm = await prov.query<{ id: string }>(
+      `insert into customer_memberships (tenant_id,customer_id,plan_id,plan_name,price_paid,
+                                         duration_months,discount_percent,free_hours,
+                                         wallet_credit,expires_at)
+       values ($1,$2,$3,'RLS Probe','1000.00',1,'10.00','2.00','500.00',
+               now() + interval '1 month') returning id`,
+      [acme.tenantId, cust.rows[0].id, plan.rows[0].id],
+    )
+    const membershipId = cm.rows[0].id
+
+    await asUser(demo.userId, async () => {
+      const r = await app.query('select id from customer_memberships where tenant_id = $1', [
+        acme.tenantId,
+      ])
+      check('demo owner sees 0 of acme customer_memberships', r.rows.length === 0)
+
+      const byId = await app.query('select id from customer_memberships where id = $1', [
+        membershipId,
+      ])
+      check('…not even by direct id', byId.rows.length === 0)
+
+      // RLS hides the row from UPDATE, so this commits touching nothing.
+      const upd = await app.query(
+        `update customer_memberships set status='cancelled', cancelled_at=now()
+          where id = $1 returning id`,
+        [membershipId],
+      )
+      check("demo owner CANNOT cancel acme's membership (0 rows)", upd.rows.length === 0)
+
+      let blocked = false
+      try {
+        await app.query(
+          `insert into customer_memberships (tenant_id,customer_id,plan_id,plan_name,price_paid,
+                                             duration_months,expires_at)
+           values ($1,$2,$3,'Sneaky','1.00',1, now() + interval '1 month')`,
+          [acme.tenantId, cust.rows[0].id, plan.rows[0].id],
+        )
+      } catch {
+        blocked = true
+      }
+      check('demo owner CANNOT insert a membership into acme', blocked)
+    })
+
+    const still = await prov.query('select status from customer_memberships where id = $1', [
+      membershipId,
+    ])
+    check("…and acme's membership is untouched", still.rows[0].status === 'active')
+
+    await prov.query('delete from customer_memberships where id = $1', [membershipId])
+    await prov.query('delete from membership_plans where id = $1', [plan.rows[0].id])
+    await prov.end()
+  }
+
   await app.end()
 
   console.log(`\n${passed} passed, ${failed} failed`)

@@ -50,6 +50,29 @@ export default async function PosBillPage({
       lines={data.lines}
       existingInvoice={data.existingInvoice}
       settlement={settlement}
+      // Display only: every wallet limit is re-checked under a lock by the
+      // action, which reads the balance from the ledger itself.
+      wallet={data.wallet}
+      // Display only: the server prices the redemption, caps it and debits.
+      loyalty={
+        data.loyalty
+          ? {
+              balance: data.loyalty.balance,
+              pointValue: data.loyalty.rule.pointValue,
+              minRedeemPoints: data.loyalty.rule.minRedeemPoints,
+            }
+          : null
+      }
+      // Display only: the action re-resolves the benefit server-side.
+      membership={
+        data.membership
+          ? {
+              planName: data.membership.planName,
+              discountPercent: data.membership.discountPercent,
+              discountAmount: data.membership.discountAmount,
+            }
+          : null
+      }
       timeZone={ctx.tenant.timezone}
       currency={ctx.tenant.currency}
     />

@@ -625,7 +625,15 @@ export const loyaltyTransactions = pgTable(
     sourceId: uuid('source_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('idx_loyalty_tx_customer').on(t.customerId)],
+  (t) => [
+    index('idx_loyalty_tx_customer').on(t.customerId),
+    // THE idempotency rule (0029): one entry per (tenant, purpose, source),
+    // so an invoice can earn once and be redeemed against once.
+    uniqueIndex('idx_loyalty_tx_source')
+      .on(t.tenantId, t.sourceType, t.sourceId)
+      .where(sql`${t.sourceId} is not null`),
+    index('idx_loyalty_tx_tenant_customer').on(t.tenantId, t.customerId),
+  ],
 )
 
 // ── business profile (migration 0012) ────────────────────────────────────────
@@ -682,6 +690,233 @@ export const promoCodes = pgTable(
     // Target of the composite (tenant_id, promo_code_id) FK on invoices.
     unique('promo_codes_tenant_id_key').on(t.tenantId, t.id),
     uniqueIndex('idx_promo_code').on(t.tenantId, sql`upper(${t.code})`),
+  ],
+)
+
+// ── webhook delivery log (migration 0024) ────────────────────────────────────
+// One row per verified gateway delivery. `event_id` is the DELIVERY identity
+// (cheap replay short-circuit + audit); payment idempotency lives on
+// payment_intents.gateway_payment_id, which is the MONEY identity.
+export const webhookEvents = pgTable(
+  'webhook_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gateway: text('gateway').notNull().default('razorpay'),
+    eventId: text('event_id'),
+    eventType: text('event_type').notNull(),
+    /** Resolved from our own payment intent, never from the payload. */
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    orderId: text('order_id'),
+    paymentId: text('payment_id'),
+    /** 'processed' | 'duplicate' | 'ignored' | 'rejected' */
+    outcome: text('outcome').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('idx_webhook_events_event')
+      .on(t.gateway, t.eventId)
+      .where(sql`${t.eventId} is not null`),
+    index('idx_webhook_events_tenant').on(t.tenantId, t.receivedAt),
+  ],
+)
+
+// ── payment intents (migration 0023) ─────────────────────────────────────────
+// A gateway order awaiting confirmation. Created by AROS-49 when a deposit
+// checkout is opened; settled by AROS-50 when the webhook signature verifies.
+// `status` stays 'pending' here — creating an order is not receiving money.
+export const paymentIntentStatus = pgEnum('payment_intent_status', [
+  'pending',
+  'paid',
+  'failed',
+  'cancelled',
+])
+export const paymentIntentPurpose = pgEnum('payment_intent_purpose', ['booking_deposit'])
+
+export const paymentIntents = pgTable(
+  'payment_intents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    bookingId: uuid('booking_id').notNull(),
+    purpose: paymentIntentPurpose('purpose').notNull().default('booking_deposit'),
+    gateway: text('gateway').notNull().default('razorpay'),
+    /** Razorpay `order_…`. Written only after the gateway call returns. */
+    gatewayOrderId: text('gateway_order_id').notNull(),
+    /** Filled by AROS-50 from the verified webhook, never at order creation. */
+    gatewayPaymentId: text('gateway_payment_id'),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    currency: text('currency').notNull().default('INR'),
+    status: paymentIntentStatus('status').notNull().default('pending'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('payment_intents_tenant_id_key').on(t.tenantId, t.id),
+    foreignKey({
+      name: 'payment_intents_booking_tenant_fkey',
+      columns: [t.tenantId, t.bookingId],
+      foreignColumns: [bookings.tenantId, bookings.id],
+    }).onDelete('cascade'),
+    // At most ONE pending intent per booking+purpose — the idempotency rule.
+    uniqueIndex('idx_payment_intents_one_pending')
+      .on(t.tenantId, t.bookingId, t.purpose)
+      .where(sql`${t.status} = 'pending'`),
+    // AROS-50's webhook lookup. Deliberately not tenant-scoped: a Razorpay
+    // order id is globally unique and must resolve to exactly one intent.
+    uniqueIndex('idx_payment_intents_gateway_order').on(t.gateway, t.gatewayOrderId),
+    // AROS-50's idempotency guarantee: one Razorpay payment settles one intent,
+    // enforced by Postgres so concurrent deliveries cannot both win.
+    uniqueIndex('idx_payment_intents_gateway_payment')
+      .on(t.gateway, t.gatewayPaymentId)
+      .where(sql`${t.gatewayPaymentId} is not null`),
+    index('idx_payment_intents_booking').on(t.tenantId, t.bookingId),
+  ],
+)
+
+// ── customer memberships (migration 0026) ────────────────────────────────────
+// A plan a customer has BOUGHT, as opposed to membershipPlans (what the venue
+// sells) and memberships (a staff seat). Every benefit column is a SNAPSHOT
+// taken at purchase: repricing the plan later must not change what an existing
+// member already paid for, so no benefit is ever read through `planId`.
+export const customerMembershipStatus = pgEnum('customer_membership_status', [
+  'active',
+  'expired',
+  'cancelled',
+])
+
+export const customerMemberships = pgTable(
+  'customer_memberships',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id').notNull(),
+    /** Provenance only — never the source of a benefit value. */
+    planId: uuid('plan_id').notNull(),
+
+    // ── snapshot, mirroring membershipPlans exactly ────────────────────────
+    planName: text('plan_name').notNull(),
+    pricePaid: numeric('price_paid', { precision: 10, scale: 2 }).notNull(),
+    durationMonths: integer('duration_months').notNull(),
+    discountPercent: numeric('discount_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    freeHours: numeric('free_hours', { precision: 10, scale: 2 }).notNull().default('0'),
+    walletCredit: numeric('wallet_credit', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Drawdown of the free-hours benefit; consumed by AROS-61. */
+    freeHoursUsed: numeric('free_hours_used', { precision: 10, scale: 2 }).notNull().default('0'),
+
+    // ── lifecycle ───────────────────────────────────────────────────────────
+    status: customerMembershipStatus('status').notNull().default('active'),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+
+    /** Reserved for the ticket that adds a non-booking GST invoice path. */
+    invoiceId: uuid('invoice_id'),
+    soldBy: uuid('sold_by').references(() => memberships.id, { onDelete: 'set null' }),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('customer_memberships_tenant_id_key').on(t.tenantId, t.id),
+    foreignKey({
+      name: 'customer_memberships_customer_tenant_fkey',
+      columns: [t.tenantId, t.customerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'customer_memberships_plan_tenant_fkey',
+      columns: [t.tenantId, t.planId],
+      foreignColumns: [membershipPlans.tenantId, membershipPlans.id],
+    }),
+    // At most ONE active membership per customer — what makes "which discount
+    // applies?" have a single answer.
+    uniqueIndex('idx_customer_memberships_one_active')
+      .on(t.tenantId, t.customerId)
+      .where(sql`${t.status} = 'active'`),
+    index('idx_customer_memberships_customer').on(t.tenantId, t.customerId, t.startsAt),
+    index('idx_customer_memberships_expiry').on(t.tenantId, t.status, t.expiresAt),
+    index('idx_customer_memberships_plan').on(t.tenantId, t.planId),
+  ],
+)
+
+// ── loyalty settings (migration 0029) ────────────────────────────────────────
+// The per-tenant earn/redeem rule. The LEDGER (loyaltyTransactions, 0007) stays
+// the source of truth for the balance; this only says how points are earned and
+// what they are worth. Defaults encode "1 point per ₹100" and "1 point = ₹1".
+export const loyaltySettings = pgTable('loyalty_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  pointsPerUnit: integer('points_per_unit').notNull().default(1),
+  unitAmount: numeric('unit_amount', { precision: 10, scale: 2 }).notNull().default('100.00'),
+  pointValue: numeric('point_value', { precision: 10, scale: 2 }).notNull().default('1.00'),
+  minRedeemPoints: integer('min_redeem_points').notNull().default(0),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── payment settings (migration 0022) ────────────────────────────────────────
+// Per-tenant Razorpay credentials. `razorpayKeyId` is publishable (Checkout
+// needs it in the browser); `razorpayKeySecretEncrypted` holds AES-256-GCM
+// ciphertext from lib/security/encryption.ts and must NEVER be selected into
+// anything client-facing. Read it only through
+// lib/settings/razorpay-credentials.ts, which decrypts server-side.
+export const paymentSettings = pgTable('payment_settings', {
+  // tenant_id IS the primary key: exactly one row per tenant.
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  razorpayKeyId: text('razorpay_key_id'),
+  razorpayKeySecretEncrypted: text('razorpay_key_secret_encrypted'),
+  /**
+   * The WEBHOOK signing secret (migration 0024) — a separate Razorpay
+   * credential from the API key secret above, with its own rotation. Same
+   * AES-256-GCM storage contract; never selected into anything client-facing.
+   */
+  razorpayWebhookSecretEncrypted: text('razorpay_webhook_secret_encrypted'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── membership plans (migration 0021) ────────────────────────────────────────
+// The CUSTOMER-facing product catalogue (Gold, Silver, …). Not to be confused
+// with `memberships` above, which is a staff member's seat in a tenant.
+// Benefits are structured columns so billing (AROS-61) can read them directly
+// rather than parsing a JSON blob or a display string.
+export const membershipPlans = pgTable(
+  'membership_plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    price: numeric('price', { precision: 10, scale: 2 }).notNull(),
+    durationMonths: integer('duration_months').notNull(),
+    discountPercent: numeric('discount_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    freeHours: numeric('free_hours', { precision: 10, scale: 2 }).notNull().default('0'),
+    walletCredit: numeric('wallet_credit', { precision: 10, scale: 2 }).notNull().default('0'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite (tenant_id, plan_id) FK customer_memberships will carry.
+    unique('membership_plans_tenant_id_key').on(t.tenantId, t.id),
+    // One LIVE plan per name per tenant; retired plans keep their name for history.
+    uniqueIndex('idx_membership_plans_active_name')
+      .on(t.tenantId, sql`lower(btrim(${t.name}))`)
+      .where(sql`${t.isActive}`),
+    index('idx_membership_plans_tenant').on(t.tenantId, t.isActive),
   ],
 )
 
@@ -742,6 +977,46 @@ export const invoices = pgTable(
     discount: numeric('discount', { precision: 10, scale: 2 }).notNull().default('0'),
     // Composite FK onto promo_codes (migration 0011) — see below.
     promoCodeId: uuid('promo_code_id'),
+    /**
+     * The membership benefit actually applied (migration 0027). A SNAPSHOT:
+     * never recomputed, so the bill stays explicable after the membership
+     * expires or the plan is repriced. `membershipDiscount` is one component
+     * of `discount` above, never an extra amount alongside it.
+     */
+    customerMembershipId: uuid('customer_membership_id'),
+    membershipDiscount: numeric('membership_discount', { precision: 10, scale: 2 })
+      .notNull()
+      .default('0'),
+    membershipDiscountPercent: numeric('membership_discount_percent', {
+      precision: 5,
+      scale: 2,
+    })
+      .notNull()
+      .default('0'),
+    membershipPlanName: text('membership_plan_name'),
+    /**
+     * The loyalty half of `discount` (migration 0029), frozen at issue —
+     * including the rate honoured, so a reprint never consults today's
+     * loyalty_settings. `loyaltyPointsEarned` is filled when the invoice
+     * settles.
+     */
+    loyaltyPointsRedeemed: integer('loyalty_points_redeemed').notNull().default(0),
+    loyaltyDiscount: numeric('loyalty_discount', { precision: 10, scale: 2 })
+      .notNull()
+      .default('0'),
+    loyaltyPointValue: numeric('loyalty_point_value', { precision: 10, scale: 2 })
+      .notNull()
+      .default('0'),
+    loyaltyPointsEarned: integer('loyalty_points_earned').notNull().default(0),
+    /**
+     * Cumulative "already undone" counters (migration 0030). A refund
+     * reversal writes only the DELTA against these, so reconciliation is
+     * idempotent and many partial refunds sum correctly.
+     */
+    loyaltyPointsReversed: integer('loyalty_points_reversed').notNull().default(0),
+    walletCreditReversed: numeric('wallet_credit_reversed', { precision: 10, scale: 2 })
+      .notNull()
+      .default('0'),
     taxTotal: numeric('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
     taxBreakup: jsonb('tax_breakup').$type<TaxBreakupLine[]>().notNull().default([]),
     total: numeric('total', { precision: 10, scale: 2 }).notNull().default('0'),
@@ -786,7 +1061,12 @@ export const invoiceItems = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     invoiceId: uuid('invoice_id').notNull(),
-    kind: text('kind').$type<'booking' | 'food' | 'membership' | 'adjustment'>().notNull(),
+    // Mirrors invoice_items_kind_check. 'wallet_topup' (migration 0028) is money
+    // received in ADVANCE, not revenue — kept distinct so reporting can exclude
+    // it from sales.
+    kind: text('kind')
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup'>()
+      .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),
     qty: numeric('qty', { precision: 10, scale: 2 }).notNull().default('1'),
@@ -826,19 +1106,39 @@ export const payments = pgTable(
     gatewayOrderId: text('gateway_order_id'),
     gatewayPaymentId: text('gateway_payment_id'),
     gatewaySignature: text('gateway_signature'),
-    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Target of the composite FK on refunds.
-    unique('payments_tenant_id_key').on(t.tenantId, t.id),
+    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+    /**
+     * Client-supplied retry token (migration 0030). A double-clicked or
+     * retried submission carries the SAME key, so the second attempt
+     * recognises itself and returns the first result instead of taking the
+     * money again. Null on gateway paths, which are already idempotent
+     * through gateway_payment_id.
+     */
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite FK on refunds.
+    unique('payments_tenant_id_key').on(t.tenantId, t.id),
+    uniqueIndex('idx_payments_idempotency')
+      .on(t.tenantId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
     foreignKey({
       name: 'payments_invoice_tenant_fkey',
       columns: [t.tenantId, t.invoiceId],
       foreignColumns: [invoices.tenantId, invoices.id],
     }).onDelete('cascade'),
     index('idx_payments_invoice').on(t.invoiceId),
+    // AROS-51: one Razorpay payment may appear on at most one payments row, so
+    // a deposit cannot be carried onto an invoice twice — by the webhook and by
+    // invoice creation racing each other.
+    uniqueIndex('idx_payments_gateway_payment')
+      .on(t.gateway, t.gatewayPaymentId)
+      .where(sql`${t.gatewayPaymentId} is not null`),
+    index('idx_payments_tenant_gateway_payment')
+      .on(t.tenantId, t.gatewayPaymentId)
+      .where(sql`${t.gatewayPaymentId} is not null`),
   ],
 )
 

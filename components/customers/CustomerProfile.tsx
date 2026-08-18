@@ -1,5 +1,11 @@
 import Link from 'next/link'
 import { ArrowLeft, CalendarDays, Coins, Sparkles, Wallet } from 'lucide-react'
+import {
+  MembershipPanel,
+  type MembershipRow,
+  type PlanOption,
+} from './MembershipPanel'
+import { WalletTopUp } from './WalletTopUp'
 import type { CustomerProfileData } from '@/lib/customers/profile'
 import { formatMoney, prettyDate, timeInZone } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
@@ -36,12 +42,20 @@ export function CustomerProfile({
   timeZone,
   currency,
   canManage,
+  canSellMemberships,
+  memberships,
+  membershipPlans,
 }: {
   data: CustomerProfileData
   timeZone: string
   currency: string
   /** May this member edit notes and tags? (Read-only otherwise.) */
   canManage: boolean
+  /** Cashier and up — may sell or cancel a membership (AROS-60). */
+  canSellMemberships: boolean
+  /** Eligibility is precomputed server-side; see the page. */
+  memberships: MembershipRow[]
+  membershipPlans: PlanOption[]
 }) {
   const { customer: c, stats } = data
   const day = (d: Date) => prettyDate(todayInZone(timeZone, d), timeZone)
@@ -190,13 +204,31 @@ export function CustomerProfile({
         />
       </Section>
 
+      {/* ── membership (AROS-60) ────────────────────────────────────────── */}
+      <MembershipPanel
+        customerId={c.id}
+        memberships={memberships}
+        plans={membershipPlans}
+        currency={currency}
+        canSell={canSellMemberships}
+      />
+
       {/* ── wallet + loyalty ───────────────────────────────────────────── */}
       <div className="grid gap-6 sm:grid-cols-2">
         <Section title="Wallet">
-          <LedgerTotal
-            label="Current balance"
-            value={formatMoney(stats.walletBalance, currency)}
-          />
+          {/* stats.walletBalance is walletBalance() over the ledger — the sum of
+              wallet_transactions.amount. There is no balance column to read. */}
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <LedgerTotal
+              label="Current balance"
+              value={formatMoney(stats.walletBalance, currency)}
+            />
+            <WalletTopUp
+              customerId={c.id}
+              currency={currency}
+              canSell={canSellMemberships}
+            />
+          </div>
           {data.wallet.length === 0 ? (
             <Empty>No wallet activity yet.</Empty>
           ) : (

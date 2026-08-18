@@ -76,6 +76,7 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         status: bookings.status,
         source: bookings.source,
         total: bookings.total,
+        deposit: bookings.deposit,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))

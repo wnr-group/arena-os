@@ -19,9 +19,25 @@ import { bookings, bookingSlots, invoices, invoiceItems } from '@/db/schema'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
+import {
+  applyPaidDepositsToInvoice,
+  backfillDepositOrderIds,
+  type DepositCarryResult,
+} from '@/lib/payments/deposit-settlement'
 import { loadInvoicePrefix } from '@/lib/settings/business-profile'
+import {
+  resolveMembershipBenefit,
+  type AppliedMembershipBenefit,
+} from './membership-benefit'
+import {
+  commitRedemption,
+  loadLoyaltyRule,
+  lockedLoyaltyBalance,
+  priceRedemption,
+  type RedeemedLoyalty,
+} from './loyalty'
 import { paise } from './payments'
-import { priceBill, type BillLine, type PricingResult } from './pricing'
+import { priceBill, round2, type BillLine, type PricingResult } from './pricing'
 import { consumePromoUse, normalizePromoCode, validatePromo } from './promo'
 
 type Db = NodePgDatabase<typeof schema>
@@ -221,12 +237,33 @@ export type IssueInvoiceInput = {
   bookingId: string
   discount?: number
   promoCode?: string
+  /**
+   * Loyalty points the customer wants to spend on this bill. Only a COUNT
+   * travels from the client — the rupee value, the cap and the debit are all
+   * decided server-side from the tenant's rule and the ledger balance.
+   */
+  redeemPoints?: number
 }
 
 export type IssuedInvoice = {
   invoiceId: string
   invoiceNumber: string
   pricing: PricingResult
+  /**
+   * The membership benefit applied, if any (AROS-61). Null when the customer
+   * had no eligible membership, or its snapshot carried no discount.
+   */
+  membership: AppliedMembershipBenefit | null
+  /** Loyalty points actually spent on this bill. Null when none were. */
+  loyalty: RedeemedLoyalty | null
+  /**
+   * Online deposits carried onto this invoice as captured payments when it was
+   * raised (AROS-51). The balance the till shows already accounts for them —
+   * this is here so the caller can say "₹200 deposit applied", and so an
+   * `unapplied` entry (a deposit bigger than the bill) is visible rather than
+   * silently dropped.
+   */
+  deposits: DepositCarryResult
 }
 
 /**
@@ -275,18 +312,49 @@ export async function issueInvoiceForBooking(
     throw new BillingError('This booking has nothing to bill.')
   }
 
-  // ── 4. promo ──────────────────────────────────────────────────────────────
-  // A percentage promo is a percentage OF THE SUBTOTAL, so the subtotal has to
-  // exist before the code can be priced. Pricing with no discount gives it —
-  // priceBill is pure, so calling it twice costs nothing and keeps it the only
-  // thing in the codebase that adds up a bill.
+  // ── 4. discounts ──────────────────────────────────────────────────────────
+  // Precedence — the single authoritative statement of it lives in
+  // lib/billing/membership-benefit.ts:
+  //
+  //   1. Base line pricing (happy hours would sit here; not yet wired in)
+  //   2. MEMBERSHIP benefit — % of subtotal, from the purchased snapshot
+  //   3. PROMO CODE or a keyed-in discount — against what REMAINS after (2)
+  //
+  // All of it is subtracted BEFORE GST: the combined figure goes to priceBill()
+  // as one `discount`, which caps it at the subtotal and allocates it across
+  // tax rates pro-rata. Nothing below recomputes tax.
+  //
+  // The subtotal has to exist before any percentage can be priced. Pricing with
+  // no discount gives it — priceBill is pure, so calling it twice costs nothing
+  // and keeps it the only thing in the codebase that adds up a bill.
+  const gross = priceBill({ lines })
+
+  // ── 4a. membership ────────────────────────────────────────────────────────
+  // THE authoritative application, and the only one: getBillableForBooking()
+  // resolves the same benefit but merely displays it. The customer comes off
+  // the BOOKING row read under RLS above, never from the caller, so a client
+  // cannot nominate another customer's membership. Every figure comes from the
+  // customer_memberships snapshot — membership_plans is not read.
+  const membership = await resolveMembershipBenefit(
+    tx,
+    tenant.id,
+    booking.customerId,
+    gross.subtotal,
+  )
+  const membershipDiscount = membership?.discountAmount ?? 0
+
+  // What a promo or a keyed-in discount may still take off. A membership that
+  // covers the whole bill leaves nothing for either.
+  const afterMembership = round2(gross.subtotal - membershipDiscount)
+
   const promoCode = normalizePromoCode(input.promoCode)
   let promoId: string | null = null
-  let discount = input.discount
+  // A keyed-in discount is capped at the remainder for the same reason a promo
+  // is: the two discounts together must never exceed the bill.
+  let discount = Math.min(round2(input.discount ?? 0), afterMembership)
 
   if (promoCode) {
-    const gross = priceBill({ lines })
-    const promo = await validatePromo(tx, tenant.id, promoCode, gross.subtotal)
+    const promo = await validatePromo(tx, tenant.id, promoCode, afterMembership)
     // An invalid code stops the bill. Billing anyway at full price would
     // silently overcharge a customer who was promised the discount.
     if (!promo.ok) throw new BillingError(promo.reason)
@@ -297,9 +365,55 @@ export async function issueInvoiceForBooking(
     discount = promo.discount
   }
 
+  // ── 4c. loyalty redemption ────────────────────────────────────────────────
+  // LAST in the precedence (see lib/billing/loyalty.ts). Points are stored
+  // value, so they settle what is genuinely still owed rather than being burnt
+  // against amounts a promo was about to remove. Capped at the remainder, and
+  // only the points that funded the capped amount are debited.
+  //
+  // The customer row is locked BEFORE the balance is read, so two tills
+  // redeeming at once serialise — the same device the wallet uses, and the same
+  // customer→invoice lock order, so the two cannot deadlock.
+  let loyalty: RedeemedLoyalty | null = null
+  // A negative or fractional count is nonsense that should never arrive — the
+  // action's Zod schema rejects it — but this core is reachable from anywhere a
+  // `tx` is, so it refuses rather than silently ignoring. 0 and undefined mean
+  // "no redemption" and bill normally.
+  if (input.redeemPoints !== undefined && input.redeemPoints !== 0) {
+    if (!Number.isInteger(input.redeemPoints) || input.redeemPoints < 0) {
+      throw new BillingError('Points to redeem must be a whole number of zero or more.')
+    }
+  }
+  if (input.redeemPoints && input.redeemPoints > 0) {
+    if (!booking.customerId) {
+      throw new BillingError('This booking has no customer, so points cannot be redeemed.')
+    }
+    const rule = await loadLoyaltyRule(tx, tenant.id)
+    await lockedLoyaltyBalance(tx, tenant.id, booking.customerId)
+
+    const remainingAfterOthers = round2(gross.subtotal - membershipDiscount - discount)
+    loyalty = await priceRedemption(
+      tx,
+      tenant.id,
+      booking.customerId,
+      input.redeemPoints,
+      remainingAfterOthers,
+      rule,
+    )
+  }
+  const loyaltyDiscount = loyalty?.discount ?? 0
+
+  // The combined figure. Membership + (promo | keyed-in) + loyalty — capped once
+  // more at the subtotal so no combination can drive the bill negative, belt and
+  // braces with priceBill's own cap.
+  const totalDiscount = Math.min(
+    round2(membershipDiscount + discount + loyaltyDiscount),
+    gross.subtotal,
+  )
+
   // priceBill owns every rupee: line rounding, discount-before-GST, the
   // per-rate CGST/SGST split and the total. Nothing is recomputed here.
-  const pricing = priceBill({ lines, discount })
+  const pricing = priceBill({ lines, discount: totalDiscount })
 
   // Take the use only now, with the bill certain to be written. It is one
   // statement and it re-checks the limit under a row lock, so the last use of a
@@ -335,6 +449,18 @@ export async function issueInvoiceForBooking(
       customerId: booking.customerId,
       // Which promo was actually honoured, not just the amount it took off.
       promoCodeId: promoId,
+      // The membership half of `discount`, frozen at issue (migration 0027) so
+      // the bill stays explicable after the membership expires or the plan is
+      // repriced. Never recomputed, and never read back from the live plan.
+      customerMembershipId: membership?.membershipId ?? null,
+      membershipDiscount: membershipDiscount.toFixed(2),
+      membershipDiscountPercent: (membership?.discountPercent ?? 0).toFixed(2),
+      membershipPlanName: membership?.planName ?? null,
+      // The loyalty half of `discount`, frozen at issue with the rate honoured
+      // (migration 0029), so a reprint never consults today's loyalty_settings.
+      loyaltyPointsRedeemed: loyalty?.points ?? 0,
+      loyaltyDiscount: loyaltyDiscount.toFixed(2),
+      loyaltyPointValue: (loyalty?.pointValue ?? 0).toFixed(2),
       subtotal: pricing.subtotal.toFixed(2),
       discount: pricing.discount.toFixed(2),
       taxTotal: pricing.taxTotal.toFixed(2),
@@ -368,5 +494,228 @@ export async function issueInvoiceForBooking(
     })),
   )
 
-  return { invoiceId: invoice.id, invoiceNumber, pricing }
+  // ── 7. carry over any deposit already paid online ─────────────────────────
+  // The usual order is deposit first, bill later, so this is where the money
+  // the venue already holds becomes a captured payment against the invoice.
+  // From here on the M1 balance — total minus captured — is simply correct, and
+  // nothing downstream needs to know a deposit was involved.
+  //
+  // Inside the same transaction as the invoice and its items: a bill can never
+  // be raised showing a deposit that was not actually recorded, or the reverse.
+  // recordVerifiedGatewayPayment() flips the invoice to 'paid' if the deposit
+  // covers the whole total, exactly as a cashier's final tender would.
+  // Debit the points now the invoice exists to reference. Same transaction, so
+  // a discounted bill can never exist without its debit, nor a debit without
+  // the bill it funded. Idempotent per invoice via the unique ledger index.
+  if (loyalty && booking.customerId) {
+    await commitRedemption(tx, tenant.id, booking.customerId, invoice.id, loyalty)
+  }
+
+  const deposits = await applyPaidDepositsToInvoice(tx, tenant.id, booking.id, invoice.id)
+  if (deposits.applied.length > 0) {
+    await backfillDepositOrderIds(tx, tenant.id, invoice.id)
+  }
+
+  return { invoiceId: invoice.id, invoiceNumber, pricing, membership, loyalty, deposits }
+}
+
+/**
+ * Raise the invoice for a MEMBERSHIP sale (AROS-60).
+ *
+ * Sibling to issueInvoiceForBooking() above, sharing every piece that decides
+ * money: priceBill() owns the arithmetic, nextInvoiceNumber() owns the GST
+ * sequence, loadInvoicePrefix() owns the prefix, financialYearPeriod() owns the
+ * scope. Only the LINES differ — one `membership` line instead of booking slots
+ * and food — so a membership bill is numbered, taxed and totalled exactly like
+ * any other bill in the system.
+ *
+ * ── Tax ─────────────────────────────────────────────────────────────────────
+ * `membership_plans` carries no tax rate (AROS-59), so the line is raised at 0%
+ * and the plan price IS the invoice total. That is deliberate: inventing a GST
+ * rate the venue never configured would put a wrong number on a legal document.
+ * When plans gain a `tax_rate_id`, pass its percent through `taxPercent` and
+ * nothing else here changes.
+ *
+ * ── Branch ──────────────────────────────────────────────────────────────────
+ * `invoices.branch_id` is NOT NULL but a membership is not branch-scoped, so
+ * the caller supplies the selling member's branch, falling back to the tenant's
+ * primary branch.
+ *
+ * Runs in the caller's transaction: the invoice, its item, the membership row
+ * and the tender all commit or roll back together.
+ */
+export async function issueMembershipInvoice(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  input: {
+    branchId: string
+    customerId: string
+    /** Snapshotted plan name, for the line description. */
+    planName: string
+    /** Rupees — the snapshotted price the customer is being charged. */
+    price: number
+    /** The customer_membership this bill is for, kept on the line as source. */
+    membershipId: string
+  },
+): Promise<IssuedInvoice> {
+  const lines: BillLine[] = [
+    {
+      kind: 'membership',
+      description: `${input.planName} membership`,
+      sourceId: input.membershipId,
+      qty: 1,
+      unitPrice: input.price,
+      // See the tax note above.
+      taxPercent: 0,
+    },
+  ]
+
+  const pricing = priceBill({ lines })
+
+  const period = financialYearPeriod(todayInZone(tenant.timezone))
+  const prefix = await loadInvoicePrefix(tx, tenant.id)
+  const invoiceNumber = await nextInvoiceNumber(tx, tenant.id, period, prefix)
+
+  // A comped (₹0) membership owes nothing, so it is settled the moment it is
+  // raised — the same rule issueInvoiceForBooking() applies to a free bill.
+  const settledOnIssue = paise(pricing.total) === 0
+
+  const [invoice] = await tx
+    .insert(invoices)
+    .values({
+      tenantId: tenant.id,
+      branchId: input.branchId,
+      invoiceNumber,
+      // No booking: a membership is sold on its own.
+      bookingId: null,
+      customerId: input.customerId,
+      subtotal: pricing.subtotal.toFixed(2),
+      discount: pricing.discount.toFixed(2),
+      taxTotal: pricing.taxTotal.toFixed(2),
+      taxBreakup: pricing.taxBreakup.map((g) => ({
+        rate: g.percent,
+        cgst: g.cgst.toFixed(2),
+        sgst: g.sgst.toFixed(2),
+      })),
+      total: pricing.total.toFixed(2),
+      status: settledOnIssue ? 'paid' : 'issued',
+      issuedAt: new Date(),
+    })
+    .returning({ id: invoices.id })
+
+  await tx.insert(invoiceItems).values(
+    pricing.items.map((item) => ({
+      tenantId: tenant.id,
+      invoiceId: invoice.id,
+      kind: item.kind,
+      sourceId: item.sourceId ?? null,
+      description: item.description,
+      qty: item.qty.toFixed(2),
+      unitPrice: item.unitPrice.toFixed(2),
+      taxRate: item.taxPercent.toFixed(2),
+      lineTotal: item.lineTotal.toFixed(2),
+    })),
+  )
+
+  // No deposit carry-over: a membership sale has no booking, so there is no
+  // payment intent to attach.
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber,
+    pricing,
+    // Buying a membership is not itself discounted by one.
+    membership: null,
+    loyalty: null,
+    deposits: { applied: [], unapplied: [] },
+  }
+}
+
+/**
+ * Raise the invoice for a WALLET TOP-UP.
+ *
+ * Third sibling of issueInvoiceForBooking() / issueMembershipInvoice(), sharing
+ * every piece that decides money: priceBill() for the arithmetic,
+ * nextInvoiceNumber() for the GST sequence, loadInvoicePrefix() for the prefix.
+ * Only the line differs.
+ *
+ * ── What a top-up is, financially ───────────────────────────────────────────
+ * Money received in advance, not revenue. The line is `kind='wallet_topup'` at
+ * 0% tax (migration 0028): issuing wallet credit is not a supply under GST, and
+ * the tax attaches later, when the credit is redeemed against a real booking or
+ * food line. The customer pays face value and receives face value.
+ *
+ * No discount and no membership benefit is applied — discounting a top-up would
+ * mean selling ₹1000 of spending power for less than ₹1000, which is a
+ * different product decision and not one this ticket makes.
+ */
+export async function issueWalletTopUpInvoice(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  input: { branchId: string; customerId: string; amount: number },
+): Promise<IssuedInvoice> {
+  const lines: BillLine[] = [
+    {
+      kind: 'wallet_topup',
+      description: 'Wallet top-up',
+      qty: 1,
+      unitPrice: input.amount,
+      // See the tax note above.
+      taxPercent: 0,
+    },
+  ]
+
+  const pricing = priceBill({ lines })
+
+  const period = financialYearPeriod(todayInZone(tenant.timezone))
+  const prefix = await loadInvoicePrefix(tx, tenant.id)
+  const invoiceNumber = await nextInvoiceNumber(tx, tenant.id, period, prefix)
+
+  const [invoice] = await tx
+    .insert(invoices)
+    .values({
+      tenantId: tenant.id,
+      branchId: input.branchId,
+      invoiceNumber,
+      bookingId: null,
+      customerId: input.customerId,
+      subtotal: pricing.subtotal.toFixed(2),
+      discount: pricing.discount.toFixed(2),
+      taxTotal: pricing.taxTotal.toFixed(2),
+      taxBreakup: pricing.taxBreakup.map((g) => ({
+        rate: g.percent,
+        cgst: g.cgst.toFixed(2),
+        sgst: g.sgst.toFixed(2),
+      })),
+      total: pricing.total.toFixed(2),
+      // Always 'issued': a top-up must be TENDERED before the credit is
+      // granted, and the caller settles it in this same transaction.
+      status: 'issued',
+      issuedAt: new Date(),
+    })
+    .returning({ id: invoices.id })
+
+  await tx.insert(invoiceItems).values(
+    pricing.items.map((item) => ({
+      tenantId: tenant.id,
+      invoiceId: invoice.id,
+      kind: item.kind,
+      sourceId: null,
+      description: item.description,
+      qty: item.qty.toFixed(2),
+      unitPrice: item.unitPrice.toFixed(2),
+      taxRate: item.taxPercent.toFixed(2),
+      lineTotal: item.lineTotal.toFixed(2),
+    })),
+  )
+
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber,
+    pricing,
+    // Buying wallet credit is neither discounted by a membership nor by points:
+    // ₹1000 of spending power costs ₹1000.
+    membership: null,
+    loyalty: null,
+    deposits: { applied: [], unapplied: [] },
+  }
 }

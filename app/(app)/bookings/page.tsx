@@ -6,6 +6,7 @@ import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { listMenuItems } from '@/lib/menu/data'
 import { listOrdersForBookings } from '@/lib/orders/data'
+import { listDepositStates } from '@/lib/payments/data'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
 function toMinutes(hhmm: string): number {
@@ -42,6 +43,12 @@ export default async function BookingsPage({
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
   const orderRows = await listOrdersForBookings(ctx, bookingIds)
+  // Which bookings already have a deposit order open or settled (AROS-49).
+  const depositRows = await listDepositStates(ctx, bookingIds)
+  const depositStates: Record<string, 'pending' | 'paid'> = {}
+  for (const [bookingId, state] of Object.entries(depositRows)) {
+    depositStates[bookingId] = state.status
+  }
 
   const ordersByBooking: Record<string, OrderSummary[]> = {}
   for (const row of orderRows) {
@@ -112,10 +119,13 @@ export default async function BookingsPage({
         status: s.status,
         source: s.source,
         total: s.total,
+        deposit: s.deposit,
       }))}
       categories={categories}
       menuItems={menuItems}
       ordersByBooking={ordersByBooking}
+      venueName={ctx.tenant.name}
+      depositStates={depositStates}
     />
   )
 }

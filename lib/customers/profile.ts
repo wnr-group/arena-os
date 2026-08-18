@@ -12,6 +12,11 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { walletBalance, loyaltyPoints } from './ledger'
+import {
+  expireLapsed,
+  listCustomerMemberships,
+  type CustomerMembership,
+} from '@/lib/memberships/customer-memberships'
 
 /**
  * Everything the customer profile renders, loaded in ONE RLS-scoped transaction.
@@ -71,6 +76,8 @@ export type CustomerProfileData = {
   notes: ProfileNote[]
   wallet: WalletEntry[]
   loyalty: LoyaltyEntry[]
+  /** Every membership the customer has held, newest first (AROS-60). */
+  memberships: CustomerMembership[]
 }
 
 /**
@@ -225,6 +232,12 @@ export async function getCustomerProfile(
     // Balances are summed over the WHOLE ledger by the canonical helpers in
     // ./ledger.ts — never over the truncated lists above, and never read from a
     // stored column, because no such column exists (migration 0006).
+    // Tidy any lapsed membership before listing, so the profile does not show a
+    // stale "active" badge. Cosmetic only: isEligible() tests the clock as well
+    // as the column, so nothing about benefits depends on this having run.
+    await expireLapsed(tx, tenantId, customerId)
+    const membershipRows = await listCustomerMemberships(tx, tenantId, customerId)
+
     const [balance, points] = await Promise.all([
       walletBalance(tx, tenantId, customerId),
       loyaltyPoints(tx, tenantId, customerId),
@@ -242,6 +255,7 @@ export async function getCustomerProfile(
       notes,
       wallet,
       loyalty,
+      memberships: membershipRows,
     }
   })
 }

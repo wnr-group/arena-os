@@ -32,6 +32,15 @@ const createInvoiceInput = z.object({
   // discount can never produce a negative total even if this were bypassed.
   discount: z.coerce.number().min(0, 'Discount cannot be negative.').finite().optional(),
   promoCode: z.string().trim().max(64).optional(),
+  // Only a COUNT of loyalty points. The rupee value, the cap against what is
+  // still owed, and the ledger debit are all decided server-side from the
+  // tenant's rule and the customer's balance — never from the browser.
+  redeemPoints: z.coerce
+    .number()
+    .int('Points must be a whole number.')
+    .nonnegative('Points cannot be negative.')
+    .finite()
+    .optional(),
 })
 
 /**

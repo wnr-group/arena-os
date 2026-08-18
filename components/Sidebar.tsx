@@ -4,7 +4,9 @@ import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
+  BadgeCheck,
   Building2,
+  CreditCard,
   CalendarDays,
   LayoutDashboard,
   Settings,
@@ -42,6 +44,8 @@ const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  // The customer membership catalogue — manager-only, like Resources.
+  { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
   { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
     href: '/menu',
@@ -64,6 +68,8 @@ const NAV: NavItem[] = [
       { href: '/settings/promo-codes', label: 'Promo Codes' },
     ],
   },
+  // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
+  { href: '/settings/payments', label: 'Payments', icon: CreditCard, can: isManager },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
     href: '/employees',

@@ -9,9 +9,15 @@ import {
   loadBillLines,
   type ExistingInvoice,
 } from './invoice'
+import {
+  resolveMembershipBenefit,
+  type AppliedMembershipBenefit,
+} from './membership-benefit'
+import { loyaltyTenderState, type LoyaltyRule } from './loyalty'
 import { getInvoiceSettlement, type InvoiceSettlement } from './payments'
+import { walletTenderState } from './wallet-payments'
 import { loadInvoiceReceipt, type InvoiceReceipt } from './receipt'
-import type { BillLine } from './pricing'
+import { priceBill, type BillLine } from './pricing'
 
 /**
  * Everything the POS bill screen renders, loaded in ONE RLS-scoped transaction
@@ -47,6 +53,27 @@ export type BillableBooking = {
    * authoritative figures behind the payment panel. Null until a bill exists.
    */
   settlement: InvoiceSettlement | null
+  /**
+   * The membership benefit this bill is entitled to (AROS-61) — DISPLAY ONLY.
+   *
+   * Resolved through the same helper issueInvoiceForBooking() uses, so the
+   * preview can never drift from what is actually charged. Nothing here is
+   * persisted: the invoice path re-reads and re-applies the benefit as the
+   * single authoritative application.
+   */
+  membership: AppliedMembershipBenefit | null
+  /**
+   * The customer's wallet balance and what may be spent against THIS bill.
+   * Null when the invoice has no customer. DISPLAY ONLY — every limit is
+   * re-checked under a lock by recordWalletPaymentForInvoice().
+   */
+  wallet: { balance: number; maxSpendable: number } | null
+  /**
+   * The customer's points balance and the tenant's rule, for the redemption
+   * control. DISPLAY ONLY — the discount is priced and the debit taken
+   * server-side when the bill is raised.
+   */
+  loyalty: { balance: number; rule: LoyaltyRule } | null
 }
 
 /**
@@ -101,6 +128,25 @@ export async function getBillableForBooking(
 
     const bookingLines = lines.filter((l) => l.kind === 'booking')
 
+    // The membership benefit, for DISPLAY on the bill screen. Priced against the
+    // undiscounted subtotal, exactly as issueInvoiceForBooking() does, through
+    // the same helper — so the figure the cashier sees is the figure that gets
+    // charged. The customer comes off the booking row, never from the caller.
+    const membership = await resolveMembershipBenefit(
+      tx,
+      ctx.tenant.id,
+      row.customerId,
+      priceBill({ lines }).subtotal,
+    )
+
+    // Points balance + rule, for the redemption control on the bill form.
+    const loyalty = await loyaltyTenderState(tx, ctx.tenant.id, row.customerId)
+
+    // Wallet state for the payment panel, once a bill exists to spend against.
+    const wallet = existingInvoice
+      ? await walletTenderState(tx, ctx.tenant.id, existingInvoice.id)
+      : null
+
     return {
       booking: {
         id: row.id,
@@ -120,6 +166,9 @@ export async function getBillableForBooking(
       lines,
       existingInvoice,
       settlement,
+      membership,
+      wallet,
+      loyalty,
     }
   })
 }
