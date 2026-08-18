@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Boxes, CalendarDays, Clock, ImageOff, Loader2, Minus, Phone, Plus, Sparkles, User, Users } from 'lucide-react'
+import { ArrowLeft, Boxes, CalendarDays, Clock, ImageOff, Loader2, Mail, Minus, Phone, Plus, Sparkles, User, Users } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail } from '@/lib/booking/public-availability'
 import { getPublicAvailability, createPublicBooking, lookupPublicCustomerByPhone, type PublicSlotOption } from '@/lib/actions/public-booking'
@@ -55,6 +55,7 @@ export function ResourceTypeBookingPage({
   const [players, setPlayers] = useState(1)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
   const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; knownName: string | null }>({
     checking: false,
     checked: false,
@@ -131,6 +132,7 @@ export function ResourceTypeBookingPage({
         endsAt,
         customerName: name,
         customerPhone: phone,
+        customerEmail: email,
         players: resourceType.capacity != null ? players : undefined,
       })
       if (r.error || !r.confirmationToken) {
@@ -341,6 +343,20 @@ export function ResourceTypeBookingPage({
                   onChange={(e) => setPhone(e.target.value)}
                   autoComplete="tel"
                   placeholder="Your phone number"
+                  className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                />
+              </label>
+
+              <label className="mt-4 block">
+                <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Mail size={14} /> Email <span className="font-normal text-muted-foreground/70">(optional)</span>
+                </span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  placeholder="you@example.com"
                   className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
                 />
               </label>

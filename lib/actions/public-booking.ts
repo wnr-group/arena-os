@@ -130,6 +130,7 @@ const bookingInput = z.object({
   endsAt: z.string().datetime(),
   customerName: z.string().trim().min(1, 'Enter your name.').max(100),
   customerPhone: z.string().trim().min(6, 'Enter a valid phone number.').max(20),
+  customerEmail: z.string().trim().email('Enter a valid email address.').max(255).optional().or(z.literal('')),
   /** Not a first-class column — the schema has no per-booking player count,
    * so this rides along as a note, same as staff bookings already do. */
   players: z.coerce.number().int().min(1).max(100).optional(),
@@ -168,6 +169,7 @@ export async function createPublicBooking(
           branchId: branch.id,
           customerName: v.customerName,
           customerPhone: v.customerPhone,
+          customerEmail: v.customerEmail || undefined,
           notes: v.players ? `Players: ${v.players}` : undefined,
           source: 'online',
           discount: 0,

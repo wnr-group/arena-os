@@ -10,6 +10,7 @@ import {
   Clock,
   ImageOff,
   Loader2,
+  Mail,
   Minus,
   Phone,
   Plus,
@@ -101,6 +102,7 @@ export function ResourceBookingPage({
   const [players, setPlayers] = useState(1)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
   const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; knownName: string | null }>({
     checking: false,
     checked: false,
@@ -178,6 +180,7 @@ export function ResourceBookingPage({
         endsAt,
         customerName: name,
         customerPhone: phone,
+        customerEmail: email,
         players: resource.capacity != null ? players : undefined,
       })
       if (r.error || !r.confirmationToken) {
@@ -400,6 +403,20 @@ export function ResourceBookingPage({
                     onChange={(e) => setPhone(e.target.value)}
                     autoComplete="tel"
                     placeholder="Your phone number"
+                    className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                  />
+                </label>
+
+                <label className="mt-4 block">
+                  <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                    <Mail size={14} /> Email <span className="font-normal text-muted-foreground/70">(optional)</span>
+                  </span>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
+                    placeholder="you@example.com"
                     className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
                   />
                 </label>
