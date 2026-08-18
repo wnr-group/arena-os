@@ -16,6 +16,7 @@ import {
   Beer,
   Salad,
   Sandwich,
+  ShoppingCart,
   X,
 } from 'lucide-react'
 import type { PublicMenuCategory, PublicMenuItem } from '@/lib/menu/public'
@@ -282,9 +283,14 @@ export function FoodMenuClient({
                           <span className="hidden text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80 sm:inline">
                             Price
                           </span>
-                          <span className="text-sm font-black text-primary sm:text-lg">
-                            {formatMoney(item.price, tenant.currency)}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-black text-primary sm:text-lg">
+                              {formatMoney(item.price, tenant.currency)}
+                            </span>
+                            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary transition-colors duration-300 group-hover:bg-primary group-hover:text-primary-foreground sm:size-8">
+                              <ShoppingCart className="size-3.5 sm:size-4" />
+                            </span>
+                          </div>
                         </div>
 
                       </div>
