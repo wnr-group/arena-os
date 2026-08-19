@@ -249,6 +249,12 @@ Mostly non-schema (infra, security, ops). Schema touches:
 ### `salary_structures` `[T]` `[built]`
 `id` · `tenant_id` · `membership_id → memberships` · `base numeric(10,2)` · `allowances jsonb` (`SalaryComponent[] = {label, amount}[]`) · `deductions jsonb` (same shape) · `effective_from date` · `created_by → memberships null` · timestamps. Unique `(membership_id, effective_from)` — a raise is a new row dated from when it takes effect, never a rewrite of an old one, so past pay stays reconstructable once the payroll run (AROS-104) starts snapshotting payslips from this. RLS: **owner-only** for select AND write via `auth_role_in() = 'owner'` — compensation is more sensitive than the business's own legal identity (`business_profiles`, which is member-select/owner-write).
 
+### `employee_advances` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `amount numeric(10,2)` · `instalment_amount numeric(10,2)` · `note text null` · `given_at date` · `created_by → memberships null` · timestamps. Unique `(tenant_id, id)` (composite-FK target for the recoveries ledger below). The PLAN side only — who was given how much and the flat instalment to recover each payroll period. RLS: owner-only, same as `salary_structures`.
+
+### `employee_advance_recoveries` `[T]` `[built]`  (append-only ledger)
+`id` · `tenant_id` · `advance_id → employee_advances` · `amount numeric(10,2)` (signed: + recovery / − correction) · `source_type text null` (`'payroll'` once AROS-104 writes these) · `source_id uuid null` (the payslip) · `created_by → memberships null` · `created_at`. Composite FK `(tenant_id, advance_id) → employee_advances(tenant_id, id) on delete cascade`. Index `(advance_id)`. Outstanding is always **derived** as `employee_advances.amount − sum(recoveries.amount)`, never a stored column — same shape as `wallet_transactions`/`loyalty_transactions` (M5). RLS: owner-only. Grants: **select, insert only** (no update/delete) — stricter than wallet/loyalty, matching `refunds`: a payroll deduction record must never be editable after the fact, only reversed with an opposite-signed row.
+
 ---
 
 ## Change log
@@ -280,3 +286,10 @@ Mostly non-schema (infra, security, ops). Schema touches:
   base pay + allowances/deductions per membership, versioned by
   `effective_from` so a raise never overwrites past pay. Owner-only RLS for
   both read and write. Foundation for the payroll run (AROS-104).
+- 2026-08-19 — `employee_advances` + `employee_advance_recoveries` (M11,
+  second ticket) built — migration 0028: staff advances/loans plus their
+  append-only recovery ledger, outstanding always derived (never stored),
+  same shape as the wallet/loyalty ledgers. The recoveries table is
+  insert-only at the grant level (like `refunds`), stricter than
+  wallet/loyalty. The payroll run (AROS-104) will write recovery rows as it
+  deducts each period's instalment.

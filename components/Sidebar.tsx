@@ -31,6 +31,8 @@ import {
   Timer,
   Ticket,
   Banknote,
+  Wallet,
+  Landmark,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -105,8 +107,17 @@ const NAV: NavItem[] = [
       { href: '/reports/employees', label: 'Employee Report', icon: BarChart3, can: isManager },
     ],
   },
-  // Owner-only: compensation is more sensitive than general staff management (migration 0027).
-  { href: '/settings/payroll', label: 'Payroll', icon: Banknote, can: isOwner },
+  // Owner-only: compensation is more sensitive than general staff management (migrations 0027–0028).
+  {
+    href: '/settings/payroll',
+    label: 'Payroll',
+    icon: Banknote,
+    can: isOwner,
+    children: [
+      { href: '/settings/payroll/salary-structures', label: 'Salary Structures', icon: Wallet },
+      { href: '/settings/payroll/advances', label: 'Advances & Loans', icon: Landmark },
+    ],
+  },
   // Owner-only: the business's legal identity (migration 0012).
   { href: '/settings/business', label: 'Business Profile', icon: Building2, can: isOwner },
 ]

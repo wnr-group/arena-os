@@ -432,6 +432,60 @@ export const salaryStructures = pgTable(
   ],
 )
 
+// ── employee advances (migration 0028) ───────────────────────────────────────
+// The plan (this table) vs. the ledger (employeeAdvanceRecoveries) — outstanding
+// is always derived as amount minus the sum of recoveries, never stored. See
+// 0028_employee_advances.sql for why the recoveries grant is insert-only.
+export const employeeAdvances = pgTable(
+  'employee_advances',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    instalmentAmount: numeric('instalment_amount', { precision: 10, scale: 2 }).notNull(),
+    note: text('note'),
+    givenAt: date('given_at').notNull(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('employee_advances_tenant_id_key').on(t.tenantId, t.id),
+    index('idx_employee_advances_member').on(t.membershipId),
+  ],
+)
+
+export const employeeAdvanceRecoveries = pgTable(
+  'employee_advance_recoveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    advanceId: uuid('advance_id').notNull(),
+    // Signed like wallet/loyalty: positive = recovery, negative = a
+    // correction. Never updated or deleted — see the migration.
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    sourceType: text('source_type'),
+    sourceId: uuid('source_id'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'employee_advance_recoveries_advance_tenant_fkey',
+      columns: [t.tenantId, t.advanceId],
+      foreignColumns: [employeeAdvances.tenantId, employeeAdvances.id],
+    }).onDelete('cascade'),
+    index('idx_employee_advance_recoveries_advance').on(t.advanceId),
+  ],
+)
+
 // ── tax rates (migration 0009) ───────────────────────────────────────────────
 export const taxRates = pgTable(
   'tax_rates',

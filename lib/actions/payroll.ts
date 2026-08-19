@@ -4,17 +4,23 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { salaryStructures } from '@/db/schema'
+import { salaryStructures, employeeAdvances } from '@/db/schema'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
+import { hasRecoveries } from '@/lib/payroll/advances'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
+class AdvanceError extends Error {}
+
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof AdvanceError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  const { code } = pgError(e)
-  if (code === '23505') return { error: 'That employee already has a salary structure effective on that date.' }
+  const { code, constraint } = pgError(e)
+  if (code === '23505' && constraint === 'salary_structures_member_effective_key') {
+    return { error: 'That employee already has a salary structure effective on that date.' }
+  }
   console.error('[payroll] action failed:', e)
   return { error: 'Something went wrong. Please try again.' }
 }
@@ -72,7 +78,7 @@ export async function upsertSalaryStructure(input: z.input<typeof salaryStructur
         })
       }
     })
-    revalidatePath('/settings/payroll')
+    revalidatePath('/settings/payroll/salary-structures')
     return {}
   } catch (e) {
     return fail(e)
@@ -87,7 +93,66 @@ export async function deleteSalaryStructure(id: string): Promise<Result> {
         .delete(salaryStructures)
         .where(and(eq(salaryStructures.id, id), eq(salaryStructures.tenantId, ctx.tenant.id))),
     )
-    revalidatePath('/settings/payroll')
+    revalidatePath('/settings/payroll/salary-structures')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const advanceInput = z.object({
+  membershipId: z.string().uuid('Choose an employee'),
+  amount: z.coerce.number().positive('Enter an amount greater than zero.'),
+  instalmentAmount: z.coerce.number().positive('Enter an amount greater than zero.'),
+  note: z.string().trim().optional(),
+  givenAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter a valid date'),
+})
+
+/**
+ * Records the advance itself (the plan). It does NOT touch the recovery
+ * ledger — that's written by the payroll run (AROS-104) as it deducts each
+ * period's instalment, matching the wallet/loyalty ledger's separation of
+ * "the thing" from "the transactions against it."
+ */
+export async function recordAdvance(input: z.input<typeof advanceInput>): Promise<Result> {
+  try {
+    const ctx = await requireOwner()
+    const v = advanceInput.parse(input)
+    if (v.instalmentAmount > v.amount) {
+      return { error: 'The instalment cannot be larger than the advance itself.' }
+    }
+
+    await withUser(ctx.user.id, (tx) =>
+      tx.insert(employeeAdvances).values({
+        tenantId: ctx.tenant.id,
+        membershipId: v.membershipId,
+        amount: v.amount.toFixed(2),
+        instalmentAmount: v.instalmentAmount.toFixed(2),
+        note: v.note || null,
+        givenAt: v.givenAt,
+        createdBy: ctx.membershipId,
+      }),
+    )
+    revalidatePath('/settings/payroll/advances')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** Blocked once any recovery has been posted — deleting would silently orphan real ledger history. Correct with a new advance instead. */
+export async function deleteAdvance(id: string): Promise<Result> {
+  try {
+    const ctx = await requireOwner()
+    await withUser(ctx.user.id, async (tx) => {
+      if (await hasRecoveries(tx, ctx.tenant.id, id)) {
+        throw new AdvanceError('This advance already has recoveries recorded and cannot be deleted.')
+      }
+      await tx
+        .delete(employeeAdvances)
+        .where(and(eq(employeeAdvances.id, id), eq(employeeAdvances.tenantId, ctx.tenant.id)))
+    })
+    revalidatePath('/settings/payroll/advances')
     return {}
   } catch (e) {
     return fail(e)
