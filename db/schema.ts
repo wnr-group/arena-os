@@ -9,6 +9,7 @@ import { relations, sql } from 'drizzle-orm'
 import {
   pgTable,
   pgEnum,
+  pgView,
   uuid,
   text,
   boolean,
@@ -1214,6 +1215,32 @@ export const auditLog = pgTable(
   },
   (t) => [index('idx_audit_log_tenant_created').on(t.tenantId, t.createdAt)],
 )
+
+// ── reporting (migration 0038) ───────────────────────────────────────────────
+// The ONLY reporting object the app may read. `.existing()` because the view is
+// authored in SQL — it carries a security_barrier and an auth_tenant_ids()
+// predicate that Drizzle cannot express, exactly like the RLS policies on every
+// table above; this declaration exists purely so report queries are typed.
+//
+// The materialized view behind it (public.mv_daily_revenue) is deliberately
+// ABSENT from this file: arena_app has no SELECT on it, so any query Drizzle
+// could build against it would fail. Read 0038_reporting.sql before changing
+// either one.
+//
+// `day` is a plain date (mode 'string' → 'YYYY-MM-DD'), already resolved to the
+// branch's local calendar day by the aggregate, so a report filters it as a
+// date with no timezone conversion. The money columns are numeric and arrive as
+// strings, like every other numeric in this schema.
+export const vDailyRevenue = pgView('v_daily_revenue', {
+  tenantId: uuid('tenant_id').notNull(),
+  branchId: uuid('branch_id').notNull(),
+  day: date('day').notNull(),
+  gross: numeric('gross', { precision: 14, scale: 2 }).notNull(),
+  discount: numeric('discount', { precision: 14, scale: 2 }).notNull(),
+  tax: numeric('tax', { precision: 14, scale: 2 }).notNull(),
+  net: numeric('net', { precision: 14, scale: 2 }).notNull(),
+  invoiceCount: integer('invoice_count').notNull(),
+}).existing()
 
 // ── billing relations ────────────────────────────────────────────────────────
 // Declared for the billing tables only; the `one()` sides carry their own

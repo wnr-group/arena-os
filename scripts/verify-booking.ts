@@ -13,7 +13,8 @@ let pass = 0,
   fail = 0
 const check = (l: string, c: boolean) => {
   console.log(`${c ? '✓' : '✗ FAIL'}  ${l}`)
-  c ? pass++ : fail++
+  if (c) pass++
+  else fail++
 }
 
 async function main() {
