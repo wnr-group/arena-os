@@ -109,6 +109,7 @@ const NAV: NavItem[] = [
       { href: '/payslips', label: 'My Payslips', icon: Receipt },
       { href: '/performance', label: 'Performance', icon: TrendingUp, can: isManager },
       { href: '/reports/employees', label: 'Employee Report', icon: BarChart3, can: isManager },
+      { href: '/reports/payroll', label: 'Payroll Cost Report', icon: Receipt, can: isManager },
     ],
   },
   // Owner-only: compensation is more sensitive than general staff management (migrations 0027–0028).

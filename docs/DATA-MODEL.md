@@ -310,3 +310,12 @@ Mostly non-schema (infra, security, ops). Schema touches:
   (new `auth_membership_id()` helper, same SECURITY DEFINER shape as
   `auth_role_in()`) while owner/manager keep seeing everyone's. INSERT is
   unchanged — still owner-only, only the payroll run writes these.
+- 2026-08-19 — Payroll Cost Report (M11, fifth ticket) — `lib/reports/payroll.ts`
+  + `/reports/payroll`, manager-guarded. No schema change: aggregates
+  `payslips` by period range, per-employee and total (the wage-bill figure
+  M12's P&L, AROS-86, will read). The ticket named the M6-D "reporting infra"
+  epic (AROS-64, a tenant-safe `security_barrier` view + CSV pattern) as a
+  dependency, but that epic was never built in this codebase — this instead
+  follows the plain RLS-scoped aggregate-query pattern `getEmployeeAnalytics()`
+  (M6-C) already established, plus a new reusable client-side CSV export
+  (`components/reports/ExportCsvButton.tsx`, no library, no server round trip).
