@@ -395,6 +395,43 @@ export const tasks = pgTable(
   (t) => [index('idx_tasks_assignee').on(t.assignedTo)],
 )
 
+/**
+ * A named pay component — HRA, PF, etc. `amount` is numeric(10,2)-shaped as a
+ * string, same convention as TaxBreakupLine below: money in JSON is never a
+ * float.
+ */
+export type SalaryComponent = {
+  label: string
+  amount: string
+}
+
+// ── salary structures (migration 0027) ──────────────────────────────────────
+// Versioned by effective_from — see 0027_salary_structures.sql for why a raise
+// is a new row rather than an edit of the old one.
+export const salaryStructures = pgTable(
+  'salary_structures',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    base: numeric('base', { precision: 10, scale: 2 }).notNull().default('0'),
+    allowances: jsonb('allowances').$type<SalaryComponent[]>().notNull().default([]),
+    deductions: jsonb('deductions').$type<SalaryComponent[]>().notNull().default([]),
+    effectiveFrom: date('effective_from').notNull(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('salary_structures_member_effective_key').on(t.membershipId, t.effectiveFrom),
+    index('idx_salary_structures_member').on(t.membershipId, t.effectiveFrom),
+  ],
+)
+
 // ── tax rates (migration 0009) ───────────────────────────────────────────────
 export const taxRates = pgTable(
   'tax_rates',

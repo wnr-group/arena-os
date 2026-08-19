@@ -244,6 +244,13 @@ Mostly non-schema (infra, security, ops). Schema touches:
 
 ---
 
+## M11 — Payroll & Salary `[M11]`
+
+### `salary_structures` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `base numeric(10,2)` · `allowances jsonb` (`SalaryComponent[] = {label, amount}[]`) · `deductions jsonb` (same shape) · `effective_from date` · `created_by → memberships null` · timestamps. Unique `(membership_id, effective_from)` — a raise is a new row dated from when it takes effect, never a rewrite of an old one, so past pay stays reconstructable once the payroll run (AROS-104) starts snapshotting payslips from this. RLS: **owner-only** for select AND write via `auth_role_in() = 'owner'` — compensation is more sensitive than the business's own legal identity (`business_profiles`, which is member-select/owner-write).
+
+---
+
 ## Change log
 
 - 2026-08-01 — Initial full spec. Built tables reflect migrations 0001–0005;
@@ -269,3 +276,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
   directory currently holds two files per number (e.g. `0010_billing.sql` and
   `0010_menu.sql`). The runner applies them in filename order, which happens to
   satisfy every dependency, but the numbering needs reconciling.
+- 2026-08-19 — `salary_structures` (M11, first ticket) built — migration 0027:
+  base pay + allowances/deductions per membership, versioned by
+  `effective_from` so a raise never overwrites past pay. Owner-only RLS for
+  both read and write. Foundation for the payroll run (AROS-104).
