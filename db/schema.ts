@@ -8,6 +8,7 @@
 import { relations, sql } from 'drizzle-orm'
 import {
   pgTable,
+  pgView,
   pgEnum,
   uuid,
   text,
@@ -161,6 +162,7 @@ export const resourceTypes = pgTable(
     bufferMinutes: integer('buffer_minutes').notNull().default(0),
     capacity: integer('capacity'),
     color: text('color'),
+    imageUrl: text('image_url'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -187,6 +189,8 @@ export const resources = pgTable(
     name: text('name').notNull(),
     hourlyRateOverride: numeric('hourly_rate_override', { precision: 10, scale: 2 }),
     status: resourceStatus('status').notNull().default('available'),
+    imageUrl: text('image_url'),
+    description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -232,6 +236,9 @@ export const bookings = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
     bookingNumber: text('booking_number').notNull(),
+    // Unguessable public identifier — see 0036_booking_confirmation_token.sql
+    // for why this can't just be bookingNumber.
+    confirmationToken: uuid('confirmation_token').notNull().defaultRandom(),
     // Snapshot of what the guest gave at the time (migration 0003) …
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
@@ -256,6 +263,7 @@ export const bookings = pgTable(
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
+    unique('bookings_tenant_token_key').on(t.tenantId, t.confirmationToken),
     // Target of the composite (tenant_id, booking_id) FK on invoices (0010).
     unique('bookings_tenant_id_key').on(t.tenantId, t.id),
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
@@ -388,6 +396,43 @@ export const tasks = pgTable(
   (t) => [index('idx_tasks_assignee').on(t.assignedTo)],
 )
 
+/**
+ * A named pay component — HRA, PF, etc. `amount` is numeric(10,2)-shaped as a
+ * string, same convention as TaxBreakupLine below: money in JSON is never a
+ * float.
+ */
+export type SalaryComponent = {
+  label: string
+  amount: string
+}
+
+// ── salary structures (migration 0037) ──────────────────────────────────────
+// Versioned by effective_from — see 0037_salary_structures.sql for why a raise
+// is a new row rather than an edit of the old one.
+export const salaryStructures = pgTable(
+  'salary_structures',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    base: numeric('base', { precision: 10, scale: 2 }).notNull().default('0'),
+    allowances: jsonb('allowances').$type<SalaryComponent[]>().notNull().default([]),
+    deductions: jsonb('deductions').$type<SalaryComponent[]>().notNull().default([]),
+    effectiveFrom: date('effective_from').notNull(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('salary_structures_member_effective_key').on(t.membershipId, t.effectiveFrom),
+    index('idx_salary_structures_member').on(t.membershipId, t.effectiveFrom),
+  ],
+)
+
 // ── tax rates (migration 0009) ───────────────────────────────────────────────
 export const taxRates = pgTable(
   'tax_rates',
@@ -509,6 +554,13 @@ export const orderItems = pgTable(
     qty: integer('qty').notNull(),
     lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull(),
     specialInstructions: text('special_instructions'),
+    // Happy-hour snapshot (migration 0031). Null when no rule applied. Frozen
+    // at order time so an edited/deleted rule never reprices a past line.
+    happyHourId: uuid('happy_hour_id').references(() => happyHours.id, { onDelete: 'set null' }),
+    happyHourName: text('happy_hour_name'),
+    originalUnitPrice: numeric('original_unit_price', { precision: 10, scale: 2 }),
+    happyHourDiscountType: discountType('happy_hour_discount_type'),
+    happyHourDiscountValue: numeric('happy_hour_discount_value', { precision: 10, scale: 2 }),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
@@ -1007,15 +1059,15 @@ export const invoices = pgTable(
     loyaltyPointValue: numeric('loyalty_point_value', { precision: 10, scale: 2 })
       .notNull()
       .default('0'),
-    loyaltyPointsEarned: integer('loyalty_points_earned').notNull().default(0),
-    /**
-     * Cumulative "already undone" counters (migration 0030). A refund
-     * reversal writes only the DELTA against these, so reconciliation is
-     * idempotent and many partial refunds sum correctly.
-     */
-    loyaltyPointsReversed: integer('loyalty_points_reversed').notNull().default(0),
-    walletCreditReversed: numeric('wallet_credit_reversed', { precision: 10, scale: 2 })
-      .notNull()
+    loyaltyPointsEarned: integer('loyalty_points_earned').notNull().default(0),
+    /**
+     * Cumulative "already undone" counters (migration 0030). A refund
+     * reversal writes only the DELTA against these, so reconciliation is
+     * idempotent and many partial refunds sum correctly.
+     */
+    loyaltyPointsReversed: integer('loyalty_points_reversed').notNull().default(0),
+    walletCreditReversed: numeric('wallet_credit_reversed', { precision: 10, scale: 2 })
+      .notNull()
       .default('0'),
     taxTotal: numeric('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
     taxBreakup: jsonb('tax_breakup').$type<TaxBreakupLine[]>().notNull().default([]),
@@ -1106,23 +1158,23 @@ export const payments = pgTable(
     gatewayOrderId: text('gateway_order_id'),
     gatewayPaymentId: text('gateway_payment_id'),
     gatewaySignature: text('gateway_signature'),
-    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
-    /**
-     * Client-supplied retry token (migration 0030). A double-clicked or
-     * retried submission carries the SAME key, so the second attempt
-     * recognises itself and returns the first result instead of taking the
-     * money again. Null on gateway paths, which are already idempotent
-     * through gateway_payment_id.
-     */
-    idempotencyKey: text('idempotency_key'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Target of the composite FK on refunds.
-    unique('payments_tenant_id_key').on(t.tenantId, t.id),
-    uniqueIndex('idx_payments_idempotency')
-      .on(t.tenantId, t.idempotencyKey)
+    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+    /**
+     * Client-supplied retry token (migration 0030). A double-clicked or
+     * retried submission carries the SAME key, so the second attempt
+     * recognises itself and returns the first result instead of taking the
+     * money again. Null on gateway paths, which are already idempotent
+     * through gateway_payment_id.
+     */
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite FK on refunds.
+    unique('payments_tenant_id_key').on(t.tenantId, t.id),
+    uniqueIndex('idx_payments_idempotency')
+      .on(t.tenantId, t.idempotencyKey)
       .where(sql`${t.idempotencyKey} is not null`),
     foreignKey({
       name: 'payments_invoice_tenant_fkey',
@@ -1207,6 +1259,32 @@ export const auditLog = pgTable(
   },
   (t) => [index('idx_audit_log_tenant_created').on(t.tenantId, t.createdAt)],
 )
+
+// ── reporting (migration 0038) ───────────────────────────────────────────────
+// The ONLY reporting object the app may read. `.existing()` because the view is
+// authored in SQL — it carries a security_barrier and an auth_tenant_ids()
+// predicate that Drizzle cannot express, exactly like the RLS policies on every
+// table above; this declaration exists purely so report queries are typed.
+//
+// The materialized view behind it (public.mv_daily_revenue) is deliberately
+// ABSENT from this file: arena_app has no SELECT on it, so any query Drizzle
+// could build against it would fail. Read 0038_reporting.sql before changing
+// either one.
+//
+// `day` is a plain date (mode 'string' → 'YYYY-MM-DD'), already resolved to the
+// branch's local calendar day by the aggregate, so a report filters it as a
+// date with no timezone conversion. The money columns are numeric and arrive as
+// strings, like every other numeric in this schema.
+export const vDailyRevenue = pgView('v_daily_revenue', {
+  tenantId: uuid('tenant_id').notNull(),
+  branchId: uuid('branch_id').notNull(),
+  day: date('day').notNull(),
+  gross: numeric('gross', { precision: 14, scale: 2 }).notNull(),
+  discount: numeric('discount', { precision: 14, scale: 2 }).notNull(),
+  tax: numeric('tax', { precision: 14, scale: 2 }).notNull(),
+  net: numeric('net', { precision: 14, scale: 2 }).notNull(),
+  invoiceCount: integer('invoice_count').notNull(),
+}).existing()
 
 // ── billing relations ────────────────────────────────────────────────────────
 // Declared for the billing tables only; the `one()` sides carry their own

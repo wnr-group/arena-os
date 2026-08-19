@@ -321,6 +321,50 @@ custom tenant domains; websocket real-time; multi-currency.
 
 ---
 
+## 8b. Reporting (AROS-64)
+
+Reports read **pre-aggregated** data, never the transaction tables directly:
+
+```
+invoices …                     source of truth
+    ↓  aggregated per (tenant, branch, local day)
+mv_daily_revenue               materialized — NEVER queried by the app
+    ↓  security_barrier + auth_tenant_ids()
+v_daily_revenue                the only reporting object arena_app may read
+    ↓  tenant + date filtered
+lib/reports/daily-revenue.ts   via withUser(), like every tenant read
+```
+
+**Why the barrier view.** A materialized view does not inherit the RLS policies
+of its source tables, and RLS cannot be enabled on one — so `mv_daily_revenue`
+holds every tenant's revenue in a single unprotected relation. Isolation is
+restored by `v_daily_revenue`, which re-applies `auth_tenant_ids()` behind
+`security_barrier`, plus grants: `arena_app` has SELECT on the view and **none**
+on the MV. Proven, not assumed, by `scripts/verify-reporting-rls.ts`.
+
+**Freshness — the one operational obligation.** The MV is a snapshot: raising an
+invoice does *not* update it. There is no scheduler in this codebase, so the
+refresh is an explicit operation and reports are stale until it runs:
+
+```
+npm run reports:refresh        # REFRESH MATERIALIZED VIEW CONCURRENTLY
+```
+
+Wire that into whatever schedules jobs in the target environment (cron, systemd
+timer, platform cron) at the cadence the business needs — hourly is usually
+enough for a revenue report. `CONCURRENTLY` keeps the previous snapshot
+readable while it rebuilds and depends on the unique index
+`mv_daily_revenue_key`; it cannot run inside a transaction, which is why it is a
+script rather than a migration step. When a job runner does land, grant it
+EXECUTE on `public.refresh_daily_revenue()` rather than access to the MV.
+
+Shared, report-agnostic helpers live in `lib/reports/`: `date-range.ts`
+(inclusive `[start, end]` calendar-date ranges, both a throwing and a lenient
+parser) and `csv.ts` (RFC 4180 escaping, streaming). AROS-65/66/67 build on
+these rather than re-implementing them.
+
+---
+
 ## 9. Non-functional & quality
 
 - **Security:** RLS is the backbone; the `booking_slots` exclusion constraint is

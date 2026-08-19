@@ -1,35 +1,75 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Pencil, Trash2, X } from 'lucide-react'
+import Link from 'next/link'
+import { toast } from 'sonner'
 import {
-  upsertResourceType,
-  deleteResourceType,
-  upsertResource,
-  deleteResource,
-} from '@/lib/actions/resources'
+  Plus,
+  Pencil,
+  Trash2,
+  X,
+  Boxes,
+  CheckCircle2,
+  Wrench,
+  XCircle,
+  LayoutGrid,
+  Table2,
+  Search,
+  Filter,
+  ChevronDown,
+  Loader2,
+  UploadCloud,
+  FileImage,
+} from 'lucide-react'
+import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
+import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
-type TypeRow = {
-  id: string
-  name: string
-  hourlyRate: string
-  bufferMinutes: number
-  capacity: number | null
-  color: string | null
+function fileNameFromUrl(url: string): string {
+  try {
+    return decodeURIComponent(url.split('/').pop() || url)
+  } catch {
+    return url
+  }
 }
+
+type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
+type ResourceStatus = 'available' | 'maintenance' | 'inactive'
 type ResourceRow = {
   id: string
   name: string
-  status: string
+  status: ResourceStatus
   resourceTypeId: string
   typeName: string
   rateOverride: string | null
+  imageUrl: string | null
+  description: string | null
+  typeImageUrl: string | null
+  typeDescription: string | null
 }
+type Modal = { mode: 'add' } | { mode: 'edit'; row: ResourceRow }
+type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
+type View = 'table' | 'grid'
 
-const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
-const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
+const input =
+  'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
+const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
+const label = 'text-sm font-medium text-muted-foreground'
+const errorText = 'mt-1 text-sm text-destructive'
+const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+
+const STATUS_LABELS: Record<ResourceStatus, string> = {
+  available: 'Available',
+  maintenance: 'Maintenance',
+  inactive: 'Inactive',
+}
+const STATUS_BADGE: Record<ResourceStatus, string> = {
+  available: 'bg-emerald-500/10 text-emerald-600',
+  maintenance: 'bg-amber-500/10 text-amber-600',
+  inactive: 'bg-muted text-muted-foreground',
+}
 
 export function ResourcesManager({
   branchId,
@@ -39,302 +79,723 @@ export function ResourcesManager({
 }: {
   branchId: string
   currency: string
-  types: TypeRow[]
+  types: TypeOption[]
   resources: ResourceRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [modal, setModal] = useState<Modal | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [view, setView] = useState<View>('grid')
+  const [search, setSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | ResourceStatus>('all')
 
-  function run(fn: () => Promise<{ error?: string }>) {
+  const run: Run = (fn, onSuccess, onSettled) => {
     setError(null)
     start(async () => {
       const r = await fn()
-      if (r.error) setError(r.error)
-      else router.refresh()
+      if (r.error) {
+        setError(r.error)
+        toast.error(r.error)
+      } else {
+        router.refresh()
+        onSuccess?.()
+      }
+      onSettled?.()
     })
   }
 
+  const stats = useMemo(() => {
+    const total = resources.length
+    const available = resources.filter((r) => r.status === 'available').length
+    const maintenance = resources.filter((r) => r.status === 'maintenance').length
+    const inactive = resources.filter((r) => r.status === 'inactive').length
+    return { total, available, maintenance, inactive }
+  }, [resources])
+
+  // Inactive types are retired — don't offer them as a filter, even if
+  // existing resources still reference one (those stay visible under "All
+  // types", they just don't get their own tab).
+  const filterableTypes = useMemo(() => types.filter((t) => t.isActive), [types])
+
+  const filteredResources = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return resources.filter((row) => {
+      if (typeFilter !== 'all' && row.resourceTypeId !== typeFilter) return false
+      if (statusFilter !== 'all' && row.status !== statusFilter) return false
+      if (q && !row.name.toLowerCase().includes(q) && !(row.description ?? '').toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [resources, search, typeFilter, statusFilter])
+
+  const filtersActive = search.trim() !== '' || typeFilter !== 'all' || statusFilter !== 'all'
+
+  function resetFilters() {
+    setSearch('')
+    setTypeFilter('all')
+    setStatusFilter('all')
+  }
+
+  async function handleDelete(row: ResourceRow) {
+    await confirm({
+      title: `Delete resource "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteResource(row.id)
+        setDeletingId(null)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Resource "${row.name}" deleted.`)
+        }
+      },
+    })
+  }
+
+  if (types.length === 0) {
+    return (
+      <p className="mt-8 rounded-md border border-dashed p-4 text-base text-muted-foreground">
+        Add a{' '}
+        <Link href="/settings/resources/types" className="font-medium text-primary hover:underline">
+          resource type
+        </Link>{' '}
+        first before adding resources.
+      </p>
+    )
+  }
+
   return (
-    <div className="mt-8 space-y-10">
+    <div className="mt-8 space-y-6">
       {error && (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </p>
       )}
 
-      {/* ── resource types ── */}
-      <section>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Resource types
-        </h2>
-        <div className="mt-3 space-y-2">
-          {types.length === 0 && (
-            <p className="text-sm text-muted-foreground">No types yet. Add one below.</p>
-          )}
-          {types.map((t) => (
-            <TypeItem key={t.id} row={t} currency={currency} pending={pending} run={run} />
-          ))}
-        </div>
-        <TypeForm pending={pending} run={run} />
-      </section>
-
-      {/* ── resources ── */}
-      <section>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Resources
-        </h2>
-        {types.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">Add a resource type first.</p>
-        ) : (
-          <>
-            <div className="mt-3 space-y-2">
-              {resources.length === 0 && (
-                <p className="text-sm text-muted-foreground">No resources yet.</p>
-              )}
-              {resources.map((r) => (
-                <ResourceItem
-                  key={r.id}
-                  row={r}
-                  types={types}
-                  currency={currency}
-                  branchId={branchId}
-                  pending={pending}
-                  run={run}
-                />
-              ))}
-            </div>
-            <ResourceForm branchId={branchId} types={types} pending={pending} run={run} />
-          </>
-        )}
-      </section>
-    </div>
-  )
-}
-
-// ── resource type row + form ──────────────────────────────────────────────────
-function TypeItem({
-  row,
-  currency,
-  pending,
-  run,
-}: {
-  row: TypeRow
-  currency: string
-  pending: boolean
-  run: (fn: () => Promise<{ error?: string }>) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  if (editing) {
-    return <TypeForm row={row} pending={pending} run={run} onDone={() => setEditing(false)} />
-  }
-  return (
-    <div className="flex items-center justify-between rounded-md border px-4 py-3">
-      <div>
-        <span className="font-medium">{row.name}</span>
-        <span className="ml-3 text-sm text-muted-foreground">
-          {formatMoney(row.hourlyRate, currency)}/hr
-          {row.bufferMinutes > 0 && ` · ${row.bufferMinutes}m buffer`}
-          {row.capacity ? ` · cap ${row.capacity}` : ''}
-        </span>
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard icon={Boxes} label="Total resources" value={stats.total} accent="bg-primary/10 text-primary" />
+        <StatCard icon={CheckCircle2} label="Available" value={stats.available} accent="bg-emerald-500/10 text-emerald-600" />
+        <StatCard icon={Wrench} label="Maintenance" value={stats.maintenance} accent="bg-amber-500/10 text-amber-600" />
+        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
       </div>
-      <div className="flex gap-1">
-        <button className={btn} onClick={() => setEditing(true)} aria-label="Edit">
-          <Pencil size={15} />
-        </button>
-        <button
-          className={`${btn} text-destructive`}
-          disabled={pending}
-          onClick={() => run(() => deleteResourceType(row.id))}
-          aria-label="Delete"
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
-    </div>
-  )
-}
 
-function TypeForm({
-  row,
-  pending,
-  run,
-  onDone,
-}: {
-  row?: TypeRow
-  pending: boolean
-  run: (fn: () => Promise<{ error?: string }>) => void
-  onDone?: () => void
-}) {
-  const [name, setName] = useState(row?.name ?? '')
-  const [rate, setRate] = useState(row?.hourlyRate ?? '')
-  const [buffer, setBuffer] = useState(String(row?.bufferMinutes ?? 0))
-  const [capacity, setCapacity] = useState(row?.capacity ? String(row.capacity) : '')
-
-  function submit() {
-    run(async () => {
-      const r = await upsertResourceType({
-        id: row?.id,
-        name,
-        hourlyRate: rate === '' ? 0 : Number(rate),
-        bufferMinutes: buffer === '' ? 0 : Number(buffer),
-        capacity: capacity === '' ? undefined : Number(capacity),
-      })
-      if (!r.error) {
-        if (onDone) onDone()
-        else {
-          setName('')
-          setRate('')
-          setBuffer('0')
-          setCapacity('')
-        }
-      }
-      return r
-    })
-  }
-
-  return (
-    <div className="mt-3 grid grid-cols-2 gap-2 rounded-md border border-dashed p-3 sm:grid-cols-5">
-      <input className={input} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className={input} placeholder="₹/hr" type="number" min="0" value={rate} onChange={(e) => setRate(e.target.value)} />
-      <input className={input} placeholder="Buffer min" type="number" min="0" value={buffer} onChange={(e) => setBuffer(e.target.value)} />
-      <input className={input} placeholder="Capacity" type="number" min="1" value={capacity} onChange={(e) => setCapacity(e.target.value)} />
-      <div className="flex gap-2">
-        <button className={`${btn} flex-1 bg-primary text-primary-foreground`} disabled={pending || !name} onClick={submit}>
-          {row ? 'Save' : <span className="inline-flex items-center gap-1"><Plus size={15} /> Add</span>}
-        </button>
-        {onDone && (
-          <button className={`${btn} border`} onClick={onDone} aria-label="Cancel">
-            <X size={15} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-base font-semibold uppercase tracking-wide text-muted-foreground">
+          All resources {resources.length > 0 && <span className="text-muted-foreground/60">({filteredResources.length})</span>}
+        </h2>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
+            <button
+              type="button"
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setView('grid')}
+              aria-pressed={view === 'grid'}
+            >
+              <LayoutGrid size={15} /> Grid
+            </button>
+            <button
+              type="button"
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setView('table')}
+              aria-pressed={view === 'table'}
+            >
+              <Table2 size={15} /> Table
+            </button>
+          </div>
+          <button
+            className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
+            onClick={() => setModal({ mode: 'add' })}
+          >
+            <Plus size={16} /> Add resource
           </button>
-        )}
+        </div>
       </div>
+
+      {resources.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-border bg-card/50 shadow-sm">
+          <div className="flex flex-wrap items-center gap-3 p-4">
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} />
+              <input
+                className="w-full rounded-lg border border-border bg-background py-2.5 pl-10 pr-3 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                placeholder="Search resources by name or description…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            <div className="relative">
+              <Filter className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+              <select
+                className="appearance-none rounded-lg border border-border bg-background py-2.5 pl-9 pr-9 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as 'all' | ResourceStatus)}
+              >
+                <option value="all">All statuses</option>
+                <option value="available">Available</option>
+                <option value="maintenance">Maintenance</option>
+                <option value="inactive">Inactive</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+            </div>
+
+            {filtersActive && (
+              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
+                Clear filters
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-1 overflow-x-auto border-t border-border px-2">
+            <TypeTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
+              All types
+            </TypeTab>
+            {filterableTypes.map((t) => (
+              <TypeTab key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)}>
+                {t.name}
+              </TypeTab>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {resources.length === 0 ? (
+        <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
+          No resources yet. Add one to get started.
+        </p>
+      ) : filteredResources.length === 0 ? (
+        <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
+          No resources match your filters.{' '}
+          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
+            Clear filters
+          </button>
+        </p>
+      ) : view === 'grid' ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {filteredResources.map((row) => {
+            const type = types.find((t) => t.id === row.resourceTypeId)
+            return (
+              <ResourceCard
+                key={row.id}
+                row={row}
+                rate={row.rateOverride ?? type?.hourlyRate ?? null}
+                currency={currency}
+                pending={pending}
+                deleting={deletingId === row.id}
+                onEdit={() => setModal({ mode: 'edit', row })}
+                onDelete={() => handleDelete(row)}
+              />
+            )
+          })}
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-base">
+              <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Resource</th>
+                  <th className="px-4 py-3 font-medium">Type</th>
+                  <th className="px-4 py-3 font-medium">Rate</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filteredResources.map((row) => (
+                  <tr key={row.id} className="transition hover:bg-muted/20">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        {row.imageUrl ?? row.typeImageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={row.imageUrl ?? row.typeImageUrl ?? ''}
+                            alt=""
+                            className="h-11 w-11 shrink-0 rounded-md border object-cover"
+                          />
+                        ) : (
+                          <div className="h-11 w-11 shrink-0 rounded-md border border-dashed bg-muted/40" />
+                        )}
+                        <span className="font-medium">{row.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{row.typeName}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {row.rateOverride ? `${formatMoney(row.rateOverride, currency)}/hr` : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[row.status]}`}>
+                        {STATUS_LABELS[row.status]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1">
+                        <button
+                          className={btn}
+                          disabled={pending}
+                          onClick={() => setModal({ mode: 'edit', row })}
+                          aria-label="Edit"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          className={`${btn} text-destructive`}
+                          disabled={pending}
+                          onClick={() => handleDelete(row)}
+                          aria-label="Delete"
+                        >
+                          {deletingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {modal && (
+        <ResourceModal
+          row={modal.mode === 'edit' ? modal.row : undefined}
+          types={types}
+          branchId={branchId}
+          currency={currency}
+          pending={pending}
+          run={run}
+          onClose={() => setModal(null)}
+        />
+      )}
     </div>
   )
 }
 
-// ── resource row + form ───────────────────────────────────────────────────────
-function ResourceItem({
-  row,
-  types,
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  accent,
+}: {
+  icon: ComponentType<{ size?: number }>
+  label: string
+  value: string | number
+  accent: string
+}) {
+  return (
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
+        <Icon size={18} />
+      </div>
+      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
+    </div>
+  )
+}
+
+function TypeTab({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
+        active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {children}
+      <span
+        className={`absolute inset-x-3 bottom-0 h-0.5 rounded-full transition ${active ? 'bg-primary' : 'bg-transparent'}`}
+      />
+    </button>
+  )
+}
+
+/** Image/placeholder block with a status badge, shared by the grid card and the modal's live preview. */
+function ResourceVisual({ imageUrl, status }: { imageUrl?: string | null; status: ResourceStatus }) {
+  return (
+    <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-muted/70 to-muted/20">
+      {imageUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={imageUrl}
+          alt=""
+          className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-muted-foreground/30">
+          <Boxes size={30} />
+        </div>
+      )}
+      <span
+        className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-sm backdrop-blur-sm ${STATUS_BADGE[status]}`}
+      >
+        {STATUS_LABELS[status]}
+      </span>
+    </div>
+  )
+}
+
+/** Name/rate/type/description block, shared by the grid card and the modal's live preview. */
+function ResourceCardBody({
+  name,
+  typeName,
+  rate,
   currency,
-  branchId,
+  description,
+}: {
+  name: string
+  typeName?: string | null
+  rate: number | string | null
+  currency: string
+  description?: string | null
+}) {
+  return (
+    <div className="p-4">
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="line-clamp-1 text-base font-semibold">{name || 'Untitled resource'}</h3>
+        {rate != null && <span className="shrink-0 text-base font-semibold text-primary">{formatMoney(rate, currency)}/hr</span>}
+      </div>
+      <p className="mt-0.5 text-sm text-muted-foreground">{typeName || 'No type'}</p>
+      {description && <p className="mt-2 line-clamp-2 text-sm text-muted-foreground/80">{description}</p>}
+    </div>
+  )
+}
+
+function ResourceCard({
+  row,
+  rate,
+  currency,
   pending,
-  run,
+  deleting,
+  onEdit,
+  onDelete,
 }: {
   row: ResourceRow
-  types: TypeRow[]
+  rate: string | null
   currency: string
-  branchId: string
   pending: boolean
-  run: (fn: () => Promise<{ error?: string }>) => void
+  deleting: boolean
+  onEdit: () => void
+  onDelete: () => void
 }) {
-  const [editing, setEditing] = useState(false)
-  if (editing) {
-    return (
-      <ResourceForm
-        row={row}
-        types={types}
-        branchId={branchId}
-        pending={pending}
-        run={run}
-        onDone={() => setEditing(false)}
-      />
-    )
-  }
   return (
-    <div className="flex items-center justify-between rounded-md border px-4 py-3">
-      <div>
-        <span className="font-medium">{row.name}</span>
-        <span className="ml-3 text-sm text-muted-foreground">
-          {row.typeName}
-          {row.rateOverride ? ` · ${formatMoney(row.rateOverride, currency)}/hr` : ''}
-          {row.status !== 'available' ? ` · ${row.status}` : ''}
-        </span>
-      </div>
-      <div className="flex gap-1">
-        <button className={btn} onClick={() => setEditing(true)} aria-label="Edit">
-          <Pencil size={15} />
+    <div className="group relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg">
+      <ResourceVisual imageUrl={row.imageUrl ?? row.typeImageUrl} status={row.status} />
+      <div
+        className={`absolute right-2 top-2 flex gap-1 transition ${
+          deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        }`}
+      >
+        <button
+          type="button"
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={pending}
+          onClick={onEdit}
+          aria-label="Edit"
+        >
+          <Pencil size={13} />
         </button>
         <button
-          className={`${btn} text-destructive`}
+          type="button"
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-destructive shadow-sm backdrop-blur-sm hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={pending}
-          onClick={() => run(() => deleteResource(row.id))}
+          onClick={onDelete}
           aria-label="Delete"
         >
-          <Trash2 size={15} />
+          {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
         </button>
       </div>
+      <ResourceCardBody name={row.name} typeName={row.typeName} rate={rate} currency={currency} description={row.description ?? row.typeDescription} />
     </div>
   )
 }
 
-function ResourceForm({
+function ResourceModal({
   row,
   types,
   branchId,
+  currency,
   pending,
   run,
-  onDone,
+  onClose,
 }: {
   row?: ResourceRow
-  types: TypeRow[]
+  types: TypeOption[]
   branchId: string
+  currency: string
   pending: boolean
-  run: (fn: () => Promise<{ error?: string }>) => void
-  onDone?: () => void
+  run: Run
+  onClose: () => void
 }) {
   const [name, setName] = useState(row?.name ?? '')
-  const [typeId, setTypeId] = useState(row?.resourceTypeId ?? types[0]?.id ?? '')
-  const [status, setStatus] = useState(row?.status ?? 'available')
+  const [typeId, setTypeId] = useState(row?.resourceTypeId ?? types.find((t) => t.isActive)?.id ?? '')
+  const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
   const [override, setOverride] = useState(row?.rateOverride ?? '')
+  const [description, setDescription] = useState(row?.description ?? '')
+  const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
+  const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [submitted, setSubmitted] = useState(false)
+
+  const selectedType = types.find((t) => t.id === typeId)
+  const previewRate = override !== '' ? Number(override) : selectedType ? Number(selectedType.hourlyRate) : null
+  const previewImage = imageUrl || selectedType?.imageUrl || null
+  // Retired types can't be picked for new/other resources, but stay in the
+  // list if this resource is currently assigned to one — otherwise the
+  // select would silently reassign it on save.
+  const selectableTypes = types.filter((t) => t.isActive || t.id === typeId)
+
+  const errors = useMemo(() => {
+    const e: { name?: string; typeId?: string; override?: string } = {}
+    if (!name.trim()) e.name = 'Name is required.'
+    if (!typeId) e.typeId = 'Select a resource type.'
+    if (override !== '' && Number.isNaN(Number(override))) e.override = 'Enter a valid rate.'
+    return e
+  }, [name, typeId, override])
+  const isValid = Object.keys(errors).length === 0
+
+  useBodyScrollLock()
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setUploadError(null)
+    setUploading(true)
+    const fd = new FormData()
+    fd.append('file', file)
+    const r = await uploadResourceImage(fd)
+    setUploading(false)
+    if (r.error) setUploadError(r.error)
+    else if (r.url) {
+      setImageUrl(r.url)
+      setFileName(file.name)
+    }
+  }
 
   function submit() {
-    run(async () => {
-      const r = await upsertResource({
-        id: row?.id,
-        branchId,
-        resourceTypeId: typeId,
-        name,
-        status: status as 'available' | 'maintenance' | 'inactive',
-        hourlyRateOverride: override === '' ? null : Number(override),
-      })
-      if (!r.error) {
-        if (onDone) onDone()
-        else {
-          setName('')
-          setOverride('')
-        }
-      }
-      return r
-    })
+    setSubmitted(true)
+    if (!isValid) return
+    run(
+      () =>
+        upsertResource({
+          id: row?.id,
+          branchId,
+          resourceTypeId: typeId,
+          name: name.trim(),
+          status,
+          hourlyRateOverride: override === '' ? null : Number(override),
+          imageUrl,
+          description,
+        }),
+      () => {
+        toast.success(row ? `Resource "${name.trim()}" updated.` : `Resource "${name.trim()}" added.`)
+        onClose()
+      },
+    )
   }
 
   return (
-    <div className="mt-3 grid grid-cols-2 gap-2 rounded-md border border-dashed p-3 sm:grid-cols-5">
-      <input className={input} placeholder="Name e.g. PS5 #1" value={name} onChange={(e) => setName(e.target.value)} />
-      <select className={input} value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-        {types.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.name}
-          </option>
-        ))}
-      </select>
-      <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
-        <option value="available">Available</option>
-        <option value="maintenance">Maintenance</option>
-        <option value="inactive">Inactive</option>
-      </select>
-      <input className={input} placeholder="Rate override" type="number" min="0" value={override} onChange={(e) => setOverride(e.target.value)} />
-      <div className="flex gap-2">
-        <button className={`${btn} flex-1 bg-primary text-primary-foreground`} disabled={pending || !name || !typeId} onClick={submit}>
-          {row ? 'Save' : <span className="inline-flex items-center gap-1"><Plus size={15} /> Add</span>}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-xl border border-border bg-card shadow-2xl md:grid-cols-[1.3fr_1fr]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 rounded-full border border-border/60 bg-background/90 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition hover:text-foreground"
+        >
+          <X size={16} />
         </button>
-        {onDone && (
-          <button className={`${btn} border`} onClick={onDone} aria-label="Cancel">
-            <X size={15} />
-          </button>
-        )}
+
+        {/* Form */}
+        <div className="order-2 p-6 pt-8 md:order-1">
+          <h2 className="text-xl font-semibold">{row ? 'Edit resource' : 'Add resource'}</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">Fill in the details — the preview updates as you type.</p>
+
+          <div className="mt-4 space-y-3">
+            {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Name</label>
+                <input
+                  className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
+                  placeholder="e.g. PS5 #1"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoFocus
+                />
+                {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
+              </div>
+              <div>
+                <label className={label}>Resource type</label>
+                <select
+                  className={`${input} ${submitted && errors.typeId ? inputInvalid : ''}`}
+                  value={typeId}
+                  onChange={(e) => setTypeId(e.target.value)}
+                >
+                  {selectableTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                      {!t.isActive ? ' (inactive)' : ''}
+                    </option>
+                  ))}
+                </select>
+                {submitted && errors.typeId && <p className={errorText}>{errors.typeId}</p>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Status</label>
+                <select className={input} value={status} onChange={(e) => setStatus(e.target.value as ResourceStatus)}>
+                  <option value="available">Available</option>
+                  <option value="maintenance">Maintenance</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+              <div>
+                <label className={label}>
+                  Rate override{selectedType ? ` (default ${formatMoney(selectedType.hourlyRate, currency)}/hr)` : ''}
+                </label>
+                <input
+                  className={`${input} ${submitted && errors.override ? inputInvalid : ''}`}
+                  placeholder="0.00"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={override}
+                  onChange={(e) => setOverride(e.target.value)}
+                />
+                {submitted && errors.override && <p className={errorText}>{errors.override}</p>}
+              </div>
+            </div>
+
+            <div>
+              <label className={label}>Description (optional override)</label>
+              <textarea
+                className={input}
+                rows={2}
+                placeholder="Leave blank to use the resource type's description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className={label}>Photo (optional override)</label>
+              <label
+                className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
+                  uploading
+                    ? 'cursor-not-allowed border-border opacity-60'
+                    : 'border-border hover:border-primary/50 hover:bg-muted/30'
+                }`}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 size={20} className="animate-spin text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Uploading…</span>
+                  </>
+                ) : fileName ? (
+                  <>
+                    <FileImage size={20} className="text-primary" />
+                    <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
+                    <span className="text-xs text-muted-foreground">Click to replace</span>
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud size={20} className="text-muted-foreground" />
+                    <span className="text-sm font-medium">Click to upload a photo</span>
+                    <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={handleFile}
+                />
+              </label>
+              {fileName && !uploading ? (
+                <button
+                  type="button"
+                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    setImageUrl('')
+                    setFileName(null)
+                  }}
+                >
+                  Remove — use the type&apos;s default photo
+                </button>
+              ) : (
+                !uploading &&
+                selectedType?.imageUrl && (
+                  <p className="mt-1 text-xs text-muted-foreground">Currently showing the resource type&apos;s default photo.</p>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Live preview */}
+        <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
+          <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
+          <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+            <div className="group">
+              <ResourceVisual imageUrl={previewImage} status={status} />
+            </div>
+            <ResourceCardBody
+              name={name}
+              typeName={selectedType?.name}
+              rate={previewRate}
+              currency={currency}
+              description={description}
+            />
+          </div>
+          <p className="mt-3 text-center text-xs text-muted-foreground">This is how the resource will look to staff</p>
+
+          <div className="mt-5 flex items-center justify-between gap-2">
+            <button
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={pending}
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={pending || uploading}
+              onClick={submit}
+            >
+              {pending && <Loader2 size={15} className="animate-spin" />}
+              {pending ? 'Saving…' : row ? 'Save changes' : 'Add resource'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

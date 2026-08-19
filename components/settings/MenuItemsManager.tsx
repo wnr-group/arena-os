@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition, type ComponentType } from 'react'
+import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { toast } from 'sonner'
 import {
   Plus,
   Pencil,
@@ -19,9 +20,21 @@ import {
   Filter,
   ChevronDown,
   Loader2,
+  UploadCloud,
+  FileImage,
 } from 'lucide-react'
 import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
+import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
+
+function fileNameFromUrl(url: string): string {
+  try {
+    return decodeURIComponent(url.split('/').pop() || url)
+  } catch {
+    return url
+  }
+}
 
 type CategoryRow = { id: string; name: string; isActive: boolean }
 type TaxRateRow = { id: string; name: string; percent: string }
@@ -73,6 +86,7 @@ export function MenuItemsManager({
   items: ItemRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -86,8 +100,10 @@ export function MenuItemsManager({
     setError(null)
     start(async () => {
       const r = await fn()
-      if (r.error) setError(r.error)
-      else {
+      if (r.error) {
+        setError(r.error)
+        toast.error(r.error)
+      } else {
         router.refresh()
         onSuccess?.()
       }
@@ -102,6 +118,11 @@ export function MenuItemsManager({
     const hidden = items.filter((i) => i.status === 'hidden').length
     return { total, available, outOfStock, hidden }
   }, [items])
+
+  // Inactive categories are retired — don't offer them as a filter, even if
+  // existing items still reference one (those stay visible under "All
+  // categories", they just don't get their own tab).
+  const filterableCategories = useMemo(() => categories.filter((c) => c.isActive), [categories])
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -121,14 +142,24 @@ export function MenuItemsManager({
     setStatusFilter('all')
   }
 
-  function handleDelete(row: ItemRow) {
-    if (!window.confirm(`Delete item "${row.name}"? This cannot be undone.`)) return
-    setDeletingId(row.id)
-    run(
-      () => deleteMenuItem(row.id),
-      undefined,
-      () => setDeletingId(null),
-    )
+  async function handleDelete(row: ItemRow) {
+    await confirm({
+      title: `Delete item "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteMenuItem(row.id)
+        setDeletingId(null)
+        if (r.error) {
+          setError(r.error)
+          toast.error(r.error)
+        } else {
+          router.refresh()
+          toast.success(`Item "${row.name}" deleted.`)
+        }
+      },
+    })
   }
 
   return (
@@ -223,7 +254,7 @@ export function MenuItemsManager({
             <CategoryTab active={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')}>
               All categories
             </CategoryTab>
-            {categories.map((c) => (
+            {filterableCategories.map((c) => (
               <CategoryTab key={c.id} active={categoryFilter === c.id} onClick={() => setCategoryFilter(c.id)}>
                 {c.name}
               </CategoryTab>
@@ -356,8 +387,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
@@ -523,12 +554,13 @@ function ItemModal({
 }) {
   const [name, setName] = useState(row?.name ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
-  const [categoryId, setCategoryId] = useState(row?.categoryId ?? categories[0]?.id ?? '')
+  const [categoryId, setCategoryId] = useState(row?.categoryId ?? categories.find((c) => c.isActive)?.id ?? '')
   const [price, setPrice] = useState(row?.price ?? '')
   const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? '')
   const [status, setStatus] = useState<ItemStatus>(row?.status ?? 'available')
   const [sortOrder, setSortOrder] = useState(String(row?.sortOrder ?? 0))
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
+  const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
@@ -536,6 +568,10 @@ function ItemModal({
   const previewCategoryName = categories.find((c) => c.id === categoryId)?.name
   const selectedTax = taxRates.find((t) => t.id === taxRateId)
   const previewTaxLabel = selectedTax ? `${selectedTax.name} · ${selectedTax.percent}%` : null
+  // Retired categories can't be picked for new/other items, but stay in the
+  // list if this item is currently in one — otherwise the select would
+  // silently reassign it on save.
+  const selectableCategories = categories.filter((c) => c.isActive || c.id === categoryId)
 
   const errors = useMemo(() => {
     const e: { name?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
@@ -550,13 +586,7 @@ function ItemModal({
   }, [name, categoryId, price, sortOrder])
   const isValid = Object.keys(errors).length === 0
 
-  useEffect(() => {
-    const original = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = original
-    }
-  }, [])
+  useBodyScrollLock()
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -569,7 +599,10 @@ function ItemModal({
     const r = await uploadMenuItemImage(fd)
     setUploading(false)
     if (r.error) setUploadError(r.error)
-    else if (r.url) setImageUrl(r.url)
+    else if (r.url) {
+      setImageUrl(r.url)
+      setFileName(file.name)
+    }
   }
 
   function submit() {
@@ -588,14 +621,17 @@ function ItemModal({
           imageUrl,
           sortOrder: sortOrder === '' ? 0 : Number(sortOrder),
         }),
-      onClose,
+      () => {
+        toast.success(row ? `Item "${name.trim()}" updated.` : `Item "${name.trim()}" added.`)
+        onClose()
+      },
     )
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-2xl border border-border bg-card shadow-2xl md:grid-cols-[1.3fr_1fr]"
+        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-xl border border-border bg-card shadow-2xl md:grid-cols-[1.3fr_1fr]"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -632,9 +668,10 @@ function ItemModal({
                   value={categoryId}
                   onChange={(e) => setCategoryId(e.target.value)}
                 >
-                  {categories.map((c) => (
+                  {selectableCategories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
+                      {!c.isActive ? ' (inactive)' : ''}
                     </option>
                   ))}
                 </select>
@@ -696,57 +733,59 @@ function ItemModal({
             </div>
             <div>
               <label className={label}>Image</label>
-              <div className="mt-1 flex items-center gap-3">
-                {imageUrl && (
-                  <div className="relative">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={imageUrl} alt="" className="h-14 w-14 rounded-md border object-cover" />
-                    <button
-                      type="button"
-                      className="absolute -right-2 -top-2 rounded-full border bg-background p-0.5"
-                      onClick={() => setImageUrl('')}
-                      aria-label="Remove image"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
+              <label
+                className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
+                  uploading
+                    ? 'cursor-not-allowed border-border opacity-60'
+                    : 'border-border hover:border-primary/50 hover:bg-muted/30'
+                }`}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 size={20} className="animate-spin text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Uploading…</span>
+                  </>
+                ) : fileName ? (
+                  <>
+                    <FileImage size={20} className="text-primary" />
+                    <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
+                    <span className="text-xs text-muted-foreground">Click to replace</span>
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud size={20} className="text-muted-foreground" />
+                    <span className="text-sm font-medium">Click to upload an image</span>
+                    <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
+                  </>
                 )}
-                <label
-                  className={`${btn} inline-flex cursor-pointer items-center gap-2 border ${uploading ? 'cursor-not-allowed opacity-50' : ''}`}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={handleFile}
+                />
+              </label>
+              {fileName && !uploading && (
+                <button
+                  type="button"
+                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    setImageUrl('')
+                    setFileName(null)
+                  }}
                 >
-                  {uploading && <Loader2 size={15} className="animate-spin" />}
-                  {uploading ? 'Uploading…' : imageUrl ? 'Replace image' : 'Upload image'}
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif"
-                    className="hidden"
-                    disabled={uploading}
-                    onChange={handleFile}
-                  />
-                </label>
-              </div>
+                  Remove image
+                </button>
+              )}
             </div>
-          </div>
-
-          <div className="mt-5 flex gap-2">
-            <button
-              className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
-              disabled={pending || uploading}
-              onClick={submit}
-            >
-              {pending && <Loader2 size={16} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save changes' : 'Add item'}
-            </button>
-            <button className={`${btn} border`} disabled={pending} onClick={onClose}>
-              Cancel
-            </button>
           </div>
         </div>
 
         {/* Live preview */}
         <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
           <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
-          <div className="mt-3 overflow-hidden rounded-xl border border-border bg-card shadow-md">
+          <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
             <div className="group">
               <ItemVisual imageUrl={imageUrl} status={status} />
             </div>
@@ -760,6 +799,24 @@ function ItemModal({
             />
           </div>
           <p className="mt-3 text-center text-xs text-muted-foreground">This is how the item will look on the menu</p>
+
+          <div className="mt-5 flex items-center justify-between gap-2">
+            <button
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={pending}
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={pending || uploading}
+              onClick={submit}
+            >
+              {pending && <Loader2 size={15} className="animate-spin" />}
+              {pending ? 'Saving…' : row ? 'Save changes' : 'Add item'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

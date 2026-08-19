@@ -28,6 +28,17 @@ export function rootDomain(): string {
 }
 
 /**
+ * The full public URL for a path on a tenant's subdomain — e.g. the booking
+ * confirmation page and its QR code, both of which need an absolute URL
+ * rather than a relative path. http in dev (lvh.me:3000 has no TLS cert),
+ * https everywhere else.
+ */
+export function publicTenantUrl(slug: string, path: string): string {
+  const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http'
+  return `${protocol}://${slug}.${rootDomain()}${path}`
+}
+
+/**
  * Extract the tenant slug from a request host header. Returns null when the
  * host is the root domain itself (the platform / marketing site) or a reserved
  * subdomain.

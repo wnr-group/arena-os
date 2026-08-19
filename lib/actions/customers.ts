@@ -16,6 +16,7 @@ import {
 import { createNote, updateNote, deleteNote } from '@/lib/customers/notes'
 import { MAX_NOTE_LENGTH } from '@/lib/customers/note-body'
 import { MAX_TAGS, MAX_TAG_LENGTH } from '@/lib/customers/tags'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
@@ -33,14 +34,15 @@ type TagsResult = Result & { tags?: string[] }
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof CustomerError) return { error: e.message }
   if (e instanceof z.ZodError) {
-    return { error: e.issues[0]?.message ?? 'Check the details and try again.' }
+    return { error: zodErrorMessage(e) }
   }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
   // 23514 = check_violation on the E.164 constraint; 23505 = unique violation.
   // Both mean a phone problem, so say so in the user's terms.
-  if (/check constraint|23514/i.test(msg)) return { error: 'Enter a valid phone number.' }
-  if (/unique|duplicate|23505/i.test(msg)) return { error: 'That phone number is already on file.' }
-  return { error: msg }
+  const { code } = pgError(e)
+  if (code === '23514') return { error: 'Enter a valid phone number.' }
+  if (code === '23505') return { error: 'That phone number is already on file.' }
+  console.error('[customers] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 /**

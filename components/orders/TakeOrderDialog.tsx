@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
-import { Plus, Minus, X, Search, Loader2, ShoppingCart } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
 import { formatMoney } from '@/lib/format'
+import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
 
 export type CategoryOption = { id: string; name: string }
 export type MenuItemOption = {
@@ -34,6 +35,8 @@ export function TakeOrderDialog({
   currency,
   categories,
   menuItems,
+  happyHours,
+  timeZone,
   onClose,
   onCreated,
 }: {
@@ -43,6 +46,8 @@ export function TakeOrderDialog({
   currency: string
   categories: CategoryOption[]
   menuItems: MenuItemOption[]
+  happyHours: HappyHourRule[]
+  timeZone: string
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -51,6 +56,16 @@ export function TakeOrderDialog({
   const [cart, setCart] = useState<CartLine[]>([])
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+
+  // Snapshotting "now" once per open keeps every price in the dialog
+  // consistent with itself; the server re-evaluates for real at submit time,
+  // so this is a preview only — never trusted for the actual charge.
+  const now = useMemo(() => new Date(), [])
+  const liveRules = useMemo(() => activeHappyHours(happyHours, now, timeZone), [happyHours, now, timeZone])
+  const priced = useCallback(
+    (price: string) => applyHappyHour(Number(price), happyHours, now, timeZone),
+    [happyHours, now, timeZone],
+  )
 
   useEffect(() => {
     const original = document.body.style.overflow
@@ -73,12 +88,13 @@ export function TakeOrderDialog({
     let subtotal = 0
     let tax = 0
     for (const line of cart) {
-      const lineSubtotal = Number(line.price) * line.qty
+      const unit = priced(line.price)?.unitPrice ?? Number(line.price)
+      const lineSubtotal = unit * line.qty
       subtotal += lineSubtotal
       tax += lineSubtotal * (Number(line.taxPercent ?? 0) / 100)
     }
     return { subtotal, tax, total: subtotal + tax }
-  }, [cart])
+  }, [cart, priced])
 
   function addToCart(item: MenuItemOption) {
     setError(null)
@@ -148,6 +164,13 @@ export function TakeOrderDialog({
             {bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.'}
           </p>
 
+          {liveRules.length > 0 && (
+            <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+              <Zap size={14} />
+              Happy hour is on — {liveRules.map((r) => r.name).join(', ')}. Prices below are already discounted.
+            </p>
+          )}
+
           <div className="relative mt-4">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} />
             <input
@@ -177,7 +200,9 @@ export function TakeOrderDialog({
                 No menu items match.
               </p>
             ) : (
-              filteredItems.map((item) => (
+              filteredItems.map((item) => {
+                const applied = priced(item.price)
+                return (
                 <button
                   key={item.id}
                   type="button"
@@ -189,13 +214,23 @@ export function TakeOrderDialog({
                     <p className="truncate text-sm text-muted-foreground">{item.categoryName}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-base font-semibold">{formatMoney(item.price, currency)}</span>
+                    <div className="flex flex-col items-end">
+                      {applied && (
+                        <span className="text-xs text-muted-foreground line-through">
+                          {formatMoney(item.price, currency)}
+                        </span>
+                      )}
+                      <span className={`text-base font-semibold ${applied ? 'text-amber-600 dark:text-amber-400' : ''}`}>
+                        {formatMoney(applied ? applied.unitPrice : item.price, currency)}
+                      </span>
+                    </div>
                     <span className="rounded-md bg-primary/10 p-1.5 text-primary">
                       <Plus size={14} />
                     </span>
                   </div>
                 </button>
-              ))
+                )
+              })
             )}
           </div>
         </div>
@@ -212,12 +247,25 @@ export function TakeOrderDialog({
                 Tap items to add them to the order.
               </p>
             ) : (
-              cart.map((line) => (
+              cart.map((line) => {
+                const applied = priced(line.price)
+                const unit = applied ? applied.unitPrice : Number(line.price)
+                return (
                 <div key={line.menuItemId} className="rounded-lg border border-border bg-card p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate text-base font-medium">{line.name}</p>
-                      <p className="text-sm text-muted-foreground">{formatMoney(line.price, currency)} each</p>
+                      <p className="text-sm text-muted-foreground">
+                        {applied && (
+                          <span className="mr-1.5 line-through">{formatMoney(line.price, currency)}</span>
+                        )}
+                        {formatMoney(unit, currency)} each
+                        {applied && (
+                          <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                            <Zap size={10} /> {applied.rule.name}
+                          </span>
+                        )}
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -248,7 +296,7 @@ export function TakeOrderDialog({
                         <Plus size={14} />
                       </button>
                     </div>
-                    <span className="text-base font-semibold">{formatMoney(Number(line.price) * line.qty, currency)}</span>
+                    <span className="text-base font-semibold">{formatMoney(unit * line.qty, currency)}</span>
                   </div>
                   <input
                     className="mt-2 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
@@ -257,7 +305,8 @@ export function TakeOrderDialog({
                     onChange={(e) => updateInstructions(line.menuItemId, e.target.value)}
                   />
                 </div>
-              ))
+                )
+              })
             )}
           </div>
 
@@ -291,6 +340,9 @@ export function TakeOrderDialog({
               Cancel
             </button>
           </div>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Any happy-hour discount is confirmed by the server when the order is placed.
+          </p>
         </div>
       </div>
     </div>

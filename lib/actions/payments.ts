@@ -15,6 +15,7 @@ import {
   recordPaymentForInvoice,
   recordPaymentInputSchema,
 } from '@/lib/billing/payments'
+import { zodErrorMessage } from '@/lib/utils/errors'
 import {
   WalletError,
   recordWalletPaymentForInvoice,
@@ -59,7 +60,7 @@ type RecordPaymentResult = {
 /** Same shape as lib/actions/billing.ts:fail() — only safe text reaches the till. */
 function fail(e: unknown): RecordPaymentResult {
   if (e instanceof AuthError || e instanceof PaymentError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   console.error('[payments] recordPayment failed:', e)
   return { error: 'Could not record the payment. Please try again.' }
 }
@@ -132,7 +133,7 @@ function failDeposit(e: unknown): DepositOrderResult {
   if (e instanceof PaymentNotConfiguredError) {
     return { error: 'Online payments are not set up for this venue yet.' }
   }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
 
   if (e instanceof OrphanedOrderError) {
     // The one case worth a loud, specific log: a gateway order exists that this
@@ -223,7 +224,7 @@ function failWallet(e: unknown, op: string): WalletResult {
     return { error: e.message }
   }
   if (e instanceof BillingError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   console.error(`[wallet] ${op} failed:`, e instanceof Error ? e.name : 'unknown')
   return { error: 'Could not complete the wallet operation. Please try again.' }
 }

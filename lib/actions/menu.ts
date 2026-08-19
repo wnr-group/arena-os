@@ -7,17 +7,27 @@ import { withUser } from '@/db'
 import { menuCategories, menuItems } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
-  const msg = e instanceof Error ? e.message : 'Something went wrong.'
-  if (/unique|duplicate/i.test(msg)) return { error: 'That name is already in use.' }
-  if (/foreign key|violates.*constraint/i.test(msg)) {
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
+  const { code, constraint } = pgError(e)
+  if (code === '23505') return { error: 'That name is already in use.' }
+  // 23503 = foreign_key_violation (default NO ACTION); 23001 = restrict_violation
+  // (explicit ON DELETE RESTRICT, which is what this FK uses) — both mean
+  // "still referenced elsewhere."
+  if (code === '23503' || code === '23001') {
+    // Default Postgres FK naming: `<table>_<column>_fkey`.
+    if (constraint === 'menu_items_category_id_fkey') {
+      return { error: 'This category has menu items in it. Move or delete those items first.' }
+    }
     return { error: 'This is still in use elsewhere and cannot be deleted.' }
   }
-  return { error: msg }
+  console.error('[menu] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 // ── categories ──────────────────────────────────────────────────────────────

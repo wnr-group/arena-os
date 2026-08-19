@@ -9,13 +9,11 @@ import {
   bookingSlots,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { zonedTimeToUtc } from './time'
+import { addDays, zonedTimeToUtc } from './time'
 
-export function addDays(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const dt = new Date(Date.UTC(y, m - 1, d + days))
-  return dt.toISOString().slice(0, 10)
-}
+// Moved to ./time (a pure module) so it can be used off the server path too;
+// re-exported here because half the app imports it from '@/lib/booking/data'.
+export { addDays }
 
 export function listResourceTypes(ctx: ActiveContext) {
   return withUser(ctx.user.id, (tx) =>
@@ -38,6 +36,10 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         bufferMinutes: resourceTypes.bufferMinutes,
         typeRate: resourceTypes.hourlyRate,
         rateOverride: resources.hourlyRateOverride,
+        imageUrl: resources.imageUrl,
+        description: resources.description,
+        typeImageUrl: resourceTypes.imageUrl,
+        typeDescription: resourceTypes.description,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))

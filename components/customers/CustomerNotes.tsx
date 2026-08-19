@@ -9,6 +9,7 @@ import {
   deleteCustomerNote,
 } from '@/lib/actions/customers'
 import { MAX_NOTE_LENGTH } from '@/lib/customers/note-body'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 export type NoteRow = {
   id: string
@@ -32,6 +33,7 @@ export function CustomerNotes({
   canManage: boolean
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, start] = useTransition()
@@ -53,9 +55,23 @@ export function CustomerNotes({
     })
   }
 
-  function removeNote(id: string) {
-    if (!confirm('Delete this note? This cannot be undone.')) return
-    run(() => deleteCustomerNote(id), 'Note deleted.')
+  async function removeNote(id: string) {
+    await confirm({
+      title: 'Delete this note?',
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setError(null)
+        setNotice(null)
+        const r = await deleteCustomerNote(id)
+        if (r.error) {
+          setError(r.error)
+          return
+        }
+        setNotice('Note deleted.')
+        router.refresh()
+      },
+    })
   }
 
   return (

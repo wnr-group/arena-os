@@ -6,13 +6,14 @@ import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { MAX_PAYMENT_AMOUNT } from '@/lib/billing/payments'
 import { RefundError, recordRefund, voidInvoiceRecord } from '@/lib/billing/refunds'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type ActionResult = { error?: string; success?: true }
 
 /** Same shape as the other billing actions — only safe text reaches the UI. */
 function fail(e: unknown): ActionResult {
   if (e instanceof AuthError || e instanceof RefundError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   console.error('[refunds] action failed:', e)
   return { error: 'Could not complete the operation. Please try again.' }
 }

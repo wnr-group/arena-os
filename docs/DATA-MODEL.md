@@ -226,11 +226,26 @@ RLS: tenant `select` + tenant `insert` — deliberately **no update or delete po
 
 Read-only. No new base tables; prefer **materialized views** / rollups over
 `bookings`, `booking_slots`, `invoices`, `payments`, `orders`,
-`customer_memberships`, `attendance` — refreshed on a schedule. Examples:
-`mv_daily_revenue(tenant_id, branch_id, day, gross, discount, tax, net)`,
+`customer_memberships`, `attendance` — refreshed on a schedule. Still to come:
 `mv_resource_occupancy(tenant_id, resource_id, day, booked_minutes, open_minutes)`.
 All filtered by `tenant_id`; export to CSV. (Add a `report_snapshots` table only if
 historical immutability is needed.)
+
+### `mv_daily_revenue` + `v_daily_revenue` `[T]` `[built]`
+Migration 0038. `mv_daily_revenue(tenant_id, branch_id, day, gross, discount,
+tax, net, invoice_count)` — one row per tenant/branch/**local calendar day**,
+aggregated from `invoices` where `status in ('issued','paid')` and `issued_at is
+not null`: `gross=SUM(subtotal)`, `discount=SUM(discount)`, `tax=SUM(tax_total)`,
+`net=SUM(total)`. `day` is `issued_at` at `coalesce(branches.timezone,
+tenants.timezone)`, never the server's zone. Unique `(tenant_id, branch_id,
+day)` — required by `REFRESH … CONCURRENTLY` — plus `(tenant_id, day)` for
+range scans.
+
+**A materialized view enforces no RLS**, so the app never touches it: it has no
+grant on the MV and reads only `v_daily_revenue`, a `security_barrier` view that
+re-applies `auth_tenant_ids()`. Refreshed out of band —
+`npm run reports:refresh` — because there is no scheduler yet; see
+ARCHITECTURE.md §8b. Proven by `scripts/verify-reporting-rls.ts`.
 
 ---
 
@@ -241,6 +256,13 @@ Mostly non-schema (infra, security, ops). Schema touches:
 - Optional `rate_limits` (or Redis/edge KV) for throttling counters — likely **not** a Postgres table (use edge KV).
 - Data-lifecycle: per-tenant **export** (read) + **hard-delete** (cascades via `tenant_id ON DELETE CASCADE`, already in place).
 - Later/deferred: `tenant_domains(tenant_id, hostname unique, verified_at)` for custom domains.
+
+---
+
+## M11 — Payroll & Salary `[M11]`
+
+### `salary_structures` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `base numeric(10,2)` · `allowances jsonb` (`SalaryComponent[] = {label, amount}[]`) · `deductions jsonb` (same shape) · `effective_from date` · `created_by → memberships null` · timestamps. Unique `(membership_id, effective_from)` — a raise is a new row dated from when it takes effect, never a rewrite of an old one, so past pay stays reconstructable once the payroll run (AROS-104) starts snapshotting payslips from this. RLS: **owner-only** for select AND write via `auth_role_in() = 'owner'` — compensation is more sensitive than the business's own legal identity (`business_profiles`, which is member-select/owner-write).
 
 ---
 
@@ -264,8 +286,18 @@ Mostly non-schema (infra, security, ops). Schema touches:
 - 2026-08-07 — `promo_codes` (0011) and `business_profiles` (0012) built, so an
   invoice's `promo_code_id` now carries a composite FK and the invoice prefix
   comes from the tenant's profile rather than a constant.
-- NOTE — the customer/billing branch and the employee/menu/orders branch were
-  developed in parallel and BOTH numbered their migrations 0006–0013, so the
-  directory currently holds two files per number (e.g. `0010_billing.sql` and
-  `0010_menu.sql`). The runner applies them in filename order, which happens to
-  satisfy every dependency, but the numbering needs reconciling.
+- NOTE (resolved) — the customer/billing branch and the employee/menu/orders
+  branch were developed in parallel and both numbered their migrations from
+  0006, leaving two files per number. Reconciled when the branches merged: the
+  duplicated files (identical content, different numbers) were removed and the
+  genuinely new ones renumbered to 0031–0037, so the directory now holds one
+  file per number again.
+- 2026-08-19 — `salary_structures` (M11, first ticket) built — migration 0037:
+  base pay + allowances/deductions per membership, versioned by
+  `effective_from` so a raise never overwrites past pay. Owner-only RLS for
+  both read and write. Foundation for the payroll run (AROS-104).
+- 2026-08-19 — reporting infrastructure (AROS-64) built — migration 0038:
+  `mv_daily_revenue` + the `v_daily_revenue` security-barrier view, the first
+  materialized view in the schema and the pattern every M6 report (AROS-65/66/67)
+  and the future P&L (M12) should follow. Refreshed by `npm run reports:refresh`
+  until a scheduler exists.

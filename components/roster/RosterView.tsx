@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight, Loader2, Plus, X } from 'lucide-react'
 import { saveShift, deleteShift } from '@/lib/actions/roster'
 import { ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { prettyDate } from '@/lib/format'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type ShiftType = 'morning' | 'evening' | 'night'
 type Member = { id: string; name: string; role: MemberRole }
@@ -64,6 +65,7 @@ export function RosterView({
   myShifts: MyShift[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal>(null)
@@ -88,13 +90,16 @@ export function RosterView({
     return map
   }, [myShifts])
 
-  function handleDelete(id: string) {
-    if (!window.confirm('Remove this shift?')) return
-    setError(null)
-    start(async () => {
-      const r = await deleteShift(id)
-      if (r.error) setError(r.error)
-      else router.refresh()
+  async function handleDelete(id: string) {
+    await confirm({
+      title: 'Remove this shift?',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        setError(null)
+        const r = await deleteShift(id)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
     })
   }
 

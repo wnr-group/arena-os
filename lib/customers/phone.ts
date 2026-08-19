@@ -8,7 +8,7 @@
  *
  * Output is E.164 ('+' followed by country code and national number, digits
  * only), which is unambiguous, sorts and compares byte-wise, and stays correct
- * if a tenant ever takes an international customer. Migration 0006 puts a CHECK
+ * if a tenant ever takes an international customer. Migration 0007 puts a CHECK
  * on `customers.phone` matching this shape, so an un-normalised write fails
  * loudly rather than quietly creating a duplicate.
  *

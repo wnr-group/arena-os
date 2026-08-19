@@ -130,9 +130,9 @@ export function CustomerProfile({
           </Empty>
         ) : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[680px] text-sm">
+            <table className="w-full min-w-[680px] text-base">
               <thead>
-                <tr className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b bg-muted/40 text-left text-sm uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 font-medium">Booking</th>
                   <th className="px-4 py-2.5 font-medium">Date</th>
                   <th className="px-4 py-2.5 font-medium">Resource</th>

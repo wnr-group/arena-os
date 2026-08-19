@@ -6,6 +6,7 @@ import { withUser } from '@/db'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill } from '@/lib/auth/roles'
 import { BillingError, issueInvoiceForBooking } from '@/lib/billing/invoice'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateInvoiceResult = { error?: string; invoiceId?: string; invoiceNumber?: string }
 
@@ -16,7 +17,7 @@ type CreateInvoiceResult = { error?: string; invoiceId?: string; invoiceNumber?:
  */
 function fail(e: unknown): CreateInvoiceResult {
   if (e instanceof AuthError || e instanceof BillingError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   // 23505 = unique_violation on (tenant_id, invoice_number): a number collided
   // despite the atomic counter. Retrying is safe, so say so rather than leaking.
   if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === '23505') {

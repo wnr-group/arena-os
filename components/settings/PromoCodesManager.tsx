@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Ban, RotateCcw, X, TicketPercent, CheckCircle2, XCircle, Infinity as InfinityIcon } from 'lucide-react'
 import { upsertPromoCode, setPromoCodeActive } from '@/lib/actions/promo-codes'
 import { formatMoney } from '@/lib/format'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 export type PromoRow = {
   id: string
@@ -59,6 +60,7 @@ const shortDate = (iso: string) =>
 
 export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; currency: string }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -86,16 +88,22 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
   const discountOf = (p: PromoRow) =>
     p.discountType === 'percentage' ? `${Number(p.discountValue)}%` : money(p.discountValue)
 
-  function toggleActive(row: PromoRow) {
+  async function toggleActive(row: PromoRow) {
     if (row.isActive) {
-      if (
-        !window.confirm(
-          `Expire ${row.code}? Customers will no longer be able to use this code. It stays on record, so invoices that already used it are unaffected.`,
-        )
-      )
-        return
+      await confirm({
+        title: `Expire ${row.code}?`,
+        description:
+          'Customers will no longer be able to use this code. It stays on record, so invoices that already used it are unaffected.',
+        confirmText: 'Expire code',
+        onConfirm: async () => {
+          const r = await setPromoCodeActive(row.id, false)
+          if (r.error) setError(r.error)
+          else router.refresh()
+        },
+      })
+      return
     }
-    run(() => setPromoCodeActive(row.id, !row.isActive))
+    run(() => setPromoCodeActive(row.id, true))
   }
 
   return (
@@ -125,8 +133,8 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
 
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+          <table className="w-full min-w-[720px] text-left text-base">
+            <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Code</th>
                 <th className="px-4 py-3 font-medium">Discount</th>
@@ -420,8 +428,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border p-4">
-      <div className={`inline-flex size-8 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border p-4 transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
+      <div className={`inline-flex size-8 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={16} />
       </div>
       <p className="mt-3 text-2xl font-semibold tabular-nums">{value}</p>

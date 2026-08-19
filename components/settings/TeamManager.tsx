@@ -48,7 +48,7 @@ export function TeamManager({
       )}
 
       <div className="overflow-hidden rounded-lg border">
-        <table className="w-full text-sm">
+        <table className="w-full text-base">
           <tbody>
             {members.map((m) => {
               const isSelf = m.id === currentMembershipId
