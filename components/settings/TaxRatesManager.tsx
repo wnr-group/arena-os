@@ -90,8 +90,8 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
 
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[520px] text-left text-sm">
-            <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+          <table className="w-full min-w-[520px] text-left text-base">
+            <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Rate</th>

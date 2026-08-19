@@ -113,7 +113,7 @@ export function CompanyManager({
           Owners &amp; staff
         </h2>
         <div className="mt-3 overflow-hidden rounded-lg border">
-          <table className="w-full text-sm">
+          <table className="w-full text-base">
             <tbody>
               {members.map((m) => (
                 <tr key={m.id} className="border-b last:border-0">

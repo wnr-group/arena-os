@@ -133,8 +133,8 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
 
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+          <table className="w-full min-w-[720px] text-left text-base">
+            <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Code</th>
                 <th className="px-4 py-3 font-medium">Discount</th>

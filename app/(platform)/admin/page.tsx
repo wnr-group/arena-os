@@ -48,8 +48,8 @@ export default async function AdminHome() {
             No companies yet. Create the first one.
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <table className="w-full text-base">
+            <thead className="border-b bg-muted/50 text-left text-sm uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Company</th>
                 <th className="px-4 py-3 font-medium">Industry</th>
