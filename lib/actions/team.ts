@@ -74,6 +74,11 @@ export async function inviteStaff(input: z.input<typeof inviteInput>): Promise<R
   }
 }
 
+// No session rotation needed on this privilege change: role is never cached
+// in the cookie/session, only in the memberships row. getActiveContext()
+// (lib/tenant/context.ts) re-reads it from the DB on every request via
+// withUser()/RLS, so a demoted or promoted member's access changes on their
+// very next request — there is no stale, session-bound privilege to revoke.
 export async function updateMemberRole(membershipId: string, role: MemberRole): Promise<Result> {
   try {
     const ctx = await requireManager()
