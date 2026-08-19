@@ -3,8 +3,18 @@
 import { useState, useTransition, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 
-/** Date-range filter for the Performance table — pushes ?from=&to= via the router so applying is a soft RSC navigation, not a full page reload. */
-export function PerformanceFilters({ from, to, today }: { from: string; to: string; today: string }) {
+/** Date-range filter shared by the reports pages — pushes ?from=&to= via the router so applying is a soft RSC navigation, not a full page reload. */
+export function DateRangeFilter({
+  basePath,
+  from,
+  to,
+  today,
+}: {
+  basePath: string
+  from: string
+  to: string
+  today: string
+}) {
   const router = useRouter()
   const [fromVal, setFromVal] = useState(from)
   const [toVal, setToVal] = useState(to)
@@ -13,7 +23,7 @@ export function PerformanceFilters({ from, to, today }: { from: string; to: stri
   function apply(e: FormEvent) {
     e.preventDefault()
     startTransition(() => {
-      router.push(`/performance?from=${fromVal}&to=${toVal}`)
+      router.push(`${basePath}?from=${fromVal}&to=${toVal}`)
     })
   }
 
