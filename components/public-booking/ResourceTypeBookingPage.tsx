@@ -56,12 +56,11 @@ export function ResourceTypeBookingPage({
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
-  const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; knownName: string | null }>({
+  const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; found: boolean }>({
     checking: false,
     checked: false,
-    knownName: null,
+    found: false,
   })
-  const [editingKnownName, setEditingKnownName] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
@@ -99,21 +98,19 @@ export function ResourceTypeBookingPage({
   // match — same minimum length the booking submission itself requires — so
   // the name field only appears once we know whether to ask for it.
   useEffect(() => {
-    setEditingKnownName(false)
     setName('')
     const digits = phone.replace(/\D/g, '')
     if (digits.length < 6) {
-      setPhoneLookup({ checking: false, checked: false, knownName: null })
+      setPhoneLookup({ checking: false, checked: false, found: false })
       return
     }
     let cancelled = false
-    setPhoneLookup({ checking: true, checked: false, knownName: null })
+    setPhoneLookup({ checking: true, checked: false, found: false })
     const timer = setTimeout(() => {
       lookupPublicCustomerByPhone({ phone }).then((r) => {
         if (cancelled) return
-        const knownName = 'error' in r ? null : r.found ? r.name : null
-        setPhoneLookup({ checking: false, checked: true, knownName })
-        if (knownName) setName(knownName)
+        const found = 'error' in r ? false : r.found
+        setPhoneLookup({ checking: false, checked: true, found })
       })
     }, 500)
     return () => {
@@ -337,61 +334,69 @@ export function ResourceTypeBookingPage({
                 <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
                   <Phone size={14} /> Phone
                 </span>
-                <input
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  autoComplete="tel"
-                  placeholder="Your phone number"
-                  className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
-                />
-              </label>
-
-              <label className="mt-4 block">
-                <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
-                  <Mail size={14} /> Email <span className="font-normal text-muted-foreground/70">(optional)</span>
-                </span>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="email"
-                  placeholder="you@example.com"
-                  className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
-                />
+                <div className="relative">
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    readOnly={phoneLookup.checked}
+                    autoComplete="tel"
+                    placeholder="Your phone number"
+                    className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30 read-only:bg-muted read-only:text-muted-foreground"
+                  />
+                  {phoneLookup.checked && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhone('')
+                        setPhoneLookup({ checking: false, checked: false, found: false })
+                      }}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-primary transition hover:underline"
+                    >
+                      Change
+                    </button>
+                  )}
+                </div>
               </label>
 
               {phoneLookup.checking ? (
                 <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
                   <Loader2 size={14} className="animate-spin" /> Checking for an existing profile…
                 </p>
-              ) : phoneLookup.checked && phoneLookup.knownName && !editingKnownName ? (
-                <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
-                  <p className="text-sm text-foreground">
-                    Welcome back, <span className="font-bold">{phoneLookup.knownName}</span>
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setEditingKnownName(true)}
-                    className="shrink-0 text-xs font-semibold text-primary transition hover:underline"
-                  >
-                    Not you?
-                  </button>
-                </div>
+              ) : phoneLookup.checked && phoneLookup.found ? (
+                <p className="mt-3 text-sm text-foreground">
+                  <span className="font-semibold">Welcome back!</span> We found a profile for this number — you're all set to book.
+                </p>
               ) : phoneLookup.checked ? (
-                <label className="mt-4 block">
-                  <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
-                    <User size={14} /> Name
-                  </span>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    autoComplete="name"
-                    placeholder="Your full name"
-                    className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
-                  />
-                </label>
+                <>
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <User size={14} /> Name
+                    </span>
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="name"
+                      placeholder="Your full name"
+                      className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                    />
+                  </label>
+
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Mail size={14} /> Email <span className="font-normal text-muted-foreground/70">(optional)</span>
+                    </span>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      placeholder="you@example.com"
+                      className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                    />
+                  </label>
+                </>
               ) : null}
 
               <div className="mt-6 space-y-2 rounded-xl border border-border bg-background p-4">
@@ -406,7 +411,11 @@ export function ResourceTypeBookingPage({
 
               <button
                 onClick={confirm}
-                disabled={pending || !(name.trim() && phone.trim())}
+                disabled={
+                  pending ||
+                  !phoneLookup.checked ||
+                  (!phoneLookup.found && !name.trim())
+                }
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
               >
                 {pending && <Loader2 size={16} className="animate-spin" />}

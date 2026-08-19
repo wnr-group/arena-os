@@ -100,15 +100,18 @@ const phoneLookupInput = z.object({
   phone: z.string().trim().min(1),
 })
 
-export type PublicCustomerLookupResult = { found: boolean; name: string | null } | { error: string }
+export type PublicCustomerLookupResult = { found: boolean } | { error: string }
 
 /**
  * Peek at the customer directory by phone as the guest types it into the
- * booking form, so the form can skip asking for a name when one is already
- * on file — and ask for it when the phone is new. Read-only: the actual
- * find-or-create only happens transactionally inside createBookingCore when
- * the booking is confirmed (lib/booking/customer.ts); this never creates a
- * customer by itself.
+ * booking form, so the form knows whether this number already has a profile.
+ * Deliberately returns only a boolean — never the stored name or any other
+ * PII — because this endpoint is unauthenticated and reachable by anyone
+ * probing phone numbers on the tenant subdomain; echoing the name back would
+ * let a stranger enumerate customers and harvest their identities. Read-only:
+ * the actual find-or-create only happens transactionally inside
+ * createBookingCore when the booking is confirmed (lib/booking/customer.ts);
+ * this never creates a customer by itself.
  */
 export async function lookupPublicCustomerByPhone(
   raw: z.input<typeof phoneLookupInput>,
@@ -117,18 +120,17 @@ export async function lookupPublicCustomerByPhone(
   if ('error' in tenant) return tenant
 
   const v = phoneLookupInput.safeParse(raw)
-  if (!v.success) return { found: false, name: null }
+  if (!v.success) return { found: false }
 
   const customer = await withPublicTenant(tenant.id, (tx) => findCustomerByRawPhone(tx, tenant.id, v.data.phone))
-  if (!customer) return { found: false, name: null }
-  return { found: true, name: customer.name }
+  return { found: Boolean(customer) }
 }
 
 const bookingInput = z.object({
   resourceId: z.string().uuid(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
-  customerName: z.string().trim().min(1, 'Enter your name.').max(100),
+  customerName: z.string().trim().max(100).optional().or(z.literal('')),
   customerPhone: z.string().trim().min(6, 'Enter a valid phone number.').max(20),
   customerEmail: z.string().trim().email('Enter a valid email address.').max(255).optional().or(z.literal('')),
   /** Not a first-class column — the schema has no per-booking player count,
@@ -161,13 +163,23 @@ export async function createPublicBooking(
     const branch = await getPublicBranch(tenant.id)
     if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
+    // The form only collects a name for phone numbers it doesn't already
+    // recognise (see lookupPublicCustomerByPhone) — enforce that server-side
+    // too, since the client's "already known" state can't be trusted.
+    const existingCustomer = await withPublicTenant(tenant.id, (tx) =>
+      findCustomerByRawPhone(tx, tenant.id, v.customerPhone),
+    )
+    if (!existingCustomer && !v.customerName?.trim()) {
+      return { error: 'Enter your name.' }
+    }
+
     const result = await withPublicTenant(tenant.id, (tx) =>
       createBookingCore(
         tx,
         { tenantId: tenant.id, timezone: tenant.timezone, membershipId: null },
         {
           branchId: branch.id,
-          customerName: v.customerName,
+          customerName: v.customerName || undefined,
           customerPhone: v.customerPhone,
           customerEmail: v.customerEmail || undefined,
           notes: v.players ? `Players: ${v.players}` : undefined,
