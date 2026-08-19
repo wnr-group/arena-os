@@ -486,10 +486,13 @@ export const employeeAdvanceRecoveries = pgTable(
   ],
 )
 
-// ── payslips (migration 0029) ────────────────────────────────────────────────
+// ── payslips (migration 0029, RLS widened 0030) ──────────────────────────────
 // The payroll run's output — a frozen snapshot per (membership, period), never
 // rewritten by a later salary-structure edit or attendance correction. See
 // 0029_payroll_runs.sql for the idempotency and net-pay-floor reasoning.
+// SELECT is self-service (a staff member sees their own rows) plus
+// owner/manager (see everyone's) — see 0030_payslips_self_view.sql. INSERT
+// stays owner-only: only the payroll run writes these.
 export const payslips = pgTable(
   'payslips',
   {

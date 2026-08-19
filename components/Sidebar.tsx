@@ -104,6 +104,9 @@ const NAV: NavItem[] = [
       { href: '/attendance', label: 'Attendance', icon: CalendarCheck },
       { href: '/roster', label: 'Roster', icon: CalendarClock },
       { href: '/tasks', label: 'Tasks', icon: ListChecks },
+      // Self-service: payslips_self_select RLS (migration 0030) scopes this to
+      // the viewer's own payslips; owner/manager see everyone's from here too.
+      { href: '/payslips', label: 'My Payslips', icon: Receipt },
       { href: '/performance', label: 'Performance', icon: TrendingUp, can: isManager },
       { href: '/reports/employees', label: 'Employee Report', icon: BarChart3, can: isManager },
     ],

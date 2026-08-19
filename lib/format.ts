@@ -21,6 +21,16 @@ export function timeInZone(iso: string | Date, timeZone: string): string {
   }).format(d)
 }
 
+/** 'YYYY-MM' → 'August 2026'. UTC throughout — a calendar month has no timezone of its own. */
+export function formatPayrollPeriod(period: string): string {
+  const [year, month] = period.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
 export function prettyDate(dateStr: string, timeZone: string): string {
   const [y, m, d] = dateStr.split('-').map(Number)
   return new Intl.DateTimeFormat('en-GB', {

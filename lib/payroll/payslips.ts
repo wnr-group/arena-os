@@ -40,30 +40,64 @@ export function listPayrollPeriods(ctx: ActiveContext) {
   })
 }
 
-/** Every payslip generated for one period, across all staff. */
+const payslipColumns = {
+  id: payslips.id,
+  membershipId: payslips.membershipId,
+  fullName: memberships.fullName,
+  email: memberships.email,
+  period: payslips.period,
+  base: payslips.base,
+  allowances: payslips.allowances,
+  deductions: payslips.deductions,
+  daysInPeriod: payslips.daysInPeriod,
+  daysPresent: payslips.daysPresent,
+  gross: payslips.gross,
+  deductionsTotal: payslips.deductionsTotal,
+  advanceInstalment: payslips.advanceInstalment,
+  netPay: payslips.netPay,
+}
+
+/** Every payslip generated for one period, across all staff. Owner/manager only, per payslips_manager_select RLS. */
 export function listPayslipsForPeriod(ctx: ActiveContext, period: string) {
   return withUser(ctx.user.id, async (tx) => {
     const rows = await tx
-      .select({
-        id: payslips.id,
-        membershipId: payslips.membershipId,
-        fullName: memberships.fullName,
-        email: memberships.email,
-        period: payslips.period,
-        base: payslips.base,
-        allowances: payslips.allowances,
-        deductions: payslips.deductions,
-        daysInPeriod: payslips.daysInPeriod,
-        daysPresent: payslips.daysPresent,
-        gross: payslips.gross,
-        deductionsTotal: payslips.deductionsTotal,
-        advanceInstalment: payslips.advanceInstalment,
-        netPay: payslips.netPay,
-      })
+      .select(payslipColumns)
       .from(payslips)
       .innerJoin(memberships, eq(memberships.id, payslips.membershipId))
       .where(and(eq(payslips.tenantId, ctx.tenant.id), eq(payslips.period, period)))
       .orderBy(memberships.fullName)
     return rows as PayslipRow[]
+  })
+}
+
+/** The caller's own payslips, most recent period first — the self-service "My Payslips" list. */
+export function listMyPayslips(ctx: ActiveContext) {
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
+      .select(payslipColumns)
+      .from(payslips)
+      .innerJoin(memberships, eq(memberships.id, payslips.membershipId))
+      .where(and(eq(payslips.tenantId, ctx.tenant.id), eq(payslips.membershipId, ctx.membershipId)))
+      .orderBy(desc(payslips.period))
+    return rows as PayslipRow[]
+  })
+}
+
+/**
+ * One payslip by id, for the printable view. No explicit ownership check
+ * here — payslips_self_select/payslips_manager_select RLS already scope
+ * this to "your own row, or any row if you're owner/manager"; another
+ * employee's id simply returns null, same as an unknown one (the invoice
+ * receipt page's convention — the URL leaks nothing).
+ */
+export function getPayslipById(ctx: ActiveContext, id: string) {
+  return withUser(ctx.user.id, async (tx) => {
+    const [row] = await tx
+      .select(payslipColumns)
+      .from(payslips)
+      .innerJoin(memberships, eq(memberships.id, payslips.membershipId))
+      .where(and(eq(payslips.tenantId, ctx.tenant.id), eq(payslips.id, id)))
+      .limit(1)
+    return (row as PayslipRow | undefined) ?? null
   })
 }

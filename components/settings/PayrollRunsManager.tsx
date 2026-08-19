@@ -1,11 +1,12 @@
 'use client'
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Play, Users, Wallet, HandCoins, Loader2, ChevronDown, ChevronRight } from 'lucide-react'
+import { Play, Users, Wallet, HandCoins, Loader2, ChevronDown, ChevronRight, FileText } from 'lucide-react'
 import { runPayrollForPeriod } from '@/lib/actions/payroll'
-import { formatMoney } from '@/lib/format'
+import { formatMoney, formatPayrollPeriod as formatPeriod } from '@/lib/format'
 
 type SalaryComponent = { label: string; amount: string }
 type PayslipRow = {
@@ -27,15 +28,6 @@ type PayslipRow = {
 type PayrollPeriodSummary = { period: string; payslipCount: number; totalNetPay: number }
 
 const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
-
-function formatPeriod(period: string): string {
-  const [year, month] = period.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-US', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
-}
 
 export function PayrollRunsManager({
   period,
@@ -171,12 +163,13 @@ export function PayrollRunsManager({
                 <th className="px-4 py-3 text-right font-medium">Deductions</th>
                 <th className="px-4 py-3 text-right font-medium">Advance</th>
                 <th className="px-4 py-3 text-right font-medium">Net Pay</th>
+                <th className="px-4 py-3 text-right font-medium">Payslip</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {payslips.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     {alreadyRun ? 'No payslips for this period.' : 'Payroll has not been run for this period yet.'}
                   </td>
                 </tr>
@@ -210,10 +203,18 @@ function PayslipTableRow({ row, money }: { row: PayslipRow; money: (n: number | 
         <td className="px-4 py-3 text-right tabular-nums text-destructive">-{money(row.deductionsTotal)}</td>
         <td className="px-4 py-3 text-right tabular-nums text-amber-600">-{money(row.advanceInstalment)}</td>
         <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(row.netPay)}</td>
+        <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+          <Link
+            href={`/payslips/${row.id}`}
+            className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+          >
+            <FileText size={14} /> View
+          </Link>
+        </td>
       </tr>
       {open && (
         <tr className="bg-muted/10">
-          <td colSpan={6} className="px-4 py-3">
+          <td colSpan={7} className="px-4 py-3">
             <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-3">
               <div>
                 <p className="text-xs font-semibold uppercase text-muted-foreground">Base</p>
