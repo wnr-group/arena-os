@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { getPublicAvailability, createPublicBooking, type PublicSlotOption } from '@/lib/actions/public-booking'
 import { timeInZone, prettyDate } from '@/lib/format'
+import { HoneypotField } from './HoneypotField'
 
 export type WizardResourceType = {
   id: string
@@ -61,6 +62,7 @@ export function BookingWizard({
   const [slot, setSlot] = useState<PublicSlotOption | null>(null)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const [website, setWebsite] = useState('')
   const [bookingNumber, setBookingNumber] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
@@ -112,6 +114,7 @@ export function BookingWizard({
         endsAt,
         customerName: name,
         customerPhone: phone,
+        website,
       })
       if (r.error) {
         setError(r.error)
@@ -129,6 +132,7 @@ export function BookingWizard({
     setSlot(null)
     setName('')
     setPhone('')
+    setWebsite('')
     setBookingNumber(null)
     setError(null)
   }
@@ -356,6 +360,8 @@ export function BookingWizard({
               className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
             />
           </label>
+
+          <HoneypotField value={website} onChange={setWebsite} />
 
           <BottomBar>
             <PrimaryButton onClick={confirm} pending={pending} disabled={!name.trim() || !phone.trim()}>

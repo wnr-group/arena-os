@@ -22,6 +22,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResource } from '@/lib/booking/public-availability'
 import { getPublicResourceAvailability, createPublicBooking, lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
+import { HoneypotField } from './HoneypotField'
 
 export const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
 export const DATE_WINDOW_DAYS = 7
@@ -103,6 +104,7 @@ export function ResourceBookingPage({
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
+  const [website, setWebsite] = useState('')
   const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; found: boolean }>({
     checking: false,
     checked: false,
@@ -179,6 +181,7 @@ export function ResourceBookingPage({
         customerPhone: phone,
         customerEmail: email,
         players: resource.capacity != null ? players : undefined,
+        website,
       })
       if (r.error || !r.confirmationToken) {
         setConfirmError(r.error ?? 'Something went wrong. Please try again.')
@@ -458,6 +461,8 @@ export function ResourceBookingPage({
                     </label>
                   </>
                 ) : null}
+
+                <HoneypotField value={website} onChange={setWebsite} />
 
                 <div className="mt-6 space-y-2 rounded-xl border border-border bg-background p-4">
                   <SummaryRow icon={Boxes} label="Resource" value={resource.name} />

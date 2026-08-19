@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { headers } from 'next/headers'
 import { z } from 'zod'
 import { withPublicTenant } from '@/db'
 import { currentTenantSlug } from '@/lib/tenant/context'
@@ -8,8 +9,16 @@ import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
+import { rateLimit } from '@/lib/security/rate-limit'
+import { ipFromHeaders } from '@/lib/security/ip'
 
 type Fail = { error: string }
+
+const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
+
+async function callerIp(): Promise<string> {
+  return ipFromHeaders(await headers())
+}
 
 async function resolvePublicTenant(): Promise<{ id: string; timezone: string } | Fail> {
   const slug = await currentTenantSlug()
@@ -32,6 +41,11 @@ export type AvailabilityResult = { starts?: PublicSlotOption[]; error?: string }
 export async function getPublicAvailability(
   raw: z.input<typeof availabilityInput>,
 ): Promise<AvailabilityResult> {
+  // Shares a budget with getPublicResourceAvailability below — both are the
+  // same kind of read, just against a type vs. a specific resource, and the
+  // wizard only ever calls one family per session.
+  if (!rateLimit(`avail:${await callerIp()}`, 40, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
   const tenant = await resolvePublicTenant()
   if ('error' in tenant) return tenant
 
@@ -70,6 +84,8 @@ export type PublicResourceAvailabilityResult =
 export async function getPublicResourceAvailability(
   raw: z.input<typeof resourceAvailabilityInput>,
 ): Promise<PublicResourceAvailabilityResult> {
+  if (!rateLimit(`avail:${await callerIp()}`, 40, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
   const tenant = await resolvePublicTenant()
   if ('error' in tenant) return tenant
 
@@ -116,6 +132,10 @@ export type PublicCustomerLookupResult = { found: boolean } | { error: string }
 export async function lookupPublicCustomerByPhone(
   raw: z.input<typeof phoneLookupInput>,
 ): Promise<PublicCustomerLookupResult> {
+  // IP-limited (not per-phone): the risk here is a stranger enumerating many
+  // phone numbers looking for hits, not repeated lookups of one number.
+  if (!rateLimit(`lookup:${await callerIp()}`, 20, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
   const tenant = await resolvePublicTenant()
   if ('error' in tenant) return tenant
 
@@ -136,6 +156,11 @@ const bookingInput = z.object({
   /** Not a first-class column — the schema has no per-booking player count,
    * so this rides along as a note, same as staff bookings already do. */
   players: z.coerce.number().int().min(1).max(100).optional(),
+  /** Honeypot: a real visitor never sees or fills this field (it's rendered
+   * off-screen and excluded from the tab order — see HoneypotField). A
+   * non-empty value means whatever submitted the form filled in every input
+   * it found, which is a form-filling bot, not a customer. */
+  website: z.string().optional(),
 })
 
 export type CreatePublicBookingResult = { error?: string; bookingNumber?: string; confirmationToken?: string }
@@ -152,10 +177,33 @@ export async function createPublicBooking(
   raw: z.input<typeof bookingInput>,
 ): Promise<CreatePublicBookingResult> {
   try {
+    // This is the action that consumes real inventory (a resource slot) and
+    // writes a customer row, so it gets the tightest budget of any public
+    // action here, checked before any parsing or DB work.
+    if (!rateLimit(`book:ip:${await callerIp()}`, 5, 10 * 60_000).ok) {
+      return { error: 'Too many booking attempts. Please wait a bit and try again.' }
+    }
+
     const tenant = await resolvePublicTenant()
     if ('error' in tenant) return tenant
 
     const v = bookingInput.parse(raw)
+
+    // Bot bait — see the `website` field's doc comment on bookingInput.
+    // Fails the same generic way a real validation error would, so a bot
+    // reading the response can't tell it was caught by the honeypot.
+    if (v.website) {
+      return { error: 'Something went wrong. Please try again.' }
+    }
+
+    // Per-phone, on top of the per-IP check above: catches a script that
+    // rotates IPs but keeps hammering one number (or the reverse — one
+    // venue's phone getting flooded from a botnet).
+    const phoneDigits = v.customerPhone.replace(/\D/g, '')
+    if (phoneDigits && !rateLimit(`book:phone:${phoneDigits}`, 3, 10 * 60_000).ok) {
+      return { error: 'Too many booking attempts for this phone number. Please wait a bit and try again.' }
+    }
+
     if (new Date(v.endsAt) <= new Date(v.startsAt)) {
       return { error: 'That slot is no longer valid — please pick another.' }
     }

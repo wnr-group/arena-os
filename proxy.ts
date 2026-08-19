@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { tenantSlugFromHost } from '@/lib/tenant/subdomain'
 import { SESSION_COOKIE } from '@/lib/auth/cookie'
+import { rateLimit } from '@/lib/security/rate-limit'
+import { ipFromHeaders } from '@/lib/security/ip'
 
 /**
  * Edge proxy (Next 16's renamed "middleware"). It is deliberately thin:
@@ -32,6 +34,25 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/resources') ||
     pathname.startsWith('/b/')
   const hasSession = request.cookies.has(SESSION_COOKIE)
+
+  // Coarse abuse gate (AROS-47): every write against the public booking site
+  // — availability lookups, phone lookups, booking create — is a server
+  // action POSTed back to its own page URL, so a per-IP cap on POSTs to the
+  // public route group catches all of them in one place, before any of them
+  // touch the database. This is deliberately loose (a real booking session
+  // fires several of these calls); tighter, action-specific and per-phone
+  // limits live next to createPublicBooking itself in
+  // lib/actions/public-booking.ts, where the parsed body is available.
+  if (request.method === 'POST' && isPublicRoute) {
+    const ip = ipFromHeaders(request.headers)
+    const check = rateLimit(`edge-public:${ip}`, 60, 60_000)
+    if (!check.ok) {
+      return new NextResponse('Too many requests. Please slow down and try again shortly.', {
+        status: 429,
+        headers: { 'Retry-After': String(check.retryAfterSeconds) },
+      })
+    }
+  }
 
   // Protected surfaces: tenant routes on a subdomain, and the platform admin
   // panel on the root domain. Membership/admin authorization is enforced deeper
