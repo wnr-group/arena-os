@@ -253,7 +253,10 @@ Mostly non-schema (infra, security, ops). Schema touches:
 `id` · `tenant_id` · `membership_id → memberships` · `amount numeric(10,2)` · `instalment_amount numeric(10,2)` · `note text null` · `given_at date` · `created_by → memberships null` · timestamps. Unique `(tenant_id, id)` (composite-FK target for the recoveries ledger below). The PLAN side only — who was given how much and the flat instalment to recover each payroll period. RLS: owner-only, same as `salary_structures`.
 
 ### `employee_advance_recoveries` `[T]` `[built]`  (append-only ledger)
-`id` · `tenant_id` · `advance_id → employee_advances` · `amount numeric(10,2)` (signed: + recovery / − correction) · `source_type text null` (`'payroll'` once AROS-104 writes these) · `source_id uuid null` (the payslip) · `created_by → memberships null` · `created_at`. Composite FK `(tenant_id, advance_id) → employee_advances(tenant_id, id) on delete cascade`. Index `(advance_id)`. Outstanding is always **derived** as `employee_advances.amount − sum(recoveries.amount)`, never a stored column — same shape as `wallet_transactions`/`loyalty_transactions` (M5). RLS: owner-only. Grants: **select, insert only** (no update/delete) — stricter than wallet/loyalty, matching `refunds`: a payroll deduction record must never be editable after the fact, only reversed with an opposite-signed row.
+`id` · `tenant_id` · `advance_id → employee_advances` · `amount numeric(10,2)` (signed: + recovery / − correction) · `source_type text null` (`'payroll'`, written by AROS-104) · `source_id uuid null` (the payslip, a soft pointer — no FK, same device as `invoice_items.source_id`) · `created_by → memberships null` · `created_at`. Composite FK `(tenant_id, advance_id) → employee_advances(tenant_id, id) on delete cascade`. Index `(advance_id)`. Outstanding is always **derived** as `employee_advances.amount − sum(recoveries.amount)`, never a stored column — same shape as `wallet_transactions`/`loyalty_transactions` (M5). RLS: owner-only. Grants: **select, insert only** (no update/delete) — stricter than wallet/loyalty, matching `refunds`: a payroll deduction record must never be editable after the fact, only reversed with an opposite-signed row.
+
+### `payslips` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `period text` (`'YYYY-MM'`, check-constrained) · `base numeric(10,2)` · `allowances jsonb` · `deductions jsonb` (both snapshotted verbatim from the `salary_structures` row used — the "line breakdown") · `days_in_period smallint` · `days_present smallint` · `gross numeric(10,2)` (`(base + Σallowances) × days_present / days_in_period`, rounded once) · `deductions_total numeric(10,2)` (Σdeductions, **not** prorated by attendance) · `advance_instalment numeric(10,2)` (what this payslip actually recovered, clamped to both outstanding balance and what the payslip can afford) · `net_pay numeric(10,2)` (floored at 0 — a payslip never prints negative) · `created_by → memberships null` · `created_at`. Unique `(membership_id, period)` — the idempotency guarantee: the run (`lib/payroll/run.ts`) pre-checks for an existing payslip in the period and blocks the whole run rather than upserting, because upserting would mean re-posting advance recoveries the (insert-only) ledger can never un-post. RLS: owner-only. Grants: **select, insert only** — a payslip is a financial record of what was actually paid, corrected by the next run rather than edited in place.
 
 ---
 
@@ -293,3 +296,12 @@ Mostly non-schema (infra, security, ops). Schema touches:
   insert-only at the grant level (like `refunds`), stricter than
   wallet/loyalty. The payroll run (AROS-104) will write recovery rows as it
   deducts each period's instalment.
+- 2026-08-19 — `payslips` (M11, third ticket, AROS-104) built — migration
+  0029: the payroll run's output. One row per (membership, period), every
+  money/attendance figure a snapshot so a later salary-structure edit or
+  attendance correction never rewrites a past payslip. Unique
+  `(membership_id, period)` makes a run idempotent — a re-run of a period
+  that already has payslips is rejected outright rather than upserting, since
+  the advance-recoveries ledger it posts to is insert-only and can't be
+  un-posted. Owner-only RLS, select+insert-only grants, same as
+  `employee_advance_recoveries`.

@@ -7,6 +7,7 @@ import { withUser } from '@/db'
 import { salaryStructures, employeeAdvances } from '@/db/schema'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
 import { hasRecoveries } from '@/lib/payroll/advances'
+import { runPayroll, PayrollError, type RunPayrollResult } from '@/lib/payroll/run'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type Result = { error?: string }
@@ -16,10 +17,14 @@ class AdvanceError extends Error {}
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof AdvanceError) return { error: e.message }
+  if (e instanceof PayrollError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
   if (code === '23505' && constraint === 'salary_structures_member_effective_key') {
     return { error: 'That employee already has a salary structure effective on that date.' }
+  }
+  if (code === '23505' && constraint === 'payslips_membership_period_key') {
+    return { error: 'Payroll for that period has already been run.' }
   }
   console.error('[payroll] action failed:', e)
   return { error: 'Something went wrong. Please try again.' }
@@ -154,6 +159,25 @@ export async function deleteAdvance(id: string): Promise<Result> {
     })
     revalidatePath('/settings/payroll/advances')
     return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+type RunPayrollResultOrError = Result & { result?: RunPayrollResult }
+
+/**
+ * Compute and post one calendar month's payslips. One transaction: every
+ * payslip and every advance-recovery row it posts commits together, or none
+ * of it does. See lib/payroll/run.ts for the pay formula and the idempotency
+ * guarantee (a period that already has payslips is rejected outright).
+ */
+export async function runPayrollForPeriod(period: string): Promise<RunPayrollResultOrError> {
+  try {
+    const ctx = await requireOwner()
+    const result = await withUser(ctx.user.id, (tx) => runPayroll(tx, ctx.tenant.id, period, ctx.membershipId))
+    revalidatePath('/settings/payroll/runs')
+    return { result }
   } catch (e) {
     return fail(e)
   }

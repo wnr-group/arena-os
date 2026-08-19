@@ -486,6 +486,41 @@ export const employeeAdvanceRecoveries = pgTable(
   ],
 )
 
+// ── payslips (migration 0029) ────────────────────────────────────────────────
+// The payroll run's output — a frozen snapshot per (membership, period), never
+// rewritten by a later salary-structure edit or attendance correction. See
+// 0029_payroll_runs.sql for the idempotency and net-pay-floor reasoning.
+export const payslips = pgTable(
+  'payslips',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    /** Calendar month this payslip covers, 'YYYY-MM'. */
+    period: text('period').notNull(),
+    base: numeric('base', { precision: 10, scale: 2 }).notNull(),
+    allowances: jsonb('allowances').$type<SalaryComponent[]>().notNull().default([]),
+    deductions: jsonb('deductions').$type<SalaryComponent[]>().notNull().default([]),
+    daysInPeriod: smallint('days_in_period').notNull(),
+    daysPresent: smallint('days_present').notNull(),
+    gross: numeric('gross', { precision: 10, scale: 2 }).notNull(),
+    deductionsTotal: numeric('deductions_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    advanceInstalment: numeric('advance_instalment', { precision: 10, scale: 2 }).notNull().default('0'),
+    netPay: numeric('net_pay', { precision: 10, scale: 2 }).notNull().default('0'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('payslips_membership_period_key').on(t.membershipId, t.period),
+    index('idx_payslips_tenant_period').on(t.tenantId, t.period),
+    index('idx_payslips_member').on(t.membershipId),
+  ],
+)
+
 // ── tax rates (migration 0009) ───────────────────────────────────────────────
 export const taxRates = pgTable(
   'tax_rates',

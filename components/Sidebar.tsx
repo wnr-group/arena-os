@@ -33,6 +33,7 @@ import {
   Banknote,
   Wallet,
   Landmark,
+  Receipt,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -116,6 +117,7 @@ const NAV: NavItem[] = [
     children: [
       { href: '/settings/payroll/salary-structures', label: 'Salary Structures', icon: Wallet },
       { href: '/settings/payroll/advances', label: 'Advances & Loans', icon: Landmark },
+      { href: '/settings/payroll/runs', label: 'Payroll Runs', icon: Receipt },
     ],
   },
   // Owner-only: the business's legal identity (migration 0012).
