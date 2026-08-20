@@ -5,16 +5,20 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill } from '@/lib/auth/roles'
+<<<<<<< HEAD
 import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { branches } from '@/db/schema'
 import { BillingError } from '@/lib/billing/invoice'
+=======
+>>>>>>> origin/main
 import {
   PaymentError,
   recordPaymentForInvoice,
   recordPaymentInputSchema,
 } from '@/lib/billing/payments'
+<<<<<<< HEAD
 import {
   WalletError,
   recordWalletPaymentForInvoice,
@@ -47,6 +51,8 @@ import {
   PaymentNotConfiguredError,
   requireRazorpayCredentials,
 } from '@/lib/settings/razorpay-credentials'
+=======
+>>>>>>> origin/main
 
 type RecordPaymentResult = {
   error?: string
@@ -105,6 +111,7 @@ export async function recordPayment(
     return fail(e)
   }
 }
+<<<<<<< HEAD
 
 /* ── AROS-49: Razorpay deposit orders ────────────────────────────────────────
  *
@@ -307,3 +314,5 @@ export async function payInvoiceFromWallet(
     return failWallet(e, 'payment')
   }
 }
+=======
+>>>>>>> origin/main
