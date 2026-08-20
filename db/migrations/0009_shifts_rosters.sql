@@ -48,9 +48,11 @@ create trigger trg_shifts_updated before update on public.shifts
 alter table public.rosters enable row level security;
 alter table public.shifts  enable row level security;
 
+drop policy if exists rosters_rw on public.rosters;
 create policy rosters_rw on public.rosters
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists shifts_rw on public.shifts;
 create policy shifts_rw on public.shifts
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));

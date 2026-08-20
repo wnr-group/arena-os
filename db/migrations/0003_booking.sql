@@ -170,29 +170,37 @@ alter table public.bookings       enable row level security;
 alter table public.booking_slots  enable row level security;
 
 -- Settings tables: any member may read; only owner/manager may write.
+drop policy if exists resource_types_select on public.resource_types;
 create policy resource_types_select on public.resource_types
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists resource_types_write on public.resource_types;
 create policy resource_types_write on public.resource_types
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
+drop policy if exists resources_select on public.resources;
 create policy resources_select on public.resources
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists resources_write on public.resources;
 create policy resources_write on public.resources
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
+drop policy if exists working_hours_select on public.working_hours;
 create policy working_hours_select on public.working_hours
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists working_hours_write on public.working_hours;
 create policy working_hours_write on public.working_hours
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
 -- Operational tables: any active member may read AND write (front-desk staff
 -- create/manage bookings).
+drop policy if exists bookings_rw on public.bookings;
 create policy bookings_rw on public.bookings
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists booking_slots_rw on public.booking_slots;
 create policy booking_slots_rw on public.booking_slots
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));

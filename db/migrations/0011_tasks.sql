@@ -32,6 +32,7 @@ create trigger trg_tasks_updated before update on public.tasks
 -- ── RLS + grants ─────────────────────────────────────────────────────────────
 alter table public.tasks enable row level security;
 
+drop policy if exists tasks_rw on public.tasks;
 create policy tasks_rw on public.tasks
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));
