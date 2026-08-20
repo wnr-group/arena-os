@@ -30,11 +30,11 @@ import {
   Percent,
   Timer,
   Ticket,
-  Banknote,
   Wallet,
   Landmark,
   Receipt,
   Calculator,
+  PiggyBank,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -117,7 +117,7 @@ const NAV: NavItem[] = [
   {
     href: '/settings/payroll',
     label: 'Payroll',
-    icon: Banknote,
+    icon: PiggyBank,
     can: isOwner,
     children: [
       { href: '/settings/payroll/salary-structures', label: 'Salary Structures', icon: Wallet },
