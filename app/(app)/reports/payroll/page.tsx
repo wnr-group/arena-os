@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { Users, TrendingUp, TrendingDown, Wallet, type LucideIcon } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager, ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { getPayrollCostReport } from '@/lib/reports/payroll'
@@ -48,17 +49,24 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
         Total wage bill for {formatPayrollPeriod(from)} – {formatPayrollPeriod(to)}, aggregated from posted payslips.
       </p>
 
-      <PeriodRangeFilter basePath="/reports/payroll" from={from} to={to} maxPeriod={currentPeriod} />
-
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Employees paid" value={String(report.rows.length)} />
-        <StatCard label="Total gross" value={money(report.totals.totalGross)} />
+      <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard icon={Users} label="Employees paid" value={String(report.rows.length)} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={TrendingUp} label="Total gross" value={money(report.totals.totalGross)} accent="bg-primary/10 text-primary" />
         <StatCard
+          icon={TrendingDown}
           label="Deductions + advances recovered"
           value={money(report.totals.totalDeductions + report.totals.totalAdvanceRecovered)}
+          accent="bg-amber-500/10 text-amber-600"
         />
-        <StatCard label="Total net pay — the wage bill" value={money(report.totals.totalNetPay)} accent />
+        <StatCard
+          icon={Wallet}
+          label="Total net pay — the wage bill"
+          value={money(report.totals.totalNetPay)}
+          accent="bg-emerald-500/10 text-emerald-600"
+        />
       </div>
+
+      <PeriodRangeFilter basePath="/reports/payroll" from={from} to={to} maxPeriod={currentPeriod} />
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Per-employee breakdown</h2>
@@ -105,8 +113,8 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
                   <td className="px-4 py-3 text-muted-foreground">{ROLE_LABELS[r.role as MemberRole] ?? r.role}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{r.payslipCount}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{money(r.totalGross)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-destructive">-{money(r.totalDeductions)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-amber-600">-{money(r.totalAdvanceRecovered)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-destructive">{money(r.totalDeductions)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-amber-600">{money(r.totalAdvanceRecovered)}</td>
                   <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(r.totalNetPay)}</td>
                 </tr>
               ))}
@@ -119,8 +127,8 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">{report.totals.payslipCount}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{money(report.totals.totalGross)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">-{money(report.totals.totalDeductions)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">-{money(report.totals.totalAdvanceRecovered)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{money(report.totals.totalDeductions)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{money(report.totals.totalAdvanceRecovered)}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{money(report.totals.totalNetPay)}</td>
                 </tr>
               </tfoot>
@@ -132,11 +140,24 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
   )
 }
 
-function StatCard({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  accent,
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  accent: string
+}) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <p className={`text-2xl font-semibold tracking-tight ${accent ? 'text-primary' : ''}`}>{value}</p>
-      <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
+        <Icon size={18} />
+      </div>
+      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )
 }

@@ -200,8 +200,8 @@ function PayslipTableRow({ row, money }: { row: PayslipRow; money: (n: number | 
           {row.daysPresent}/{row.daysInPeriod}
         </td>
         <td className="px-4 py-3 text-right tabular-nums">{money(row.gross)}</td>
-        <td className="px-4 py-3 text-right tabular-nums text-destructive">-{money(row.deductionsTotal)}</td>
-        <td className="px-4 py-3 text-right tabular-nums text-amber-600">-{money(row.advanceInstalment)}</td>
+        <td className="px-4 py-3 text-right tabular-nums text-destructive">{money(row.deductionsTotal)}</td>
+        <td className="px-4 py-3 text-right tabular-nums text-amber-600">{money(row.advanceInstalment)}</td>
         <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(row.netPay)}</td>
         <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
           <Link
