@@ -145,10 +145,10 @@ export function SalaryStructuresManager({
                   <td className="px-4 py-3 font-medium">{row.fullName || row.email || 'Unnamed'}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{money(Number(row.base))}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-emerald-600">
-                    +{money(componentTotal(row.allowances))}
+                    {money(componentTotal(row.allowances))}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-destructive">
-                    -{money(componentTotal(row.deductions))}
+                    {money(componentTotal(row.deductions))}
                   </td>
                   <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(netPay(row))}</td>
                   <td className="px-4 py-3 text-muted-foreground">{row.effectiveFrom}</td>
