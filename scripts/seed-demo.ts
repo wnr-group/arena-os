@@ -20,6 +20,7 @@
 import { Client } from 'pg'
 import { hash } from '@node-rs/argon2'
 import { loadEnv } from './env'
+import { DEFAULT_EXPENSE_CATEGORIES } from '../lib/expenses/defaults'
 
 const ARGON = { memoryCost: 19456, timeCost: 2, outputLen: 32, parallelism: 1 } as const
 
@@ -230,6 +231,18 @@ async function main() {
     }
     console.log(`✓ ${demoCustomers.length} customers (with tags + notes)`)
 
+    // 9. Starter expense categories (AROS-107/108). Ordinary rows a manager can
+    //    rename or retire — seeded because an expense requires a category, so
+    //    the Expenses page would otherwise open onto an unsubmittable form.
+    //    `on conflict do nothing` (untargeted) makes the re-run idempotent
+    //    against the partial unique index on (tenant_id, lower(btrim(name))).
+    await client.query(
+      `insert into public.expense_categories (tenant_id, name)
+       select $1, unnest($2::text[])
+       on conflict do nothing`,
+      [tenantId, DEFAULT_EXPENSE_CATEGORIES as unknown as string[]],
+    )
+    console.log(`✓ ${DEFAULT_EXPENSE_CATEGORIES.length} expense categories`)
     // 9. Platform admin (operates Arena OS itself; not a tenant member)
     const adminHash = await hash('admin1234', ARGON)
     await client.query(

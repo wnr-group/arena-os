@@ -7,6 +7,7 @@ import {
   BadgeCheck,
   Building2,
   CreditCard,
+  Wallet,
   CalendarDays,
   LayoutDashboard,
   Settings,
@@ -95,6 +96,9 @@ const NAV: NavItem[] = [
   },
   // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
   { href: '/settings/payments', label: 'Payments', icon: CreditCard, can: isManager },
+  // Expense tracker (AROS-108) — manager/owner; the page and every mutation
+  // enforce that themselves, the nav entry is convenience only.
+  { href: '/expenses', label: 'Expenses', icon: Wallet, can: isManager },
   // Revenue & bookings analytics (AROS-65) — manager/owner, and the page and
   // its data readers enforce that themselves; hiding the link is not the guard.
   {

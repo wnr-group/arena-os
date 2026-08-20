@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0038 reporting infrastructure (AROS-64)
+-- Arena OS — 0032 reporting infrastructure (AROS-64)
 --
 -- The shape every M6 report (AROS-65/66/67) is meant to reuse:
 --

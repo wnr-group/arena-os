@@ -1216,7 +1216,7 @@ export const auditLog = pgTable(
   (t) => [index('idx_audit_log_tenant_created').on(t.tenantId, t.createdAt)],
 )
 
-// ── reporting (migration 0038) ───────────────────────────────────────────────
+// ── reporting (migration 0032) ───────────────────────────────────────────────
 // The ONLY reporting object the app may read. `.existing()` because the view is
 // authored in SQL — it carries a security_barrier and an auth_tenant_ids()
 // predicate that Drizzle cannot express, exactly like the RLS policies on every
@@ -1224,7 +1224,7 @@ export const auditLog = pgTable(
 //
 // The materialized view behind it (public.mv_daily_revenue) is deliberately
 // ABSENT from this file: arena_app has no SELECT on it, so any query Drizzle
-// could build against it would fail. Read 0038_reporting.sql before changing
+// could build against it would fail. Read 0032_reporting.sql before changing
 // either one.
 //
 // `day` is a plain date (mode 'string' → 'YYYY-MM-DD'), already resolved to the
@@ -1241,6 +1241,190 @@ export const vDailyRevenue = pgView('v_daily_revenue', {
   net: numeric('net', { precision: 14, scale: 2 }).notNull(),
   invoiceCount: integer('invoice_count').notNull(),
 }).existing()
+
+// ── expenses module (migration 0033) ─────────────────────────────────────────
+// Settings-shaped catalogues plus the ledger that spends against them, the same
+// read-all / manager-write split as the menu tables. `amount` is numeric, so it
+// arrives as a STRING like every other money column in this schema.
+export const expenseCategories = pgTable(
+  'expense_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite (tenant_id, category_id) FK expenses carries.
+    unique('expense_categories_tenant_id_key').on(t.tenantId, t.id),
+    // One LIVE category per name per tenant; retired ones keep theirs for history.
+    uniqueIndex('idx_expense_categories_active_name')
+      .on(t.tenantId, sql`lower(btrim(${t.name}))`)
+      .where(sql`${t.isActive}`),
+    index('idx_expense_categories_tenant').on(t.tenantId, t.isActive),
+  ],
+)
+
+export const vendors = pgTable(
+  'vendors',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    phone: text('phone'),
+    email: text('email'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Target of the composite (tenant_id, vendor_id) FK expenses carries.
+    unique('vendors_tenant_id_key').on(t.tenantId, t.id),
+    uniqueIndex('idx_vendors_active_name')
+      .on(t.tenantId, sql`lower(btrim(${t.name}))`)
+      .where(sql`${t.isActive}`),
+    index('idx_vendors_tenant').on(t.tenantId, t.isActive),
+  ],
+)
+
+/** Only 'monthly' today (AROS-109); an enum so adding 'weekly' is an ALTER TYPE. */
+export const expenseCadence = pgEnum('expense_cadence', ['monthly'])
+
+/**
+ * Recurring expense templates (migration 0034). A template is not itself an
+ * expense — the generation job turns each due period into an ordinary row in
+ * `expenses`, tagged with recurringExpenseId + recurrencePeriod.
+ */
+export const recurringExpenses = pgTable(
+  'recurring_expenses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id').notNull(),
+    // Nullable for the same reason expenses.vendorId is.
+    vendorId: uuid('vendor_id'),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    cadence: expenseCadence('cadence').notNull().default('monthly'),
+    dayOfMonth: smallint('day_of_month').notNull(),
+    /** Concrete due DATE of the next period, already month-end adjusted. */
+    nextRun: date('next_run').notNull(),
+    note: text('note'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'recurring_expenses_category_tenant_fkey',
+      columns: [t.tenantId, t.categoryId],
+      foreignColumns: [expenseCategories.tenantId, expenseCategories.id],
+    }),
+    foreignKey({
+      name: 'recurring_expenses_vendor_tenant_fkey',
+      columns: [t.tenantId, t.vendorId],
+      foreignColumns: [vendors.tenantId, vendors.id],
+    }).onDelete('set null'),
+    // Target of the composite (tenant_id, recurring_expense_id) FK on expenses.
+    unique('recurring_expenses_tenant_id_key').on(t.tenantId, t.id),
+    index('idx_recurring_expenses_due').on(t.nextRun).where(sql`${t.isActive}`),
+    index('idx_recurring_expenses_tenant').on(t.tenantId, t.isActive),
+  ],
+)
+
+export const expenses = pgTable(
+  'expenses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id').notNull(),
+    // Nullable: rent and salaries have no supplier to name.
+    vendorId: uuid('vendor_id'),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    // A plain date, not an instant: the day is the tenant's, not a timezone's.
+    spentOn: date('spent_on').notNull(),
+    note: text('note'),
+    receiptUrl: text('receipt_url'),
+    // Provenance (migration 0034). Both null for a hand-entered expense; the
+    // paired CHECK in SQL keeps them all-or-nothing.
+    recurringExpenseId: uuid('recurring_expense_id'),
+    /** The period this row represents, as that period's FIRST day. */
+    recurrencePeriod: date('recurrence_period'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Composite FKs carry tenant_id INSIDE the key, so an expense can never
+    // point at another tenant's category or vendor. No delete rule on the
+    // category: deleting one that has been spent against must fail loudly.
+    foreignKey({
+      name: 'expenses_category_tenant_fkey',
+      columns: [t.tenantId, t.categoryId],
+      foreignColumns: [expenseCategories.tenantId, expenseCategories.id],
+    }),
+    foreignKey({
+      name: 'expenses_vendor_tenant_fkey',
+      columns: [t.tenantId, t.vendorId],
+      foreignColumns: [vendors.tenantId, vendors.id],
+    }).onDelete('set null'),
+    foreignKey({
+      name: 'expenses_recurring_tenant_fkey',
+      columns: [t.tenantId, t.recurringExpenseId],
+      foreignColumns: [recurringExpenses.tenantId, recurringExpenses.id],
+    }).onDelete('set null'),
+    index('idx_expenses_tenant_spent_on').on(t.tenantId, t.spentOn.desc()),
+    index('idx_expenses_category').on(t.tenantId, t.categoryId),
+    index('idx_expenses_vendor').on(t.tenantId, t.vendorId),
+    // THE duplicate guard: one generated expense per (template, period).
+    // NULLs are distinct, so manual expenses are unconstrained.
+    uniqueIndex('idx_expenses_recurrence_period').on(t.recurringExpenseId, t.recurrencePeriod),
+    index('idx_expenses_recurring').on(t.tenantId, t.recurringExpenseId),
+  ],
+)
+
+export const expenseCategoriesRelations = relations(expenseCategories, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [expenseCategories.tenantId], references: [tenants.id] }),
+  expenses: many(expenses),
+}))
+
+export const vendorsRelations = relations(vendors, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [vendors.tenantId], references: [tenants.id] }),
+  expenses: many(expenses),
+}))
+
+export const recurringExpensesRelations = relations(recurringExpenses, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [recurringExpenses.tenantId], references: [tenants.id] }),
+  category: one(expenseCategories, {
+    fields: [recurringExpenses.tenantId, recurringExpenses.categoryId],
+    references: [expenseCategories.tenantId, expenseCategories.id],
+  }),
+  vendor: one(vendors, {
+    fields: [recurringExpenses.tenantId, recurringExpenses.vendorId],
+    references: [vendors.tenantId, vendors.id],
+  }),
+  generated: many(expenses),
+}))
+
+export const expensesRelations = relations(expenses, ({ one }) => ({
+  tenant: one(tenants, { fields: [expenses.tenantId], references: [tenants.id] }),
+  category: one(expenseCategories, {
+    fields: [expenses.tenantId, expenses.categoryId],
+    references: [expenseCategories.tenantId, expenseCategories.id],
+  }),
+  vendor: one(vendors, {
+    fields: [expenses.tenantId, expenses.vendorId],
+    references: [vendors.tenantId, vendors.id],
+  }),
+}))
 
 // ── billing relations ────────────────────────────────────────────────────────
 // Declared for the billing tables only; the `one()` sides carry their own
