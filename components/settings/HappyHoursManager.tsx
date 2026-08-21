@@ -30,7 +30,9 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 function formatTime(t: string) {
   const [h, m] = t.split(':').map(Number)
@@ -99,7 +101,7 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
           className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
           onClick={() => setModal({ mode: 'add' })}
         >
-          <Plus size={16} /> Add happy hour
+          <Plus size={16} /> Add Happy Hour
         </button>
       </div>
 
@@ -215,7 +217,7 @@ function DaySummary({ days }: { days: number[] }) {
           key={i}
           title={DOW_FULL[i]}
           className={`flex size-6 items-center justify-center rounded-full text-[10px] font-semibold ${
-            days.includes(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground/40'
+            days.includes(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
           }`}
         >
           {d[0]}
@@ -249,7 +251,12 @@ function HappyHourModal({
 
   const errors = useMemo(() => {
     const e: { name?: string; days?: string; time?: string; discountValue?: string } = {}
-    if (!name.trim()) e.name = 'Name is required.'
+    const trimmedName = name.trim()
+    if (!trimmedName) e.name = 'Name is required.'
+    else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
+    else if (!NAME_PATTERN.test(trimmedName))
+      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
     if (daysOfWeek.length === 0) e.days = 'Select at least one day.'
     if (startTime && endTime && endTime <= startTime) e.time = 'End time must be after start time.'
     if (discountValue === '') e.discountValue = 'Discount value is required.'
@@ -306,6 +313,7 @@ function HappyHourModal({
               placeholder="e.g. Weekday Evening Special"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={100}
               autoFocus
             />
             {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
@@ -399,16 +407,16 @@ function HappyHourModal({
         </div>
 
         <div className="mt-5 flex gap-2">
+          <button className={`${btn} flex-1 border`} disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
           <button
             className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
             disabled={pending}
             onClick={submit}
           >
             {pending && <Loader2 size={16} className="animate-spin" />}
-            {pending ? 'Saving…' : row ? 'Save changes' : 'Add happy hour'}
-          </button>
-          <button className={`${btn} border`} disabled={pending} onClick={onClose}>
-            Cancel
+            {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Happy Hour'}
           </button>
         </div>
       </div>
