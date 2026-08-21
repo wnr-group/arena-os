@@ -19,6 +19,7 @@ const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
   'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
   const router = useRouter()
@@ -192,7 +193,12 @@ function CategoryModal({
 
   const errors = useMemo(() => {
     const e: { name?: string; sortOrder?: string } = {}
-    if (!name.trim()) e.name = 'Name is required.'
+    const trimmedName = name.trim()
+    if (!trimmedName) e.name = 'Name is required.'
+    else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
+    else if (!NAME_PATTERN.test(trimmedName))
+      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
     if (row && sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
       e.sortOrder = 'Sort order must be a whole number.'
     return e
@@ -241,6 +247,7 @@ function CategoryModal({
               placeholder="e.g. Starters"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={100}
               autoFocus
             />
             {submitted && errors.name && <p className={errorText}>{errors.name}</p>}

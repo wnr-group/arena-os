@@ -63,6 +63,8 @@ const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
   'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
+const DESCRIPTION_PATTERN = /^[\p{L}\p{N}\s&'".,()!?/-]+$/u
 
 const STATUS_LABELS: Record<ItemStatus, string> = {
   available: 'Available',
@@ -565,8 +567,20 @@ function ItemModal({
   const selectableCategories = categories.filter((c) => c.isActive || c.id === categoryId)
 
   const errors = useMemo(() => {
-    const e: { name?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
-    if (!name.trim()) e.name = 'Name is required.'
+    const e: { name?: string; description?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
+    const trimmedName = name.trim()
+    if (!trimmedName) e.name = 'Name is required.'
+    else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
+    else if (!NAME_PATTERN.test(trimmedName))
+      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
+    const trimmedDescription = description.trim()
+    if (trimmedDescription) {
+      if (trimmedDescription.length < 5) e.description = 'Description must be at least 5 characters.'
+      else if (trimmedDescription.length > 500) e.description = 'Description must be at most 500 characters.'
+      else if (!DESCRIPTION_PATTERN.test(trimmedDescription))
+        e.description = "Description contains characters that aren't allowed."
+    }
     if (!categoryId) e.categoryId = 'Select a category.'
     if (price === '') e.price = 'Price is required.'
     else if (Number.isNaN(Number(price))) e.price = 'Enter a valid price.'
@@ -574,7 +588,7 @@ function ItemModal({
     if (sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
       e.sortOrder = 'Sort order must be a whole number.'
     return e
-  }, [name, categoryId, price, sortOrder])
+  }, [name, description, categoryId, price, sortOrder])
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
@@ -649,6 +663,7 @@ function ItemModal({
                 placeholder="e.g. Margherita Pizza"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                maxLength={100}
                 autoFocus
               />
               {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
@@ -722,11 +737,13 @@ function ItemModal({
             <div>
               <label className={label}>Description (optional)</label>
               <textarea
-                className={input}
+                className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
                 rows={2}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                maxLength={500}
               />
+              {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
             </div>
             <div>
               <label className={label}>Image</label>
