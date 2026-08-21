@@ -244,6 +244,22 @@ Mostly non-schema (infra, security, ops). Schema touches:
 
 ---
 
+## M11 — Payroll & Salary `[M11]`
+
+### `salary_structures` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `base numeric(10,2)` · `allowances jsonb` (`SalaryComponent[] = {label, amount}[]`) · `deductions jsonb` (same shape) · `effective_from date` · `created_by → memberships null` · timestamps. Unique `(membership_id, effective_from)` — a raise is a new row dated from when it takes effect, never a rewrite of an old one, so past pay stays reconstructable once the payroll run (AROS-104) starts snapshotting payslips from this. RLS: **owner-only** for select AND write via `auth_role_in() = 'owner'` — compensation is more sensitive than the business's own legal identity (`business_profiles`, which is member-select/owner-write).
+
+### `employee_advances` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `amount numeric(10,2)` · `instalment_amount numeric(10,2)` · `note text null` · `given_at date` · `created_by → memberships null` · timestamps. Unique `(tenant_id, id)` (composite-FK target for the recoveries ledger below). The PLAN side only — who was given how much and the flat instalment to recover each payroll period. RLS: owner-only, same as `salary_structures`.
+
+### `employee_advance_recoveries` `[T]` `[built]`  (append-only ledger)
+`id` · `tenant_id` · `advance_id → employee_advances` · `amount numeric(10,2)` (signed: + recovery / − correction) · `source_type text null` (`'payroll'`, written by AROS-104) · `source_id uuid null` (the payslip, a soft pointer — no FK, same device as `invoice_items.source_id`) · `created_by → memberships null` · `created_at`. Composite FK `(tenant_id, advance_id) → employee_advances(tenant_id, id) on delete cascade`. Index `(advance_id)`. Outstanding is always **derived** as `employee_advances.amount − sum(recoveries.amount)`, never a stored column — same shape as `wallet_transactions`/`loyalty_transactions` (M5). RLS: owner-only. Grants: **select, insert only** (no update/delete) — stricter than wallet/loyalty, matching `refunds`: a payroll deduction record must never be editable after the fact, only reversed with an opposite-signed row.
+
+### `payslips` `[T]` `[built]`
+`id` · `tenant_id` · `membership_id → memberships` · `period text` (`'YYYY-MM'`, check-constrained) · `base numeric(10,2)` · `allowances jsonb` · `deductions jsonb` (both snapshotted verbatim from the `salary_structures` row used — the "line breakdown") · `days_in_period smallint` · `days_present smallint` · `gross numeric(10,2)` (`(base + Σallowances) × days_present / days_in_period`, rounded once) · `deductions_total numeric(10,2)` (Σdeductions, **not** prorated by attendance) · `advance_instalment numeric(10,2)` (what this payslip actually recovered, clamped to both outstanding balance and what the payslip can afford) · `net_pay numeric(10,2)` (floored at 0 — a payslip never prints negative) · `created_by → memberships null` · `created_at`. Unique `(membership_id, period)` — the idempotency guarantee: the run (`lib/payroll/run.ts`) pre-checks for an existing payslip in the period and blocks the whole run rather than upserting, because upserting would mean re-posting advance recoveries the (insert-only) ledger can never un-post. RLS (AROS-105, migration 0030): **SELECT** is self-service — `membership_id = auth_membership_id(tenant_id)` — plus owner/manager see every row (`auth_is_manager`), deliberately wider than `salary_structures`/`employee_advances`, since a payslip is "about" the employee it belongs to the way attendance is. **INSERT** stays owner-only, unchanged from 0029. Grants: **select, insert only** — a payslip is a financial record of what was actually paid, corrected by the next run rather than edited in place.
+
+---
+
 ## Change log
 
 - 2026-08-01 — Initial full spec. Built tables reflect migrations 0001–0005;
@@ -269,3 +285,37 @@ Mostly non-schema (infra, security, ops). Schema touches:
   directory currently holds two files per number (e.g. `0010_billing.sql` and
   `0010_menu.sql`). The runner applies them in filename order, which happens to
   satisfy every dependency, but the numbering needs reconciling.
+- 2026-08-19 — `salary_structures` (M11, first ticket) built — migration 0027:
+  base pay + allowances/deductions per membership, versioned by
+  `effective_from` so a raise never overwrites past pay. Owner-only RLS for
+  both read and write. Foundation for the payroll run (AROS-104).
+- 2026-08-19 — `employee_advances` + `employee_advance_recoveries` (M11,
+  second ticket) built — migration 0028: staff advances/loans plus their
+  append-only recovery ledger, outstanding always derived (never stored),
+  same shape as the wallet/loyalty ledgers. The recoveries table is
+  insert-only at the grant level (like `refunds`), stricter than
+  wallet/loyalty. The payroll run (AROS-104) will write recovery rows as it
+  deducts each period's instalment.
+- 2026-08-19 — `payslips` (M11, third ticket, AROS-104) built — migration
+  0029: the payroll run's output. One row per (membership, period), every
+  money/attendance figure a snapshot so a later salary-structure edit or
+  attendance correction never rewrites a past payslip. Unique
+  `(membership_id, period)` makes a run idempotent — a re-run of a period
+  that already has payslips is rejected outright rather than upserting, since
+  the advance-recoveries ledger it posts to is insert-only and can't be
+  un-posted. Owner-only RLS, select+insert-only grants, same as
+  `employee_advance_recoveries`.
+- 2026-08-19 — payslip self-view (M11, fourth ticket, AROS-105) — migration
+  0030: widened `payslips` SELECT so a staff member sees their own payslips
+  (new `auth_membership_id()` helper, same SECURITY DEFINER shape as
+  `auth_role_in()`) while owner/manager keep seeing everyone's. INSERT is
+  unchanged — still owner-only, only the payroll run writes these.
+- 2026-08-19 — Payroll Cost Report (M11, fifth ticket) — `lib/reports/payroll.ts`
+  + `/reports/payroll`, manager-guarded. No schema change: aggregates
+  `payslips` by period range, per-employee and total (the wage-bill figure
+  M12's P&L, AROS-86, will read). The ticket named the M6-D "reporting infra"
+  epic (AROS-64, a tenant-safe `security_barrier` view + CSV pattern) as a
+  dependency, but that epic was never built in this codebase — this instead
+  follows the plain RLS-scoped aggregate-query pattern `getEmployeeAnalytics()`
+  (M6-C) already established, plus a new reusable client-side CSV export
+  (`components/reports/ExportCsvButton.tsx`, no library, no server round trip).

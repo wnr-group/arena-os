@@ -6,11 +6,13 @@ import { withUser } from '@/db'
 import { tasks } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { isManager } from '@/lib/auth/roles'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type Result = { error?: string; id?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 

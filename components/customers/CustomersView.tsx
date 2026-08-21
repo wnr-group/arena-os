@@ -154,9 +154,9 @@ export function CustomersView({
               pending ? 'opacity-60' : ''
             }`}
           >
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[720px] text-base">
               <thead>
-                <tr className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b bg-muted/40 text-left text-sm uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 font-medium">Name</th>
                   <th className="px-4 py-2.5 font-medium">Phone</th>
                   <th className="px-4 py-2.5 font-medium">Email</th>

@@ -58,4 +58,29 @@ export async function withUser<T>(userId: string, fn: (tx: DB) => Promise<T>): P
   })
 }
 
+/**
+ * Run UN-authenticated work on the restricted app connection — the public
+ * booking site. No app.user_id is ever set here, so every staff-only RLS
+ * policy (keyed off auth_tenant_ids()) simply matches nothing; only the
+ * `*_public_select` policies (0022_public_booking.sql) apply.
+ *
+ * withPublicApp: no tenant known yet — legal only for the slug-to-tenant
+ * lookup, which goes through the public_tenant_by_slug() SECURITY DEFINER
+ * function (0022_public_booking.sql) rather than a row policy, since a
+ * broad tenants SELECT policy would let any caller enumerate every tenant
+ * on the platform.
+ * withPublicTenant: pins one already-resolved tenant id for the life of the
+ * transaction, the same way withUser() pins a user.
+ */
+export async function withPublicApp<T>(fn: (tx: DB) => Promise<T>): Promise<T> {
+  return appDb.transaction((tx) => fn(tx as unknown as DB))
+}
+
+export async function withPublicTenant<T>(tenantId: string, fn: (tx: DB) => Promise<T>): Promise<T> {
+  return appDb.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.public_tenant_id', ${tenantId}, true)`)
+    return fn(tx as unknown as DB)
+  })
+}
+
 export { schema }

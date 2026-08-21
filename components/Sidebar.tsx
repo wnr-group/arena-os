@@ -15,6 +15,26 @@ import {
   HandCoins,
   ChevronDown,
   Contact,
+  ChefHat,
+  ScanLine,
+  UserCog,
+  CalendarCheck,
+  CalendarClock,
+  ListChecks,
+  TrendingUp,
+  BarChart3,
+  Shapes,
+  Package,
+  Tags,
+  ClipboardList,
+  Percent,
+  Timer,
+  Ticket,
+  Wallet,
+  Landmark,
+  Receipt,
+  Calculator,
+  PiggyBank,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -29,7 +49,7 @@ import { canViewCustomers, isManager, isOwner, type MemberRole } from '@/lib/aut
  * Hiding an entry is convenience, never security — every page re-checks the
  * role, every server action guards itself, and RLS guards the tables.
  */
-type NavChild = { href: string; label: string; can?: (role: MemberRole) => boolean }
+type NavChild = { href: string; label: string; icon?: LucideIcon; can?: (role: MemberRole) => boolean }
 type NavItem = {
   href: string
   label: string
@@ -41,16 +61,26 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
+  { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
+  {
+    href: '/settings/resources',
+    label: 'Resources',
+    icon: Boxes,
+    can: isManager,
+    children: [
+      { href: '/settings/resources/types', label: 'Resource Types', icon: Shapes },
+      { href: '/settings/resources/units', label: 'Resources', icon: Package },
+    ],
+  },
   {
     href: '/menu',
     label: 'Menu',
     icon: UtensilsCrossed,
     can: isManager,
     children: [
-      { href: '/menu/categories', label: 'Categories' },
-      { href: '/menu/items', label: 'Items' },
+      { href: '/menu/categories', label: 'Categories', icon: Tags },
+      { href: '/menu/items', label: 'Items', icon: ClipboardList },
     ],
   },
   {
@@ -59,21 +89,40 @@ const NAV: NavItem[] = [
     icon: HandCoins,
     can: isManager,
     children: [
-      { href: '/settings/tax-rates', label: 'Tax Rates' },
-      { href: '/settings/happy-hours', label: 'Happy Hours' },
-      { href: '/settings/promo-codes', label: 'Promo Codes' },
+      { href: '/settings/tax-rates', label: 'Tax Rates', icon: Percent },
+      { href: '/settings/happy-hours', label: 'Happy Hours', icon: Timer },
+      { href: '/settings/promo-codes', label: 'Promo Codes', icon: Ticket },
     ],
   },
+  { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
     href: '/employees',
     label: 'Employees',
     icon: Users,
     children: [
-      { href: '/settings/team', label: 'Staff', can: isManager },
-      { href: '/attendance', label: 'Attendance' },
-      { href: '/roster', label: 'Roster' },
-      { href: '/tasks', label: 'Tasks' },
+      { href: '/settings/team', label: 'Staff', icon: UserCog, can: isManager },
+      { href: '/attendance', label: 'Attendance', icon: CalendarCheck },
+      { href: '/roster', label: 'Roster', icon: CalendarClock },
+      { href: '/tasks', label: 'Tasks', icon: ListChecks },
+      // Self-service: payslips_self_select RLS (migration 0030) scopes this to
+      // the viewer's own payslips; owner/manager see everyone's from here too.
+      { href: '/payslips', label: 'My Payslips', icon: Receipt },
+      { href: '/performance', label: 'Performance', icon: TrendingUp, can: isManager },
+      { href: '/reports/employees', label: 'Employee Report', icon: BarChart3, can: isManager },
+      { href: '/reports/payroll', label: 'Payroll Cost Report', icon: Calculator, can: isManager },
+    ],
+  },
+  // Owner-only: compensation is more sensitive than general staff management (migrations 0027–0028).
+  {
+    href: '/settings/payroll',
+    label: 'Payroll',
+    icon: PiggyBank,
+    can: isOwner,
+    children: [
+      { href: '/settings/payroll/salary-structures', label: 'Salary Structures', icon: Wallet },
+      { href: '/settings/payroll/advances', label: 'Advances & Loans', icon: Landmark },
+      { href: '/settings/payroll/runs', label: 'Payroll Runs', icon: Receipt },
     ],
   },
   // Owner-only: the business's legal identity (migration 0012).
@@ -145,18 +194,20 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
                 <div className="ml-[1.15rem] mt-1 flex flex-col gap-1 border-l border-border pl-4">
                   {visibleChildren.map((child) => {
                     const active = pathname === child.href || pathname.startsWith(child.href + '/')
+                    const ChildIcon = child.icon
                     return (
                       <Link
                         key={child.href}
                         href={child.href}
                         className={cn(
-                          'rounded-md px-3 py-2 text-sm font-medium transition-all duration-200',
+                          'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200',
                           active
                             ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/10'
                             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                         )}
                       >
-                        {child.label}
+                        {ChildIcon && <ChildIcon size={15} className="shrink-0" />}
+                        <span className="truncate">{child.label}</span>
                       </Link>
                     )
                   })}

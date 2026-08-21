@@ -271,9 +271,9 @@ function LineTable({
         <p className="mt-3 text-sm text-muted-foreground">Nothing to bill here.</p>
       ) : (
         <div className="mt-3 overflow-x-auto">
-          <table className="w-full min-w-[520px] text-sm">
+          <table className="w-full min-w-[520px] text-base">
             <thead>
-              <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr className="border-b text-left text-sm uppercase tracking-wide text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Description</th>
                 <th className="py-2 pr-3 font-medium">Type</th>
                 <th className="py-2 pr-3 text-right font-medium">Qty</th>
