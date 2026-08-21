@@ -58,7 +58,8 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
 
 const STATUS_LABELS: Record<ResourceStatus, string> = {
   available: 'Available',
@@ -184,7 +185,7 @@ export function ResourcesManager({
           <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium uppercase tracking-wide transition ${
                 view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('grid')}
@@ -194,7 +195,7 @@ export function ResourcesManager({
             </button>
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium uppercase tracking-wide transition ${
                 view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('table')}
@@ -207,7 +208,7 @@ export function ResourcesManager({
             className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
             onClick={() => setModal({ mode: 'add' })}
           >
-            <Plus size={16} /> Add resource
+            <Plus size={16} /> Add Resource
           </button>
         </div>
       </div>
@@ -241,15 +242,15 @@ export function ResourcesManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
-                Clear filters
+              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+                Clear Filters
               </button>
             )}
           </div>
 
           <div className="flex gap-1 overflow-x-auto border-t border-border px-2">
             <TypeTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
-              All types
+              All Types
             </TypeTab>
             {filterableTypes.map((t) => (
               <TypeTab key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)}>
@@ -267,8 +268,8 @@ export function ResourcesManager({
       ) : filteredResources.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No resources match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
-            Clear filters
+          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+            Clear Filters
           </button>
         </p>
       ) : view === 'grid' ? (
@@ -408,7 +409,7 @@ function TypeTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -733,13 +734,13 @@ function ResourceModal({
               {fileName && !uploading ? (
                 <button
                   type="button"
-                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
                   }}
                 >
-                  Remove — use the type&apos;s default photo
+                  Remove — Use the Type&apos;s Default Photo
                 </button>
               ) : (
                 !uploading &&
@@ -770,19 +771,19 @@ function ResourceModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >
               {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save changes' : 'Add resource'}
+              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource'}
             </button>
           </div>
         </div>

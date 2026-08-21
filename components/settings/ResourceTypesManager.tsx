@@ -36,7 +36,8 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
 
 function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number }) {
   return imageUrl ? (
@@ -115,7 +116,7 @@ export function ResourceTypesManager({ currency, types }: { currency: string; ty
           className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
           onClick={() => setModal({ mode: 'add' })}
         >
-          <Plus size={16} /> Add resource type
+          <Plus size={16} /> Add Resource Type
         </button>
       </div>
 
@@ -310,15 +311,17 @@ function TypeModal({
   const [submitted, setSubmitted] = useState(false)
 
   const errors = useMemo(() => {
-    const e: { name?: string; rate?: string; buffer?: string; capacity?: string } = {}
+    const e: { name?: string; description?: string; rate?: string; buffer?: string; capacity?: string } = {}
     if (!name.trim()) e.name = 'Name is required.'
+    else if (name.trim().length < 2) e.name = 'Name must be at least 2 characters.'
+    if (description.trim() && description.trim().length < 5) e.description = 'Description must be at least 5 characters.'
     if (rate !== '' && Number.isNaN(Number(rate))) e.rate = 'Enter a valid rate.'
     if (buffer !== '' && (Number.isNaN(Number(buffer)) || !Number.isInteger(Number(buffer))))
       e.buffer = 'Buffer must be a whole number.'
     if (capacity !== '' && (Number.isNaN(Number(capacity)) || Number(capacity) <= 0))
       e.capacity = 'Capacity must be a positive number.'
     return e
-  }, [name, rate, buffer, capacity])
+  }, [name, description, rate, buffer, capacity])
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
@@ -386,7 +389,9 @@ function TypeModal({
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
 
             <div>
-              <label className={label}>Name</label>
+              <label className={label}>
+                Name <span className="text-destructive">*</span>
+              </label>
               <input
                 className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
                 placeholder="e.g. PS5 Station"
@@ -398,7 +403,13 @@ function TypeModal({
             </div>
             <div>
               <label className={label}>Description (optional)</label>
-              <textarea className={input} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+              <textarea
+                className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
+                rows={2}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -484,13 +495,13 @@ function TypeModal({
               {fileName && !uploading && (
                 <button
                   type="button"
-                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
                   }}
                 >
-                  Remove image
+                  Remove Image
                 </button>
               )}
             </div>
@@ -516,19 +527,19 @@ function TypeModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >
               {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save changes' : 'Add resource type'}
+              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource Type'}
             </button>
           </div>
         </div>
