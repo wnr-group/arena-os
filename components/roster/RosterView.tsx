@@ -69,6 +69,7 @@ export function RosterView({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const shiftsByDay = useMemo(() => {
     const map = new Map<string, RosterShift[]>()
@@ -96,7 +97,9 @@ export function RosterView({
       confirmText: 'Remove',
       onConfirm: async () => {
         setError(null)
+        setDeletingId(id)
         const r = await deleteShift(id)
+        setDeletingId(null)
         if (r.error) setError(r.error)
         else router.refresh()
       },
@@ -156,8 +159,13 @@ export function RosterView({
                             <p className="truncate font-medium">{s.memberName || 'Unnamed'}</p>
                             <p className="truncate opacity-80">{ROLE_LABELS[s.memberRole]}</p>
                           </div>
-                          <button onClick={() => handleDelete(s.id)} className="shrink-0 opacity-70 hover:opacity-100" aria-label="Remove shift">
-                            <X size={13} />
+                          <button
+                            onClick={() => handleDelete(s.id)}
+                            disabled={deletingId === s.id}
+                            className="shrink-0 opacity-70 hover:opacity-100 disabled:opacity-50"
+                            aria-label="Remove shift"
+                          >
+                            {deletingId === s.id ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
                           </button>
                         </div>
                         <p className="mt-1">

@@ -45,6 +45,7 @@ export function AttendanceView({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const me = rows.find((r) => r.membershipId === currentMembershipId) ?? null
 
@@ -80,7 +81,9 @@ export function AttendanceView({
       title: 'Delete this attendance entry?',
       confirmText: 'Delete',
       onConfirm: async () => {
+        setDeletingId(attendanceId)
         const r = await managerDeleteAttendance(attendanceId)
+        setDeletingId(null)
         if (r.error) setError(r.error)
         else router.refresh()
       },
@@ -207,7 +210,11 @@ export function AttendanceView({
                               onClick={() => handleDelete(row)}
                               aria-label="Delete"
                             >
-                              <X size={16} />
+                              {deletingId === row.attendanceId ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <X size={16} />
+                              )}
                             </button>
                           )}
                         </div>

@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, ReceiptText } from 'lucide-react'
+import { ArrowLeft, Loader2, ReceiptText } from 'lucide-react'
 import { createInvoiceForBooking } from '@/lib/actions/billing'
 import { priceBill, type BillLine } from '@/lib/billing/pricing'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
@@ -345,7 +345,7 @@ export function BillScreen({
             disabled={blocked || pending || !discountValid}
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
-            <ReceiptText size={16} />
+            {pending ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
             {pending ? 'Generating…' : 'Generate bill'}
           </button>
           <p className="text-center text-xs text-muted-foreground">

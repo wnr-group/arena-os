@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Loader2,
   Plus,
   Search,
   ShoppingBag,
@@ -158,6 +159,7 @@ export function BookingsView({
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
+  const [actingAction, setActingAction] = useState<string | null>(null)
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -234,7 +236,8 @@ export function BookingsView({
   const hourTicks: number[] = []
   for (let h = firstHour; h <= lastHour; h++) hourTicks.push(h)
 
-  function act(fn: () => Promise<{ error?: string }>) {
+  function act(action: string, fn: () => Promise<{ error?: string }>) {
+    setActingAction(action)
     start(async () => {
       const r = await fn()
       if (r.error) toast.error(r.error)
@@ -242,6 +245,7 @@ export function BookingsView({
         setSelected(null)
         router.refresh()
       }
+      setActingAction(null)
     })
   }
 
@@ -603,13 +607,29 @@ export function BookingsView({
                 </Link>
               )}
               {selected.status === 'confirmed' && (
-                <ActBtn label="Check in" onClick={() => act(() => setBookingStatus(selected.bookingId, 'checked_in'))} pending={pending} />
+                <ActBtn
+                  label="Check in"
+                  onClick={() => act('check_in', () => setBookingStatus(selected.bookingId, 'checked_in'))}
+                  pending={pending}
+                  loading={actingAction === 'check_in'}
+                />
               )}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                <ActBtn label="Complete" onClick={() => act(() => setBookingStatus(selected.bookingId, 'completed'))} pending={pending} />
+                <ActBtn
+                  label="Complete"
+                  onClick={() => act('complete', () => setBookingStatus(selected.bookingId, 'completed'))}
+                  pending={pending}
+                  loading={actingAction === 'complete'}
+                />
               )}
               {selected.status === 'confirmed' && (
-                <ActBtn label="No-show" variant="muted" onClick={() => act(() => setBookingStatus(selected.bookingId, 'no_show'))} pending={pending} />
+                <ActBtn
+                  label="No-show"
+                  variant="muted"
+                  onClick={() => act('no_show', () => setBookingStatus(selected.bookingId, 'no_show'))}
+                  pending={pending}
+                  loading={actingAction === 'no_show'}
+                />
               )}
               {selected.status !== 'completed' && (
                 <ActBtn label="Cancel" variant="danger" onClick={() => handleCancel(selected)} pending={pending} />
@@ -762,11 +782,13 @@ function ActBtn({
   label,
   onClick,
   pending,
+  loading = false,
   variant = 'primary',
 }: {
   label: string
   onClick: () => void
   pending: boolean
+  loading?: boolean
   variant?: 'primary' | 'danger' | 'muted'
 }) {
   const cls =
@@ -776,7 +798,12 @@ function ActBtn({
         ? 'border hover:bg-muted'
         : 'bg-primary text-primary-foreground hover:opacity-90'
   return (
-    <button onClick={onClick} disabled={pending} className={`rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${cls}`}>
+    <button
+      onClick={onClick}
+      disabled={pending}
+      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${cls}`}
+    >
+      {loading && <Loader2 size={14} className="animate-spin" />}
       {label}
     </button>
   )

@@ -286,8 +286,9 @@ export function NewBookingDialog({
           <button
             onClick={findTimes}
             disabled={pending || !resourceTypeId}
-            className="w-full rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
+            {pending && slots === null && <Loader2 size={15} className="animate-spin" />}
             {pending && slots === null ? 'Checking…' : 'Find available times'}
           </button>
 
@@ -344,8 +345,9 @@ export function NewBookingDialog({
           <button
             onClick={submit}
             disabled={pending || !selectedSlot || checkingPhone}
-            className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
+            {pending && selectedSlot && <Loader2 size={15} className="animate-spin" />}
             {selectedSlot
               ? `Book ${timeInZone(selectedSlot.startsAt, timeZone)}–${timeInZone(
                   new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString(),

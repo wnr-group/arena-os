@@ -48,6 +48,7 @@ export function SalaryStructuresManager({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const money = (n: number) => formatMoney(n, currency)
 
   const run: Run = (fn, onSuccess) => {
@@ -76,7 +77,9 @@ export function SalaryStructuresManager({
       description: `Effective from ${row.effectiveFrom}. This cannot be undone.`,
       confirmText: 'Delete',
       onConfirm: async () => {
+        setDeletingId(row.id)
         const r = await deleteSalaryStructure(row.id)
+        setDeletingId(null)
         if (r.error) {
           setError(r.error)
           toast.error(r.error)
@@ -163,7 +166,7 @@ export function SalaryStructuresManager({
                         onClick={() => handleDelete(row)}
                         aria-label="Delete"
                       >
-                        <Trash2 size={15} />
+                        {deletingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                       </button>
                     </div>
                   </td>

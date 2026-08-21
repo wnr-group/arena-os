@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { UserPlus, Trash2 } from 'lucide-react'
+import { UserPlus, Trash2, Loader2 } from 'lucide-react'
 import { inviteStaff, updateMemberRole, removeMember } from '@/lib/actions/team'
 import { ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 
@@ -23,8 +23,11 @@ export function TeamManager({
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [roleUpdatingId, setRoleUpdatingId] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const [inviting, setInviting] = useState(false)
 
-  function run(fn: () => Promise<{ error?: string }>, after?: () => void) {
+  function run(fn: () => Promise<{ error?: string }>, after?: () => void, onSettled?: () => void) {
     setError(null)
     start(async () => {
       const r = await fn()
@@ -33,6 +36,7 @@ export function TeamManager({
         after?.()
         router.refresh()
       }
+      onSettled?.()
     })
   }
 
@@ -61,29 +65,49 @@ export function TeamManager({
                     <p className="text-xs text-muted-foreground">{m.email || '—'}</p>
                   </td>
                   <td className="px-4 py-3">
-                    <select
-                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
-                      value={m.role}
-                      disabled={pending || isSelf}
-                      onChange={(e) => run(() => updateMemberRole(m.id, e.target.value as MemberRole))}
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r} disabled={r === 'owner' && currentRole !== 'owner'}>
-                          {ROLE_LABELS[r]}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative inline-flex items-center">
+                      <select
+                        className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
+                        value={m.role}
+                        disabled={pending || isSelf}
+                        onChange={(e) => {
+                          const nextRole = e.target.value as MemberRole
+                          setRoleUpdatingId(m.id)
+                          run(
+                            () => updateMemberRole(m.id, nextRole),
+                            undefined,
+                            () => setRoleUpdatingId(null),
+                          )
+                        }}
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r} value={r} disabled={r === 'owner' && currentRole !== 'owner'}>
+                            {ROLE_LABELS[r]}
+                          </option>
+                        ))}
+                      </select>
+                      {roleUpdatingId === m.id && (
+                        <Loader2 size={14} className="ml-1.5 animate-spin text-muted-foreground" />
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{m.status}</td>
                   <td className="px-4 py-3 text-right">
                     {!isSelf && (
                       <button
                         disabled={pending}
-                        onClick={() => run(() => removeMember(m.id))}
+                        onClick={() => {
+                          setRemovingId(m.id)
+                          run(
+                            () => removeMember(m.id),
+                            undefined,
+                            () => setRemovingId(null),
+                          )
+                        }}
                         className="text-destructive hover:opacity-80 disabled:opacity-50"
                         aria-label="Remove"
                       >
-                        <Trash2 size={15} />
+                        {removingId === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                       </button>
                     )}
                   </td>
@@ -94,7 +118,15 @@ export function TeamManager({
         </table>
       </div>
 
-      <InviteForm grantableRoles={grantableRoles} pending={pending} run={run} />
+      <InviteForm
+        grantableRoles={grantableRoles}
+        pending={pending}
+        inviting={inviting}
+        run={(fn, after) => {
+          setInviting(true)
+          run(fn, after, () => setInviting(false))
+        }}
+      />
     </div>
   )
 }
@@ -102,10 +134,12 @@ export function TeamManager({
 function InviteForm({
   grantableRoles,
   pending,
+  inviting,
   run,
 }: {
   grantableRoles: MemberRole[]
   pending: boolean
+  inviting: boolean
   run: (fn: () => Promise<{ error?: string }>, after?: () => void) => void
 }) {
   const [fullName, setFullName] = useState('')
@@ -141,8 +175,9 @@ function InviteForm({
               },
             )
           }
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
+          {inviting && <Loader2 size={14} className="animate-spin" />}
           Add
         </button>
       </div>

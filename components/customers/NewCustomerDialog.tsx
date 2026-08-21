@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { createCustomer } from '@/lib/actions/customers'
 
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
@@ -115,8 +115,9 @@ export function NewCustomerDialog({
             <button
               type="submit"
               disabled={pending || !phone.trim()}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
+              {pending && <Loader2 size={14} className="animate-spin" />}
               {pending ? 'Saving…' : 'Add customer'}
             </button>
           </div>
