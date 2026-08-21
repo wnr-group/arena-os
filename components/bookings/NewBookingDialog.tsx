@@ -113,7 +113,12 @@ export function NewBookingDialog({
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Phone</label>
-              <input className={input} value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
+              <input
+                className={input}
+                value={customerPhone}
+                inputMode="tel"
+                onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
+              />
             </div>
           </div>
 
