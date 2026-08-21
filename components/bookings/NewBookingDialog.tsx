@@ -5,6 +5,7 @@ import { Check, Loader2, X } from 'lucide-react'
 import { getAvailableStartsForType } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
+import { zonedTimeToUtc } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
 
 type Resource = { id: string; name: string; resourceTypeId: string; typeName: string; imageUrl: string | null }
@@ -14,6 +15,12 @@ type TimeSlot = { startsAt: string; resourceId: string }
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
+
+function minutesToHHMM(min: number): string {
+  const h = Math.floor(min / 60) % 24
+  const m = min % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
 
 const DURATIONS = [
   { label: '30 min', value: 30 },
@@ -27,6 +34,8 @@ export function NewBookingDialog({
   branchId,
   date,
   timeZone,
+  openMin,
+  closeMin,
   resources,
   presetResourceTypeId,
   onClose,
@@ -35,6 +44,10 @@ export function NewBookingDialog({
   branchId: string
   date: string
   timeZone: string
+  /** Branch operating hours for `date`, in minutes since midnight — used to
+   * lay out a fixed, always-aligned time grid (see candidateTimes below). */
+  openMin: number
+  closeMin: number
   resources: Resource[]
   presetResourceTypeId?: string
   onClose: () => void
@@ -64,6 +77,25 @@ export function NewBookingDialog({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
+
+  // `slots` (from the server) only lists times that are actually bookable, so
+  // rendering it directly as a grid means any filtered-out time shifts every
+  // later button's row/column — a start near the end of its row can leave its
+  // "covered" neighbour wrapped onto the next row, looking disconnected even
+  // though it's the correct time. Lay out every 30-min mark of the working
+  // day instead (same grid the server iterated to build `slots`) so position
+  // in the grid always matches clock time, and mark whichever ones aren't in
+  // `slots` as unavailable rather than omitting them.
+  const candidateTimes = useMemo(() => {
+    if (slots === null) return []
+    const byStart = new Map(slots.map((s) => [s.startsAt, s.resourceId]))
+    const out: { startsAt: string; resourceId: string | null }[] = []
+    for (let m = openMin; m + duration <= closeMin; m += 30) {
+      const startsAt = zonedTimeToUtc(date, minutesToHHMM(m), timeZone).toISOString()
+      out.push({ startsAt, resourceId: byStart.get(startsAt) ?? null })
+    }
+    return out
+  }, [slots, openMin, closeMin, duration, date, timeZone])
 
   // Phone-first walk-in flow: as soon as a full 10-digit number is entered,
   // check whether it already has a customer profile. If it does, that
@@ -268,26 +300,28 @@ export function NewBookingDialog({
                 </p>
               ) : (
                 <div className="mt-2 grid grid-cols-4 gap-2">
-                  {slots.map((s) => {
+                  {candidateTimes.map((c) => {
+                    const isBookable = c.resourceId !== null
                     // A start time that's already gone by can't be booked —
                     // disable it rather than hiding it, so the grid still
                     // reads as "here's the whole day" for a date in progress.
-                    const isPast = new Date(s.startsAt).getTime() <= Date.now()
-                    const isSelected = selectedSlot?.startsAt === s.startsAt
+                    const isPast = new Date(c.startsAt).getTime() <= Date.now()
+                    const isSelected = selectedSlot?.startsAt === c.startsAt
                     // Slots that fall inside the selected start's duration window
                     // aren't separately bookable once that start is picked — shade
                     // them so the full span of the booking reads as one block.
                     const isCovered =
+                      isBookable &&
                       !isSelected &&
                       selectedSlot !== null &&
-                      new Date(s.startsAt).getTime() > new Date(selectedSlot.startsAt).getTime() &&
-                      new Date(s.startsAt).getTime() < new Date(selectedSlot.startsAt).getTime() + duration * 60_000
+                      new Date(c.startsAt).getTime() > new Date(selectedSlot.startsAt).getTime() &&
+                      new Date(c.startsAt).getTime() < new Date(selectedSlot.startsAt).getTime() + duration * 60_000
                     return (
                       <button
-                        key={s.startsAt}
-                        onClick={() => setSelectedSlot(s)}
-                        disabled={isPast}
-                        title={isPast ? 'This time has already passed.' : undefined}
+                        key={c.startsAt}
+                        onClick={() => isBookable && setSelectedSlot({ startsAt: c.startsAt, resourceId: c.resourceId! })}
+                        disabled={isPast || !isBookable}
+                        title={isPast ? 'This time has already passed.' : !isBookable ? 'Not available.' : undefined}
                         className={`rounded-md border px-2 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:border-dashed disabled:text-muted-foreground/50 disabled:hover:bg-transparent ${
                           isSelected
                             ? 'border-primary bg-primary text-primary-foreground'
@@ -296,7 +330,7 @@ export function NewBookingDialog({
                               : 'hover:bg-muted'
                         }`}
                       >
-                        {timeInZone(s.startsAt, timeZone)}
+                        {timeInZone(c.startsAt, timeZone)}
                       </button>
                     )
                   })}

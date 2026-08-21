@@ -530,6 +530,8 @@ export function BookingsView({
           branchId={branchId}
           date={date}
           timeZone={timeZone}
+          openMin={openMin}
+          closeMin={closeMin}
           resources={resources.map((r) => ({
             id: r.id,
             name: r.name,
