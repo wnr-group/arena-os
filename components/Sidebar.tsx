@@ -4,7 +4,9 @@ import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
+  BadgeCheck,
   Building2,
+  CreditCard,
   CalendarDays,
   LayoutDashboard,
   Settings,
@@ -49,7 +51,12 @@ import { canViewCustomers, isManager, isOwner, type MemberRole } from '@/lib/aut
  * Hiding an entry is convenience, never security — every page re-checks the
  * role, every server action guards itself, and RLS guards the tables.
  */
-type NavChild = { href: string; label: string; icon?: LucideIcon; can?: (role: MemberRole) => boolean }
+type NavChild = {
+  href: string
+  label: string
+  icon?: LucideIcon
+  can?: (role: MemberRole) => boolean
+}
 type NavItem = {
   href: string
   label: string
@@ -63,6 +70,9 @@ const NAV: NavItem[] = [
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  // The customer membership catalogue — manager-only, like Resources.
+  { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
+  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
     href: '/settings/resources',
     label: 'Resources',
@@ -94,6 +104,8 @@ const NAV: NavItem[] = [
       { href: '/settings/promo-codes', label: 'Promo Codes', icon: Ticket },
     ],
   },
+  // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
+  { href: '/settings/payments', label: 'Payments', icon: CreditCard, can: isManager },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
@@ -188,7 +200,10 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
               >
                 <Icon size={18} className="shrink-0" />
                 <span className="flex-1 truncate text-left">{item.label}</span>
-                <ChevronDown size={14} className={cn('shrink-0 transition-transform duration-200', open && 'rotate-180')} />
+                <ChevronDown
+                  size={14}
+                  className={cn('shrink-0 transition-transform duration-200', open && 'rotate-180')}
+                />
               </button>
               {open && (
                 <div className="ml-[1.15rem] mt-1 flex flex-col gap-1 border-l border-border pl-4">
@@ -231,7 +246,10 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
               collapsed && 'justify-center px-2',
             )}
           >
-            <Icon size={18} className={cn('shrink-0 transition-transform duration-200 group-hover:scale-110')} />
+            <Icon
+              size={18}
+              className={cn('shrink-0 transition-transform duration-200 group-hover:scale-110')}
+            />
             {!collapsed && <span className="truncate">{item.label}</span>}
           </Link>
         )

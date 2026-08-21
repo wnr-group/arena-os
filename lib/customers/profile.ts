@@ -12,6 +12,11 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { walletBalance, loyaltyPoints } from './ledger'
+import {
+  expireLapsed,
+  listCustomerMemberships,
+  type CustomerMembership,
+} from '@/lib/memberships/customer-memberships'
 
 /**
  * Everything the customer profile renders, loaded in ONE RLS-scoped transaction.
@@ -38,7 +43,7 @@ export type ProfileNote = {
   id: string
   body: string
   createdAt: Date
-  /** Equal to createdAt until the note is edited (migration 0017). */
+  /** Equal to createdAt until the note is edited (migration 0009). */
   updatedAt: Date
   createdByName: string | null
 }
@@ -71,6 +76,8 @@ export type CustomerProfileData = {
   notes: ProfileNote[]
   wallet: WalletEntry[]
   loyalty: LoyaltyEntry[]
+  /** Every membership the customer has held, newest first (AROS-60). */
+  memberships: CustomerMembership[]
 }
 
 /**
@@ -92,10 +99,7 @@ export async function getCustomerProfile(
 
     if (!customer) return null
 
-    const forCustomer = and(
-      eq(bookings.tenantId, tenantId),
-      eq(bookings.customerId, customerId),
-    )
+    const forCustomer = and(eq(bookings.tenantId, tenantId), eq(bookings.customerId, customerId))
 
     // Both counts in one pass. A "visit" is a booking the customer actually
     // turned up for — checked in or completed — so cancellations and no-shows
@@ -181,9 +185,7 @@ export async function getCustomerProfile(
       })
       .from(customerNotes)
       .leftJoin(memberships, eq(memberships.id, customerNotes.createdBy))
-      .where(
-        and(eq(customerNotes.tenantId, tenantId), eq(customerNotes.customerId, customerId)),
-      )
+      .where(and(eq(customerNotes.tenantId, tenantId), eq(customerNotes.customerId, customerId)))
       .orderBy(desc(customerNotes.createdAt))
 
     const wallet = await tx
@@ -224,7 +226,13 @@ export async function getCustomerProfile(
 
     // Balances are summed over the WHOLE ledger by the canonical helpers in
     // ./ledger.ts — never over the truncated lists above, and never read from a
-    // stored column, because no such column exists (migration 0014).
+    // stored column, because no such column exists (migration 0006).
+    // Tidy any lapsed membership before listing, so the profile does not show a
+    // stale "active" badge. Cosmetic only: isEligible() tests the clock as well
+    // as the column, so nothing about benefits depends on this having run.
+    await expireLapsed(tx, tenantId, customerId)
+    const membershipRows = await listCustomerMemberships(tx, tenantId, customerId)
+
     const [balance, points] = await Promise.all([
       walletBalance(tx, tenantId, customerId),
       loyaltyPoints(tx, tenantId, customerId),
@@ -242,6 +250,7 @@ export async function getCustomerProfile(
       notes,
       wallet,
       loyalty,
+      memberships: membershipRows,
     }
   })
 }

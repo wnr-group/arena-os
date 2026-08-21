@@ -16,6 +16,23 @@ function finite(value: number): number {
   return Number.isFinite(value) ? value : 0
 }
 
+/**
+ * Money as whole paise.
+ *
+ * Every financial comparison in the codebase goes through this: floats that
+ * look equal (800 vs 799.9999999999999) compare wrong, and `>=` on rupees is
+ * exactly the bug that lets an invoice be overpaid by a hundredth of a paisa.
+ * round2() first, then scale to an integer, and compare integers.
+ *
+ * Lives HERE, in the dependency-free money module, rather than in ./payments —
+ * it is pure arithmetic that several modules need, and keeping it in payments
+ * forced a circular import (payments → loyalty → payments). ./payments still
+ * re-exports it, so every existing import site is unchanged.
+ */
+export function paise(amount: number): number {
+  return Math.round(round2(amount) * 100)
+}
+
 /** Clamp to zero. Used wherever a negative would produce a negative total. */
 function atLeastZero(value: number): number {
   return value > 0 ? value : 0
@@ -25,7 +42,7 @@ function atLeastZero(value: number): number {
 
 export type BillLine = {
   description: string
-  kind: 'booking' | 'food' | 'membership' | 'adjustment'
+  kind: 'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup'
   sourceId?: string
   qty: number
   unitPrice: number

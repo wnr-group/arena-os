@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { NewBookingDialog } from './NewBookingDialog'
+import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
@@ -42,6 +43,8 @@ type Slot = {
   status: string
   source: string
   total: string
+  /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
+  deposit: string
 }
 export type OrderItemLine = {
   itemId: string
@@ -119,6 +122,8 @@ export function BookingsView({
   menuItems,
   happyHours,
   ordersByBooking,
+  venueName,
+  depositStates,
 }: {
   branchId: string
   branchName: string
@@ -137,6 +142,9 @@ export function BookingsView({
   menuItems: MenuItemOption[]
   happyHours: HappyHourRule[]
   ordersByBooking: Record<string, OrderSummary[]>
+  venueName: string
+  /** bookingId → deposit state, read from payment_intents (AROS-49). */
+  depositStates: Record<string, 'pending' | 'paid'>
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -545,7 +553,27 @@ export function BookingsView({
               <Row k="Time" v={`${timeInZone(selected.startsAt, timeZone)}–${timeInZone(selected.endsAt, timeZone)}`} />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
               <Row k="Total" v={formatMoney(selected.total, currency)} />
+              {Number(selected.deposit) > 0 && (
+                <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
+              )}
             </dl>
+
+            {/* Online deposit. The button sends only a booking id — the amount
+                shown above is a label, and the server prices the order itself. */}
+            {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
+              <div className="mt-3">
+                <DepositButton
+                  bookingId={selected.bookingId}
+                  bookingNumber={selected.bookingNumber}
+                  depositAmount={selected.deposit}
+                  currency={currency}
+                  venueName={venueName}
+                  customerName={selected.customerName}
+                  customerPhone={selected.customerPhone}
+                  depositStatus={depositStates[selected.bookingId] ?? 'none'}
+                />
+              </div>
+            )}
 
             <div className="mt-4 flex flex-wrap gap-2">
               {/* Only the statuses lib/billing/invoice.ts will actually bill.

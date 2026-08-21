@@ -18,6 +18,7 @@ const KIND_LABEL: Record<string, string> = {
   food: 'Food',
   membership: 'Membership',
   adjustment: 'Adjustment',
+  wallet_topup: 'Wallet top-up',
 }
 const METHOD_LABEL: Record<string, string> = {
   cash: 'Cash',
@@ -199,6 +200,27 @@ export default async function InvoiceReceiptPage({
             <Row k="Subtotal" v={money(invoice.subtotal)} />
             {Number(invoice.discount) > 0 && (
               <Row k="Discount" v={`− ${money(invoice.discount)}`} />
+            )}
+            {/* The membership half of that discount, from the invoice's own
+                snapshot (AROS-61) — never from the customer's current
+                membership or the live plan, so a reprint years later still
+                explains the figure. Indented because it itemises the line
+                above rather than adding to it. */}
+            {Number(invoice.loyaltyDiscount) > 0 && (
+              <Row
+                k={`Loyalty · ${invoice.loyaltyPointsRedeemed} points`}
+                v={`− ${money(invoice.loyaltyDiscount)}`}
+                indent
+              />
+            )}
+            {Number(invoice.membershipDiscount) > 0 && (
+              <Row
+                k={`${invoice.membershipPlanName ?? 'Membership'} · ${Number(
+                  invoice.membershipDiscountPercent,
+                )}%`}
+                v={`− ${money(invoice.membershipDiscount)}`}
+                indent
+              />
             )}
 
             {invoice.taxBreakup.map((g) => (

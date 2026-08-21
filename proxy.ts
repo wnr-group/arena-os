@@ -56,10 +56,21 @@ export function proxy(request: NextRequest) {
     }
   }
 
+  /**
+   * Gateway webhooks are machine-to-machine and carry no session cookie — a
+   * redirect to /login would swallow every Razorpay delivery and silently lose
+   * payments. They authenticate themselves with an HMAC signature instead (see
+   * app/api/webhooks/razorpay/route.ts), so the cookie check must not apply.
+   * The tenant slug header set above is exactly what those routes use to pick
+   * which tenant's signing secret to verify against.
+   */
+  const isWebhook = pathname.startsWith('/api/webhooks/')
+
   // Protected surfaces: tenant routes on a subdomain, and the platform admin
   // panel on the root domain. Membership/admin authorization is enforced deeper
   // (RLS + page guards); the proxy only bounces the signed-out.
-  const needsSession = (slug || pathname.startsWith('/admin')) && !isAuthRoute && !isPublicRoute
+  const needsSession =
+    (slug || pathname.startsWith('/admin')) && !isAuthRoute && !isPublicRoute && !isWebhook
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
