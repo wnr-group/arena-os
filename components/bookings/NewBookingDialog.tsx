@@ -11,7 +11,9 @@ type Resource = { id: string; name: string; resourceTypeId: string; typeName: st
 type ResourceTypeOption = { id: string; name: string; imageUrl: string | null }
 type TimeSlot = { startsAt: string; resourceId: string }
 
-const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
+const input = 'w-full rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring'
+const label = 'text-sm font-medium text-muted-foreground'
+const errorText = 'mt-1 text-sm text-destructive'
 
 const DURATIONS = [
   { label: '30 min', value: 30 },
@@ -110,7 +112,7 @@ export function NewBookingDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">New booking</h2>
+          <h2 className="text-xl font-semibold">New booking</h2>
           <button onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
             <X size={18} />
           </button>
@@ -119,7 +121,7 @@ export function NewBookingDialog({
         <div className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">
+              <label className={label}>
                 Customer name <span className="text-destructive">*</span>
               </label>
               <input
@@ -129,10 +131,10 @@ export function NewBookingDialog({
                 onChange={(e) => setCustomerName(e.target.value)}
                 onBlur={() => setNameTouched(true)}
               />
-              {nameError && <p className="mt-1 text-xs text-destructive">{nameError}</p>}
+              {nameError && <p className={errorText}>{nameError}</p>}
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground">
+              <label className={label}>
                 Phone <span className="text-destructive">*</span>
               </label>
               <input
@@ -143,13 +145,13 @@ export function NewBookingDialog({
                 onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
                 onBlur={() => setPhoneTouched(true)}
               />
-              {phoneError && <p className="mt-1 text-xs text-destructive">{phoneError}</p>}
+              {phoneError && <p className={errorText}>{phoneError}</p>}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Resource type</label>
+              <label className={label}>Resource type</label>
               <div className="flex items-center gap-2">
                 {selectedType?.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -179,7 +181,7 @@ export function NewBookingDialog({
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Duration</label>
+              <label className={label}>Duration</label>
               <select
                 className={input}
                 value={duration}
@@ -208,9 +210,7 @@ export function NewBookingDialog({
 
           {slots !== null && (
             <div>
-              <label className="text-xs font-medium text-muted-foreground">
-                Available start times ({date})
-              </label>
+              <label className={label}>Available start times ({date})</label>
               {slots.length === 0 ? (
                 <p className="mt-1 text-sm text-muted-foreground">
                   No free times for this resource type and duration. Try a shorter duration or another day.

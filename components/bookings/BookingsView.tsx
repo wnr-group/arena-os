@@ -288,7 +288,7 @@ export function BookingsView({
             type="date"
             value={date}
             onChange={(e) => e.target.value && router.push(`/bookings?date=${e.target.value}`)}
-            className="rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            className="rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring"
           />
           <Link href={`/bookings?date=${nextDate}`} className="rounded-md border p-2 hover:bg-muted" aria-label="Next day">
             <ChevronRight size={16} />
@@ -296,14 +296,14 @@ export function BookingsView({
           <button
             onClick={() => openNew()}
             disabled={resources.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Plus size={16} /> New booking
           </button>
           <button
             onClick={() => setOrderDialog({})}
             disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-base font-medium transition hover:bg-muted disabled:opacity-50"
           >
             <ShoppingBag size={16} /> Take order
           </button>
@@ -555,7 +555,7 @@ export function BookingsView({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">{selected.bookingNumber}</h2>
+              <h2 className="text-xl font-semibold">{selected.bookingNumber}</h2>
               <button onClick={() => setSelected(null)} aria-label="Close" className="text-muted-foreground hover:text-foreground">
                 <X size={18} />
               </button>
