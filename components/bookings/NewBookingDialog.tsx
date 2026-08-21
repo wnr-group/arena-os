@@ -1,9 +1,9 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
-import { X } from 'lucide-react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
+import { Check, Loader2, X } from 'lucide-react'
 import { getAvailableStartsForType } from '@/lib/actions/availability'
-import { createBooking } from '@/lib/actions/bookings'
+import { createBooking, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { timeInZone } from '@/lib/format'
 
@@ -65,9 +65,41 @@ export function NewBookingDialog({
   const [pending, start] = useTransition()
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
 
+  // Phone-first walk-in flow: as soon as a full 10-digit number is entered,
+  // check whether it already has a customer profile. If it does, that
+  // customer's name is used and we never show a name field at all; if not,
+  // the name field appears so staff can enter it.
+  const [checkingPhone, setCheckingPhone] = useState(false)
+  const [phoneChecked, setPhoneChecked] = useState(false)
+  const [existingCustomerName, setExistingCustomerName] = useState<string | null>(null)
+  const isNewCustomer = phoneChecked && !checkingPhone && !existingCustomerName
+
+  useEffect(() => {
+    setPhoneChecked(false)
+    setExistingCustomerName(null)
+    if (!isValidPhone(customerPhone)) return
+    let cancelled = false
+    setCheckingPhone(true)
+    lookupCustomerByPhone(customerPhone).then((r) => {
+      if (cancelled) return
+      setCheckingPhone(false)
+      setPhoneChecked(true)
+      if (r.found) {
+        setExistingCustomerName(r.name || 'Existing customer')
+        setCustomerName(r.name || '')
+      } else {
+        setCustomerName('')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [customerPhone])
+
   // Field-level messages shown right under each input, once the visitor has
   // left the field (or tried to submit) rather than the moment it's empty.
-  const nameError = (nameTouched || attemptedSubmit) && !customerName.trim() ? 'Customer name is required.' : null
+  const nameError =
+    isNewCustomer && (nameTouched || attemptedSubmit) && !customerName.trim() ? 'Customer name is required.' : null
   const phoneError =
     (phoneTouched || attemptedSubmit) && !customerPhone.trim()
       ? 'Phone number is required.'
@@ -90,7 +122,9 @@ export function NewBookingDialog({
     if (!selectedSlot) return
     setError(null)
     setAttemptedSubmit(true)
-    if (!customerName.trim() || !customerPhone.trim() || !isValidPhone(customerPhone)) return
+    if (!customerPhone.trim() || !isValidPhone(customerPhone)) return
+    if (!phoneChecked || checkingPhone) return
+    if (!customerName.trim()) return
     const endsAt = new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     start(async () => {
       const r = await createBooking({
@@ -119,7 +153,37 @@ export function NewBookingDialog({
         </div>
 
         <div className="mt-4 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={label}>
+              Phone <span className="text-destructive">*</span>
+            </label>
+            <div className="relative">
+              <input
+                className={input}
+                value={customerPhone}
+                inputMode="tel"
+                required
+                autoFocus
+                onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
+                onBlur={() => setPhoneTouched(true)}
+              />
+              {checkingPhone && (
+                <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            {phoneError ? (
+              <p className={errorText}>{phoneError}</p>
+            ) : (
+              phoneChecked &&
+              existingCustomerName && (
+                <p className="mt-1 flex items-center gap-1 text-sm text-emerald-600">
+                  <Check size={14} /> {existingCustomerName}
+                </p>
+              )
+            )}
+          </div>
+
+          {isNewCustomer && (
             <div>
               <label className={label}>
                 Customer name <span className="text-destructive">*</span>
@@ -128,26 +192,13 @@ export function NewBookingDialog({
                 className={input}
                 value={customerName}
                 required
+                autoFocus
                 onChange={(e) => setCustomerName(e.target.value)}
                 onBlur={() => setNameTouched(true)}
               />
               {nameError && <p className={errorText}>{nameError}</p>}
             </div>
-            <div>
-              <label className={label}>
-                Phone <span className="text-destructive">*</span>
-              </label>
-              <input
-                className={input}
-                value={customerPhone}
-                inputMode="tel"
-                required
-                onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
-                onBlur={() => setPhoneTouched(true)}
-              />
-              {phoneError && <p className={errorText}>{phoneError}</p>}
-            </div>
-          </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -258,7 +309,7 @@ export function NewBookingDialog({
 
           <button
             onClick={submit}
-            disabled={pending || !selectedSlot}
+            disabled={pending || !selectedSlot || checkingPhone}
             className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {selectedSlot
