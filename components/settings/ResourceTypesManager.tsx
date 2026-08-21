@@ -314,6 +314,7 @@ function TypeModal({
     const e: { name?: string; description?: string; rate?: string; buffer?: string; capacity?: string } = {}
     if (!name.trim()) e.name = 'Name is required.'
     else if (name.trim().length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (name.trim().length > 100) e.name = 'Name must be at most 100 characters.'
     if (description.trim() && description.trim().length < 5) e.description = 'Description must be at least 5 characters.'
     if (rate !== '' && Number.isNaN(Number(rate))) e.rate = 'Enter a valid rate.'
     if (buffer !== '' && (Number.isNaN(Number(buffer)) || !Number.isInteger(Number(buffer))))
@@ -397,6 +398,7 @@ function TypeModal({
                 placeholder="e.g. PS5 Station"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                maxLength={100}
                 autoFocus
               />
               {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
