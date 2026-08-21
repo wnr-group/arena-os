@@ -298,7 +298,9 @@ function HappyHourModal({
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className={label}>Name</label>
+            <label className={label}>
+              Name <span className="text-destructive">*</span>
+            </label>
             <input
               className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
               placeholder="e.g. Weekday Evening Special"
@@ -310,7 +312,9 @@ function HappyHourModal({
           </div>
 
           <div>
-            <label className={label}>Days</label>
+            <label className={label}>
+              Days <span className="text-destructive">*</span>
+            </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {DOW_SHORT.map((d, i) => (
                 <button
@@ -333,7 +337,9 @@ function HappyHourModal({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={label}>Start time</label>
+              <label className={label}>
+                Start time <span className="text-destructive">*</span>
+              </label>
               <input
                 className={`${input} ${submitted && errors.time ? inputInvalid : ''}`}
                 type="time"
@@ -342,7 +348,9 @@ function HappyHourModal({
               />
             </div>
             <div>
-              <label className={label}>End time</label>
+              <label className={label}>
+                End time <span className="text-destructive">*</span>
+              </label>
               <input
                 className={`${input} ${submitted && errors.time ? inputInvalid : ''}`}
                 type="time"
@@ -362,7 +370,9 @@ function HappyHourModal({
               </select>
             </div>
             <div>
-              <label className={label}>Discount value</label>
+              <label className={label}>
+                Discount value <span className="text-destructive">*</span>
+              </label>
               <div className="relative">
                 <input
                   className={`${input} pr-10 ${submitted && errors.discountValue ? inputInvalid : ''}`}

@@ -204,7 +204,9 @@ function TaxRateModal({
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className="text-xs font-medium text-muted-foreground">Name</label>
+            <label className="text-xs font-medium text-muted-foreground">
+              Name <span className="text-destructive">*</span>
+            </label>
             <input
               className={input}
               placeholder="e.g. GST 5%"

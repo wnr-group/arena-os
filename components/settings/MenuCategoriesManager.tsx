@@ -233,7 +233,9 @@ function CategoryModal({
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className={label}>Name</label>
+            <label className={label}>
+              Name <span className="text-destructive">*</span>
+            </label>
             <input
               className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
               placeholder="e.g. Starters"

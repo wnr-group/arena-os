@@ -641,7 +641,9 @@ function ItemModal({
           <div className="mt-4 space-y-3">
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
             <div>
-              <label className={label}>Name</label>
+              <label className={label}>
+                Name <span className="text-destructive">*</span>
+              </label>
               <input
                 className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
                 placeholder="e.g. Margherita Pizza"
@@ -653,7 +655,9 @@ function ItemModal({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={label}>Category</label>
+                <label className={label}>
+                  Category <span className="text-destructive">*</span>
+                </label>
                 <select
                   className={`${input} ${submitted && errors.categoryId ? inputInvalid : ''}`}
                   value={categoryId}
@@ -669,7 +673,9 @@ function ItemModal({
                 {submitted && errors.categoryId && <p className={errorText}>{errors.categoryId}</p>}
               </div>
               <div>
-                <label className={label}>Price</label>
+                <label className={label}>
+                  Price <span className="text-destructive">*</span>
+                </label>
                 <input
                   className={`${input} ${submitted && errors.price ? inputInvalid : ''}`}
                   placeholder="0.00"

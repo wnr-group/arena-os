@@ -635,7 +635,9 @@ function ResourceModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={label}>Name</label>
+                <label className={label}>
+                  Name <span className="text-destructive">*</span>
+                </label>
                 <input
                   className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
                   placeholder="e.g. PS5 #1"
@@ -646,7 +648,9 @@ function ResourceModal({
                 {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
               </div>
               <div>
-                <label className={label}>Resource type</label>
+                <label className={label}>
+                  Resource type <span className="text-destructive">*</span>
+                </label>
                 <select
                   className={`${input} ${submitted && errors.typeId ? inputInvalid : ''}`}
                   value={typeId}
