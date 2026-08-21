@@ -218,6 +218,10 @@ export function NewBookingDialog({
               ) : (
                 <div className="mt-2 grid grid-cols-4 gap-2">
                   {slots.map((s) => {
+                    // A start time that's already gone by can't be booked —
+                    // disable it rather than hiding it, so the grid still
+                    // reads as "here's the whole day" for a date in progress.
+                    const isPast = new Date(s.startsAt).getTime() <= Date.now()
                     const isSelected = selectedSlot?.startsAt === s.startsAt
                     // Slots that fall inside the selected start's duration window
                     // aren't separately bookable once that start is picked — shade
@@ -231,7 +235,9 @@ export function NewBookingDialog({
                       <button
                         key={s.startsAt}
                         onClick={() => setSelectedSlot(s)}
-                        className={`rounded-md border px-2 py-1.5 text-sm transition ${
+                        disabled={isPast}
+                        title={isPast ? 'This time has already passed.' : undefined}
+                        className={`rounded-md border px-2 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:border-dashed disabled:text-muted-foreground/50 disabled:hover:bg-transparent ${
                           isSelected
                             ? 'border-primary bg-primary text-primary-foreground'
                             : isCovered
