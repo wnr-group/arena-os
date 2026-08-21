@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, Receipt, CheckCircle2, XCircle, Percent } from 'lucide-react'
 import { upsertTaxRate, deleteTaxRate } from '@/lib/actions/tax-rates'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -16,15 +17,13 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
 export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
 
   const run: Run = (fn, onSuccess) => {
-    setError(null)
     start(async () => {
       const r = await fn()
-      if (r.error) setError(r.error)
+      if (r.error) toast.error(r.error)
       else {
         router.refresh()
         onSuccess?.()
@@ -47,7 +46,7 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
       confirmText: 'Delete',
       onConfirm: async () => {
         const r = await deleteTaxRate(row.id)
-        if (r.error) setError(r.error)
+        if (r.error) toast.error(r.error)
         else router.refresh()
       },
     })
@@ -55,12 +54,6 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={Receipt} label="Total rates" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard

@@ -22,16 +22,13 @@ const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
 
   const run: Run = (fn, onSuccess) => {
-    setError(null)
     start(async () => {
       const r = await fn()
       if (r.error) {
-        setError(r.error)
         toast.error(r.error)
       } else {
         router.refresh()
@@ -54,7 +51,6 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
       onConfirm: async () => {
         const r = await deleteMenuCategory(row.id)
         if (r.error) {
-          setError(r.error)
           toast.error(r.error)
         } else {
           router.refresh()
@@ -66,12 +62,6 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-3 gap-4">
         <StatCard icon={ListTree} label="Total categories" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />

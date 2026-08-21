@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, Clock, CheckCircle2, XCircle, Percent, Loader2 } from 'lucide-react'
 import { upsertHappyHour, deleteHappyHour } from '@/lib/actions/happy-hours'
 import { formatMoney } from '@/lib/format'
@@ -45,16 +46,14 @@ function formatDiscount(type: DiscountType, value: string, currency: string) {
 export function HappyHoursManager({ currency, happyHours }: { currency: string; happyHours: HappyHourRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const run: Run = (fn, onSuccess, onSettled) => {
-    setError(null)
     start(async () => {
       const r = await fn()
-      if (r.error) setError(r.error)
+      if (r.error) toast.error(r.error)
       else {
         router.refresh()
         onSuccess?.()
@@ -79,7 +78,7 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
         setDeletingId(row.id)
         const r = await deleteHappyHour(row.id)
         setDeletingId(null)
-        if (r.error) setError(r.error)
+        if (r.error) toast.error(r.error)
         else router.refresh()
       },
     })
@@ -87,12 +86,6 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={Clock} label="Total rules" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
