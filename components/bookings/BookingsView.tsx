@@ -19,6 +19,7 @@ import {
 import { NewBookingDialog } from './NewBookingDialog'
 import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -147,6 +148,7 @@ export function BookingsView({
   depositStates: Record<string, 'pending' | 'paid'>
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
   const [showNew, setShowNew] = useState(false)
   const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
@@ -246,6 +248,23 @@ export function BookingsView({
   function openNew(resourceTypeId?: string) {
     setPresetResourceTypeId(resourceTypeId)
     setShowNew(true)
+  }
+
+  async function handleCancel(slot: Slot) {
+    await confirm({
+      title: `Cancel booking ${slot.bookingNumber}?`,
+      description: `This will cancel ${slot.customerName || 'this walk-in'}'s booking. This cannot be undone.`,
+      confirmText: 'Cancel booking',
+      cancelText: 'Keep booking',
+      onConfirm: async () => {
+        const r = await cancelBooking(slot.bookingId)
+        if (r.error) setToast(r.error)
+        else {
+          setSelected(null)
+          router.refresh()
+        }
+      },
+    })
   }
 
   return (
@@ -596,7 +615,7 @@ export function BookingsView({
                 <ActBtn label="No-show" variant="muted" onClick={() => act(() => setBookingStatus(selected.bookingId, 'no_show'))} pending={pending} />
               )}
               {selected.status !== 'completed' && (
-                <ActBtn label="Cancel" variant="danger" onClick={() => act(() => cancelBooking(selected.bookingId))} pending={pending} />
+                <ActBtn label="Cancel" variant="danger" onClick={() => handleCancel(selected)} pending={pending} />
               )}
             </div>
 
