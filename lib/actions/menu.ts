@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { menuCategories, menuItems } from '@/db/schema'
@@ -43,14 +43,26 @@ export async function upsertMenuCategory(input: z.input<typeof categoryInput>): 
     const ctx = await requireManager()
     const v = categoryInput.parse(input)
     await withUser(ctx.user.id, async (tx) => {
-      const values = { tenantId: ctx.tenant.id, name: v.name, sortOrder: v.sortOrder, isActive: v.isActive }
       if (v.id) {
         await tx
           .update(menuCategories)
-          .set(values)
+          .set({ name: v.name, sortOrder: v.sortOrder, isActive: v.isActive })
           .where(and(eq(menuCategories.id, v.id), eq(menuCategories.tenantId, ctx.tenant.id)))
       } else {
-        await tx.insert(menuCategories).values(values)
+        // New categories always go to the end of the list — the client no
+        // longer sends a meaningful sortOrder for creates, so relying on it
+        // (or defaulting to 0) let every new row collide with whatever else
+        // was already sitting at 0.
+        const [{ next }] = await tx
+          .select({ next: sql<number>`coalesce(max(${menuCategories.sortOrder}), -1) + 1` })
+          .from(menuCategories)
+          .where(eq(menuCategories.tenantId, ctx.tenant.id))
+        await tx.insert(menuCategories).values({
+          tenantId: ctx.tenant.id,
+          name: v.name,
+          isActive: v.isActive,
+          sortOrder: next,
+        })
       }
     })
     revalidatePath('/menu/categories')
