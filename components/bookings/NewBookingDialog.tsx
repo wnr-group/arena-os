@@ -4,7 +4,7 @@ import { useMemo, useState, useTransition } from 'react'
 import { X } from 'lucide-react'
 import { getAvailableStartsForType } from '@/lib/actions/availability'
 import { createBooking } from '@/lib/actions/bookings'
-import { normalizePhone } from '@/lib/customers/phone'
+import { isValidPhone } from '@/lib/customers/phone'
 import { timeInZone } from '@/lib/format'
 
 type Resource = { id: string; name: string; resourceTypeId: string; typeName: string; imageUrl: string | null }
@@ -74,8 +74,8 @@ export function NewBookingDialog({
   function submit() {
     if (!selectedSlot) return
     setError(null)
-    if (customerPhone && !normalizePhone(customerPhone)) {
-      setError('Enter a valid phone number.')
+    if (customerPhone && !isValidPhone(customerPhone)) {
+      setError('Enter a valid 10-digit phone number.')
       return
     }
     const endsAt = new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()

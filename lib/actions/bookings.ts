@@ -8,7 +8,7 @@ import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
-import { normalizePhone } from '@/lib/customers/phone'
+import { isValidPhone } from '@/lib/customers/phone'
 import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
@@ -31,7 +31,7 @@ const createInput = z.object({
     .string()
     .trim()
     .optional()
-    .refine((v) => !v || normalizePhone(v) !== null, 'Enter a valid phone number.'),
+    .refine((v) => !v || isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   customerEmail: z.string().trim().email().optional().or(z.literal('')),
   notes: z.string().trim().optional(),
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),

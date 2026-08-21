@@ -65,3 +65,18 @@ export function normalizePhone(
 
   return `+${digits}`
 }
+
+/**
+ * Stricter than normalizePhone(): that function's 8-digit MIN_DIGITS floor
+ * exists to tolerate short international numbers, but it also lets a
+ * national number well short of a real 10-digit Indian mobile (e.g. a
+ * 6-digit typo) normalize "successfully". Use this wherever the caller is
+ * genuinely a domestic mobile number field — it requires the normalized
+ * value to carry exactly NATIONAL_LENGTH national digits after the calling
+ * code, i.e. a complete number rather than merely an E.164-shaped string.
+ */
+export function isValidPhone(raw: string | null | undefined, callingCode: string = DEFAULT_CALLING_CODE): boolean {
+  const normalized = normalizePhone(raw, callingCode)
+  if (!normalized) return false
+  return normalized.length === 1 + callingCode.length + NATIONAL_LENGTH
+}
