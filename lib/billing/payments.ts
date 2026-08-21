@@ -14,7 +14,8 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type * as schema from '@/db/schema'
 import { invoices, memberships, payments } from '@/db/schema'
-import { round2 } from './pricing'
+import { settleInvoicePaid } from './loyalty'
+import { paise, round2 } from './pricing'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -42,17 +43,11 @@ export const PAYABLE_INVOICE_STATUS = 'issued'
 export const MAX_PAYMENT_AMOUNT = 99_999_999.99
 
 /**
- * Money as whole paise.
- *
- * Every financial comparison in this file goes through this: floats that look
- * equal (800 vs 799.9999999999999) compare wrong, and `>=` on rupees is exactly
- * the bug that lets an invoice be overpaid by a hundredth of a paisa. round2()
- * — the project's single money helper, from ./pricing — then scale to an
- * integer, and compare integers.
+ * Money as whole paise. Defined in ./pricing (the dependency-free money module)
+ * and re-exported here so the many existing `from './payments'` imports keep
+ * working. Moving the definition is what breaks the payments ↔ loyalty cycle.
  */
-export function paise(amount: number): number {
-  return Math.round(round2(amount) * 100)
-}
+export { paise }
 
 export type RecordedPayment = {
   id: string
@@ -177,17 +172,25 @@ export const recordPaymentInputSchema = z.object({
   method: z.enum(POS_PAYMENT_METHODS, {
     errorMap: () => ({ message: 'Choose cash, card or UPI.' }),
   }),
-  amount: z.coerce
-    .number({ invalid_type_error: 'Enter a valid amount.' })
-    .finite('Enter a valid amount.')
-    .positive('Enter an amount greater than zero.')
-    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
+  amount: z.coerce
+    .number({ invalid_type_error: 'Enter a valid amount.' })
+    .finite('Enter a valid amount.')
+    .positive('Enter an amount greater than zero.')
+    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
+  /**
+   * Retry token. A double-clicked button or a retried request carries the
+   * SAME key, and the second attempt returns the first result rather than
+   * taking the money twice. Optional so server-side callers that are
+   * already idempotent by other means need not supply one.
+   */
+  idempotencyKey: z.string().trim().min(8).max(128).optional(),
 })
 
-export type RecordPaymentInput = {
-  invoiceId: string
-  method: PosPaymentMethod
-  amount: number
+export type RecordPaymentInput = {
+  invoiceId: string
+  method: PosPaymentMethod
+  amount: number
+  idempotencyKey?: string
 }
 
 export type RecordPaymentResult = {
@@ -196,8 +199,10 @@ export type RecordPaymentResult = {
   balance: number
   invoiceStatus: string
   settled: boolean
-  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
-  bookingId: string | null
+  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
+  bookingId: string | null
+  /** True when this call recognised itself as a retry and took no money. */
+  deduplicated?: boolean
 }
 
 /**
@@ -238,8 +243,48 @@ export async function recordPaymentForInvoice(
     .for('update')
     .limit(1)
 
-  if (!invoice) throw new PaymentError('Invoice not found.')
-
+  if (!invoice) throw new PaymentError('Invoice not found.')
+
+  // ── 1b. have we already taken this exact tender? ──────────────────────────
+  // Checked AFTER the invoice lock, which is what makes it race-free: two
+  // simultaneous submissions of one click serialise on that lock, so the
+  // second sees the first's row rather than a stale absence. The unique index
+  // on (tenant_id, idempotency_key) is the backstop if they ever did not.
+  //
+  // A recognised retry is NOT an error — it returns what the first call
+  // returned, which is what a cashier who clicked twice expects to see.
+  if (input.idempotencyKey) {
+    const [existing] = await tx
+      .select({ id: payments.id, invoiceId: payments.invoiceId })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.tenantId, actor.tenantId),
+          eq(payments.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1)
+
+    if (existing) {
+      // A key is minted per attempt, so reuse against a DIFFERENT invoice
+      // means the client is confused — refuse rather than silently ignore.
+      if (existing.invoiceId !== invoice.id) {
+        throw new PaymentError('That payment reference has already been used.')
+      }
+      const paidNow = await capturedTotal(tx, actor.tenantId, invoice.id)
+      const invoiceTotal = round2(Number(invoice.total))
+      return {
+        paymentId: existing.id,
+        paid: paidNow,
+        balance: round2(invoiceTotal - paidNow),
+        invoiceStatus: invoice.status,
+        settled: paise(paidNow) >= paise(invoiceTotal),
+        bookingId: invoice.bookingId,
+        deduplicated: true,
+      }
+    }
+  }
+
   // ── 2. can this invoice still take money? ─────────────────────────────────
   if (invoice.status === 'paid') throw new PaymentError('This invoice is already paid.')
   if (invoice.status === 'void') throw new PaymentError('This invoice has been voided.')
@@ -278,9 +323,10 @@ export async function recordPaymentForInvoice(
       invoiceId: invoice.id,
       method: input.method,
       amount: amount.toFixed(2),
-      status: 'captured',
-      collectedBy: actor.membershipId,
-    })
+      status: 'captured',
+      collectedBy: actor.membershipId,
+      idempotencyKey: input.idempotencyKey ?? null,
+    })
     .returning({ id: payments.id })
 
   // ── 6. settle the invoice, only once the money is actually recorded ───────
@@ -288,10 +334,10 @@ export async function recordPaymentForInvoice(
   const settled = paise(newPaid) >= paise(total)
 
   if (settled) {
-    await tx
-      .update(invoices)
-      .set({ status: 'paid' })
-      .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId)))
+    // THE settlement seam: marks the invoice paid AND awards loyalty points,
+    // in this transaction. Every payment path goes through it so earning can
+    // neither be missed on one route nor happen twice on another.
+    await settleInvoicePaid(tx, actor.tenantId, invoice.id)
   }
 
   return {
@@ -302,4 +348,91 @@ export async function recordPaymentForInvoice(
     settled,
     bookingId: invoice.bookingId,
   }
+}
+
+/**
+ * Record a GATEWAY payment against an issued invoice.
+ *
+ * Sibling to recordPaymentForInvoice() above, deliberately separate rather than
+ * a flag on it, because the two have different trust models:
+ *
+ *   recordPaymentForInvoice   a cashier asserts money is in the till. Restricted
+ *                             to POS_PAYMENT_METHODS, needs a collecting
+ *                             membership, and refuses 'online' outright.
+ *   this function             Razorpay has ALREADY taken the money and a
+ *                             verified webhook signature says so. There is no
+ *                             cashier, so `collected_by` is null, and the method
+ *                             is 'online' by definition.
+ *
+ * What it does NOT relax is the money arithmetic: the same invoice lock, the
+ * same capturedTotal() read after the lock, and the same
+ * `alreadyPaid + amount <= total` rule compared in paise. A gateway payment can
+ * no more overpay an invoice than a cashier can.
+ *
+ * Returns null WITHOUT throwing when the invoice cannot absorb the amount. The
+ * money has already moved at the gateway, so refusing to record the deposit
+ * against an invoice must never fail the webhook — the caller keeps the
+ * authoritative record on the payment intent and an operator reconciles.
+ */
+export async function recordVerifiedGatewayPayment(
+  tx: Db,
+  params: {
+    tenantId: string
+    invoiceId: string
+    amount: number
+    gateway: string
+    gatewayOrderId: string
+    gatewayPaymentId: string
+  },
+): Promise<{ paymentId: string; settled: boolean } | null> {
+  const [invoice] = await tx
+    .select({
+      id: invoices.id,
+      status: invoices.status,
+      total: invoices.total,
+      branchId: invoices.branchId,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.id, params.invoiceId), eq(invoices.tenantId, params.tenantId)))
+    .for('update')
+    .limit(1)
+
+  // No invoice, or one that cannot take money (draft/void/already paid).
+  if (!invoice) return null
+  if (invoice.status !== PAYABLE_INVOICE_STATUS) return null
+
+  const total = round2(Number(invoice.total))
+  const alreadyPaid = await capturedTotal(tx, params.tenantId, invoice.id)
+  const amount = round2(params.amount)
+
+  if (paise(amount) <= 0) return null
+  // The overpayment rule, in paise. A deposit larger than what is still owed is
+  // not recorded here; it stays on the payment intent for reconciliation.
+  if (paise(alreadyPaid) + paise(amount) > paise(total)) return null
+
+  const [payment] = await tx
+    .insert(payments)
+    .values({
+      tenantId: params.tenantId,
+      branchId: invoice.branchId,
+      invoiceId: invoice.id,
+      method: 'online',
+      amount: amount.toFixed(2),
+      status: 'captured',
+      gateway: params.gateway,
+      gatewayOrderId: params.gatewayOrderId,
+      gatewayPaymentId: params.gatewayPaymentId,
+      // No cashier took this money.
+      collectedBy: null,
+    })
+    .returning({ id: payments.id })
+
+  const newPaid = round2(alreadyPaid + amount)
+  const settled = paise(newPaid) >= paise(total)
+
+  if (settled) {
+    await settleInvoicePaid(tx, params.tenantId, invoice.id)
+  }
+
+  return { paymentId: payment.id, settled }
 }

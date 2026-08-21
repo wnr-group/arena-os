@@ -13,8 +13,19 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { auditLog, invoices, invoiceItems, orderItems, orders, payments, refunds } from '@/db/schema'
+import {
+  auditLog,
+  invoices,
+  invoiceItems,
+  orderItems,
+  orders,
+  payments,
+  refunds,
+} from '@/db/schema'
 import { paise } from './payments'
+import { reverseLoyaltyForVoidedInvoice } from './loyalty'
+import { reconcileInvoiceAfterRefund } from './refund-reconciliation'
+import { restoreWalletOnRefund } from './wallet-payments'
 import { round2 } from './pricing'
 
 type Db = NodePgDatabase<typeof schema>
@@ -203,6 +214,36 @@ export async function recordRefund(
     })
     .returning({ id: refunds.id })
 
+  // ── 4b. wallet restoration ────────────────────────────────────────────────
+  // A wallet payment is money that came OUT of the ledger, so refunding it must
+  // put the money BACK there rather than into the till. Without this a wallet
+  // payment could be refunded financially while the customer's balance stayed
+  // wrong — the exact inconsistency the ledger exists to prevent.
+  //
+  // In this transaction, so the refund and the credit cannot come apart. A
+  // no-op for cash/card/UPI, which come back the way they went in.
+  const walletRestored = await restoreWalletOnRefund(tx, actor.tenantId, {
+    method: payment.method,
+    invoiceId: payment.invoiceId,
+    refundId: refund.id,
+    amount,
+    createdBy: actor.membershipId,
+  })
+
+  // ── 4c. undo what the payment caused ──────────────────────────────────────
+  // Money going back must take its side effects with it: loyalty points earned
+  // on this bill, wallet credit a refunded TOP-UP sold, and a membership whose
+  // purchase is now fully refunded. Proportional for partial refunds, and
+  // cumulative across several of them.
+  //
+  // In this transaction, so a refund can never exist without its reversal.
+  const reconciliation = await reconcileInvoiceAfterRefund(
+    tx,
+    actor.tenantId,
+    payment.invoiceId,
+    refund.id,
+  )
+
   // ── 5. payment status ─────────────────────────────────────────────────────
   // Only a FULL refund flips the status; a partial one leaves it 'captured',
   // because part of that tender is still money the business holds.
@@ -232,6 +273,10 @@ export async function recordRefund(
       refunded_amount: refundedTotal.toFixed(2),
       remaining_refundable: round2(paymentAmount - refundedTotal).toFixed(2),
       refund: { id: refund.id, amount: amount.toFixed(2), method: payment.method },
+      wallet_restored: walletRestored,
+      loyalty_points_reversed: reconciliation.loyaltyPointsReversed,
+      wallet_credit_reversed: reconciliation.walletCreditReversed.toFixed(2),
+      membership_cancelled: reconciliation.membershipCancelled,
       reason,
     },
   })
@@ -309,6 +354,17 @@ export async function voidInvoiceRecord(
     .set({ status: 'void' })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId)))
 
+  // Loyalty goes back the way it came: points earned on a struck-off bill are
+  // taken back, and points redeemed against it are returned. Without this a
+  // customer could keep 100 points from a bill that never stood, or lose points
+  // they spent on one. In this transaction, so it cannot come apart from the
+  // void; idempotent per invoice via the ledger's unique index.
+  // A void follows a full refund, so the proportional reconciliation above has
+  // usually already reversed the earn; this converges on the remainder (and is a
+  // no-op when it is already zero) and additionally RETURNS any points the
+  // customer redeemed against a bill that no longer stands.
+  await reconcileInvoiceAfterRefund(tx, actor.tenantId, invoice.id, invoice.id)
+  const loyaltyReversal = await reverseLoyaltyForVoidedInvoice(tx, actor.tenantId, invoice.id)
   // Release any food orders this invoice claimed, so a re-bill of the booking
   // can pick them up again — otherwise they would sit at 'billed' forever,
   // invisible to loadFoodLines, and the food charge would be lost for good.
@@ -364,6 +420,8 @@ export async function voidInvoiceRecord(
       invoice_number: invoice.invoiceNumber,
       total: invoice.total,
       reason,
+      loyalty_earn_reversed: loyaltyReversal.earnReversed,
+      loyalty_redeem_returned: loyaltyReversal.redeemReturned,
     },
   })
 

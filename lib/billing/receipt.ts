@@ -75,6 +75,24 @@ export type InvoiceReceipt = {
     customerId: string | null
     subtotal: string
     discount: string
+    /**
+     * The membership half of `discount`, as it was applied (AROS-61). Read
+     * straight off the invoice snapshot — the receipt never consults the
+     * customer's current membership or the live plan, so a reprint years later
+     * shows what was actually charged.
+     */
+    membershipDiscount: string
+    membershipDiscountPercent: string
+    membershipPlanName: string | null
+    /**
+     * The loyalty half of `discount`, as applied. Read off the invoice's own
+     * snapshot — never from today's loyalty_settings — so a reprint years later
+     * shows the rate that was actually honoured.
+     */
+    loyaltyPointsRedeemed: number
+    loyaltyDiscount: string
+    loyaltyPointValue: string
+    loyaltyPointsEarned: number
     taxTotal: string
     taxBreakup: ReceiptTaxGroup[]
     total: string
@@ -124,6 +142,13 @@ export async function loadInvoiceReceipt(
       customerId: invoices.customerId,
       subtotal: invoices.subtotal,
       discount: invoices.discount,
+      membershipDiscount: invoices.membershipDiscount,
+      membershipDiscountPercent: invoices.membershipDiscountPercent,
+      membershipPlanName: invoices.membershipPlanName,
+      loyaltyPointsRedeemed: invoices.loyaltyPointsRedeemed,
+      loyaltyDiscount: invoices.loyaltyDiscount,
+      loyaltyPointValue: invoices.loyaltyPointValue,
+      loyaltyPointsEarned: invoices.loyaltyPointsEarned,
       taxTotal: invoices.taxTotal,
       taxBreakup: invoices.taxBreakup,
       total: invoices.total,
@@ -208,6 +233,13 @@ export async function loadInvoiceReceipt(
       customerId: row.customerId,
       subtotal: row.subtotal,
       discount: row.discount,
+      membershipDiscount: row.membershipDiscount,
+      membershipDiscountPercent: row.membershipDiscountPercent,
+      membershipPlanName: row.membershipPlanName,
+      loyaltyPointsRedeemed: row.loyaltyPointsRedeemed,
+      loyaltyDiscount: row.loyaltyDiscount,
+      loyaltyPointValue: row.loyaltyPointValue,
+      loyaltyPointsEarned: row.loyaltyPointsEarned,
       taxTotal: row.taxTotal,
       taxBreakup,
       total: row.total,
