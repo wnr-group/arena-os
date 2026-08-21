@@ -74,7 +74,15 @@ export function NewBookingDialog({
   function submit() {
     if (!selectedSlot) return
     setError(null)
-    if (customerPhone && !isValidPhone(customerPhone)) {
+    if (!customerName.trim()) {
+      setError('Customer name is required.')
+      return
+    }
+    if (!customerPhone.trim()) {
+      setError('Phone number is required.')
+      return
+    }
+    if (!isValidPhone(customerPhone)) {
       setError('Enter a valid 10-digit phone number.')
       return
     }
@@ -83,8 +91,8 @@ export function NewBookingDialog({
       const r = await createBooking({
         branchId,
         source: 'walk_in',
-        customerName: customerName || undefined,
-        customerPhone: customerPhone || undefined,
+        customerName,
+        customerPhone,
         slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt }],
       })
       if (r.error) setError(r.error)
@@ -108,15 +116,25 @@ export function NewBookingDialog({
         <div className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Customer name</label>
-              <input className={input} value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+              <label className="text-xs font-medium text-muted-foreground">
+                Customer name <span className="text-destructive">*</span>
+              </label>
+              <input
+                className={input}
+                value={customerName}
+                required
+                onChange={(e) => setCustomerName(e.target.value)}
+              />
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Phone</label>
+              <label className="text-xs font-medium text-muted-foreground">
+                Phone <span className="text-destructive">*</span>
+              </label>
               <input
                 className={input}
                 value={customerPhone}
                 inputMode="tel"
+                required
                 onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
               />
             </div>
@@ -192,19 +210,32 @@ export function NewBookingDialog({
                 </p>
               ) : (
                 <div className="mt-2 grid grid-cols-4 gap-2">
-                  {slots.map((s) => (
-                    <button
-                      key={s.startsAt}
-                      onClick={() => setSelectedSlot(s)}
-                      className={`rounded-md border px-2 py-1.5 text-sm transition ${
-                        selectedSlot?.startsAt === s.startsAt
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'hover:bg-muted'
-                      }`}
-                    >
-                      {timeInZone(s.startsAt, timeZone)}
-                    </button>
-                  ))}
+                  {slots.map((s) => {
+                    const isSelected = selectedSlot?.startsAt === s.startsAt
+                    // Slots that fall inside the selected start's duration window
+                    // aren't separately bookable once that start is picked — shade
+                    // them so the full span of the booking reads as one block.
+                    const isCovered =
+                      !isSelected &&
+                      selectedSlot !== null &&
+                      new Date(s.startsAt).getTime() > new Date(selectedSlot.startsAt).getTime() &&
+                      new Date(s.startsAt).getTime() < new Date(selectedSlot.startsAt).getTime() + duration * 60_000
+                    return (
+                      <button
+                        key={s.startsAt}
+                        onClick={() => setSelectedSlot(s)}
+                        className={`rounded-md border px-2 py-1.5 text-sm transition ${
+                          isSelected
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : isCovered
+                              ? 'border-primary/40 bg-primary/10 text-primary'
+                              : 'hover:bg-muted'
+                        }`}
+                      >
+                        {timeInZone(s.startsAt, timeZone)}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>

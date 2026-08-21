@@ -16,6 +16,7 @@ import {
   ReceiptText,
   X,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { NewBookingDialog } from './NewBookingDialog'
 import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
@@ -154,7 +155,6 @@ export function BookingsView({
   const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
@@ -237,7 +237,7 @@ export function BookingsView({
   function act(fn: () => Promise<{ error?: string }>) {
     start(async () => {
       const r = await fn()
-      if (r.error) setToast(r.error)
+      if (r.error) toast.error(r.error)
       else {
         setSelected(null)
         router.refresh()
@@ -258,10 +258,11 @@ export function BookingsView({
       cancelText: 'Keep booking',
       onConfirm: async () => {
         const r = await cancelBooking(slot.bookingId)
-        if (r.error) setToast(r.error)
+        if (r.error) toast.error(r.error)
         else {
           setSelected(null)
           router.refresh()
+          toast.success(`Booking ${slot.bookingNumber} cancelled.`)
         }
       },
     })
@@ -308,12 +309,6 @@ export function BookingsView({
           </button>
         </div>
       </div>
-
-      {toast && (
-        <p className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {toast}
-        </p>
-      )}
 
       {/* view tabs */}
       <div className="mt-5 flex gap-5 border-b border-border">
@@ -546,7 +541,7 @@ export function BookingsView({
           onClose={() => setShowNew(false)}
           onCreated={(num) => {
             setShowNew(false)
-            setToast(`Booking ${num} created.`)
+            toast.success(`Booking ${num} created.`)
             router.refresh()
           }}
         />
@@ -688,7 +683,7 @@ export function BookingsView({
           onClose={() => setOrderDialog(null)}
           onCreated={(num) => {
             setOrderDialog(null)
-            setToast(`Order ${num} created.`)
+            toast.success(`Order ${num} created.`)
             router.refresh()
           }}
         />

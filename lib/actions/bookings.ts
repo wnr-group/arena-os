@@ -26,12 +26,12 @@ function fail(e: unknown): Result {
 
 const createInput = z.object({
   branchId: z.string().uuid(),
-  customerName: z.string().trim().optional(),
+  customerName: z.string().trim().min(1, 'Customer name is required.'),
   customerPhone: z
     .string()
     .trim()
-    .optional()
-    .refine((v) => !v || isValidPhone(v), 'Enter a valid 10-digit phone number.'),
+    .min(1, 'Phone number is required.')
+    .refine((v) => isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   customerEmail: z.string().trim().email().optional().or(z.literal('')),
   notes: z.string().trim().optional(),
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
