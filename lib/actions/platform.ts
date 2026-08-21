@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { ownerDb } from '@/db'
-import { tenants, branches, memberships } from '@/db/schema'
+import { tenants, branches, memberships, expenseCategories } from '@/db/schema'
+import { DEFAULT_EXPENSE_CATEGORIES } from '@/lib/expenses/defaults'
 import { requirePlatformAdmin, PlatformError } from '@/lib/platform/guard'
 import { findOrCreateUser } from '@/lib/platform/provision'
 import { RESERVED_SLUGS } from '@/lib/tenant/subdomain'
@@ -87,6 +88,14 @@ export async function createCompany(input: z.input<typeof createInput>): Promise
         fullName: v.ownerName,
         email: v.ownerEmail.toLowerCase(),
       })
+
+      // Starter expense categories, the same way this transaction seeds a
+      // 'Main Branch': an expense requires a category, so a brand-new tenant
+      // would otherwise open the Expenses page onto a form it cannot submit.
+      // Ordinary rows — renameable, retirable, and addable to.
+      await tx.insert(expenseCategories).values(
+        DEFAULT_EXPENSE_CATEGORIES.map((name) => ({ tenantId: tenant.id, name })),
+      )
     })
 
     revalidatePath('/admin')
