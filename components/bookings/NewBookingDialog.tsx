@@ -52,6 +52,9 @@ export function NewBookingDialog({
 
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
+  const [nameTouched, setNameTouched] = useState(false)
+  const [phoneTouched, setPhoneTouched] = useState(false)
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [resourceTypeId, setResourceTypeId] = useState(presetResourceTypeId ?? resourceTypes[0]?.id ?? '')
   const [duration, setDuration] = useState(60)
   const [slots, setSlots] = useState<TimeSlot[] | null>(null)
@@ -59,6 +62,16 @@ export function NewBookingDialog({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
+
+  // Field-level messages shown right under each input, once the visitor has
+  // left the field (or tried to submit) rather than the moment it's empty.
+  const nameError = (nameTouched || attemptedSubmit) && !customerName.trim() ? 'Customer name is required.' : null
+  const phoneError =
+    (phoneTouched || attemptedSubmit) && !customerPhone.trim()
+      ? 'Phone number is required.'
+      : customerPhone.trim() && !isValidPhone(customerPhone)
+        ? 'Enter a valid 10-digit phone number.'
+        : null
 
   function findTimes() {
     setError(null)
@@ -74,18 +87,8 @@ export function NewBookingDialog({
   function submit() {
     if (!selectedSlot) return
     setError(null)
-    if (!customerName.trim()) {
-      setError('Customer name is required.')
-      return
-    }
-    if (!customerPhone.trim()) {
-      setError('Phone number is required.')
-      return
-    }
-    if (!isValidPhone(customerPhone)) {
-      setError('Enter a valid 10-digit phone number.')
-      return
-    }
+    setAttemptedSubmit(true)
+    if (!customerName.trim() || !customerPhone.trim() || !isValidPhone(customerPhone)) return
     const endsAt = new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     start(async () => {
       const r = await createBooking({
@@ -124,7 +127,9 @@ export function NewBookingDialog({
                 value={customerName}
                 required
                 onChange={(e) => setCustomerName(e.target.value)}
+                onBlur={() => setNameTouched(true)}
               />
+              {nameError && <p className="mt-1 text-xs text-destructive">{nameError}</p>}
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">
@@ -136,7 +141,9 @@ export function NewBookingDialog({
                 inputMode="tel"
                 required
                 onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+\s-]/g, ''))}
+                onBlur={() => setPhoneTouched(true)}
               />
+              {phoneError && <p className="mt-1 text-xs text-destructive">{phoneError}</p>}
             </div>
           </div>
 
