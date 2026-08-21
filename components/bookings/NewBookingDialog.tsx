@@ -326,7 +326,7 @@ export function NewBookingDialog({
                           isSelected
                             ? 'border-primary bg-primary text-primary-foreground'
                             : isCovered
-                              ? 'border-primary/40 bg-primary/10 text-primary'
+                              ? 'border-primary bg-primary/25 font-medium text-primary'
                               : 'hover:bg-muted'
                         }`}
                       >
