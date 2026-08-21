@@ -178,23 +178,27 @@ export function MenuItemsManager({
           <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium uppercase tracking-wide transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('grid')}
               aria-pressed={view === 'grid'}
+              aria-label="Grid view"
+              title="Grid view"
             >
-              <LayoutGrid size={15} /> Grid
+              <LayoutGrid size={15} />
             </button>
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium uppercase tracking-wide transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('table')}
               aria-pressed={view === 'table'}
+              aria-label="Table view"
+              title="Table view"
             >
-              <Table2 size={15} /> Table
+              <Table2 size={15} />
             </button>
           </div>
           {categories.length > 0 && (
