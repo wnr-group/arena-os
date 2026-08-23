@@ -17,7 +17,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "expenses:recurring": "tsx scripts/run-recurring-expenses.ts"
+    "expenses:recurring": "tsx scripts/run-recurring-expenses.ts",
+    "reports:refresh": "tsx scripts/refresh-reports.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
