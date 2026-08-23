@@ -110,6 +110,18 @@ const NAV: NavItem[] = [
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.
   { href: '/expenses', label: 'Expenses', icon: Wallet, can: isManager },
+  // Revenue & sales analytics (AROS-64/65) — manager/owner; the pages and their
+  // data readers enforce that themselves, the nav entry is convenience only.
+  {
+    href: '/reports',
+    label: 'Reports',
+    icon: BarChart3,
+    can: isManager,
+    children: [
+      { href: '/reports', label: 'Revenue & Bookings', icon: TrendingUp, can: isManager },
+      { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
+    ],
+  },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
   {
     href: '/employees',
