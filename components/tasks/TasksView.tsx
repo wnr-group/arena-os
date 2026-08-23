@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
-import { CheckCircle2, Circle, Clock, ListTodo, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Circle, Clock, ListTodo, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { createTask, updateTask, updateTaskStatus, deleteTask } from '@/lib/actions/tasks'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 
@@ -198,8 +198,10 @@ export function TasksView({
                             <option value="in_progress">In progress</option>
                             <option value="done">Done</option>
                           </select>
-                          {statusUpdatingId === t.id && (
+                          {statusUpdatingId === t.id ? (
                             <Loader2 size={13} className="pointer-events-none absolute right-2 animate-spin" />
+                          ) : (
+                            <ChevronDown size={13} className="pointer-events-none absolute right-2" />
                           )}
                         </div>
                       ) : (
