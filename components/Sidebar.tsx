@@ -72,7 +72,6 @@ const NAV: NavItem[] = [
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.
   { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
     href: '/settings/resources',
     label: 'Resources',
