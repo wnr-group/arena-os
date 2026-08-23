@@ -19,6 +19,7 @@ export default async function HappyHoursSettingsPage() {
       </p>
       <HappyHoursManager
         currency={ctx.tenant.currency}
+        timezone={ctx.tenant.timezone}
         happyHours={happyHours.map((h) => ({
           id: h.id,
           name: h.name,

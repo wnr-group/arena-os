@@ -1,10 +1,11 @@
 'use client'
 
-import { useMemo, useState, useTransition, type ComponentType } from 'react'
+import { useEffect, useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, Clock, CheckCircle2, XCircle, Percent, Loader2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Clock, CheckCircle2, XCircle, Percent, Loader2, PauseCircle, PlayCircle } from 'lucide-react'
 import { upsertHappyHour, deleteHappyHour } from '@/lib/actions/happy-hours'
+import { activeHappyHours } from '@/lib/happy-hours/apply'
 import { formatMoney } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 
@@ -45,12 +46,47 @@ function formatDiscount(type: DiscountType, value: string, currency: string) {
   return type === 'percentage' ? `${Number(value)}% off` : `${formatMoney(value, currency)} off`
 }
 
-export function HappyHoursManager({ currency, happyHours }: { currency: string; happyHours: HappyHourRow[] }) {
+/**
+ * Live status of a rule right now: `disabled` when a manager has turned it
+ * off (overrides the schedule, e.g. to stop it early), otherwise `live` or
+ * `scheduled` based on whether `now` falls inside its days/time window.
+ */
+type Status = 'live' | 'scheduled' | 'disabled'
+
+function getStatus(row: HappyHourRow, now: Date, timezone: string): Status {
+  if (!row.isActive) return 'disabled'
+  return activeHappyHours([row], now, timezone).length > 0 ? 'live' : 'scheduled'
+}
+
+const STATUS_META: Record<Status, { label: string; className: string; icon: ComponentType<{ size?: number }> }> = {
+  live: { label: 'Live now', className: 'bg-emerald-500/10 text-emerald-600', icon: CheckCircle2 },
+  scheduled: { label: 'Scheduled', className: 'bg-amber-500/10 text-amber-600', icon: Clock },
+  disabled: { label: 'Disabled', className: 'bg-muted text-muted-foreground', icon: XCircle },
+}
+
+export function HappyHoursManager({
+  currency,
+  timezone,
+  happyHours,
+}: {
+  currency: string
+  timezone: string
+  happyHours: HappyHourRow[]
+}) {
   const router = useRouter()
   const confirm = useConfirm()
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+
+  // Re-derive live/scheduled status on a timer so a rule flips to "Live now"
+  // or "Scheduled" on its own as the clock crosses its start/end time.
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000)
+    return () => clearInterval(id)
+  }, [])
 
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
@@ -66,10 +102,42 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
 
   const stats = useMemo(() => {
     const total = happyHours.length
-    const active = happyHours.filter((h) => h.isActive).length
+    const live = happyHours.filter((h) => getStatus(h, now, timezone) === 'live').length
+    const disabled = happyHours.filter((h) => !h.isActive).length
     const percentage = happyHours.filter((h) => h.discountType === 'percentage').length
-    return { total, active, inactive: total - active, percentage }
-  }, [happyHours])
+    return { total, live, disabled, percentage }
+  }, [happyHours, now, timezone])
+
+  async function applyToggle(row: HappyHourRow, next: boolean) {
+    setTogglingId(row.id)
+    const r = await upsertHappyHour({
+      id: row.id,
+      name: row.name,
+      daysOfWeek: row.daysOfWeek,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      discountType: row.discountType,
+      discountValue: Number(row.discountValue),
+      isActive: next,
+    })
+    setTogglingId(null)
+    if (r.error) toast.error(r.error)
+    else router.refresh()
+  }
+
+  async function handleToggleActive(row: HappyHourRow) {
+    const next = !row.isActive
+    if (!next) {
+      await confirm({
+        title: `Stop "${row.name}" now?`,
+        description: 'It will no longer apply, even during its scheduled window, until you re-enable it.',
+        confirmText: 'Stop it',
+        onConfirm: () => applyToggle(row, next),
+      })
+    } else {
+      applyToggle(row, next)
+    }
+  }
 
   async function handleDelete(row: HappyHourRow) {
     await confirm({
@@ -90,8 +158,8 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
     <div className="mt-8 space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={Clock} label="Total rules" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={CheckCircle2} label="Live now" value={stats.live} accent="bg-emerald-500/10 text-emerald-600" />
+        <StatCard icon={XCircle} label="Disabled" value={stats.disabled} accent="bg-muted text-muted-foreground" />
         <StatCard icon={Percent} label="Percentage-based" value={stats.percentage} accent="bg-primary/10 text-primary" />
       </div>
 
@@ -126,49 +194,68 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
                   </td>
                 </tr>
               )}
-              {happyHours.map((row) => (
-                <tr key={row.id} className="transition hover:bg-muted/20">
-                  <td className="px-4 py-3 font-medium">{row.name}</td>
-                  <td className="px-4 py-3">
-                    <DaySummary days={row.daysOfWeek} />
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {formatTime(row.startTime)} – {formatTime(row.endTime)}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {formatDiscount(row.discountType, row.discountValue, currency)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${
-                        row.isActive ? 'bg-emerald-500/10 text-emerald-600' : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      {row.isActive ? 'Active' : 'Inactive'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-1">
-                      <button
-                        className={btn}
-                        disabled={pending}
-                        onClick={() => setModal({ mode: 'edit', row })}
-                        aria-label="Edit"
+              {happyHours.map((row) => {
+                const status = getStatus(row, now, timezone)
+                const meta = STATUS_META[status]
+                const StatusIcon = meta.icon
+                return (
+                  <tr key={row.id} className="transition hover:bg-muted/20">
+                    <td className="px-4 py-3 font-medium">{row.name}</td>
+                    <td className="px-4 py-3">
+                      <DaySummary days={row.daysOfWeek} />
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatTime(row.startTime)} – {formatTime(row.endTime)}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatDiscount(row.discountType, row.discountValue, currency)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-medium ${meta.className}`}
                       >
-                        <Pencil size={16} />
-                      </button>
-                      <button
-                        className={`${btn} text-destructive`}
-                        disabled={pending}
-                        onClick={() => handleDelete(row)}
-                        aria-label="Delete"
-                      >
-                        {deletingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        <StatusIcon size={13} />
+                        {meta.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1">
+                        <button
+                          className={btn}
+                          disabled={pending || togglingId === row.id}
+                          onClick={() => handleToggleActive(row)}
+                          aria-label={row.isActive ? 'Disable' : 'Enable'}
+                          title={row.isActive ? 'Stop now' : 'Enable'}
+                        >
+                          {togglingId === row.id ? (
+                            <Loader2 size={16} className="animate-spin" />
+                          ) : row.isActive ? (
+                            <PauseCircle size={16} />
+                          ) : (
+                            <PlayCircle size={16} />
+                          )}
+                        </button>
+                        <button
+                          className={btn}
+                          disabled={pending}
+                          onClick={() => setModal({ mode: 'edit', row })}
+                          aria-label="Edit"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          className={`${btn} text-destructive`}
+                          disabled={pending}
+                          onClick={() => handleDelete(row)}
+                          aria-label="Delete"
+                        >
+                          {deletingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
