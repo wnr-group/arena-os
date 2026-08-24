@@ -10,6 +10,10 @@ import { INDUSTRY_ICONS } from '@/components/public-booking/TenantHome'
 
 const EMPTY_BRANDING: WebsiteBranding = { logoUrl: null, accentColor: null, heroImageUrl: null }
 
+// Fixed so the sticky navbar below can stick at exactly this many pixels —
+// keep in sync with the h-11 on the banner below.
+const PREVIEW_BANNER_HEIGHT = 44
+
 /**
  * Staff-only preview — renders the current DRAFT through the exact same
  * WebsitePage/WebsiteSections components the public homepage uses
@@ -47,7 +51,7 @@ export default async function WebsitePreviewPage() {
 
   return (
     <div>
-      <div className="sticky top-0 z-50 flex items-center justify-center gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700">
+      <div className="sticky top-0 z-50 flex h-11 items-center justify-center gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 text-center text-sm font-medium text-amber-700">
         <span>Preview — this is not live yet.</span>
         <Link href="/settings/website" className="inline-flex items-center gap-1 underline underline-offset-2 hover:text-amber-800">
           <ArrowLeft size={14} /> Back to editor
@@ -56,7 +60,13 @@ export default async function WebsitePreviewPage() {
       {sections.length === 0 ? (
         <div className="px-4 py-20 text-center text-muted-foreground">No sections yet — add some in the editor to see a preview.</div>
       ) : (
-        <WebsitePage tenantName={ctx.tenant.name} icon={<Icon size={18} />} sections={sections} settings={settings} />
+        <WebsitePage
+          tenantName={ctx.tenant.name}
+          icon={<Icon size={18} />}
+          sections={sections}
+          settings={settings}
+          navTopOffset={PREVIEW_BANNER_HEIGHT}
+        />
       )}
     </div>
   )

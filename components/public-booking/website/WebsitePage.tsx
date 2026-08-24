@@ -14,19 +14,22 @@ export function WebsitePage({
   sections,
   settings,
   footer,
+  navTopOffset,
 }: {
   tenantName: string
   icon: ReactNode
   sections: WebsiteSection[]
   settings: WebsiteBranding
   footer?: ReactNode
+  /** Pixels to stick the navbar below instead of the viewport top — e.g. the staff preview banner above it. */
+  navTopOffset?: number
 }) {
   return (
     <div
       className="flex min-h-screen flex-col"
       style={settings.accentColor ? ({ '--primary': settings.accentColor } as React.CSSProperties) : undefined}
     >
-      <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} />
+      <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} />
       {settings.heroImageUrl && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={settings.heroImageUrl} alt="" className="h-64 w-full object-cover sm:h-80" />

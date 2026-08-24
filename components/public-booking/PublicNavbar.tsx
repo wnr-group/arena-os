@@ -30,10 +30,13 @@ export function PublicNavbar({
   tenantName,
   icon,
   logoUrl,
+  topOffset = 0,
 }: {
   tenantName: string
   icon: ReactNode
   logoUrl?: string | null
+  /** Pixels to stick below instead of the viewport top — e.g. the staff preview banner above it. */
+  topOffset?: number
 }) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
@@ -64,7 +67,8 @@ export function PublicNavbar({
 
   return (
     <header
-      className={`sticky top-0 z-40 border-b transition-all duration-300 ${
+      style={{ top: topOffset }}
+      className={`sticky z-40 border-b transition-all duration-300 ${
         scrolled
           ? 'border-border/80 bg-background/85 backdrop-blur-md shadow-[0_2px_20px_-8px_rgba(124,58,237,0.08),0_8px_30px_-12px_rgba(0,0,0,0.05)]'
           : 'border-transparent bg-background/60 backdrop-blur-sm'
