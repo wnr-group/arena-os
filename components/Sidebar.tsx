@@ -15,7 +15,6 @@ import {
   Clock,
   Users,
   UtensilsCrossed,
-  LineChart,
   HandCoins,
   ChevronDown,
   Contact,
@@ -34,6 +33,8 @@ import {
   Percent,
   Timer,
   Ticket,
+  Gift,
+  Scale,
   Landmark,
   Receipt,
   Calculator,
@@ -73,7 +74,7 @@ const NAV: NavItem[] = [
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.
   { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
-  { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
+  // { href: '/settings/resources', label: 'Resources', icon: Boxes, can: isManager },
   {
     href: '/settings/resources',
     label: 'Resources',
@@ -103,6 +104,11 @@ const NAV: NavItem[] = [
       { href: '/settings/tax-rates', label: 'Tax Rates', icon: Percent },
       { href: '/settings/happy-hours', label: 'Happy Hours', icon: Timer },
       { href: '/settings/promo-codes', label: 'Promo Codes', icon: Ticket },
+      // The earn/redeem rule the till reads live (migration 0029). Grouped with
+      // the other money rules because a redemption is a discount on the bill.
+      // The page and the action each enforce manager/owner themselves — this
+      // entry only decides what is worth showing.
+      { href: '/settings/loyalty', label: 'Loyalty', icon: Gift },
     ],
   },
   // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
@@ -121,6 +127,9 @@ const NAV: NavItem[] = [
     children: [
       { href: '/reports', label: 'Revenue & Bookings', icon: TrendingUp, can: isManager },
       { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
+      // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
+      // and getPnlReport() throws for one; this entry only decides visibility.
+      { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },
     ],
   },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },

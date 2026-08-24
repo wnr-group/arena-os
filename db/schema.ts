@@ -254,6 +254,12 @@ export const bookings = pgTable(
     checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /**
+     * Raised (migration 0047) when a CUSTOMER cancels a booking the venue is
+     * holding a deposit against. Nothing is refunded automatically — this is
+     * the staff work queue, and only staff ever lower it.
+     */
+    depositReviewRequired: boolean('deposit_review_required').notNull().default(false),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -704,6 +710,13 @@ export const customers = pgTable(
     dob: date('dob'),
     tags: text('tags').array().notNull().default([]),
     membershipStatus: text('membership_status'),
+    /**
+     * Communication preferences (migration 0048), edited by the customer in the
+     * portal. Consent for messages about their OWN bookings — not a marketing
+     * opt-in — which is why both default to true rather than false.
+     */
+    smsOptIn: boolean('sms_opt_in').notNull().default(true),
+    emailOptIn: boolean('email_opt_in').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -781,6 +794,61 @@ export const loyaltyTransactions = pgTable(
       .on(t.tenantId, t.sourceType, t.sourceId)
       .where(sql`${t.sourceId} is not null`),
     index('idx_loyalty_tx_tenant_customer').on(t.tenantId, t.customerId),
+  ],
+)
+
+// ── customer auth (migration 0044) ───────────────────────────────────────────
+// The customer-portal twin of `sessions`/`users` above. Separate tables,
+// separate cookie, separate resolver — a staff token is meaningless here and a
+// customer token is meaningless to the staff surface.
+
+// Short-lived phone-verification challenge. `codeHash` is an HMAC-SHA-256 of
+// the issued code (lib/otp/challenge.ts) — the code itself is never stored.
+export const customerOtpChallenges = pgTable(
+  'customer_otp_challenges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** Always E.164, same CHECK as customers.phone. */
+    phone: text('phone').notNull(),
+    codeHash: text('code_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('idx_customer_otp_tenant_phone').on(t.tenantId, t.phone, t.createdAt),
+    index('idx_customer_otp_expires').on(t.expiresAt),
+  ],
+)
+
+// Reached ONLY through the owner connection (not granted to arena_app), exactly
+// like `sessions`. `id` is the SHA-256 of the token held in the cookie.
+export const customerSessions = pgTable(
+  'customer_sessions',
+  {
+    id: text('id').primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // (tenant_id, customer_id) → customers(tenant_id, id): a session pointing
+    // at another tenant's customer is structurally impossible (0016's trick).
+    foreignKey({
+      name: 'customer_sessions_customer_tenant_fkey',
+      columns: [t.tenantId, t.customerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }).onDelete('cascade'),
+    index('idx_customer_sessions_customer').on(t.tenantId, t.customerId),
+    index('idx_customer_sessions_expires').on(t.expiresAt),
   ],
 )
 
@@ -995,7 +1063,52 @@ export const customerMemberships = pgTable(
   ],
 )
 
-// ── loyalty settings (migration 0029) ────────────────────────────────────────
+// ── booking cancellation settings (migration 0047) ───────────────────────────
+// The per-tenant self-service cancellation rule, read by the customer portal.
+// tenant_id IS the primary key, so there is exactly one row per tenant by
+// construction — the same shape loyalty_settings and payment_settings use.
+// A tenant with no row falls back to the defaults encoded here.
+export const bookingCancellationSettings = pgTable('booking_cancellation_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  customerCancellationEnabled: boolean('customer_cancellation_enabled').notNull().default(true),
+  /** Hours before the start time after which self-service cancellation closes. */
+  cutoffHours: integer('cutoff_hours').notNull().default(24),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── loyalty tiers (migration 0049) ───────────────────────────────────────────
+// The per-tenant tier ladder. A tier is DERIVED from the ledger on read — there
+// is no tier column on customers and no cached points total anywhere. Thresholds
+// are compared against LIFETIME POINTS EARNED, not the spendable balance; see
+// lib/loyalty/tiers.ts for why those differ.
+export const loyaltyTiers = pgTable(
+  'loyalty_tiers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Lifetime points earned at or above which this tier is held. */
+    threshold: integer('threshold').notNull(),
+    /** Display only — this ticket carries no benefit LOGIC. */
+    perk: text('perk'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Makes "the highest qualifying tier" a single unambiguous answer.
+    unique('loyalty_tiers_tenant_threshold_key').on(t.tenantId, t.threshold),
+    unique('loyalty_tiers_tenant_name_key').on(t.tenantId, t.name),
+    index('idx_loyalty_tiers_tenant').on(t.tenantId, t.threshold),
+  ],
+)
+
+// ── loyalty settings (migration 0029) ───────────────────────────────────────────────────────────────────────────────
 // The per-tenant earn/redeem rule. The LEDGER (loyaltyTransactions, 0007) stays
 // the source of truth for the balance; this only says how points are earned and
 // what they are worth. Defaults encode "1 point per ₹100" and "1 point = ₹1".

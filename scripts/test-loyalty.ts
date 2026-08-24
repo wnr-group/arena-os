@@ -39,7 +39,7 @@ async function main() {
   } = await import('../lib/billing/loyalty')
   const { loyaltyPoints } = await import('../lib/customers/ledger')
   const { issueInvoiceForBooking } = await import('../lib/billing/invoice')
-  const { recordPaymentForInvoice, getInvoiceSettlement, paise } = await import(
+  const { recordPaymentForInvoice, getInvoiceSettlement } = await import(
     '../lib/billing/payments'
   )
   const { recordRefund, voidInvoiceRecord } = await import('../lib/billing/refunds')

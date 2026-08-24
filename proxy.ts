@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { tenantSlugFromHost } from '@/lib/tenant/subdomain'
 import { SESSION_COOKIE } from '@/lib/auth/cookie'
+import { CUSTOMER_SESSION_COOKIE } from '@/lib/auth/customer-cookie'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 
@@ -23,6 +24,16 @@ export function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl
   const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/auth')
+
+  // ── the customer portal (AROS-88) ─────────────────────────────────────────
+  // The whole /account tree belongs to CUSTOMERS, not staff. /account/login is
+  // its unauthenticated door; everything else behind it needs the customer
+  // cookie. Computed here because both gates below have to agree on where the
+  // boundary is — the staff gate must skip this tree, and the customer gate
+  // must cover exactly it.
+  const isCustomerLoginRoute =
+    pathname === '/account/login' || pathname.startsWith('/account/login/')
+  const isPortalRoute = pathname === '/account' || pathname.startsWith('/account/')
   // The public (no-login) tenant homepage ("/", app/page.tsx when a tenant
   // slug is present) and booking site — app/(public) — pinned to the tenant
   // by subdomain like every other tenant route, but deliberately reachable
@@ -34,8 +45,13 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
-    pathname.startsWith('/b/')
+    pathname.startsWith('/b/') ||
+    // Customer OTP login (AROS-87). Public by definition: a customer signing in
+    // has no session of EITHER kind yet.
+    isCustomerLoginRoute
+
   const hasSession = request.cookies.has(SESSION_COOKIE)
+  const hasCustomerSession = request.cookies.has(CUSTOMER_SESSION_COOKIE)
 
   // Coarse abuse gate (AROS-47): every write against the public booking site
   // — availability lookups, phone lookups, booking create — is a server
@@ -66,11 +82,41 @@ export function proxy(request: NextRequest) {
    */
   const isWebhook = pathname.startsWith('/api/webhooks/')
 
+  // ── customer gate ─────────────────────────────────────────────────────────
+  // Checked BEFORE the staff gate, and covering the /account tree exclusively.
+  // Order matters: without this, a customer with no staff cookie would be sent
+  // to the STAFF login, which they can never satisfy.
+  //
+  // Presence-only, deliberately. This function never touches the database (see
+  // the note at the top of the file), so it cannot tell a valid cookie from a
+  // forged or expired one — that is PortalLayout's job via requireCustomer(),
+  // which validates the session against customer_sessions and its tenant. All
+  // this does is spare the signed-out an unnecessary render.
+  //
+  // A staff cookie is NOT accepted here, and the customer cookie is NOT
+  // accepted by the staff gate below: they are different cookie names looked
+  // up in different tables, so neither audience can borrow the other's session.
+  if (slug && isPortalRoute && !isCustomerLoginRoute && !hasCustomerSession) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/account/login'
+    // So login can return them where they were headed. Validated on the far
+    // end by safeCustomerNext() — never trusted as given.
+    url.searchParams.set('next', pathname)
+    return NextResponse.redirect(url)
+  }
+
   // Protected surfaces: tenant routes on a subdomain, and the platform admin
   // panel on the root domain. Membership/admin authorization is enforced deeper
   // (RLS + page guards); the proxy only bounces the signed-out.
+  //
+  // `!isPortalRoute` keeps the staff gate off the customer tree entirely — the
+  // customer gate above is the only authority there.
   const needsSession =
-    (slug || pathname.startsWith('/admin')) && !isAuthRoute && !isPublicRoute && !isWebhook
+    (slug || pathname.startsWith('/admin')) &&
+    !isAuthRoute &&
+    !isPublicRoute &&
+    !isWebhook &&
+    !isPortalRoute
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'

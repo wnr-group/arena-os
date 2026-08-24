@@ -12,7 +12,7 @@
  */
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
-import { and, eq, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { customerMemberships } from '../db/schema'
 import { loadEnv } from './env'
@@ -38,7 +38,6 @@ async function main() {
     consumeFreeHours,
     expireLapsed,
     isEligible,
-    benefitsOf,
     addMonths,
     MembershipError,
   } = await import('../lib/memberships/customer-memberships')

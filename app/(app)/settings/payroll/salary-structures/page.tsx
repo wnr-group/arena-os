@@ -19,7 +19,7 @@ export default async function SalaryStructuresSettingsPage() {
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold">Salary Structures</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        Set each employee's base pay, allowances and deductions — the foundation payroll runs will compute from. Owner
+        Set each employee&rsquo;s base pay, allowances and deductions — the foundation payroll runs will compute from. Owner
         only.
       </p>
       <SalaryStructuresManager

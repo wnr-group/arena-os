@@ -38,22 +38,33 @@ export function ResourceTypeBookingPage({
   tenant,
   resourceType,
   today,
+  initialDuration = 60,
+  initialPlayers = 1,
 }: {
   tenant: PublicTenant
   resourceType: PublicResourceTypeDetail
   today: string
+  /**
+   * Prefill from the portal's rebook redirect (AROS-90). Both default to the
+   * values this wizard has always used, so the ordinary public entry point is
+   * completely unchanged. They only seed the starting duration and party size;
+   * the customer still picks a new date and slot through the normal flow, and
+   * availability is still checked the same way.
+   */
+  initialDuration?: number
+  initialPlayers?: number
 }) {
   const router = useRouter()
   const dates = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
 
   const [step, setStep] = useState<Step>('select')
   const [date, setDate] = useState(today)
-  const [duration, setDuration] = useState(60)
+  const [duration, setDuration] = useState(initialDuration)
   const [slots, setSlots] = useState<PublicSlotOption[] | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [slotsError, setSlotsError] = useState<string | null>(null)
   const [selectedSlot, setSelectedSlot] = useState<PublicSlotOption | null>(null)
-  const [players, setPlayers] = useState(1)
+  const [players, setPlayers] = useState(initialPlayers)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
@@ -368,7 +379,7 @@ export function ResourceTypeBookingPage({
                 </p>
               ) : phoneLookup.checked && phoneLookup.found ? (
                 <p className="mt-3 text-sm text-foreground">
-                  <span className="font-semibold">Welcome back!</span> We found a profile for this number — you're all set to book.
+                  <span className="font-semibold">Welcome back!</span> We found a profile for this number — you&rsquo;re all set to book.
                 </p>
               ) : phoneLookup.checked ? (
                 <>

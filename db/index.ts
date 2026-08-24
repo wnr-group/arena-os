@@ -16,7 +16,12 @@ import * as schema from './schema'
  *
  * Pools are cached on globalThis so dev HMR doesn't leak connections.
  */
-type DB = NodePgDatabase<typeof schema>
+/**
+ * The Drizzle handle every wrapper below hands to its callback. Exported so a
+ * reader can declare "I take an already-scoped transaction" in its signature
+ * (see lib/portal/bookings.ts) rather than taking an id it would have to trust.
+ */
+export type DB = NodePgDatabase<typeof schema>
 
 const globalForDb = globalThis as unknown as {
   __ownerPool?: Pool
@@ -79,6 +84,50 @@ export async function withPublicApp<T>(fn: (tx: DB) => Promise<T>): Promise<T> {
 export async function withPublicTenant<T>(tenantId: string, fn: (tx: DB) => Promise<T>): Promise<T> {
   return appDb.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.public_tenant_id', ${tenantId}, true)`)
+    return fn(tx as unknown as DB)
+  })
+}
+
+/**
+ * Run work as a LOGGED-IN CUSTOMER on the customer portal, with RLS enforced.
+ *
+ * The third identity on this connection, alongside withUser() (staff) and
+ * withPublicTenant() (anonymous visitor). It sets `app.customer_id` for the
+ * life of one transaction, and the customer policies in
+ * 0045_customer_portal_rls.sql then scope every row to that one customer.
+ *
+ * ── It sets app.customer_id and NOTHING ELSE. That is the security property ──
+ *
+ * Postgres RLS policies are PERMISSIVE by default, which means they are OR-ed
+ * together. `customers_public_select` and `bookings_public_select`
+ * (0023_public_booking_create.sql) both read
+ *
+ *     tenant_id = current_public_tenant_id()
+ *
+ * and deliberately expose EVERY customer and EVERY booking of a tenant — the
+ * public booking flow needs them for the phone find-or-create and for the
+ * BK-YYYYMMDD-NNN counter, and safety there rests on application-level column
+ * discipline rather than on the row policy.
+ *
+ * So if this wrapper also pinned `app.public_tenant_id` — the obvious thing to
+ * reach for, since the portal lives on a tenant subdomain — those policies
+ * would OR with the customer policies and a logged-in customer would be able
+ * to read the entire tenant's customer directory and booking table. The
+ * customer id alone is enough: it is a globally unique primary key, and
+ * current_customer_tenant_id() derives the tenant from it inside the database,
+ * so the tenant is never taken from the caller.
+ *
+ * Two things back this up if someone later adds the pin anyway: the customer
+ * policies are paired with RESTRICTIVE policies (which AND rather than OR), and
+ * scripts/verify-customer-portal-rls.ts asserts the combination directly.
+ *
+ * The customer id must come from a validated customer session
+ * (lib/auth/customer-session.ts) — never from a route param, form field or
+ * header.
+ */
+export async function withCustomer<T>(customerId: string, fn: (tx: DB) => Promise<T>): Promise<T> {
+  return appDb.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.customer_id', ${customerId}, true)`)
     return fn(tx as unknown as DB)
   })
 }
