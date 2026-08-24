@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { WebsiteSection, WebsiteBranding } from '@/lib/website/types'
+import { getContrastText } from '@/lib/website/color'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { WebsiteSections } from './WebsiteSections'
 
@@ -27,7 +28,14 @@ export function WebsitePage({
   return (
     <div
       className="flex min-h-screen flex-col"
-      style={settings.accentColor ? ({ '--primary': settings.accentColor } as React.CSSProperties) : undefined}
+      style={
+        settings.accentColor
+          ? ({
+              '--primary': settings.accentColor,
+              '--primary-foreground': getContrastText(settings.accentColor),
+            } as React.CSSProperties)
+          : undefined
+      }
     >
       <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} />
       {settings.heroImageUrl && (
