@@ -49,6 +49,7 @@ export function SectionModal(props: SectionModalProps) {
   const [body, setBody] = useState(section ? str(section.content, 'body') : '')
   const [imageUrl, setImageUrl] = useState(section ? str(section.content, 'imageUrl') : '')
   const [alt, setAlt] = useState(section ? str(section.content, 'alt') : '')
+  const [caption, setCaption] = useState(section ? str(section.content, 'caption') : '')
   const [style, setStyle] = useState<'overlay' | 'stacked'>(
     section && str(section.content, 'style') === 'stacked' ? 'stacked' : 'overlay',
   )
@@ -80,7 +81,7 @@ export function SectionModal(props: SectionModalProps) {
       case 'text':
         return { body }
       case 'image':
-        return { imageUrl, alt: alt || undefined }
+        return { imageUrl, alt: alt || undefined, caption: caption || undefined }
       case 'image_text':
         return { imageUrl, alt: alt || undefined, body, style }
       case 'video':
@@ -154,6 +155,18 @@ export function SectionModal(props: SectionModalProps) {
                   maxLength={200}
                 />
               </div>
+              {type === 'image' && (
+                <div className="mt-2">
+                  <label className={labelClass}>Caption (optional)</label>
+                  <input
+                    className={inputClass}
+                    placeholder="Text shown under the image"
+                    value={caption}
+                    onChange={(e) => setCaption(e.target.value)}
+                    maxLength={200}
+                  />
+                </div>
+              )}
             </div>
           )}
 

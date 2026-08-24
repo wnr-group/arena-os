@@ -2,13 +2,15 @@ import type { ReactNode } from 'react'
 
 /**
  * "Light Markdown" (M13 v1 scope) — deliberately not a general-purpose
- * CommonMark engine. Supports paragraphs, **bold**, *italic*, and
- * [label](https://url) links (http/https only). Builds React elements
+ * CommonMark engine. Supports paragraphs, bullet lists, **bold**, *italic*,
+ * and [label](https://url) links (http/https only). Builds React elements
  * directly rather than parsing to an HTML string, so it is XSS-safe by
  * construction — there is no `dangerouslySetInnerHTML` anywhere in this
- * path and nothing to sanitise.
+ * path and nothing to sanitise; a stray `<script>` in the source renders as
+ * inert text, the same as any other character.
  */
 const INLINE_PATTERN = /\*\*(.+?)\*\*|\*(.+?)\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
+const LIST_ITEM_PATTERN = /^[-*]\s+(.*)$/
 
 function renderInline(line: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = []
@@ -44,14 +46,30 @@ function renderInline(line: string, keyPrefix: string): ReactNode[] {
 }
 
 export function renderLightMarkdown(text: string): ReactNode[] {
-  const paragraphs = text.trim().split(/\n\s*\n/).filter(Boolean)
-  return paragraphs.map((paragraph, pi) => {
-    const lines = paragraph.split('\n')
+  const blocks = text.trim().split(/\n\s*\n/).filter(Boolean)
+  return blocks.map((block, bi) => {
+    const lines = block.split('\n')
+    const listItems = lines.map((line) => LIST_ITEM_PATTERN.exec(line.trim())?.[1])
+
+    // A block renders as a bullet list only when EVERY line in it is a list
+    // item — a block that mixes plain lines and "- " lines just falls
+    // through to the paragraph case below, `- ` and all, rather than
+    // guessing which lines belong to the list.
+    if (listItems.every((item) => item !== undefined)) {
+      return (
+        <ul key={bi} className="list-disc space-y-1 pl-5 text-left">
+          {(listItems as string[]).map((item, li) => (
+            <li key={li}>{renderInline(item, `${bi}-${li}`)}</li>
+          ))}
+        </ul>
+      )
+    }
+
     return (
-      <p key={pi}>
+      <p key={bi}>
         {lines.map((line, li) => (
           <span key={li}>
-            {renderInline(line, `${pi}-${li}`)}
+            {renderInline(line, `${bi}-${li}`)}
             {li < lines.length - 1 && <br />}
           </span>
         ))}

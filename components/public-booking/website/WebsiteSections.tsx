@@ -26,12 +26,17 @@ function WebsiteSectionBlock({ section, tinted }: { section: WebsiteSection; tin
     case 'image':
       return (
         <SectionShell heading={section.heading} tinted={tinted}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={section.content.imageUrl}
-            alt={section.content.alt ?? ''}
-            className="mx-auto max-h-[32rem] w-full max-w-4xl rounded-2xl border border-border object-cover shadow-lg shadow-black/5"
-          />
+          <figure className="mx-auto max-w-4xl">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={section.content.imageUrl}
+              alt={section.content.alt ?? ''}
+              className="mx-auto max-h-[32rem] w-full rounded-2xl border border-border object-cover shadow-lg shadow-black/5"
+            />
+            {section.content.caption && (
+              <figcaption className="mt-3 text-center text-sm text-muted-foreground">{section.content.caption}</figcaption>
+            )}
+          </figure>
         </SectionShell>
       )
     case 'image_text':

@@ -19,6 +19,8 @@ export const textContentSchema = z.object({
 export const imageContentSchema = z.object({
   imageUrl: z.string().url(),
   alt: z.string().optional(),
+  /** Visible text under the image — distinct from `alt`, which is screen-reader only. */
+  caption: z.string().optional(),
 })
 
 export const imageTextContentSchema = z.object({
