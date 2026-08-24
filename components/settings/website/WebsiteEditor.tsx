@@ -15,8 +15,8 @@ import {
   AlertCircle,
   CircleDashed,
 } from 'lucide-react'
-import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
-import { SortableContext, arrayMove, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
+import { DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { reorderWebsiteSections, deleteWebsiteSection, updateWebsiteBranding, publishWebsite } from '@/lib/actions/website'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -53,7 +53,13 @@ export function WebsiteEditor({
 
   useEffect(() => setItems(sections), [sections])
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+  // Keyboard sensor makes the list reorderable without a mouse/touch drag —
+  // Tab to a handle, Space to pick it up, arrow keys to move it, Space again
+  // to drop (dnd-kit's standard sortable keyboard interaction).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
   function handleDragEnd(e: DragEndEvent) {
     const { active, over } = e
