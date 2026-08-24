@@ -4,7 +4,8 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { X, Loader2, Type, Image as ImageIcon, Images, Video, Clapperboard } from 'lucide-react'
 import { upsertWebsiteSection } from '@/lib/actions/website'
-import { extractYoutubeVideoId } from '@/lib/website/youtube'
+import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
+import { renderLightMarkdown } from '@/lib/website/markdown'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { ImageUploadField } from './ImageUploadField'
 import type { WebsiteSectionType } from '@/lib/website/types'
@@ -69,8 +70,9 @@ export function SectionModal(props: SectionModalProps) {
     if (needsBody && !body.trim()) e.body = 'This section needs some text.'
     if (needsImage && !imageUrl) e.imageUrl = 'Upload an image.'
     if (needsVideo) {
-      if (!youtubeUrl.trim()) e.youtubeUrl = 'Paste a YouTube link.'
-      else if (!extractYoutubeVideoId(youtubeUrl.trim())) e.youtubeUrl = 'Must be a youtube.com or youtu.be video link.'
+      if (!youtubeUrl.trim()) e.youtubeUrl = 'Paste a YouTube link, e.g. https://youtu.be/…'
+      else if (!extractYoutubeVideoId(youtubeUrl.trim()))
+        e.youtubeUrl = 'Not a valid YouTube link — paste one like https://youtu.be/… or https://www.youtube.com/watch?v=…'
     }
     return e
   }, [heading, body, imageUrl, youtubeUrl, needsBody, needsImage, needsVideo])
@@ -201,11 +203,25 @@ export function SectionModal(props: SectionModalProps) {
               <label className={labelClass}>YouTube link</label>
               <input
                 className={`${inputClass} ${submitted && errors.youtubeUrl ? inputInvalid : ''}`}
-                placeholder="https://www.youtube.com/watch?v=…"
+                placeholder="Paste a YouTube link, e.g. https://youtu.be/…"
                 value={youtubeUrl}
                 onChange={(e) => setYoutubeUrl(e.target.value)}
               />
               {submitted && errors.youtubeUrl && <p className={errorText}>{errors.youtubeUrl}</p>}
+              {(() => {
+                const videoId = extractYoutubeVideoId(youtubeUrl.trim())
+                if (!videoId) return null
+                return (
+                  <div className="mt-2 aspect-video w-full overflow-hidden rounded-lg border border-border">
+                    <iframe
+                      src={youtubeEmbedUrl(videoId)}
+                      title="YouTube preview"
+                      allow="accelerometer; encrypted-media; picture-in-picture"
+                      className="h-full w-full"
+                    />
+                  </div>
+                )
+              })()}
             </div>
           )}
 
@@ -215,12 +231,20 @@ export function SectionModal(props: SectionModalProps) {
               <textarea
                 className={`${inputClass} ${submitted && errors.body ? inputInvalid : ''}`}
                 rows={5}
-                placeholder="Write a paragraph. **bold**, *italic* and [links](https://example.com) are supported."
+                placeholder="Write a paragraph…"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 maxLength={4000}
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Light markdown supported: **bold**, *italic*, [link](https://example.com), and &ldquo;- &rdquo; bullet lists.
+              </p>
               {submitted && errors.body && <p className={errorText}>{errors.body}</p>}
+              {body.trim() && (
+                <div className="mt-2 rounded-lg border border-border bg-muted/30 p-3 text-sm leading-relaxed text-muted-foreground [&_strong]:font-semibold [&_strong]:text-foreground [&_a]:text-primary [&_ul]:list-disc [&_ul]:pl-5">
+                  {renderLightMarkdown(body)}
+                </div>
+              )}
             </div>
           )}
         </div>

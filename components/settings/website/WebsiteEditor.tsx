@@ -64,18 +64,16 @@ export function WebsiteEditor({
   function handleDragEnd(e: DragEndEvent) {
     const { active, over } = e
     if (!over || active.id === over.id) return
-    setItems((prev) => {
-      const oldIndex = prev.findIndex((s) => s.id === active.id)
-      const newIndex = prev.findIndex((s) => s.id === over.id)
-      const next = arrayMove(prev, oldIndex, newIndex)
-      startReorder(async () => {
-        const r = await reorderWebsiteSections(next.map((s) => s.id))
-        if (r.error) {
-          toast.error(r.error)
-          router.refresh()
-        }
-      })
-      return next
+    const oldIndex = items.findIndex((s) => s.id === active.id)
+    const newIndex = items.findIndex((s) => s.id === over.id)
+    const next = arrayMove(items, oldIndex, newIndex)
+    setItems(next)
+    startReorder(async () => {
+      const r = await reorderWebsiteSections(next.map((s) => s.id))
+      if (r.error) {
+        toast.error(r.error)
+        router.refresh()
+      }
     })
   }
 
