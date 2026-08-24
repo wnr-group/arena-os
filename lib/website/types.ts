@@ -39,7 +39,27 @@ export const videoTextContentSchema = z.object({
   body: z.string(),
 })
 
-export const websiteSectionTypeSchema = z.enum(['text', 'image', 'image_text', 'video', 'video_text'])
+/** "Show up to N" — shared by the two catalogue-backed sections below. */
+const dynamicLimitSchema = z.object({ limit: z.number().int().min(1).max(12) })
+export const resourcesContentSchema = dynamicLimitSchema
+export const menuContentSchema = dynamicLimitSchema
+
+/** No editor-owned fields — these render entirely from the branch record
+ *  (working hours / address) resolved at render time. */
+export const hoursContentSchema = z.object({})
+export const mapContentSchema = z.object({})
+
+export const websiteSectionTypeSchema = z.enum([
+  'text',
+  'image',
+  'image_text',
+  'video',
+  'video_text',
+  'resources',
+  'menu',
+  'hours',
+  'map',
+])
 export type WebsiteSectionType = z.infer<typeof websiteSectionTypeSchema>
 
 /** Content schema for a given section type — the draft-side write path picks
@@ -51,6 +71,10 @@ export const sectionContentSchemas = {
   image_text: imageTextContentSchema,
   video: videoContentSchema,
   video_text: videoTextContentSchema,
+  resources: resourcesContentSchema,
+  menu: menuContentSchema,
+  hours: hoursContentSchema,
+  map: mapContentSchema,
 } satisfies Record<WebsiteSectionType, z.ZodTypeAny>
 
 export const websiteSectionSchema = z.discriminatedUnion('type', [
@@ -59,6 +83,10 @@ export const websiteSectionSchema = z.discriminatedUnion('type', [
   z.object({ id: z.string(), type: z.literal('image_text'), heading: z.string().nullable(), position: z.number(), content: imageTextContentSchema }),
   z.object({ id: z.string(), type: z.literal('video'), heading: z.string().nullable(), position: z.number(), content: videoContentSchema }),
   z.object({ id: z.string(), type: z.literal('video_text'), heading: z.string().nullable(), position: z.number(), content: videoTextContentSchema }),
+  z.object({ id: z.string(), type: z.literal('resources'), heading: z.string().nullable(), position: z.number(), content: resourcesContentSchema }),
+  z.object({ id: z.string(), type: z.literal('menu'), heading: z.string().nullable(), position: z.number(), content: menuContentSchema }),
+  z.object({ id: z.string(), type: z.literal('hours'), heading: z.string().nullable(), position: z.number(), content: hoursContentSchema }),
+  z.object({ id: z.string(), type: z.literal('map'), heading: z.string().nullable(), position: z.number(), content: mapContentSchema }),
 ])
 
 export type WebsiteSection = z.infer<typeof websiteSectionSchema>

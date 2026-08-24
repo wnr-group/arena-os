@@ -1,19 +1,58 @@
 import type { WebsiteSection } from '@/lib/website/types'
+import type { PublicBranch } from '@/lib/booking/public-availability'
+import { getPublicResourceTypes, getPublicWorkingHours } from '@/lib/booking/public-availability'
+import { getPublicMenu } from '@/lib/menu/public'
 import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
+import { formatMoney } from '@/lib/format'
+import { MenuItemCard } from '@/components/public-booking/MenuItemCard'
+import { ArrowRight } from 'lucide-react'
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+/** '14:30' -> '2:30 PM' — working_hours stores plain wall-clock strings, no timezone math needed to display them. */
+function formatHour(time: string): string {
+  const [h, m] = time.split(':').map(Number)
+  const period = h >= 12 ? 'PM' : 'AM'
+  const hour12 = h % 12 === 0 ? 12 : h % 12
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`
+}
 
 /** Renders a published (or previewed-draft) website's ordered sections. */
-export function WebsiteSections({ sections }: { sections: WebsiteSection[] }) {
+export function WebsiteSections({
+  sections,
+  tenantId,
+  branch,
+  currency,
+}: {
+  sections: WebsiteSection[]
+  /** Needed by the dynamic sections (resources/menu/hours/map) to fetch their own live data. */
+  tenantId: string
+  branch: PublicBranch | null
+  currency: string
+}) {
   return (
     <main className="flex-1">
       {sections.map((section, i) => (
-        <WebsiteSectionBlock key={section.id} section={section} tinted={i % 2 === 1} />
+        <WebsiteSectionBlock key={section.id} section={section} tinted={i % 2 === 1} tenantId={tenantId} branch={branch} currency={currency} />
       ))}
     </main>
   )
 }
 
-function WebsiteSectionBlock({ section, tinted }: { section: WebsiteSection; tinted: boolean }) {
+async function WebsiteSectionBlock({
+  section,
+  tinted,
+  tenantId,
+  branch,
+  currency,
+}: {
+  section: WebsiteSection
+  tinted: boolean
+  tenantId: string
+  branch: PublicBranch | null
+  currency: string
+}) {
   switch (section.type) {
     case 'text':
       return (
@@ -84,6 +123,90 @@ function WebsiteSectionBlock({ section, tinted }: { section: WebsiteSection; tin
           </div>
         </SectionShell>
       )
+    case 'resources': {
+      if (!branch) return null
+      const types = (await getPublicResourceTypes(tenantId, branch.id)).slice(0, section.content.limit)
+      if (types.length === 0) return null
+      return (
+        <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {types.map((t) => (
+              <a
+                key={t.id}
+                href={`/book-type/${t.id}`}
+                className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
+              >
+                {t.imageUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={t.imageUrl} alt="" className="h-40 w-full object-cover" />
+                )}
+                <div className="flex flex-1 flex-col p-5">
+                  <h3 className="text-base font-semibold">{t.name}</h3>
+                  {t.description && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{t.description}</p>}
+                  <div className="mt-3 flex items-center justify-between text-sm">
+                    <span className="font-semibold text-primary">{formatMoney(t.hourlyRate, currency)}/hr</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-primary transition-all group-hover:gap-1.5">
+                      Book Now <ArrowRight size={14} />
+                    </span>
+                  </div>
+                </div>
+              </a>
+            ))}
+          </div>
+        </SectionShell>
+      )
+    }
+    case 'menu': {
+      const items = (await getPublicMenu(tenantId)).flatMap((c) => c.items).slice(0, section.content.limit)
+      if (items.length === 0) return null
+      return (
+        <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
+          <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
+            {items.map((item) => (
+              <MenuItemCard key={item.id} item={item} currency={currency} />
+            ))}
+          </div>
+          <p className="mt-8 text-center">
+            <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
+              View full menu &rarr;
+            </a>
+          </p>
+        </SectionShell>
+      )
+    }
+    case 'hours': {
+      if (!branch) return null
+      const hours = await getPublicWorkingHours(tenantId, branch.id)
+      return (
+        <SectionShell heading={section.heading ?? 'Opening Hours'} tinted={tinted}>
+          <div className="mx-auto max-w-md divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+            {hours.map((h) => (
+              <div key={h.dayOfWeek} className="flex items-center justify-between px-4 py-3 text-sm">
+                <span className="font-medium">{DAY_NAMES[h.dayOfWeek]}</span>
+                <span className="text-muted-foreground">
+                  {h.isClosed ? 'Closed' : `${formatHour(h.openTime)} – ${formatHour(h.closeTime)}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </SectionShell>
+      )
+    }
+    case 'map': {
+      if (!branch?.address) return null
+      return (
+        <SectionShell heading={section.heading ?? 'Find Us'} tinted={tinted} wide>
+          <div className="mx-auto aspect-video w-full max-w-4xl overflow-hidden rounded-2xl border border-border shadow-lg shadow-black/5">
+            <iframe
+              src={`https://www.google.com/maps?q=${encodeURIComponent(branch.address)}&output=embed`}
+              title="Map"
+              loading="lazy"
+              className="h-full w-full"
+            />
+          </div>
+        </SectionShell>
+      )
+    }
   }
 }
 

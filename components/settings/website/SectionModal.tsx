@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { X, Loader2, Type, Image as ImageIcon, Images, Video, Clapperboard } from 'lucide-react'
+import { X, Loader2, Type, Image as ImageIcon, Images, Video, Clapperboard, LayoutGrid, UtensilsCrossed, Clock, MapPinned } from 'lucide-react'
 import { upsertWebsiteSection } from '@/lib/actions/website'
 import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
@@ -23,7 +23,16 @@ export const SECTION_TYPES: { type: WebsiteSectionType; label: string; descripti
   { type: 'image_text', label: 'Image + Text', description: 'A photo with text overlaid or stacked below.', icon: Images },
   { type: 'video', label: 'Video', description: 'A heading and a YouTube video.', icon: Video },
   { type: 'video_text', label: 'Video + Text', description: 'A YouTube video with a paragraph.', icon: Clapperboard },
+  { type: 'resources', label: 'Featured Resources', description: 'Your bookable resources, pulled in live with a Book Now link.', icon: LayoutGrid },
+  { type: 'menu', label: 'Menu Highlights', description: 'A few items from your food menu, pulled in live.', icon: UtensilsCrossed },
+  { type: 'hours', label: 'Opening Hours', description: 'Your weekly hours, pulled from Working Hours.', icon: Clock },
+  { type: 'map', label: 'Contact & Map', description: 'Your branch address on an embedded map.', icon: MapPinned },
 ]
+
+const DYNAMIC_LIMIT_LABEL: Partial<Record<WebsiteSectionType, string>> = {
+  resources: 'Show up to how many resources?',
+  menu: 'Show up to how many menu items?',
+}
 
 const inputClass =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
@@ -35,6 +44,11 @@ const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-w
 function str(content: Record<string, unknown>, key: string): string {
   const v = content[key]
   return typeof v === 'string' ? v : ''
+}
+
+function num(content: Record<string, unknown>, key: string, fallback: number): number {
+  const v = content[key]
+  return typeof v === 'number' ? v : fallback
 }
 
 type SectionModalProps =
@@ -55,6 +69,7 @@ export function SectionModal(props: SectionModalProps) {
     section && str(section.content, 'style') === 'stacked' ? 'stacked' : 'overlay',
   )
   const [youtubeUrl, setYoutubeUrl] = useState(section ? str(section.content, 'youtubeUrl') : '')
+  const [limit, setLimit] = useState(section ? num(section.content, 'limit', 6) : 6)
   const [pending, setPending] = useState(false)
   const [submitted, setSubmitted] = useState(false)
 
@@ -63,6 +78,8 @@ export function SectionModal(props: SectionModalProps) {
   const needsBody = type === 'text' || type === 'image_text' || type === 'video_text'
   const needsImage = type === 'image' || type === 'image_text'
   const needsVideo = type === 'video' || type === 'video_text'
+  const needsLimit = type === 'resources' || type === 'menu'
+  const isLiveData = type === 'hours' || type === 'map'
 
   const errors = useMemo(() => {
     const e: { heading?: string; body?: string; imageUrl?: string; youtubeUrl?: string } = {}
@@ -90,6 +107,12 @@ export function SectionModal(props: SectionModalProps) {
         return { youtubeUrl }
       case 'video_text':
         return { youtubeUrl, body }
+      case 'resources':
+      case 'menu':
+        return { limit }
+      case 'hours':
+      case 'map':
+        return {}
     }
   }
 
@@ -223,6 +246,28 @@ export function SectionModal(props: SectionModalProps) {
                 )
               })()}
             </div>
+          )}
+
+          {needsLimit && (
+            <div>
+              <label className={labelClass}>{DYNAMIC_LIMIT_LABEL[type]}</label>
+              <input
+                type="number"
+                min={1}
+                max={12}
+                className={`${inputClass} w-24`}
+                value={limit}
+                onChange={(e) => setLimit(Math.min(12, Math.max(1, Number(e.target.value) || 1)))}
+              />
+            </div>
+          )}
+
+          {isLiveData && (
+            <p className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground">
+              {type === 'hours'
+                ? "This section always shows your branch's current Working Hours — nothing to configure here."
+                : "This section always shows your branch's current address — nothing to configure here."}
+            </p>
           )}
 
           {needsBody && (

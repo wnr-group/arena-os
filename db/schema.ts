@@ -1652,6 +1652,10 @@ export const websiteSectionType = pgEnum('website_section_type', [
   'image_text',
   'video',
   'video_text',
+  'resources',
+  'menu',
+  'hours',
+  'map',
 ])
 
 /** Draft content — the future editor (AROS-C/D) mutates these rows directly. */

@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
@@ -121,6 +121,31 @@ export async function getPublicResourceType(
 }
 
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
+
+export type PublicWorkingHours = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean }
+
+/**
+ * The branch's full weekly schedule, Sun(0)..Sat(6) — for the "Opening
+ * Hours" website section. Any day with no row (never configured) falls back
+ * to DEFAULT_HOURS, same as the slot-math readers below rather than being
+ * omitted, so the table always has exactly seven rows.
+ */
+export async function getPublicWorkingHours(tenantId: string, branchId: string): Promise<PublicWorkingHours[]> {
+  const rows = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        dayOfWeek: workingHours.dayOfWeek,
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.tenantId, tenantId), eq(workingHours.branchId, branchId)))
+      .orderBy(asc(workingHours.dayOfWeek)),
+  )
+  const byDay = new Map(rows.map((r) => [r.dayOfWeek, r]))
+  return Array.from({ length: 7 }, (_, dayOfWeek) => byDay.get(dayOfWeek) ?? { dayOfWeek, ...DEFAULT_HOURS })
+}
 
 export type PublicAvailabilityInput = {
   tenantId: string

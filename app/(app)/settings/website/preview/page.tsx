@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
+import { getPublicBranch } from '@/lib/booking/public-availability'
 import { listWebsiteSections, getWebsiteSettings } from '@/lib/website/data'
 import { websiteSectionSchema, websiteBrandingSchema, type WebsiteSection, type WebsiteBranding } from '@/lib/website/types'
 import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
@@ -26,7 +27,11 @@ export default async function WebsitePreviewPage() {
   if (!ctx) return null
   if (!isManager(ctx.role)) redirect('/dashboard')
 
-  const [rows, settingsRow] = await Promise.all([listWebsiteSections(ctx), getWebsiteSettings(ctx)])
+  const [rows, settingsRow, branch] = await Promise.all([
+    listWebsiteSections(ctx),
+    getWebsiteSettings(ctx),
+    getPublicBranch(ctx.tenant.id),
+  ])
 
   const sections: WebsiteSection[] = []
   for (const r of rows) {
@@ -66,6 +71,9 @@ export default async function WebsitePreviewPage() {
           sections={sections}
           settings={settings}
           navTopOffset={PREVIEW_BANNER_HEIGHT}
+          tenantId={ctx.tenant.id}
+          branch={branch}
+          currency={ctx.tenant.currency}
         />
       )}
     </div>

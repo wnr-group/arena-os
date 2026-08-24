@@ -47,6 +47,9 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
         icon={<Icon size={18} />}
         sections={website.sections}
         settings={website.settings}
+        tenantId={tenant.id}
+        branch={branch}
+        currency={tenant.currency}
         footer={
           <PublicFooter
             tenantName={tenant.name}
