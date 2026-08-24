@@ -1,0 +1,38 @@
+import type { ReactNode } from 'react'
+import type { WebsiteSection, WebsiteBranding } from '@/lib/website/types'
+import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
+import { WebsiteSections } from './WebsiteSections'
+
+/**
+ * The branding + section-stack shell shared by the live public homepage
+ * (TenantHome) and the staff-only preview page — so "preview" is structurally
+ * the same render path a customer gets, not just a promise.
+ */
+export function WebsitePage({
+  tenantName,
+  icon,
+  sections,
+  settings,
+  footer,
+}: {
+  tenantName: string
+  icon: ReactNode
+  sections: WebsiteSection[]
+  settings: WebsiteBranding
+  footer?: ReactNode
+}) {
+  return (
+    <div
+      className="flex min-h-screen flex-col"
+      style={settings.accentColor ? ({ '--primary': settings.accentColor } as React.CSSProperties) : undefined}
+    >
+      <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} />
+      {settings.heroImageUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={settings.heroImageUrl} alt="" className="h-64 w-full object-cover sm:h-80" />
+      )}
+      <WebsiteSections sections={sections} />
+      {footer}
+    </div>
+  )
+}

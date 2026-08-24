@@ -1,10 +1,12 @@
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
+import { getPublishedWebsite } from '@/lib/website/public'
+import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 
-const INDUSTRY_LABELS: Record<string, string> = {
+export const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
   recording_studio: 'Recording Studio',
   podcast_studio: 'Podcast Studio',
@@ -13,7 +15,7 @@ const INDUSTRY_LABELS: Record<string, string> = {
   other: 'Business',
 }
 
-const INDUSTRY_ICONS: Record<string, LucideIcon> = {
+export const INDUSTRY_ICONS: Record<string, LucideIcon> = {
   gaming_cafe: Gamepad2,
   recording_studio: Mic2,
   podcast_studio: Radio,
@@ -33,6 +35,30 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
+
+  // A business that has published its own homepage (M13) gets that instead of
+  // the default below. Every tenant that hasn't touched the builder yet — i.e.
+  // everyone, until AROS-C/E ship — falls straight through unchanged.
+  const website = await getPublishedWebsite(tenant.id)
+  if (website) {
+    return (
+      <WebsitePage
+        tenantName={tenant.name}
+        icon={<Icon size={18} />}
+        sections={website.sections}
+        settings={website.settings}
+        footer={
+          <PublicFooter
+            tenantName={tenant.name}
+            industryLabel={industryLabel}
+            icon={Icon}
+            address={branch?.address ?? null}
+            phone={branch?.phone ?? null}
+          />
+        }
+      />
+    )
+  }
 
   return (
     <div className="flex min-h-screen flex-col">

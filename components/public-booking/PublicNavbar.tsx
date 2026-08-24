@@ -26,7 +26,15 @@ function scrollToId(id: string) {
  * brand mark, animated-underline links, and an always-visible gradient
  * "Book Now" CTA. Links collapse behind a hamburger below `md`; the CTA
  * never does. Gains a shadow once the page scrolls past the hero. */
-export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: ReactNode }) {
+export function PublicNavbar({
+  tenantName,
+  icon,
+  logoUrl,
+}: {
+  tenantName: string
+  icon: ReactNode
+  logoUrl?: string | null
+}) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const router = useRouter()
@@ -69,9 +77,18 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
       >
         <div className="flex flex-1 justify-start min-w-0">
           <button type="button" onClick={() => goTo('home')} className="group flex min-w-0 items-center gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
-              {icon}
-            </span>
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={logoUrl}
+                alt={tenantName}
+                className="size-10 shrink-0 rounded-xl object-cover shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105"
+              />
+            ) : (
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
+                {icon}
+              </span>
+            )}
             <span className="truncate text-lg font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
               {tenantName}
             </span>

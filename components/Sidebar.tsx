@@ -37,6 +37,7 @@ import {
   Receipt,
   Calculator,
   PiggyBank,
+  Globe,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -105,6 +106,8 @@ const NAV: NavItem[] = [
   },
   // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
   { href: '/settings/payments', label: 'Payments', icon: CreditCard, can: isManager },
+  // Website builder (M13/AROS-C) — manager and owner only, like the rest of settings.
+  { href: '/settings/website', label: 'Website', icon: Globe, can: isManager },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.

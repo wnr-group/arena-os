@@ -1644,3 +1644,56 @@ export const auditLogRelations = relations(auditLog, ({ one }) => ({
 export const sequencesRelations = relations(sequences, ({ one }) => ({
   tenant: one(tenants, { fields: [sequences.tenantId], references: [tenants.id] }),
 }))
+
+// ── website builder (migration 0044, M13/AROS-A) ─────────────────────────────
+export const websiteSectionType = pgEnum('website_section_type', [
+  'text',
+  'image',
+  'image_text',
+  'video',
+  'video_text',
+])
+
+/** Draft content — the future editor (AROS-C/D) mutates these rows directly. */
+export const websiteSections = pgTable(
+  'website_sections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    type: websiteSectionType('type').notNull(),
+    heading: text('heading'),
+    // Real per-type shape is enforced by zod at the action boundary
+    // (lib/website/types.ts), not here — it depends on `type`.
+    content: jsonb('content').$type<Record<string, unknown>>().notNull().default({}),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_website_sections_tenant').on(t.tenantId, t.position)],
+)
+
+/** Draft branding (logo/accent/hero) — one row per tenant; consumed by AROS-F. */
+export const websiteSettings = pgTable('website_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  logoUrl: text('logo_url'),
+  accentColor: text('accent_color'),
+  heroImageUrl: text('hero_image_url'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Publish state — the only one of the three tables the public homepage ever
+ * reads. `publishedSnapshot` is null until the first publish (AROS-E) and is
+ * validated app-side (lib/website/types.ts) on every read.
+ */
+export const websitePages = pgTable('website_pages', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  publishedSnapshot: jsonb('published_snapshot').$type<Record<string, unknown>>(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+})
