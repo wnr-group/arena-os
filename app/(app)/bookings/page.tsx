@@ -110,7 +110,14 @@ export default async function BookingsPage({
 
   const resources = allResources
     .filter((r) => r.status !== 'inactive')
-    .map((r) => ({ id: r.id, name: r.name, typeName: r.typeName, status: r.status }))
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      resourceTypeId: r.resourceTypeId,
+      typeName: r.typeName,
+      status: r.status,
+      imageUrl: r.imageUrl ?? r.typeImageUrl,
+    }))
 
   return (
     <BookingsView

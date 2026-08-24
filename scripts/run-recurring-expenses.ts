@@ -68,8 +68,8 @@ async function main() {
 
   // Due = active AND next_run <= the TENANT's today. The tenant's timezone, not
   // the server's: a template due on the 1st must not fire while it is still the
-  // 31st in Kolkata. Same `at time zone` device mv_daily_revenue uses (0032) —
-  // no ad-hoc timezone arithmetic in JavaScript.
+  // 31st in Kolkata. Resolved with an `at time zone` cast in SQL — no ad-hoc
+  // timezone arithmetic in JavaScript.
   const { rows: due } = await client.query<DueTemplate>(`
     select r.id,
            r.tenant_id,

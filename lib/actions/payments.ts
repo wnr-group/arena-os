@@ -47,6 +47,7 @@ import {
   PaymentNotConfiguredError,
   requireRazorpayCredentials,
 } from '@/lib/settings/razorpay-credentials'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type RecordPaymentResult = {
   error?: string
@@ -59,7 +60,7 @@ type RecordPaymentResult = {
 /** Same shape as lib/actions/billing.ts:fail() — only safe text reaches the till. */
 function fail(e: unknown): RecordPaymentResult {
   if (e instanceof AuthError || e instanceof PaymentError) return { error: e.message }
-  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+  if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   console.error('[payments] recordPayment failed:', e)
   return { error: 'Could not record the payment. Please try again.' }
 }
@@ -83,11 +84,7 @@ export async function recordPayment(
     const v = recordPaymentInputSchema.parse(input)
 
     const result = await withUser(ctx.user.id, (tx) =>
-      recordPaymentForInvoice(
-        tx,
-        { tenantId: ctx.tenant.id, membershipId: ctx.membershipId },
-        v,
-      ),
+      recordPaymentForInvoice(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
 
     // The POS screen is keyed by booking, so revalidate the invoice's own

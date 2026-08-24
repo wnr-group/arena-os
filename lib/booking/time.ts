@@ -85,3 +85,16 @@ export function todayInZone(timeZone: string, now: Date = new Date()): string {
   }
   return `${p.year}-${p.month}-${p.day}`
 }
+
+/**
+ * Add `days` to a plain 'YYYY-MM-DD' date string, returning the same shape.
+ * Lives here (a pure module, no DB import) so import-order-sensitive callers —
+ * e.g. lib/reports/date-range.ts, pulled in by standalone scripts before their
+ * env is loaded — can use it without dragging in db/index.ts's pool. Same
+ * implementation as lib/booking/data.ts's addDays.
+ */
+export function addDays(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + days))
+  return dt.toISOString().slice(0, 10)
+}

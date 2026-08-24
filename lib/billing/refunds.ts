@@ -13,7 +13,15 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { auditLog, invoices, invoiceItems, orderItems, orders, payments, refunds } from '@/db/schema'
+import {
+  auditLog,
+  invoices,
+  invoiceItems,
+  orderItems,
+  orders,
+  payments,
+  refunds,
+} from '@/db/schema'
 import { paise } from './payments'
 import { reverseLoyaltyForVoidedInvoice } from './loyalty'
 import { reconcileInvoiceAfterRefund } from './refund-reconciliation'
@@ -346,6 +354,17 @@ export async function voidInvoiceRecord(
     .set({ status: 'void' })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId)))
 
+  // Loyalty goes back the way it came: points earned on a struck-off bill are
+  // taken back, and points redeemed against it are returned. Without this a
+  // customer could keep 100 points from a bill that never stood, or lose points
+  // they spent on one. In this transaction, so it cannot come apart from the
+  // void; idempotent per invoice via the ledger's unique index.
+  // A void follows a full refund, so the proportional reconciliation above has
+  // usually already reversed the earn; this converges on the remainder (and is a
+  // no-op when it is already zero) and additionally RETURNS any points the
+  // customer redeemed against a bill that no longer stands.
+  await reconcileInvoiceAfterRefund(tx, actor.tenantId, invoice.id, invoice.id)
+  const loyaltyReversal = await reverseLoyaltyForVoidedInvoice(tx, actor.tenantId, invoice.id)
   // Release any food orders this invoice claimed, so a re-bill of the booking
   // can pick them up again — otherwise they would sit at 'billed' forever,
   // invisible to loadFoodLines, and the food charge would be lost for good.
@@ -386,18 +405,6 @@ export async function voidInvoiceRecord(
         ),
       )
   }
-
-  // Loyalty goes back the way it came: points earned on a struck-off bill are
-  // taken back, and points redeemed against it are returned. Without this a
-  // customer could keep 100 points from a bill that never stood, or lose points
-  // they spent on one. In this transaction, so it cannot come apart from the
-  // void; idempotent per invoice via the ledger's unique index.
-  // A void follows a full refund, so the proportional reconciliation above has
-  // usually already reversed the earn; this converges on the remainder (and is a
-  // no-op when it is already zero) and additionally RETURNS any points the
-  // customer redeemed against a bill that no longer stands.
-  await reconcileInvoiceAfterRefund(tx, actor.tenantId, invoice.id, invoice.id)
-  const loyaltyReversal = await reverseLoyaltyForVoidedInvoice(tx, actor.tenantId, invoice.id)
 
   await writeAudit(tx, actor, {
     action: 'void_invoice',

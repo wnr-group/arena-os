@@ -14,7 +14,7 @@ import type { DateRange } from './date-range'
  * public.v_daily_revenue, and only that. Never mv_daily_revenue: a
  * materialized view does not enforce RLS, arena_app has no grant on it, and
  * the barrier view is what re-applies auth_tenant_ids(). See
- * db/migrations/0032_reporting.sql.
+ * db/migrations/0038_reporting.sql.
  *
  * ── HOW IT IS SCOPED ────────────────────────────────────────────────────────
  * Through withUser(), like every other tenant read in this codebase, so the

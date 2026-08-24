@@ -17,7 +17,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "expenses:recurring": "tsx scripts/run-recurring-expenses.ts"
+    "expenses:recurring": "tsx scripts/run-recurring-expenses.ts",
+    "reports:refresh": "tsx scripts/refresh-reports.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
@@ -28,8 +29,10 @@
     "lucide-react": "0.344.0",
     "next": "16.2.9",
     "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "sonner": "^2.0.8",
     "tailwind-merge": "2.2.1",
     "zod": "3.22.4"
   },
@@ -38,6 +41,7 @@
     "@tailwindcss/postcss": "4.3.0",
     "@types/node": "20.11.24",
     "@types/pg": "^8.11.10",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "19.0.0",
     "@types/react-dom": "19.0.0",
     "drizzle-kit": "^0.31.10",

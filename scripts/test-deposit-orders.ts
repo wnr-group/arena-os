@@ -26,7 +26,7 @@
 import { randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { paymentIntents } from '../db/schema'
 import { loadEnv } from './env'
@@ -45,6 +45,7 @@ async function main() {
   loadEnv()
   const {
     createDepositOrder,
+    DepositError,
     OrphanedOrderError,
     resolveDepositAmount,
     depositReceipt,

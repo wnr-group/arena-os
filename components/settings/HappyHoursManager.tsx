@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Trash2, X, Clock, CheckCircle2, XCircle, Percent, Loader2 } from 'lucide-react'
 import { upsertHappyHour, deleteHappyHour } from '@/lib/actions/happy-hours'
 import { formatMoney } from '@/lib/format'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type DiscountType = 'percentage' | 'fixed'
 type HappyHourRow = {
@@ -43,6 +44,7 @@ function formatDiscount(type: DiscountType, value: string, currency: string) {
 
 export function HappyHoursManager({ currency, happyHours }: { currency: string; happyHours: HappyHourRow[] }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -68,14 +70,19 @@ export function HappyHoursManager({ currency, happyHours }: { currency: string; 
     return { total, active, inactive: total - active, percentage }
   }, [happyHours])
 
-  function handleDelete(row: HappyHourRow) {
-    if (!window.confirm(`Delete happy hour "${row.name}"? This cannot be undone.`)) return
-    setDeletingId(row.id)
-    run(
-      () => deleteHappyHour(row.id),
-      undefined,
-      () => setDeletingId(null),
-    )
+  async function handleDelete(row: HappyHourRow) {
+    await confirm({
+      title: `Delete happy hour "${row.name}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setDeletingId(row.id)
+        const r = await deleteHappyHour(row.id)
+        setDeletingId(null)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
+    })
   }
 
   return (
@@ -197,8 +204,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>

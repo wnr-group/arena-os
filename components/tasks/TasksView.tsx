@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, Circle, Clock, ListTodo, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { createTask, updateTask, updateTaskStatus, deleteTask } from '@/lib/actions/tasks'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type TaskStatus = 'open' | 'in_progress' | 'done'
 type TaskRow = {
@@ -42,6 +43,7 @@ export function TasksView({
   tasks: TaskRow[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
@@ -80,15 +82,19 @@ export function TasksView({
     })
   }
 
-  function handleDelete(task: TaskRow) {
-    if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
-    setError(null)
-    setDeletingId(task.id)
-    start(async () => {
-      const r = await deleteTask(task.id)
-      setDeletingId(null)
-      if (r.error) setError(r.error)
-      else router.refresh()
+  async function handleDelete(task: TaskRow) {
+    await confirm({
+      title: `Delete task "${task.title}"?`,
+      description: 'This cannot be undone.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setError(null)
+        setDeletingId(task.id)
+        const r = await deleteTask(task.id)
+        setDeletingId(null)
+        if (r.error) setError(r.error)
+        else router.refresh()
+      },
     })
   }
 
@@ -254,8 +260,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>

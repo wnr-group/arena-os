@@ -40,7 +40,7 @@ import type { DateRange } from './date-range'
  *
  * TIMEZONE. Every bucket is the BRANCH's local day/hour —
  * `coalesce(branches.timezone, tenants.timezone)` — the same rule
- * mv_daily_revenue uses (0032), so a revenue day and a bookings day mean the
+ * mv_daily_revenue uses (0038), so a revenue day and a bookings day mean the
  * same thing. The server's zone is never involved.
  *
  * RETIRED RESOURCES — and why two metrics treat them differently. `resources.

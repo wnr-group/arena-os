@@ -36,8 +36,14 @@
   --ring: #7c3aed;
 }
 
-/* Dark theme — defined for later; INACTIVE until <html data-theme="dark">. */
-:root[data-theme='dark'] {
+/* Dark theme — defined for later; INACTIVE until data-theme="dark" is set.
+ * Matches the attribute on ANY element, not just :root, so a single section
+ * (e.g. the public resource-booking page) can opt into the dark palette
+ * without a global toggle — Tailwind's `@theme inline` below compiles
+ * utilities straight to `var(--background)` etc. (not an indirect
+ * `--color-background`), so these custom properties cascade normally to
+ * descendants of whichever element carries the attribute. */
+[data-theme='dark'] {
   color-scheme: dark;
 
   --background: #140f1c;
@@ -84,6 +90,47 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
+
+/* Premium Animations and Utilities */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.45;
+    transform: translate(-50%, -33%) scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: translate(-48%, -35%) scale(1.08);
+  }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 10s ease-in-out infinite;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-none {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
 
 /* ── print ───────────────────────────────────────────────────────────────────
    Everything below is inside @media print, so it cannot affect the app on

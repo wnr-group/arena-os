@@ -99,10 +99,7 @@ export async function getCustomerProfile(
 
     if (!customer) return null
 
-    const forCustomer = and(
-      eq(bookings.tenantId, tenantId),
-      eq(bookings.customerId, customerId),
-    )
+    const forCustomer = and(eq(bookings.tenantId, tenantId), eq(bookings.customerId, customerId))
 
     // Both counts in one pass. A "visit" is a booking the customer actually
     // turned up for — checked in or completed — so cancellations and no-shows
@@ -188,9 +185,7 @@ export async function getCustomerProfile(
       })
       .from(customerNotes)
       .leftJoin(memberships, eq(memberships.id, customerNotes.createdBy))
-      .where(
-        and(eq(customerNotes.tenantId, tenantId), eq(customerNotes.customerId, customerId)),
-      )
+      .where(and(eq(customerNotes.tenantId, tenantId), eq(customerNotes.customerId, customerId)))
       .orderBy(desc(customerNotes.createdAt))
 
     const wallet = await tx

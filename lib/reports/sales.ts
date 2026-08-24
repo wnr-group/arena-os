@@ -119,7 +119,7 @@ export async function getSalesReport(
   return withUser(ctx.user.id, async (tx) => {
     // ── food ─────────────────────────────────────────────────────────────────
     // Dated by the INVOICE's issued_at in the branch's local day — the same
-    // basis mv_daily_revenue uses (migration 0032), so a food sale lands on the
+    // basis mv_daily_revenue uses (migration 0038), so a food sale lands on the
     // same day as the revenue it is part of. The kitchen's own order timestamp
     // is deliberately not used: the sale happens when it is billed.
     const food = await tx.execute(sql`

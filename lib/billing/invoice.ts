@@ -25,10 +25,7 @@ import {
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
 import { loadInvoicePrefix } from '@/lib/settings/business-profile'
-import {
-  resolveMembershipBenefit,
-  type AppliedMembershipBenefit,
-} from './membership-benefit'
+import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
 import {
   commitRedemption,
   loadLoyaltyRule,
@@ -178,7 +175,11 @@ export async function loadBookingLines(
  * were already snapshotted at order time (including any happy-hour discount),
  * so this never re-prices a menu item against today's rate.
  */
-export async function loadFoodLines(tx: Db, tenantId: string, bookingId: string): Promise<BillLine[]> {
+export async function loadFoodLines(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<BillLine[]> {
   const rows = await tx
     .select({
       id: orderItems.id,
@@ -189,7 +190,13 @@ export async function loadFoodLines(tx: Db, tenantId: string, bookingId: string)
     })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.bookingId, bookingId), eq(orders.status, 'open')))
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.bookingId, bookingId),
+        eq(orders.status, 'open'),
+      ),
+    )
     .orderBy(orderItems.id)
 
   return rows.map((r) => ({
@@ -235,7 +242,11 @@ export async function loadBillLines(
  * caller showing an EXISTING invoice (the bill screen once it has one, a
  * reprint, …) must read the lines from here instead.
  */
-export async function loadInvoiceLines(tx: Db, tenantId: string, invoiceId: string): Promise<BillLine[]> {
+export async function loadInvoiceLines(
+  tx: Db,
+  tenantId: string,
+  invoiceId: string,
+): Promise<BillLine[]> {
   const rows = await tx
     .select({
       description: invoiceItems.description,
@@ -570,6 +581,23 @@ export async function issueInvoiceForBooking(
     })),
   )
 
+  // ── 7. mark the food orders billed ────────────────────────────────────────
+  // The other half of double-billing prevention: loadFoodLines only reads
+  // status='open' orders, so flipping these to 'billed' here — in the same
+  // transaction as the invoice itself — means the same fries can never end up
+  // on a second bill, and a failure anywhere above rolls this back too.
+  await tx
+    .update(orders)
+    .set({ status: 'billed' })
+    .where(
+      and(
+        eq(orders.tenantId, tenant.id),
+        eq(orders.bookingId, booking.id),
+        eq(orders.status, 'open'),
+      ),
+    )
+
+
   // ── 7. carry over any deposit already paid online ─────────────────────────
   // The usual order is deposit first, bill later, so this is where the money
   // the venue already holds becomes a captured payment against the invoice.
@@ -591,16 +619,6 @@ export async function issueInvoiceForBooking(
   if (deposits.applied.length > 0) {
     await backfillDepositOrderIds(tx, tenant.id, invoice.id)
   }
-
-  // ── 8. mark the food orders billed ────────────────────────────────────────
-  // The other half of double-billing prevention: loadFoodLines only reads
-  // status='open' orders, so flipping these to 'billed' here — in the same
-  // transaction as the invoice itself — means the same fries can never end up
-  // on a second bill, and a failure anywhere above rolls this back too.
-  await tx
-    .update(orders)
-    .set({ status: 'billed' })
-    .where(and(eq(orders.tenantId, tenant.id), eq(orders.bookingId, booking.id), eq(orders.status, 'open')))
 
   return { invoiceId: invoice.id, invoiceNumber, pricing, membership, loyalty, deposits }
 }

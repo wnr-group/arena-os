@@ -49,7 +49,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
 
   // Sequential, not Promise.all: each opens its own withUser() transaction on
   // the shared app pool, and three small reads gain nothing from competing for
-  // it (same reasoning as lib/reports/revenue.ts).
+  // it.
   const list = await listExpenses(ctx, filters)
   const categories = await listExpenseCategoryOptions(ctx)
   const vendors = await listVendorOptions(ctx)

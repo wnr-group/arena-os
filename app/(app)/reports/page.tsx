@@ -7,7 +7,7 @@ import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
-import { ExportCsvButton } from '@/components/reports/ExportCsvButton'
+import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
 
 type Search = { from?: string; to?: string }
 
@@ -48,6 +48,23 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   const maxPeak = Math.max(...bookings.peakHours.map((h) => h.bookings), 0)
   const maxResource = Math.max(...bookings.topResources.map((r) => r.minutes), 0)
 
+  // CSV columns for the client-side export button (shared ExportCsvButton) —
+  // exports exactly the rows already rendered below, nothing re-fetched.
+  const dailyCols: CsvColumn<(typeof data.days)[number]>[] = [
+    { key: 'day', label: 'Date' },
+    { key: 'gross', label: 'Gross' },
+    { key: 'discount', label: 'Discount' },
+    { key: 'tax', label: 'Tax' },
+    { key: 'net', label: 'Net' },
+    { key: 'bookings', label: 'Bookings' },
+    { key: 'occupancyPercent', label: 'Occupancy %' },
+  ]
+  const resourceCols: CsvColumn<(typeof bookings.topResources)[number]>[] = [
+    { key: 'resourceName', label: 'Resource' },
+    { key: 'resourceTypeName', label: 'Type' },
+    { key: 'minutes', label: 'Minutes' },
+  ]
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -57,7 +74,11 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
             What {ctx.tenant.name} took, how busy it was, and which resources earned it.
           </p>
         </div>
-        <ExportCsvButton from={range.start} to={range.end} />
+        <ExportCsvButton
+          rows={data.days}
+          columns={dailyCols}
+          filename={`revenue-${range.start}_${range.end}.csv`}
+        />
       </div>
 
       <DateRangeFilter basePath="/reports" from={range.start} to={range.end} today={today} />
@@ -197,7 +218,13 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
         {/* ── resource usage ── */}
         <Section
           title="Most-used resources"
-          action={<ExportCsvButton from={range.start} to={range.end} dataset="resources" label="CSV" />}
+          action={
+            <ExportCsvButton
+              rows={bookings.topResources}
+              columns={resourceCols}
+              filename={`resource-usage-${range.start}_${range.end}.csv`}
+            />
+          }
         >
           {bookings.topResources.length === 0 ? (
             <Empty>No resource was booked in this period.</Empty>

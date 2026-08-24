@@ -25,8 +25,18 @@ function tokenId(token: string): string {
 /**
  * Create a session for a user and set the httpOnly cookie. Uses the OWNER
  * connection — sessions are identity infrastructure, not tenant data.
+ *
+ * Rotates: any session token already sitting in the cookie jar is invalidated
+ * first, so a token from before this login (fixated by an attacker, or left
+ * over from a previous sign-in) can never remain valid alongside the new one.
  */
 export async function createSession(userId: string): Promise<void> {
+  const jar = await cookies()
+  const previous = jar.get(COOKIE)?.value
+  if (previous) {
+    await ownerDb.delete(sessions).where(eq(sessions.id, tokenId(previous)))
+  }
+
   const token = randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS)
 
@@ -36,7 +46,6 @@ export async function createSession(userId: string): Promise<void> {
     expiresAt,
   })
 
-  const jar = await cookies()
   jar.set(COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',

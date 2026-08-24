@@ -1,68 +1,52 @@
 'use client'
 
-import { useState, useTransition } from 'react'
 import { Download } from 'lucide-react'
-import { exportRevenueReportCsv } from '@/lib/actions/reports'
+
+export type CsvColumn<T> = { key: keyof T; label: string }
+
+/** RFC 4180 field escaping — quote whenever the value contains a comma, quote, or newline. */
+function csvField(value: unknown): string {
+  const s = String(value ?? '')
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
 
 /**
- * Downloads a report as CSV (AROS-65).
- *
- * The file is BUILT ON THE SERVER by a Server Action that re-checks the session,
- * the manager role and the tenant — the browser only receives text it was
- * already allowed to see, and there is no public export URL to leak. This
- * component just turns that text into a saved file, which needs the DOM and is
- * therefore the one client-side piece.
+ * Builds a CSV client-side from rows already on the page and triggers a
+ * download — no server round trip, no CSV library, same "no PDF library"
+ * spirit as components/invoices/PrintButton.tsx. The export is exactly what
+ * RLS already scoped the page to show; nothing is re-fetched.
  */
-export function ExportCsvButton({
-  from,
-  to,
-  dataset = 'daily',
-  label = 'Download CSV',
+export function ExportCsvButton<T extends Record<string, unknown>>({
+  rows,
+  columns,
+  filename,
 }: {
-  from: string
-  to: string
-  dataset?: 'daily' | 'resources' | 'food' | 'memberships'
-  label?: string
+  rows: T[]
+  columns: CsvColumn<T>[]
+  filename: string
 }) {
-  const [pending, start] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-
   function download() {
-    setError(null)
-    start(async () => {
-      const r = await exportRevenueReportCsv({ start: from, end: to, dataset })
-      if (r.error || !r.csv) {
-        setError(r.error ?? 'Could not build the export.')
-        return
-      }
-      // text/csv + BOM-free content; the filename comes from the server so the
-      // period in it always matches the data inside.
-      const blob = new Blob([r.csv], { type: 'text/csv;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = r.filename ?? 'report.csv'
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      // Revoked on the next tick: Safari needs the object URL to outlive the
-      // click handler, so revoking synchronously can abort the download.
-      setTimeout(() => URL.revokeObjectURL(url), 0)
-    })
+    const lines = [
+      columns.map((c) => csvField(c.label)).join(','),
+      ...rows.map((row) => columns.map((c) => csvField(row[c.key])).join(',')),
+    ]
+    // Leading BOM so Excel opens UTF-8 correctly instead of mangling it.
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        onClick={download}
-        disabled={pending}
-        className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-1.5 text-sm font-semibold shadow-sm transition-colors hover:bg-muted disabled:opacity-60"
-      >
-        <Download size={15} />
-        {pending ? 'Preparing…' : label}
-      </button>
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
+    <button
+      onClick={download}
+      disabled={rows.length === 0}
+      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <Download size={15} /> Export CSV
+    </button>
   )
 }

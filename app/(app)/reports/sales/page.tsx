@@ -7,7 +7,7 @@ import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
-import { ExportCsvButton } from '@/components/reports/ExportCsvButton'
+import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
 
 type Search = { from?: string; to?: string }
 
@@ -34,6 +34,21 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
   const money = (n: number) => formatMoney(n, currency)
   const maxFood = Math.max(...food.map((f) => f.grossRevenue), 0)
   const maxPlan = Math.max(...memberships.map((m) => m.revenue), 0)
+
+  // CSV columns for the shared client-side ExportCsvButton — exports exactly the
+  // rows rendered below.
+  const foodCols: CsvColumn<(typeof food)[number]>[] = [
+    { key: 'itemName', label: 'Item' },
+    { key: 'quantity', label: 'Qty sold' },
+    { key: 'invoices', label: 'Invoices' },
+    { key: 'grossRevenue', label: 'Gross revenue' },
+  ]
+  const membershipCols: CsvColumn<(typeof memberships)[number]>[] = [
+    { key: 'planName', label: 'Plan' },
+    { key: 'sold', label: 'Plans sold' },
+    { key: 'cancelled', label: 'Cancelled' },
+    { key: 'revenue', label: 'Revenue' },
+  ]
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -65,7 +80,11 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
         title="Food & drink sales"
         action={
           food.length > 0 ? (
-            <ExportCsvButton from={range.start} to={range.end} dataset="food" label="CSV" />
+            <ExportCsvButton
+              rows={food}
+              columns={foodCols}
+              filename={`food-sales-${range.start}_${range.end}.csv`}
+            />
           ) : undefined
         }
       >
@@ -127,7 +146,11 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
         title="Membership sales"
         action={
           memberships.length > 0 ? (
-            <ExportCsvButton from={range.start} to={range.end} dataset="memberships" label="CSV" />
+            <ExportCsvButton
+              rows={memberships}
+              columns={membershipCols}
+              filename={`membership-sales-${range.start}_${range.end}.csv`}
+            />
           ) : undefined
         }
       >

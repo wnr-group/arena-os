@@ -32,7 +32,7 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold">Performance</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        See who&apos;s showing up and getting tasks done — attendance and task completion at a glance for {ctx.tenant.name}.
+        See who's showing up and getting tasks done — attendance and task completion at a glance for {ctx.tenant.name}.
       </p>
 
       <DateRangeFilter basePath="/performance" from={from} to={to} today={today} />
@@ -41,13 +41,13 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
         <table className="w-full text-left text-base">
           <thead>
             <tr className="border-b border-border text-sm uppercase tracking-wider text-muted-foreground">
-              <th className="px-4 py-3.5 font-semibold">Employee</th>
-              <th className="px-4 py-3.5 font-semibold">Role</th>
-              <th className="px-4 py-3.5 font-semibold text-right">Days Present</th>
-              <th className="px-4 py-3.5 font-semibold text-right">Hours Worked</th>
-              <th className="px-4 py-3.5 font-semibold text-right">Tasks Assigned</th>
-              <th className="px-4 py-3.5 font-semibold text-right">Tasks Completed</th>
-              <th className="px-4 py-3.5 font-semibold text-right">Completion</th>
+              <th className="px-4 py-3 font-semibold">Employee</th>
+              <th className="px-4 py-3 font-semibold">Role</th>
+              <th className="px-4 py-3 font-semibold text-right">Days Present</th>
+              <th className="px-4 py-3 font-semibold text-right">Hours Worked</th>
+              <th className="px-4 py-3 font-semibold text-right">Tasks Assigned</th>
+              <th className="px-4 py-3 font-semibold text-right">Tasks Completed</th>
+              <th className="px-4 py-3 font-semibold text-right">Completion</th>
             </tr>
           </thead>
           <tbody>
@@ -62,16 +62,16 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
               const rate = r.tasksAssigned > 0 ? Math.round((r.tasksCompleted / r.tasksAssigned) * 100) : null
               return (
                 <tr key={r.membershipId} className="border-b border-border last:border-0">
-                  <td className="px-4 py-3.5">
+                  <td className="px-4 py-3">
                     <div className="font-medium text-foreground">{r.fullName || r.email || 'Unnamed'}</div>
                     {r.fullName && r.email && <div className="text-sm text-muted-foreground">{r.email}</div>}
                   </td>
-                  <td className="px-4 py-3.5 text-muted-foreground">{ROLE_LABELS[r.role as MemberRole]}</td>
-                  <td className="px-4 py-3.5 text-right tabular-nums">{r.daysPresent}</td>
-                  <td className="px-4 py-3.5 text-right tabular-nums">{r.hoursWorked.toFixed(1)}</td>
-                  <td className="px-4 py-3.5 text-right tabular-nums">{r.tasksAssigned}</td>
-                  <td className="px-4 py-3.5 text-right tabular-nums">{r.tasksCompleted}</td>
-                  <td className="px-4 py-3.5 text-right tabular-nums">{rate === null ? '—' : `${rate}%`}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{ROLE_LABELS[r.role as MemberRole]}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.daysPresent}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.hoursWorked.toFixed(1)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.tasksAssigned}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.tasksCompleted}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{rate === null ? '—' : `${rate}%`}</td>
                 </tr>
               )
             })}

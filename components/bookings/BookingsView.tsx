@@ -23,7 +23,14 @@ import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
-type Resource = { id: string; name: string; typeName: string; status: string }
+type Resource = {
+  id: string
+  name: string
+  resourceTypeId: string
+  typeName: string
+  status: string
+  imageUrl: string | null
+}
 type Slot = {
   slotId: string
   resourceId: string
@@ -71,6 +78,16 @@ const STATUS_LABELS: Record<string, string> = {
   completed: 'Completed',
   cancelled: 'Cancelled',
   no_show: 'No-show',
+}
+const SOURCE_BADGE: Record<string, string> = {
+  online: 'bg-violet-500/10 text-violet-600',
+  walk_in: 'bg-muted text-muted-foreground',
+  staff: 'bg-muted text-muted-foreground',
+}
+const SOURCE_LABELS: Record<string, string> = {
+  online: 'Online',
+  walk_in: 'Walk-in',
+  staff: 'Staff',
 }
 type View = 'timeline' | 'bookings'
 
@@ -132,7 +149,7 @@ export function BookingsView({
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
   const [showNew, setShowNew] = useState(false)
-  const [presetResource, setPresetResource] = useState<string | undefined>(undefined)
+  const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -226,8 +243,8 @@ export function BookingsView({
     })
   }
 
-  function openNew(resourceId?: string) {
-    setPresetResource(resourceId)
+  function openNew(resourceTypeId?: string) {
+    setPresetResourceTypeId(resourceTypeId)
     setShowNew(true)
   }
 
@@ -294,7 +311,7 @@ export function BookingsView({
         <div className="mt-10 rounded-lg border border-dashed p-10 text-center">
           <p className="text-sm text-muted-foreground">
             No bookable resources yet.{' '}
-            <Link href="/settings/resources" className="font-medium text-foreground underline">
+            <Link href="/settings/resources/units" className="font-medium text-foreground underline">
               Add resources
             </Link>{' '}
             to start taking bookings.
@@ -324,14 +341,22 @@ export function BookingsView({
               const rowSlots = slots.filter((s) => s.resourceId === r.id)
               return (
                 <div key={r.id} className="flex items-stretch border-t">
-                  <div className="w-36 shrink-0 py-3 pr-3">
-                    <p className="truncate text-sm font-medium">{r.name}</p>
-                    <p className="truncate text-xs text-muted-foreground">{r.typeName}</p>
+                  <div className="flex w-36 shrink-0 items-center gap-2 py-3 pr-3">
+                    {r.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={r.imageUrl} alt="" className="size-8 shrink-0 rounded-md border border-border object-cover" />
+                    ) : (
+                      <div className="size-8 shrink-0 rounded-md border border-dashed border-border bg-muted/40" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{r.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">{r.typeName}</p>
+                    </div>
                   </div>
                   <button
                     className="relative h-16 flex-1 cursor-copy"
-                    onClick={() => openNew(r.id)}
-                    title="Click to add a booking on this resource"
+                    onClick={() => openNew(r.resourceTypeId)}
+                    title="Click to add a booking of this resource type"
                   >
                     {/* hour gridlines */}
                     {hourTicks.map((h) => (
@@ -440,7 +465,16 @@ export function BookingsView({
                     <tr key={b.bookingId} className="transition hover:bg-muted/20">
                       <td className="px-4 py-3 font-medium">{b.bookingNumber}</td>
                       <td className="px-4 py-3">
-                        <p className="font-medium">{b.customerName || 'Walk-in'}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">{b.customerName || 'Walk-in'}</p>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                              SOURCE_BADGE[b.source] ?? 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            {SOURCE_LABELS[b.source] ?? b.source}
+                          </span>
+                        </div>
                         {b.customerPhone && <p className="text-sm text-muted-foreground">{b.customerPhone}</p>}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{b.resourceNames.join(', ')}</td>
@@ -482,8 +516,14 @@ export function BookingsView({
           branchId={branchId}
           date={date}
           timeZone={timeZone}
-          resources={resources.map((r) => ({ id: r.id, name: r.name, typeName: r.typeName }))}
-          presetResourceId={presetResource}
+          resources={resources.map((r) => ({
+            id: r.id,
+            name: r.name,
+            resourceTypeId: r.resourceTypeId,
+            typeName: r.typeName,
+            imageUrl: r.imageUrl,
+          }))}
+          presetResourceTypeId={presetResourceTypeId}
           onClose={() => setShowNew(false)}
           onCreated={(num) => {
             setShowNew(false)
@@ -509,6 +549,7 @@ export function BookingsView({
             <dl className="mt-3 space-y-1.5 text-sm">
               <Row k="Customer" v={selected.customerName || 'Walk-in'} />
               {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
+              <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
               <Row k="Time" v={`${timeInZone(selected.startsAt, timeZone)}–${timeInZone(selected.endsAt, timeZone)}`} />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
               <Row k="Total" v={formatMoney(selected.total, currency)} />
@@ -665,8 +706,8 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg ${accent}`}>
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
+      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
         <Icon size={18} />
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
