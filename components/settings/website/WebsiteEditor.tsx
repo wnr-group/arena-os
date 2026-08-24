@@ -128,25 +128,25 @@ export function WebsiteEditor({
             {typePicker && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setTypePicker(false)} />
-                <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-border bg-card p-2 shadow-2xl">
-                  {SECTION_TYPES.map(({ type, label, description, icon: Icon }) => (
-                    <button
-                      key={type}
-                      className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-muted"
-                      onClick={() => {
-                        setTypePicker(false)
-                        setModal({ mode: 'add', type })
-                      }}
-                    >
-                      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                        <Icon size={16} />
-                      </span>
-                      <span>
-                        <span className="block text-sm font-medium">{label}</span>
-                        <span className="block text-xs text-muted-foreground">{description}</span>
-                      </span>
-                    </button>
-                  ))}
+                <div className="absolute right-0 z-20 mt-2 w-[min(28rem,calc(100vw-2rem))] rounded-xl border border-border bg-card p-3 shadow-2xl">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {SECTION_TYPES.map(({ type, label, description, icon: Icon }) => (
+                      <button
+                        key={type}
+                        title={description}
+                        className="flex flex-col items-center gap-2 rounded-lg p-3 text-center transition hover:bg-muted"
+                        onClick={() => {
+                          setTypePicker(false)
+                          setModal({ mode: 'add', type })
+                        }}
+                      >
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                          <Icon size={18} />
+                        </span>
+                        <span className="text-xs font-medium leading-tight">{label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
