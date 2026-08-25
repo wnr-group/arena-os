@@ -4,9 +4,8 @@ import { getPublicResourceTypes, getPublicWorkingHours } from '@/lib/booking/pub
 import { getPublicMenu } from '@/lib/menu/public'
 import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
-import { formatMoney } from '@/lib/format'
 import { MenuItemCard } from '@/components/public-booking/MenuItemCard'
-import { ArrowRight } from 'lucide-react'
+import { ResourceTypeCard } from '@/components/public-booking/ResourceTypeCard'
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -129,28 +128,9 @@ async function WebsiteSectionBlock({
       if (types.length === 0) return null
       return (
         <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {types.map((t) => (
-              <a
-                key={t.id}
-                href={`/book-type/${t.id}`}
-                className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
-              >
-                {t.imageUrl && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={t.imageUrl} alt="" className="h-40 w-full object-cover" />
-                )}
-                <div className="flex flex-1 flex-col p-5">
-                  <h3 className="text-base font-semibold">{t.name}</h3>
-                  {t.description && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{t.description}</p>}
-                  <div className="mt-3 flex items-center justify-between text-sm">
-                    <span className="font-semibold text-primary">{formatMoney(t.hourlyRate, currency)}/hr</span>
-                    <span className="inline-flex items-center gap-1 font-medium text-primary transition-all group-hover:gap-1.5">
-                      Book Now <ArrowRight size={14} />
-                    </span>
-                  </div>
-                </div>
-              </a>
+              <ResourceTypeCard key={t.id} type={t} currency={currency} />
             ))}
           </div>
         </SectionShell>
