@@ -12,7 +12,7 @@ import {
   websiteSectionTypeSchema,
   sectionContentSchemas,
   websiteSectionSchema,
-  websiteBrandingSchema,
+  brandingSnapshotFromRow,
   websiteBrandingInputSchema,
 } from '@/lib/website/types'
 
@@ -189,15 +189,7 @@ export async function publishWebsite(): Promise<Result> {
           content: r.content,
         }),
       )
-      const settings = websiteBrandingSchema.parse({
-        logoUrl: settingsRow?.logoUrl ?? null,
-        accentColor: settingsRow?.accentColor ?? null,
-        heroImageUrl: settingsRow?.heroImageUrl ?? null,
-        heroHeading: settingsRow?.heroHeading ?? null,
-        heroSubheading: settingsRow?.heroSubheading ?? null,
-        heroCtaText: settingsRow?.heroCtaText ?? null,
-        heroCtaUrl: settingsRow?.heroCtaUrl ?? null,
-      })
+      const settings = brandingSnapshotFromRow(settingsRow ?? null)
 
       const publishedSnapshot = { sections, settings }
       await tx

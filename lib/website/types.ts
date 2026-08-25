@@ -111,6 +111,31 @@ export const websiteBrandingSchema = z.object({
 
 export type WebsiteBranding = z.infer<typeof websiteBrandingSchema>
 
+/** The `website_settings` row shape (or its absence) -> a validated
+ *  WebsiteBranding snapshot. Shared by the publish action and the draft/
+ *  published diff check so both build the exact same shape from a row. */
+export function brandingSnapshotFromRow(
+  row: {
+    logoUrl: string | null
+    accentColor: string | null
+    heroImageUrl: string | null
+    heroHeading: string | null
+    heroSubheading: string | null
+    heroCtaText: string | null
+    heroCtaUrl: string | null
+  } | null,
+): WebsiteBranding {
+  return websiteBrandingSchema.parse({
+    logoUrl: row?.logoUrl ?? null,
+    accentColor: row?.accentColor ?? null,
+    heroImageUrl: row?.heroImageUrl ?? null,
+    heroHeading: row?.heroHeading ?? null,
+    heroSubheading: row?.heroSubheading ?? null,
+    heroCtaText: row?.heroCtaText ?? null,
+    heroCtaUrl: row?.heroCtaUrl ?? null,
+  })
+}
+
 /** '' -> null, otherwise trims — shared by every optional hero text field. */
 const optionalText = (max: number) =>
   z

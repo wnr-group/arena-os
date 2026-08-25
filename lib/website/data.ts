@@ -21,10 +21,19 @@ export async function getWebsiteSettings(ctx: ActiveContext) {
   return row ?? null
 }
 
-/** Just published_at — page.tsx uses it to compute the unpublished-changes badge. */
-export async function getWebsitePublishedAt(ctx: ActiveContext): Promise<Date | null> {
+/** page.tsx diffs this snapshot against the live draft to compute the
+ *  unpublished-changes badge (lib/website/status.ts) — publishedAt alone
+ *  can't tell a real edit from a delete, since a deleted row leaves no
+ *  updated_at behind to compare against. */
+export async function getWebsitePublishedSnapshot(
+  ctx: ActiveContext,
+): Promise<{ publishedSnapshot: unknown; publishedAt: Date | null }> {
   const [row] = await withUser(ctx.user.id, (tx) =>
-    tx.select({ publishedAt: websitePages.publishedAt }).from(websitePages).where(eq(websitePages.tenantId, ctx.tenant.id)).limit(1),
+    tx
+      .select({ publishedSnapshot: websitePages.publishedSnapshot, publishedAt: websitePages.publishedAt })
+      .from(websitePages)
+      .where(eq(websitePages.tenantId, ctx.tenant.id))
+      .limit(1),
   )
-  return row?.publishedAt ?? null
+  return { publishedSnapshot: row?.publishedSnapshot ?? null, publishedAt: row?.publishedAt ?? null }
 }

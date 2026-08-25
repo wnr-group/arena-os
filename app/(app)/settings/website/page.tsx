@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
-import { listWebsiteSections, getWebsiteSettings, getWebsitePublishedAt } from '@/lib/website/data'
+import { listWebsiteSections, getWebsiteSettings, getWebsitePublishedSnapshot } from '@/lib/website/data'
+import { computePublishStatus } from '@/lib/website/status'
 import { WebsiteEditor } from '@/components/settings/website/WebsiteEditor'
 
 export default async function WebsiteSettingsPage() {
@@ -9,22 +10,16 @@ export default async function WebsiteSettingsPage() {
   if (!ctx) return null
   if (!isManager(ctx.role)) redirect('/dashboard')
 
-  const [sections, settings, publishedAt] = await Promise.all([
+  const [sections, settings, published] = await Promise.all([
     listWebsiteSections(ctx),
     getWebsiteSettings(ctx),
-    getWebsitePublishedAt(ctx),
+    getWebsitePublishedSnapshot(ctx),
   ])
 
-  // "Live" vs "unpublished changes": whether any draft row has moved since
-  // the last publish. Deleting every section without adding anything else
-  // won't flip this — a rare enough edge case not worth tracking separately;
-  // Publish always operates on the true current draft regardless.
-  const latestDraftChange = Math.max(
-    0,
-    ...sections.map((s) => s.updatedAt.getTime()),
-    settings ? settings.updatedAt.getTime() : 0,
-  )
-  const publishStatus = !publishedAt ? 'unpublished' : latestDraftChange > publishedAt.getTime() ? 'changed' : 'live'
+  // Compared structurally against the published snapshot, not by
+  // timestamp — a deleted section leaves no updated_at behind to compare,
+  // so a timestamp-only check can miss it.
+  const publishStatus = computePublishStatus(sections, settings, published.publishedSnapshot)
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
@@ -48,7 +43,7 @@ export default async function WebsiteSettingsPage() {
             : null
         }
         publishStatus={publishStatus}
-        publishedAt={publishedAt ? publishedAt.toISOString() : null}
+        publishedAt={published.publishedAt ? published.publishedAt.toISOString() : null}
       />
     </div>
   )
