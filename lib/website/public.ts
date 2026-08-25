@@ -11,7 +11,15 @@ import {
   type WebsiteBranding,
 } from './types'
 
-const EMPTY_BRANDING: WebsiteBranding = { logoUrl: null, accentColor: null, heroImageUrl: null }
+const EMPTY_BRANDING: WebsiteBranding = {
+  logoUrl: null,
+  accentColor: null,
+  heroImageUrl: null,
+  heroHeading: null,
+  heroSubheading: null,
+  heroCtaText: null,
+  heroCtaUrl: null,
+}
 
 export type PublishedWebsite = {
   sections: WebsiteSection[]
@@ -49,15 +57,19 @@ export const getPublishedWebsite = cache(async function getPublishedWebsite(
       console.error(`website_pages: dropping invalid section for tenant ${tenantId}`, parsed.error)
     }
   }
-  if (sections.length === 0) return null
-
   const brandingParsed = websiteBrandingSchema.safeParse(shape.data.settings)
   if (!brandingParsed.success) {
     console.error(`website_pages: malformed settings for tenant ${tenantId}`, brandingParsed.error)
   }
+  const settings = brandingParsed.success ? brandingParsed.data : EMPTY_BRANDING
+
+  // A tenant with a configured hero image but zero sections still has a real
+  // homepage to show (the hero itself) — only fall back to the default
+  // homepage when there is truly nothing published.
+  if (sections.length === 0 && !settings.heroImageUrl) return null
 
   return {
     sections: sections.sort((a, b) => a.position - b.position),
-    settings: brandingParsed.success ? brandingParsed.data : EMPTY_BRANDING,
+    settings,
   }
 })

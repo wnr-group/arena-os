@@ -91,25 +91,60 @@ export const websiteSectionSchema = z.discriminatedUnion('type', [
 
 export type WebsiteSection = z.infer<typeof websiteSectionSchema>
 
+/** Missing key -> null — snapshots published before these hero-text fields
+ *  existed have no such key at all, not just a null value. */
+const legacyNullableText = z
+  .string()
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null)
+
 export const websiteBrandingSchema = z.object({
   logoUrl: z.string().url().nullable(),
   accentColor: z.string().nullable(),
   heroImageUrl: z.string().url().nullable(),
+  heroHeading: legacyNullableText,
+  heroSubheading: legacyNullableText,
+  heroCtaText: legacyNullableText,
+  heroCtaUrl: legacyNullableText,
 })
 
 export type WebsiteBranding = z.infer<typeof websiteBrandingSchema>
 
+/** '' -> null, otherwise trims — shared by every optional hero text field. */
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .transform((v) => (v === '' || v == null ? null : v))
+
 /** Branding form input — accentColor is constrained to a plain hex value here
  *  (the published/stored schema above stays looser in case that ever needs
- *  to accept a CSS color keyword read from an older row). */
-export const websiteBrandingInputSchema = z.object({
-  logoUrl: z.string().url().nullable(),
-  accentColor: z
-    .string()
-    .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex colour like #7c3aed')
-    .nullable(),
-  heroImageUrl: z.string().url().nullable(),
-})
+ *  to accept a CSS color keyword read from an older row). The hero CTA link
+ *  accepts either an in-site path ("/resources") or a full external URL,
+ *  since a manager may want to send visitors off-site (e.g. a review page). */
+export const websiteBrandingInputSchema = z
+  .object({
+    logoUrl: z.string().url().nullable(),
+    accentColor: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex colour like #7c3aed')
+      .nullable(),
+    heroImageUrl: z.string().url().nullable(),
+    heroHeading: optionalText(200),
+    heroSubheading: optionalText(300),
+    heroCtaText: optionalText(40),
+    heroCtaUrl: optionalText(500).refine(
+      (v) => v === null || v.startsWith('/') || /^https?:\/\//i.test(v),
+      'Must start with / (e.g. /resources) or http(s)://',
+    ),
+  })
+  .refine((v) => Boolean(v.heroCtaText) === Boolean(v.heroCtaUrl), {
+    message: 'Add both a button label and a link, or leave both blank.',
+    path: ['heroCtaUrl'],
+  })
 
 export const websiteSnapshotSchema = z.object({
   sections: z.array(z.unknown()),

@@ -9,7 +9,15 @@ import { websiteSectionSchema, websiteBrandingSchema, type WebsiteSection, type 
 import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
 import { INDUSTRY_ICONS } from '@/components/public-booking/TenantHome'
 
-const EMPTY_BRANDING: WebsiteBranding = { logoUrl: null, accentColor: null, heroImageUrl: null }
+const EMPTY_BRANDING: WebsiteBranding = {
+  logoUrl: null,
+  accentColor: null,
+  heroImageUrl: null,
+  heroHeading: null,
+  heroSubheading: null,
+  heroCtaText: null,
+  heroCtaUrl: null,
+}
 
 // Fixed so the sticky navbar below can stick at exactly this many pixels —
 // keep in sync with the h-11 on the banner below.
@@ -47,7 +55,15 @@ export default async function WebsitePreviewPage() {
 
   const brandingParsed = websiteBrandingSchema.safeParse(
     settingsRow
-      ? { logoUrl: settingsRow.logoUrl, accentColor: settingsRow.accentColor, heroImageUrl: settingsRow.heroImageUrl }
+      ? {
+          logoUrl: settingsRow.logoUrl,
+          accentColor: settingsRow.accentColor,
+          heroImageUrl: settingsRow.heroImageUrl,
+          heroHeading: settingsRow.heroHeading,
+          heroSubheading: settingsRow.heroSubheading,
+          heroCtaText: settingsRow.heroCtaText,
+          heroCtaUrl: settingsRow.heroCtaUrl,
+        }
       : EMPTY_BRANDING,
   )
   const settings = brandingParsed.success ? brandingParsed.data : EMPTY_BRANDING
@@ -62,7 +78,7 @@ export default async function WebsitePreviewPage() {
           <ArrowLeft size={14} /> Back to editor
         </Link>
       </div>
-      {sections.length === 0 ? (
+      {sections.length === 0 && !settings.heroImageUrl ? (
         <div className="px-4 py-20 text-center text-muted-foreground">No sections yet — add some in the editor to see a preview.</div>
       ) : (
         <WebsitePage

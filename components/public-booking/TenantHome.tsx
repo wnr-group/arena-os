@@ -2,6 +2,7 @@ import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } fr
 import type { PublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
 import { getPublishedWebsite } from '@/lib/website/public'
+import { publicSiteFont } from '@/lib/fonts'
 import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
@@ -64,11 +65,11 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className={`flex min-h-screen flex-col ${publicSiteFont.className}`}>
       <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
 
       <main className="flex-1">
-        <section id="home" className="scroll-mt-16 border-b border-border bg-gradient-to-b from-primary/5 to-transparent">
+        <section id="home" className="scroll-mt-16 bg-gradient-to-b from-primary/5 to-transparent">
           <div className="mx-auto max-w-5xl px-4 py-14 text-center sm:px-6 sm:py-20">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3.5 py-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               <Icon size={13} className="text-primary" /> {industryLabel}
@@ -90,7 +91,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
           </div>
         </section>
 
-        <section id="about" className="scroll-mt-16 border-b border-border bg-card/40">
+        <section id="about" className="scroll-mt-16 bg-card/40">
           <div className="mx-auto max-w-3xl px-4 py-14 text-center sm:px-6">
             <h2 className="text-3xl font-extrabold tracking-tight sm:text-4xl">About {tenant.name}</h2>
             <p className="mx-auto mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg leading-relaxed">

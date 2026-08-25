@@ -24,7 +24,15 @@ import { SectionModal, SECTION_TYPES, type SectionRow } from './SectionModal'
 import { ImageUploadField } from './ImageUploadField'
 import type { WebsiteSectionType } from '@/lib/website/types'
 
-type Branding = { logoUrl: string | null; accentColor: string | null; heroImageUrl: string | null }
+type Branding = {
+  logoUrl: string | null
+  accentColor: string | null
+  heroImageUrl: string | null
+  heroHeading: string | null
+  heroSubheading: string | null
+  heroCtaText: string | null
+  heroCtaUrl: string | null
+}
 type PublishStatus = 'unpublished' | 'live' | 'changed'
 type Modal = { mode: 'add'; type: WebsiteSectionType } | { mode: 'edit'; section: SectionRow } | null
 
@@ -291,17 +299,30 @@ function PublishBar({
   )
 }
 
+const fieldInputClass =
+  'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
+const fieldLabelClass = 'text-sm font-medium text-muted-foreground'
+
 function BrandingPanel({ settings }: { settings: Branding | null }) {
   const [logoUrl, setLogoUrl] = useState(settings?.logoUrl ?? '')
-  const [heroImageUrl, setHeroImageUrl] = useState(settings?.heroImageUrl ?? '')
   const [accentColor, setAccentColor] = useState(settings?.accentColor ?? DEFAULT_ACCENT)
+  const [heroImageUrl, setHeroImageUrl] = useState(settings?.heroImageUrl ?? '')
+  const [heroHeading, setHeroHeading] = useState(settings?.heroHeading ?? '')
+  const [heroSubheading, setHeroSubheading] = useState(settings?.heroSubheading ?? '')
+  const [heroCtaText, setHeroCtaText] = useState(settings?.heroCtaText ?? '')
+  const [heroCtaUrl, setHeroCtaUrl] = useState(settings?.heroCtaUrl ?? '')
   const [pending, setPending] = useState(false)
 
   const accentValid = HEX_PATTERN.test(accentColor)
+  const ctaMismatch = Boolean(heroCtaText.trim()) !== Boolean(heroCtaUrl.trim())
 
   async function save() {
     if (!accentValid) {
       toast.error('Accent colour must be a hex value like #7c3aed.')
+      return
+    }
+    if (ctaMismatch) {
+      toast.error('Add both a button label and a link, or leave both blank.')
       return
     }
     setPending(true)
@@ -309,6 +330,10 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
       logoUrl: logoUrl || null,
       accentColor: accentColor || null,
       heroImageUrl: heroImageUrl || null,
+      heroHeading: heroHeading.trim() || null,
+      heroSubheading: heroSubheading.trim() || null,
+      heroCtaText: heroCtaText.trim() || null,
+      heroCtaUrl: heroCtaUrl.trim() || null,
     })
     setPending(false)
     if (r.error) toast.error(r.error)
@@ -316,33 +341,92 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card p-5 shadow-sm">
-      <h2 className="text-base font-semibold uppercase tracking-wide text-muted-foreground">Branding</h2>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="space-y-6 rounded-xl border border-border bg-card p-5 shadow-sm">
+      <div className="space-y-4">
+        <h2 className="text-base font-semibold uppercase tracking-wide text-muted-foreground">Branding</h2>
         <ImageUploadField label="Logo" value={logoUrl} onChange={setLogoUrl} hint="Square works best · up to 5MB" />
-        <ImageUploadField label="Hero image" value={heroImageUrl} onChange={setHeroImageUrl} hint="Wide banner · up to 5MB" />
+        <div>
+          <label className={fieldLabelClass}>Accent colour</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="color"
+              value={accentValid ? accentColor : DEFAULT_ACCENT}
+              onChange={(e) => setAccentColor(e.target.value)}
+              className="size-10 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-1"
+            />
+            <input
+              className={`w-40 rounded-lg border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:ring-2 focus:ring-ring/30 ${
+                accentColor && !accentValid ? 'border-destructive focus:border-destructive' : 'border-border focus:border-primary'
+              }`}
+              value={accentColor}
+              onChange={(e) => setAccentColor(e.target.value)}
+              placeholder="#7c3aed"
+              maxLength={7}
+            />
+          </div>
+          {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #7c3aed.</p>}
+        </div>
       </div>
-      <div>
-        <label className="text-sm font-medium text-muted-foreground">Accent colour</label>
-        <div className="mt-1 flex items-center gap-2">
+
+      <div className="space-y-4 border-t border-border pt-5">
+        <div>
+          <h2 className="text-base font-semibold uppercase tracking-wide text-muted-foreground">Hero Section</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            The full-screen banner at the top of your homepage — an image with your headline over it.
+          </p>
+        </div>
+        <ImageUploadField
+          label="Hero image"
+          value={heroImageUrl}
+          onChange={setHeroImageUrl}
+          hint="Wide, high-resolution photo · up to 5MB"
+        />
+        <div>
+          <label className={fieldLabelClass}>Headline (optional)</label>
           <input
-            type="color"
-            value={accentValid ? accentColor : DEFAULT_ACCENT}
-            onChange={(e) => setAccentColor(e.target.value)}
-            className="size-10 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-1"
-          />
-          <input
-            className={`w-40 rounded-lg border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:ring-2 focus:ring-ring/30 ${
-              accentColor && !accentValid ? 'border-destructive focus:border-destructive' : 'border-border focus:border-primary'
-            }`}
-            value={accentColor}
-            onChange={(e) => setAccentColor(e.target.value)}
-            placeholder="#7c3aed"
-            maxLength={7}
+            className={fieldInputClass}
+            placeholder="e.g. Your Game. Your Time."
+            value={heroHeading}
+            onChange={(e) => setHeroHeading(e.target.value)}
+            maxLength={200}
           />
         </div>
-        {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #7c3aed.</p>}
+        <div>
+          <label className={fieldLabelClass}>Subheading (optional)</label>
+          <textarea
+            className={fieldInputClass}
+            rows={2}
+            placeholder="e.g. Book consoles, rooms, and tables in seconds."
+            value={heroSubheading}
+            onChange={(e) => setHeroSubheading(e.target.value)}
+            maxLength={300}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className={fieldLabelClass}>Button label (optional)</label>
+            <input
+              className={fieldInputClass}
+              placeholder="Book Now"
+              value={heroCtaText}
+              onChange={(e) => setHeroCtaText(e.target.value)}
+              maxLength={40}
+            />
+          </div>
+          <div>
+            <label className={fieldLabelClass}>Button link (optional)</label>
+            <input
+              className={fieldInputClass}
+              placeholder="/resources"
+              value={heroCtaUrl}
+              onChange={(e) => setHeroCtaUrl(e.target.value)}
+              maxLength={500}
+            />
+          </div>
+        </div>
+        {ctaMismatch && <p className="text-sm text-destructive">Add both a button label and a link, or leave both blank.</p>}
       </div>
+
       <button
         className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
         disabled={pending}

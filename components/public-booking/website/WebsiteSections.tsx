@@ -222,7 +222,7 @@ function SectionShell({
   children: React.ReactNode
 }) {
   return (
-    <section className={`scroll-mt-16 border-b border-border ${tinted ? 'bg-card/40' : ''}`}>
+    <section className={`scroll-mt-16 ${tinted ? 'bg-card/40' : ''}`}>
       <div className={`mx-auto px-4 py-14 sm:px-6 sm:py-16 ${wide ? 'max-w-5xl' : 'max-w-3xl'}`}>
         {heading && (
           <h2 className="mb-6 text-center text-2xl font-extrabold tracking-tight sm:text-3xl">{heading}</h2>

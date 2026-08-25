@@ -193,6 +193,10 @@ export async function publishWebsite(): Promise<Result> {
         logoUrl: settingsRow?.logoUrl ?? null,
         accentColor: settingsRow?.accentColor ?? null,
         heroImageUrl: settingsRow?.heroImageUrl ?? null,
+        heroHeading: settingsRow?.heroHeading ?? null,
+        heroSubheading: settingsRow?.heroSubheading ?? null,
+        heroCtaText: settingsRow?.heroCtaText ?? null,
+        heroCtaUrl: settingsRow?.heroCtaUrl ?? null,
       })
 
       const publishedSnapshot = { sections, settings }

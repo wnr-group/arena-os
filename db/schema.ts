@@ -1686,6 +1686,10 @@ export const websiteSettings = pgTable('website_settings', {
   logoUrl: text('logo_url'),
   accentColor: text('accent_color'),
   heroImageUrl: text('hero_image_url'),
+  heroHeading: text('hero_heading'),
+  heroSubheading: text('hero_subheading'),
+  heroCtaText: text('hero_cta_text'),
+  heroCtaUrl: text('hero_cta_url'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 

@@ -35,7 +35,17 @@ export default async function WebsiteSettingsPage() {
       <WebsiteEditor
         sections={sections.map((s) => ({ id: s.id, type: s.type, heading: s.heading, content: s.content }))}
         settings={
-          settings ? { logoUrl: settings.logoUrl, accentColor: settings.accentColor, heroImageUrl: settings.heroImageUrl } : null
+          settings
+            ? {
+                logoUrl: settings.logoUrl,
+                accentColor: settings.accentColor,
+                heroImageUrl: settings.heroImageUrl,
+                heroHeading: settings.heroHeading,
+                heroSubheading: settings.heroSubheading,
+                heroCtaText: settings.heroCtaText,
+                heroCtaUrl: settings.heroCtaUrl,
+              }
+            : null
         }
         publishStatus={publishStatus}
         publishedAt={publishedAt ? publishedAt.toISOString() : null}

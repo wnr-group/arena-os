@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
+import { publicSiteFont } from '@/lib/fonts'
 
 /**
  * The public (no-login) surface, pinned to whichever tenant the subdomain
@@ -20,5 +21,5 @@ export default async function PublicLayout({ children }: { children: React.React
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
-  return <div className="min-h-screen bg-background text-foreground">{children}</div>
+  return <div className={`min-h-screen bg-background text-foreground ${publicSiteFont.className}`}>{children}</div>
 }
