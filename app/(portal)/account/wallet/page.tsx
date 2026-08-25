@@ -31,12 +31,12 @@ export default async function PortalWalletPage() {
 
       <div className="grid gap-3 sm:grid-cols-2">
         <BalanceCard
-          icon={<Wallet size={16} />}
+          icon={<Wallet size={18} />}
           label="Wallet balance"
           value={formatMoney(data.walletBalance, tenant.currency)}
         />
         <BalanceCard
-          icon={<Sparkles size={16} />}
+          icon={<Sparkles size={18} />}
           label="Loyalty points"
           value={`${data.loyaltyPoints} ${data.loyaltyPoints === 1 ? 'point' : 'points'}`}
         />
@@ -79,13 +79,15 @@ function BalanceCard({
   label: string
   value: string
 }) {
+  // Matches StatCard on the portal overview, which in turn matches the staff
+  // views' stat cards — one card treatment across the whole product.
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
+      <span className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-300 group-hover:scale-110">
         {icon}
-        {label}
-      </p>
-      <p className="mt-1.5 text-2xl font-semibold tabular-nums">{value}</p>
+      </span>
+      <p className="mt-3 text-xs text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-2xl font-semibold tabular-nums">{value}</p>
     </div>
   )
 }

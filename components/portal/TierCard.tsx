@@ -22,12 +22,12 @@ export function TierCard({ standing }: { standing: TierStanding }) {
 
   return (
     <section className="rounded-xl border border-border bg-card p-4">
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Award size={16} />
-        Loyalty tier
-      </p>
+      <span className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Award size={18} />
+      </span>
+      <p className="mt-3 text-xs text-muted-foreground">Loyalty tier</p>
 
-      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
+      <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2">
         <p className="text-2xl font-semibold">{currentTier?.name ?? 'Not yet earned'}</p>
         {progress.isMaxTier && currentTier && (
           <span className="text-xs font-medium text-muted-foreground">Top tier</span>

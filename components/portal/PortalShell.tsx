@@ -49,7 +49,10 @@ export function PortalShell({
       <header className="border-b border-border bg-card/60 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <div className="min-w-0">
-            <Link href="/account" className="truncate text-base font-semibold hover:underline">
+            <Link
+              href="/account"
+              className="truncate text-base font-semibold transition-colors hover:text-primary"
+            >
               {venueName}
             </Link>
             <p className="truncate text-xs text-muted-foreground">
@@ -72,19 +75,24 @@ export function PortalShell({
         </div>
 
         <nav className="mx-auto max-w-4xl overflow-x-auto px-4 sm:px-6">
-          <ul className="flex gap-1 pb-1">
+          <ul className="flex gap-1 pb-2">
             {NAV.map(({ href, label, icon: Icon, ready }) => {
               // Overview is an exact match (it is the prefix of every other
               // route); the rest stay highlighted on their detail pages too,
               // so /account/bookings/<id> still shows "Bookings" as current.
               const active =
                 href === '/account' ? pathname === href : pathname.startsWith(href)
+              // A filled brand pill for the current tab, matching the staff
+              // sidebar's active state. The portal previously marked it with a
+              // 2px underline, which was the only brand-coloured pixel on the
+              // whole surface.
               const className = cn(
-                'inline-flex items-center gap-1.5 whitespace-nowrap rounded-t-md border-b-2 px-3 py-2 text-sm transition',
+                'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200',
                 active
-                  ? 'border-primary font-medium text-foreground'
-                  : 'border-transparent text-muted-foreground',
-                ready ? 'hover:text-foreground' : 'cursor-not-allowed opacity-50',
+                  ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/10'
+                  : 'text-muted-foreground',
+                ready && !active ? 'hover:bg-muted hover:text-foreground' : '',
+                ready ? '' : 'cursor-not-allowed opacity-50',
               )
 
               return (

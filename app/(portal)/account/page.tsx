@@ -30,18 +30,18 @@ export default async function AccountPage() {
 
       <div className="grid gap-3 sm:grid-cols-3">
         <StatCard
-          icon={<CalendarDays size={16} />}
+          icon={<CalendarDays size={18} />}
           label="Upcoming bookings"
           value={String(summary.upcomingBookings)}
           hint={`${summary.totalBookings} in total`}
         />
         <StatCard
-          icon={<Wallet size={16} />}
+          icon={<Wallet size={18} />}
           label="Wallet balance"
           value={formatMoney(summary.walletBalance)}
         />
         <StatCard
-          icon={<Sparkles size={16} />}
+          icon={<Sparkles size={18} />}
           label="Loyalty points"
           value={String(summary.loyaltyPoints)}
         />
@@ -97,13 +97,16 @@ function StatCard({
   value: string
   hint?: string
 }) {
+  // Same brand icon chip and hover-lift the staff views use for their own stat
+  // cards (see components/attendance/AttendanceView.tsx), so the portal reads
+  // as part of the same product rather than an unstyled corner of it.
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
+      <span className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-300 group-hover:scale-110">
         {icon}
-        {label}
-      </p>
-      <p className="mt-1.5 text-2xl font-semibold tabular-nums">{value}</p>
+      </span>
+      <p className="mt-3 text-xs text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-2xl font-semibold tabular-nums">{value}</p>
       {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )

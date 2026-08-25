@@ -74,7 +74,7 @@ export default async function PortalBookingDetailPage({
               normal public availability flow. */}
           <Link
             href={`/account/bookings/${booking.id}/rebook`}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium transition hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
           >
             <RotateCcw size={14} aria-hidden />
             Book again

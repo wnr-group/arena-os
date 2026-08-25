@@ -125,7 +125,7 @@ export function BookingRow({
           {showRebook && (
             <Link
               href={`/account/bookings/${booking.id}/rebook`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium transition hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
             >
               <RotateCcw size={14} aria-hidden />
               Book again
@@ -160,7 +160,9 @@ export function BookingSection({
       <h2 className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-semibold">
         {title}
         {bookings.length > 0 && (
-          <span className="text-xs font-normal text-muted-foreground">{bookings.length}</span>
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            {bookings.length}
+          </span>
         )}
       </h2>
 
