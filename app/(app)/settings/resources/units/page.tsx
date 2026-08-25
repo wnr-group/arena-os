@@ -54,6 +54,7 @@ export default async function ResourcesUnitsPage() {
           description: r.description,
           typeImageUrl: r.typeImageUrl,
           typeDescription: r.typeDescription,
+          qrToken: r.qrToken,
         }))}
       />
     </div>

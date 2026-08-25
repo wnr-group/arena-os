@@ -34,7 +34,8 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
-    pathname.startsWith('/b/')
+    pathname.startsWith('/b/') ||
+    pathname.startsWith('/order/')
   const hasSession = request.cookies.has(SESSION_COOKIE)
 
   // Coarse abuse gate (AROS-47): every write against the public booking site

@@ -15,6 +15,7 @@ import type * as schema from '@/db/schema'
 import { orders, orderItems, menuItems, taxRates, bookings, happyHours, kots } from '@/db/schema'
 import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
+import { getActiveBookingForResource } from '@/lib/booking/attribution'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -30,6 +31,14 @@ export type CreateOrderItemInput = {
 export type CreateOrderInput = {
   branchId: string
   bookingId?: string
+  // Attribution (migration 0047). channel defaults to 'staff' so every
+  // existing caller (the POS flow) is unaffected. customerId/resourceId are
+  // for the online-ordering path: when resourceId is given and bookingId
+  // wasn't, the order auto-attaches to that station's active booking (see
+  // getActiveBookingForResource) — otherwise it stays standalone.
+  channel?: 'staff' | 'online'
+  customerId?: string
+  resourceId?: string
   items: CreateOrderItemInput[]
 }
 
@@ -79,13 +88,16 @@ export async function createOrderCore(
     .where(and(eq(happyHours.tenantId, ctx.tenantId), eq(happyHours.isActive, true)))
   const now = new Date()
 
-  if (input.bookingId) {
+  let effectiveBookingId = input.bookingId ?? null
+  if (effectiveBookingId) {
     const [booking] = await tx
       .select({ id: bookings.id })
       .from(bookings)
-      .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+      .where(and(eq(bookings.id, effectiveBookingId), eq(bookings.tenantId, ctx.tenantId)))
       .limit(1)
     if (!booking) throw new OrderError('Booking not found.')
+  } else if (input.resourceId) {
+    effectiveBookingId = await getActiveBookingForResource(tx, ctx.tenantId, input.resourceId)
   }
 
   const compact = todayInZone(ctx.timezone).replace(/-/g, '')
@@ -103,9 +115,12 @@ export async function createOrderCore(
     .values({
       tenantId: ctx.tenantId,
       branchId: input.branchId,
-      bookingId: input.bookingId || null,
+      bookingId: effectiveBookingId,
       orderNumber,
       status: 'open',
+      channel: input.channel ?? 'staff',
+      customerId: input.customerId ?? null,
+      resourceId: input.resourceId ?? null,
       createdBy: ctx.membershipId,
     })
     .returning({ id: orders.id })

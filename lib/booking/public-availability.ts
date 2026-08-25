@@ -4,6 +4,7 @@ import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
+import { getActiveBookingForResource } from './attribution'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -288,6 +289,61 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
     resourceTypeId: row.resourceTypeId,
     resourceTypeName: row.resourceTypeName,
   }
+}
+
+export type PublicStation = { resource: PublicResource; bookingId: string | null }
+
+/**
+ * What a QR code resolves to — the station itself, plus the booking (if any)
+ * currently occupying it, resolved in the same transaction via
+ * getActiveBookingForResource. Tenant-safe by construction: scoped both by
+ * the (tenant_id, qr_token) unique constraint and by resources_public_select's
+ * own tenant_id = current_public_tenant_id() check, same discipline as the
+ * booking confirmation token lookup on app/(public)/b/[token].
+ */
+export async function getPublicStation(tenantId: string, qrToken: string): Promise<PublicStation | null> {
+  return withPublicTenant(tenantId, async (tx) => {
+    const [row] = await tx
+      .select({
+        id: resources.id,
+        name: resources.name,
+        description: resources.description,
+        imageUrl: resources.imageUrl,
+        hourlyRateOverride: resources.hourlyRateOverride,
+        resourceTypeId: resourceTypes.id,
+        resourceTypeName: resourceTypes.name,
+        typeHourlyRate: resourceTypes.hourlyRate,
+        typeImageUrl: resourceTypes.imageUrl,
+        capacity: resourceTypes.capacity,
+      })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resources.qrToken, qrToken),
+          eq(resources.tenantId, tenantId),
+          eq(resources.status, 'available'),
+          eq(resourceTypes.isActive, true),
+        ),
+      )
+      .limit(1)
+    if (!row) return null
+
+    const bookingId = await getActiveBookingForResource(tx, tenantId, row.id)
+    return {
+      resource: {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        imageUrl: row.imageUrl ?? row.typeImageUrl,
+        hourlyRate: row.hourlyRateOverride ?? row.typeHourlyRate,
+        capacity: row.capacity,
+        resourceTypeId: row.resourceTypeId,
+        resourceTypeName: row.resourceTypeName,
+      },
+      bookingId,
+    }
+  })
 }
 
 export type PublicTypeAvailabilityInput = {

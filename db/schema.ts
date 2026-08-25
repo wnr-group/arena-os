@@ -186,11 +186,15 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // Unguessable public identifier for the QR-at-station ordering entry
+    // point — see 0048_resource_qr_token.sql for why this can't just be id.
+    qrToken: uuid('qr_token').notNull().defaultRandom(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique('resources_tenant_name_key').on(t.tenantId, t.name),
+    unique('resources_tenant_qr_key').on(t.tenantId, t.qrToken),
     index('idx_resources_branch').on(t.tenantId, t.branchId),
     index('idx_resources_type').on(t.resourceTypeId),
   ],
@@ -602,6 +606,9 @@ export const happyHours = pgTable('happy_hours', {
 
 // ── orders (migration 0012) ──────────────────────────────────────────────────
 export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'])
+// Who placed it (migration 0047) — 'staff' for the POS flow, 'online' for a
+// customer ordering from a station's QR entry point.
+export const orderChannel = pgEnum('order_channel', ['staff', 'online'])
 
 export const orders = pgTable(
   'orders',
@@ -616,6 +623,13 @@ export const orders = pgTable(
     bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
     orderNumber: text('order_number').notNull(),
     status: orderStatus('status').notNull().default('open'),
+    // Attribution (migration 0047): channel always set; customerId/resourceId
+    // nullable — a staff order has neither, an online order may have either
+    // or both. See lib/booking/attribution.ts for how resourceId resolves
+    // bookingId when the station has an active booking.
+    channel: orderChannel('channel').notNull().default('staff'),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -624,6 +638,8 @@ export const orders = pgTable(
     unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
     index('idx_orders_branch').on(t.tenantId, t.branchId),
     index('idx_orders_booking').on(t.bookingId),
+    index('idx_orders_customer').on(t.tenantId, t.customerId),
+    index('idx_orders_resource').on(t.resourceId),
   ],
 )
 

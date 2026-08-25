@@ -21,6 +21,7 @@ import {
   Loader2,
   UploadCloud,
   FileImage,
+  QrCode,
 } from 'lucide-react'
 import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
@@ -48,6 +49,7 @@ type ResourceRow = {
   description: string | null
   typeImageUrl: string | null
   typeDescription: string | null
+  qrToken: string
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: ResourceRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
@@ -336,6 +338,13 @@ export function ResourcesManager({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
+                        <Link
+                          href={`/settings/resources/units/${row.id}/qr`}
+                          className={btn}
+                          aria-label="View / print QR"
+                        >
+                          <QrCode size={16} />
+                        </Link>
                         <button
                           className={btn}
                           disabled={pending}
@@ -501,6 +510,13 @@ function ResourceCard({
           deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
         }`}
       >
+        <Link
+          href={`/settings/resources/units/${row.id}/qr`}
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary"
+          aria-label="View / print QR"
+        >
+          <QrCode size={13} />
+        </Link>
         <button
           type="button"
           className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
