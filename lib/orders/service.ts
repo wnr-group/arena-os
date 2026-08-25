@@ -37,6 +37,10 @@ export type CreateOrderInput = {
   // wasn't, the order auto-attaches to that station's active booking (see
   // getActiveBookingForResource) — otherwise it stays standalone.
   channel?: 'staff' | 'online'
+  // Accept/reject gate (migration 0050). Defaults to 'accepted' — only
+  // placeOnlineOrder (lib/actions/public-orders.ts) ever passes 'pending',
+  // and only when the tenant's auto-accept setting is off.
+  acceptanceStatus?: 'pending' | 'accepted'
   customerId?: string
   resourceId?: string
   items: CreateOrderItemInput[]
@@ -119,6 +123,7 @@ export async function createOrderCore(
       orderNumber,
       status: 'open',
       channel: input.channel ?? 'staff',
+      acceptanceStatus: input.acceptanceStatus ?? 'accepted',
       customerId: input.customerId ?? null,
       resourceId: input.resourceId ?? null,
       createdBy: ctx.membershipId,
@@ -232,6 +237,64 @@ export async function cancelOrderCore(
     .where(and(eq(orders.id, orderId), eq(orders.tenantId, ctx.tenantId)))
 
   await cancelKotsForOrders(tx, ctx.tenantId, [orderId])
+}
+
+/**
+ * Accept a pending online order — the only move that lets its kitchen ticket
+ * (already sitting in the database since createOrderCore, status 'pending')
+ * start showing up on /kitchen: listActiveKots requires acceptanceStatus =
+ * 'accepted' precisely so an unreviewed order never reaches the kitchen.
+ */
+export async function acceptOrderCore(tx: Db, ctx: { tenantId: string }, orderId: string): Promise<void> {
+  const order = await lockPendingOnlineOrder(tx, ctx.tenantId, orderId)
+
+  await tx
+    .update(orders)
+    .set({ acceptanceStatus: 'accepted' })
+    .where(and(eq(orders.id, order.id), eq(orders.tenantId, ctx.tenantId)))
+}
+
+/**
+ * Reject a pending online order: cancels the order AND its kitchen ticket
+ * (like cancelOrderCore) and records why, so the customer/receipt can explain
+ * it later. Unlike a plain cancellation this can only happen before the order
+ * was ever accepted — once accepted it's in the normal kitchen flow and must
+ * go through cancelOrderCore instead.
+ */
+export async function rejectOrderCore(
+  tx: Db,
+  ctx: { tenantId: string },
+  orderId: string,
+  reason: string,
+): Promise<void> {
+  const order = await lockPendingOnlineOrder(tx, ctx.tenantId, orderId)
+
+  await tx
+    .update(orders)
+    .set({ status: 'cancelled', acceptanceStatus: 'rejected', rejectionReason: reason })
+    .where(and(eq(orders.id, order.id), eq(orders.tenantId, ctx.tenantId)))
+
+  await cancelKotsForOrders(tx, ctx.tenantId, [order.id])
+}
+
+/** Shared lock/validate step for acceptOrderCore and rejectOrderCore. */
+async function lockPendingOnlineOrder(
+  tx: Db,
+  tenantId: string,
+  orderId: string,
+): Promise<{ id: string }> {
+  const [order] = await tx
+    .select({ id: orders.id, channel: orders.channel, acceptanceStatus: orders.acceptanceStatus })
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.tenantId, tenantId)))
+    .for('update')
+    .limit(1)
+  if (!order) throw new OrderError('Order not found.')
+  if (order.channel !== 'online') throw new OrderError('Only online orders go through the accept/reject queue.')
+  if (order.acceptanceStatus !== 'pending') {
+    throw new OrderError(`This order has already been ${order.acceptanceStatus}.`)
+  }
+  return order
 }
 
 /**

@@ -64,3 +64,15 @@ export const KITCHEN_ROLES: MemberRole[] = ['owner', 'manager', 'kitchen_staff']
 export function canManageKitchen(role: MemberRole | null | undefined): boolean {
   return !!role && KITCHEN_ROLES.includes(role)
 }
+
+/**
+ * Roles that may see and act on the incoming online-order queue (accept /
+ * reject) — front-of-house roles, not kitchen staff: an online order isn't
+ * kitchen business until it's been accepted, at which point it's just a KOT
+ * like any other and kitchen_staff handles it on /kitchen as usual.
+ */
+export const INCOMING_ORDER_ROLES: MemberRole[] = ['owner', 'manager', 'cashier', 'receptionist', 'floor_staff']
+
+export function canManageIncomingOrders(role: MemberRole | null | undefined): boolean {
+  return !!role && INCOMING_ORDER_ROLES.includes(role)
+}

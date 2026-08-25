@@ -609,6 +609,10 @@ export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'
 // Who placed it (migration 0047) — 'staff' for the POS flow, 'online' for a
 // customer ordering from a station's QR entry point.
 export const orderChannel = pgEnum('order_channel', ['staff', 'online'])
+// Staff accept/reject gate for online orders (migration 0050) — defaults to
+// 'accepted' so every staff/POS order (and every pre-existing row) skips the
+// gate entirely; only an online order can ever be inserted as 'pending'.
+export const orderAcceptanceStatus = pgEnum('order_acceptance_status', ['pending', 'accepted', 'rejected'])
 
 export const orders = pgTable(
   'orders',
@@ -628,6 +632,11 @@ export const orders = pgTable(
     // or both. See lib/booking/attribution.ts for how resourceId resolves
     // bookingId when the station has an active booking.
     channel: orderChannel('channel').notNull().default('staff'),
+    // Accept/reject gate (migration 0050) — see lib/orders/service.ts's
+    // acceptOrderCore/rejectOrderCore. rejectionReason is only ever set
+    // alongside acceptanceStatus: 'rejected'.
+    acceptanceStatus: orderAcceptanceStatus('acceptance_status').notNull().default('accepted'),
+    rejectionReason: text('rejection_reason'),
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
@@ -1024,6 +1033,18 @@ export const loyaltySettings = pgTable('loyalty_settings', {
   pointValue: numeric('point_value', { precision: 10, scale: 2 }).notNull().default('1.00'),
   minRedeemPoints: integer('min_redeem_points').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── order settings (migration 0050) ──────────────────────────────────────────
+// Singleton per tenant, same shape as loyaltySettings above. Off by default —
+// a venue must opt in to skipping the accept/reject step for an online order.
+export const orderSettings = pgTable('order_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  autoAcceptOnlineOrders: boolean('auto_accept_online_orders').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

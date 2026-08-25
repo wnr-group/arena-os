@@ -1,10 +1,15 @@
 import 'server-only'
 import { and, asc, eq, notInArray } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { kots, orders, orderItems, bookings } from '@/db/schema'
+import { kots, orders, orderItems, bookings, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 
-/** Flat KOT+item rows for a branch's active tickets — grouped by the caller (see components/kitchen/KitchenQueue.tsx). */
+/** Flat KOT+item rows for a branch's active tickets — grouped by the caller
+ *  (see components/kitchen/KitchenQueue.tsx).
+ *
+ *  `acceptanceStatus = 'accepted'` (migration 0050) is the gate that keeps an
+ *  online order awaiting staff accept/reject off this screen: a staff/POS
+ *  order is always 'accepted' by default, so this filter never touches it. */
 export function listActiveKots(ctx: ActiveContext, branchId: string) {
   return withUser(ctx.user.id, (tx) =>
     tx
@@ -15,6 +20,8 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
         createdAt: kots.createdAt,
         orderId: orders.id,
         orderNumber: orders.orderNumber,
+        channel: orders.channel,
+        stationName: resources.name,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
         qty: orderItems.qty,
@@ -23,11 +30,13 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
       .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .leftJoin(resources, eq(resources.id, orders.resourceId))
       .where(
         and(
           eq(kots.tenantId, ctx.tenant.id),
           eq(kots.branchId, branchId),
           notInArray(kots.status, ['served', 'cancelled']),
+          eq(orders.acceptanceStatus, 'accepted'),
         ),
       )
       .orderBy(asc(kots.createdAt), asc(orderItems.id)),

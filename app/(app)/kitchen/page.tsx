@@ -32,6 +32,8 @@ export default async function KitchenPage() {
         status: row.status,
         createdAt: row.createdAt.toISOString(),
         orderNumber: row.orderNumber,
+        channel: row.channel,
+        stationName: row.stationName,
         items: [],
       }
       ticketsById.set(row.kotId, ticket)

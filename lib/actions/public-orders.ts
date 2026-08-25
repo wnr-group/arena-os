@@ -8,6 +8,7 @@ import { menuItems } from '@/db/schema'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation } from '@/lib/booking/public-availability'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
+import { getOrderSettingsCore } from '@/lib/orders/settings'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 import { zodErrorMessage } from '@/lib/utils/errors'
@@ -32,7 +33,7 @@ const orderInput = z.object({
     .max(30),
 })
 
-export type PlaceOnlineOrderResult = { error?: string; orderNumber?: string }
+export type PlaceOnlineOrderResult = { error?: string; orderNumber?: string; pendingAcceptance?: boolean }
 
 /**
  * A customer at a scanned station placing a food order — the online-ordering
@@ -77,19 +78,26 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         throw new OrderError('One or more items in your order are no longer available. Please review your cart.')
       }
 
-      return createOrderCore(
+      // Whether this order needs a human to accept it before the kitchen sees
+      // it (lib/orders/service.ts's acceptanceStatus gate) is a per-tenant
+      // choice — read fresh, in this transaction, never cached across orders.
+      const settings = await getOrderSettingsCore(tx, tenant.id)
+
+      const created = await createOrderCore(
         tx,
         { tenantId: tenant.id, timezone: tenant.timezone, membershipId: null },
         {
           branchId: station.branchId,
           resourceId: station.resource.id,
           channel: 'online',
+          acceptanceStatus: settings.autoAcceptOnlineOrders ? 'accepted' : 'pending',
           items: v.items,
         },
       )
+      return { ...created, pendingAcceptance: !settings.autoAcceptOnlineOrders }
     })
 
-    return { orderNumber: result.orderNumber }
+    return { orderNumber: result.orderNumber, pendingAcceptance: result.pendingAcceptance }
   } catch (e) {
     if (e instanceof OrderError) return { error: e.message }
     if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
