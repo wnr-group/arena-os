@@ -50,7 +50,7 @@ export type CreatedOrder = { id: string; orderNumber: string; kotNumber: string 
  */
 export async function createOrderCore(
   tx: Db,
-  ctx: { tenantId: string; timezone: string; membershipId: string },
+  ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateOrderInput,
 ): Promise<CreatedOrder> {
   // Snapshot each item's current name/price/tax so the order stays accurate

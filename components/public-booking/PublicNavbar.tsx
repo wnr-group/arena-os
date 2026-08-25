@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { ArrowRight, Menu, X } from 'lucide-react'
+import { ArrowRight, Menu, ShoppingBag, X } from 'lucide-react'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
@@ -31,12 +31,18 @@ export function PublicNavbar({
   icon,
   logoUrl,
   topOffset = 0,
+  cartCount,
+  onCartClick,
 }: {
   tenantName: string
   icon: ReactNode
   logoUrl?: string | null
   /** Pixels to stick below instead of the viewport top — e.g. the staff preview banner above it. */
   topOffset?: number
+  /** Item count shown as a badge on the cart button. Only meaningful together with onCartClick. */
+  cartCount?: number
+  /** When set, shows a cart button that opens the ordering cart — used only on the /order page. */
+  onCartClick?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
@@ -114,6 +120,21 @@ export function PublicNavbar({
         </nav>
 
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
+          {onCartClick && (
+            <button
+              type="button"
+              onClick={onCartClick}
+              aria-label="View cart"
+              className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background/50 text-foreground transition-all duration-200 hover:border-primary/40 hover:bg-primary/5 hover:text-primary active:scale-95"
+            >
+              <ShoppingBag size={18} />
+              {!!cartCount && cartCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground shadow">
+                  {cartCount > 99 ? '99+' : cartCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => router.push('/resources')}

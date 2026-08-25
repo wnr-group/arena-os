@@ -4,28 +4,17 @@ import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { z } from 'zod'
 import { withPublicTenant } from '@/db'
-import { currentTenantSlug } from '@/lib/tenant/context'
-import { getPublicTenantBySlug } from '@/lib/tenant/public'
+import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 
-type Fail = { error: string }
-
 const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
 
 async function callerIp(): Promise<string> {
   return ipFromHeaders(await headers())
-}
-
-async function resolvePublicTenant(): Promise<{ id: string; timezone: string } | Fail> {
-  const slug = await currentTenantSlug()
-  if (!slug) return { error: 'Unknown venue.' }
-  const tenant = await getPublicTenantBySlug(slug)
-  if (!tenant) return { error: 'Unknown venue.' }
-  return tenant
 }
 
 const availabilityInput = z.object({

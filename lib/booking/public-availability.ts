@@ -291,7 +291,7 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
   }
 }
 
-export type PublicStation = { resource: PublicResource; bookingId: string | null }
+export type PublicStation = { resource: PublicResource; branchId: string; bookingId: string | null }
 
 /**
  * What a QR code resolves to — the station itself, plus the booking (if any)
@@ -306,6 +306,7 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
     const [row] = await tx
       .select({
         id: resources.id,
+        branchId: resources.branchId,
         name: resources.name,
         description: resources.description,
         imageUrl: resources.imageUrl,
@@ -331,6 +332,7 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
 
     const bookingId = await getActiveBookingForResource(tx, tenantId, row.id)
     return {
+      branchId: row.branchId,
       resource: {
         id: row.id,
         name: row.name,

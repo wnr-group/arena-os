@@ -2,6 +2,7 @@ import 'server-only'
 import { cache } from 'react'
 import { sql } from 'drizzle-orm'
 import { withPublicApp } from '@/db'
+import { currentTenantSlug } from './context'
 
 export type PublicTenant = {
   id: string
@@ -35,3 +36,17 @@ export const getPublicTenantBySlug = cache(async function getPublicTenantBySlug(
   )
   return rows[0] ?? null
 })
+
+/**
+ * The tenant every public server action starts with — subdomain -> slug
+ * (currentTenantSlug, set by proxy.ts) -> row (getPublicTenantBySlug).
+ * Shared so every public action (booking, ordering, ...) resolves "which
+ * venue is this?" the exact same way instead of each re-implementing it.
+ */
+export async function resolvePublicTenant(): Promise<PublicTenant | { error: string }> {
+  const slug = await currentTenantSlug()
+  if (!slug) return { error: 'Unknown venue.' }
+  const tenant = await getPublicTenantBySlug(slug)
+  if (!tenant) return { error: 'Unknown venue.' }
+  return tenant
+}
