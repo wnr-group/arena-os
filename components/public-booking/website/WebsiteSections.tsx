@@ -211,7 +211,11 @@ async function ResourcesContent({
   const types = (await getPublicResourceTypes(tenantId, branch.id)).slice(0, section.content.limit)
   if (types.length === 0) return null
   return (
+<<<<<<< HEAD
     <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} maxWidthClass="max-w-6xl">
+=======
+    <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {types.map((t) => (
           <ResourceTypeCard key={t.id} type={t} currency={currency} />
@@ -226,7 +230,11 @@ async function ResourcesContent({
  *  placeholder) in case count is capped to the grid's own widest layout. */
 function ResourcesSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
   return (
+<<<<<<< HEAD
     <SectionShell heading={heading ?? 'What We Offer'} tinted={tinted} maxWidthClass="max-w-6xl">
+=======
+    <SectionShell heading={heading ?? 'What We Offer'} tinted={tinted} wide>
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: count }).map((_, i) => (
           <ResourceCardSkeleton key={i} />
@@ -259,20 +267,28 @@ function ResourceCardSkeleton() {
 }
 
 /** The 'menu' case's data fetch, split out for the same reason as
+<<<<<<< HEAD
  *  ResourcesContent above. Cart-aware (MenuHighlightsClient) so a visitor can
  *  add straight from the homepage — the same OrderCartProvider that
  *  WebsitePage mounts around the whole section stack. */
+=======
+ *  ResourcesContent above. */
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
 async function MenuContent({
   section,
   tinted,
   tenantId,
   currency,
+<<<<<<< HEAD
   timezone,
+=======
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
 }: {
   section: Extract<WebsiteSection, { type: 'menu' }>
   tinted: boolean
   tenantId: string
   currency: string
+<<<<<<< HEAD
   timezone: string
 }) {
   const [menu, happyHourRules] = await Promise.all([getPublicMenu(tenantId), getPublicActiveHappyHourRules(tenantId)])
@@ -288,6 +304,18 @@ async function MenuContent({
   return (
     <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} maxWidthClass="max-w-6xl">
       <MenuHighlightsClient items={orderableItems} currency={currency} />
+=======
+}) {
+  const items = (await getPublicMenu(tenantId)).flatMap((c) => c.items).slice(0, section.content.limit)
+  if (items.length === 0) return null
+  return (
+    <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
+      <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
+        {items.map((item) => (
+          <MenuItemCard key={item.id} item={item} currency={currency} />
+        ))}
+      </div>
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
       <p className="mt-8 text-center">
         <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
           View full menu &rarr;
@@ -299,7 +327,11 @@ async function MenuContent({
 
 function MenuSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
   return (
+<<<<<<< HEAD
     <SectionShell heading={heading ?? 'From the Menu'} tinted={tinted} maxWidthClass="max-w-6xl">
+=======
+    <SectionShell heading={heading ?? 'From the Menu'} tinted={tinted} wide>
+>>>>>>> fd19abd (feat: apply tenant branding across all public pages, stream homepage sections)
       <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
         {Array.from({ length: count }).map((_, i) => (
           <MenuCardSkeleton key={i} />
