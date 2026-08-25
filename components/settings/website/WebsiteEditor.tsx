@@ -211,17 +211,13 @@ function SectionCard({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm transition ${isDragging ? 'opacity-60 shadow-lg' : ''}`}
+      className={`flex cursor-grab touch-none items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm transition active:cursor-grabbing ${isDragging ? 'opacity-60 shadow-lg' : ''}`}
+      {...attributes}
+      {...listeners}
     >
-      <button
-        type="button"
-        className="cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
-        aria-label="Drag to reorder"
-        {...attributes}
-        {...listeners}
-      >
+      <span className="text-muted-foreground" aria-hidden>
         <GripVertical size={18} />
-      </button>
+      </span>
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
         <Icon size={16} />
       </span>
@@ -229,7 +225,9 @@ function SectionCard({
         <p className="truncate text-sm font-medium">{row.heading || meta?.label || row.type}</p>
         <p className="text-xs text-muted-foreground">{meta?.label}</p>
       </div>
-      <div className="flex shrink-0 gap-1">
+      {/* Dragging is bound to the whole card, so these buttons must stop the
+          pointerdown here or a click gets read as a drag attempt first. */}
+      <div className="flex shrink-0 gap-1" onPointerDown={(e) => e.stopPropagation()}>
         <button
           className="rounded-lg px-3 py-2 text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
           disabled={deleting}
