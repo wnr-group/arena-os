@@ -69,6 +69,7 @@ function CartDrawer({
   const [visible, setVisible] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [placedOrderNumber, setPlacedOrderNumber] = useState<string | null>(null)
+  const [pendingAcceptance, setPendingAcceptance] = useState(false)
   const [pending, startTransition] = useTransition()
 
   useEffect(() => {
@@ -106,6 +107,7 @@ function CartDrawer({
         return
       }
       setPlacedOrderNumber(res.orderNumber ?? null)
+      setPendingAcceptance(!!res.pendingAcceptance)
       clearCart()
     })
   }
@@ -155,9 +157,15 @@ function CartDrawer({
             <span className="flex size-16 items-center justify-center rounded-full bg-emerald-500/10">
               <CheckCircle2 className="size-9 text-emerald-500" />
             </span>
-            <p className="text-lg font-black tracking-tight">Order #{placedOrderNumber} sent to the kitchen!</p>
+            <p className="text-lg font-black tracking-tight">
+              {pendingAcceptance ? `Order #${placedOrderNumber} received!` : `Order #${placedOrderNumber} sent to the kitchen!`}
+            </p>
             <p className="max-w-xs text-sm text-muted-foreground">
-              {hasActiveBooking ? 'This has been added to your current booking.' : "We'll bring it out to you shortly."}
+              {pendingAcceptance
+                ? "The venue is confirming your order — we'll start it shortly."
+                : hasActiveBooking
+                  ? 'This has been added to your current booking.'
+                  : "We'll bring it out to you shortly."}
             </p>
             <button
               type="button"
