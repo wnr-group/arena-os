@@ -1,3 +1,5 @@
+import { Suspense } from 'react'
+import { Users } from 'lucide-react'
 import type { WebsiteSection } from '@/lib/website/types'
 import type { PublicBranch } from '@/lib/booking/public-availability'
 import { getPublicResourceTypes, getPublicWorkingHours } from '@/lib/booking/public-availability'
@@ -123,35 +125,19 @@ async function WebsiteSectionBlock({
         </SectionShell>
       )
     case 'resources': {
-      if (!branch) return null
-      const types = (await getPublicResourceTypes(tenantId, branch.id)).slice(0, section.content.limit)
-      if (types.length === 0) return null
+      const count = Math.min(section.content.limit, 4)
       return (
-        <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {types.map((t) => (
-              <ResourceTypeCard key={t.id} type={t} currency={currency} />
-            ))}
-          </div>
-        </SectionShell>
+        <Suspense fallback={<ResourcesSkeleton heading={section.heading} tinted={tinted} count={count} />}>
+          <ResourcesContent section={section} tinted={tinted} tenantId={tenantId} branch={branch} currency={currency} />
+        </Suspense>
       )
     }
     case 'menu': {
-      const items = (await getPublicMenu(tenantId)).flatMap((c) => c.items).slice(0, section.content.limit)
-      if (items.length === 0) return null
+      const count = Math.min(section.content.limit, 4)
       return (
-        <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
-          <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
-            {items.map((item) => (
-              <MenuItemCard key={item.id} item={item} currency={currency} />
-            ))}
-          </div>
-          <p className="mt-8 text-center">
-            <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
-              View full menu &rarr;
-            </a>
-          </p>
-        </SectionShell>
+        <Suspense fallback={<MenuSkeleton heading={section.heading} tinted={tinted} count={count} />}>
+          <MenuContent section={section} tinted={tinted} tenantId={tenantId} currency={currency} />
+        </Suspense>
       )
     }
     case 'hours': {
@@ -188,6 +174,140 @@ async function WebsiteSectionBlock({
       )
     }
   }
+}
+
+/** The 'resources' case's data fetch, split out so it can stream behind its
+ *  own Suspense boundary (ResourcesSkeleton) instead of blocking the rest
+ *  of the homepage while getPublicResourceTypes resolves. */
+async function ResourcesContent({
+  section,
+  tinted,
+  tenantId,
+  branch,
+  currency,
+}: {
+  section: Extract<WebsiteSection, { type: 'resources' }>
+  tinted: boolean
+  tenantId: string
+  branch: PublicBranch | null
+  currency: string
+}) {
+  if (!branch) return null
+  const types = (await getPublicResourceTypes(tenantId, branch.id)).slice(0, section.content.limit)
+  if (types.length === 0) return null
+  return (
+    <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {types.map((t) => (
+          <ResourceTypeCard key={t.id} type={t} currency={currency} />
+        ))}
+      </div>
+    </SectionShell>
+  )
+}
+
+/** Same shell as the real content (so the heading — already known
+ *  synchronously — appears immediately, only the card grid is a
+ *  placeholder) in case count is capped to the grid's own widest layout. */
+function ResourcesSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
+  return (
+    <SectionShell heading={heading ?? 'What We Offer'} tinted={tinted} wide>
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: count }).map((_, i) => (
+          <ResourceCardSkeleton key={i} />
+        ))}
+      </div>
+    </SectionShell>
+  )
+}
+
+function ResourceCardSkeleton() {
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <div className="skeleton-shimmer aspect-[4/3] w-full shrink-0" />
+      <div className="flex flex-1 flex-col p-5">
+        <div className="skeleton-shimmer h-5 w-3/4 rounded-md" />
+        <div className="mt-2 min-h-10 space-y-2">
+          <div className="skeleton-shimmer h-3.5 w-full rounded-md" />
+          <div className="skeleton-shimmer h-3.5 w-[85%] rounded-md" />
+        </div>
+        <div className="mt-auto flex items-center justify-between gap-2 pt-4">
+          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground/30">
+            <Users size={12} />
+            <span className="skeleton-shimmer h-3.5 w-12 rounded-md" />
+          </span>
+          <div className="skeleton-shimmer h-4 w-16 rounded-md" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The 'menu' case's data fetch, split out for the same reason as
+ *  ResourcesContent above. */
+async function MenuContent({
+  section,
+  tinted,
+  tenantId,
+  currency,
+}: {
+  section: Extract<WebsiteSection, { type: 'menu' }>
+  tinted: boolean
+  tenantId: string
+  currency: string
+}) {
+  const items = (await getPublicMenu(tenantId)).flatMap((c) => c.items).slice(0, section.content.limit)
+  if (items.length === 0) return null
+  return (
+    <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
+      <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
+        {items.map((item) => (
+          <MenuItemCard key={item.id} item={item} currency={currency} />
+        ))}
+      </div>
+      <p className="mt-8 text-center">
+        <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
+          View full menu &rarr;
+        </a>
+      </p>
+    </SectionShell>
+  )
+}
+
+function MenuSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
+  return (
+    <SectionShell heading={heading ?? 'From the Menu'} tinted={tinted} wide>
+      <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
+        {Array.from({ length: count }).map((_, i) => (
+          <MenuCardSkeleton key={i} />
+        ))}
+      </div>
+    </SectionShell>
+  )
+}
+
+function MenuCardSkeleton() {
+  return (
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm">
+      <div className="skeleton-shimmer aspect-square w-full sm:aspect-[16/11]" />
+      <div className="flex flex-1 flex-col p-3 sm:p-5">
+        <div className="skeleton-shimmer h-3.5 w-3/4 rounded-md sm:h-4" />
+        <div className="mt-1.5 hidden flex-1 space-y-1.5 sm:block">
+          <div className="skeleton-shimmer h-3.5 w-full rounded-md" />
+          <div className="skeleton-shimmer h-3.5 w-[65%] rounded-md" />
+        </div>
+        <div className="mt-2.5 flex items-center justify-between border-t border-border/40 pt-2.5 sm:mt-4 sm:pt-4">
+          <span className="hidden text-[10px] font-bold uppercase tracking-widest text-muted-foreground/30 sm:inline">
+            Price
+          </span>
+          <div className="flex items-center gap-2">
+            <div className="skeleton-shimmer h-4 w-10 rounded-md sm:h-5 sm:w-14" />
+            <div className="skeleton-shimmer size-7 shrink-0 rounded-full sm:size-8" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function SectionShell({

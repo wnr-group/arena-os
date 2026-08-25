@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { WebsiteSection, WebsiteBranding } from '@/lib/website/types'
 import type { PublicBranch } from '@/lib/booking/public-availability'
-import { getContrastText } from '@/lib/website/color'
+import { accentColorStyle } from '@/lib/website/color'
 import { publicSiteFont } from '@/lib/fonts'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { WebsiteSections } from './WebsiteSections'
@@ -37,14 +37,7 @@ export function WebsitePage({
   return (
     <div
       className={`flex min-h-screen flex-col ${publicSiteFont.className}`}
-      style={
-        settings.accentColor
-          ? ({
-              '--primary': settings.accentColor,
-              '--primary-foreground': getContrastText(settings.accentColor),
-            } as React.CSSProperties)
-          : undefined
-      }
+      style={accentColorStyle(settings.accentColor)}
     >
       <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} />
       {settings.heroImageUrl && (

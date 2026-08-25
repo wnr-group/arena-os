@@ -1,7 +1,8 @@
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
-import { getPublishedWebsite } from '@/lib/website/public'
+import { getPublishedWebsite, getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
 import { publicSiteFont } from '@/lib/fonts'
 import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
@@ -64,9 +65,11 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
     )
   }
 
+  const branding = await getPublishedBranding(tenant.id)
+
   return (
-    <div className={`flex min-h-screen flex-col ${publicSiteFont.className}`}>
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
+    <div className={`flex min-h-screen flex-col ${publicSiteFont.className}`} style={accentColorStyle(branding.accentColor)}>
+      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
       <main className="flex-1">
         <section id="home" className="scroll-mt-16 bg-gradient-to-b from-primary/5 to-transparent">

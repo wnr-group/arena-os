@@ -6,6 +6,8 @@ import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingByToken } from '@/lib/booking/public-confirmation'
 import { publicTenantUrl } from '@/lib/tenant/subdomain'
 import { generateQrSvg } from '@/lib/utils/qr'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { BookingConfirmation } from '@/components/public-booking/BookingConfirmation'
@@ -55,13 +57,14 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
   const branch = await getPublicBranch(tenant.id)
   const confirmationUrl = publicTenantUrl(tenant.slug, `/b/${token}`)
   const qrSvg = await generateQrSvg(confirmationUrl)
+  const branding = await getPublishedBranding(tenant.id)
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
+    <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
+      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
       <main className="flex-1 bg-background">
         <BookingConfirmation booking={booking} tenant={tenant} qrSvg={qrSvg} />

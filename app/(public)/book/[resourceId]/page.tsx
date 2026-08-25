@@ -4,6 +4,8 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResource } from '@/lib/booking/public-availability'
 import { todayInZone } from '@/lib/booking/time'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
 import { ResourceBookingPage } from '@/components/public-booking/ResourceBookingPage'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
@@ -48,12 +50,13 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
   if (!resource) notFound()
 
   const branch = await getPublicBranch(tenant.id)
+  const branding = await getPublishedBranding(tenant.id)
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
+    <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
+      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
       <main className="flex-1 bg-background">
         <ResourceBookingPage tenant={tenant} resource={resource} today={todayInZone(tenant.timezone)} />

@@ -4,6 +4,8 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicMenu } from '@/lib/menu/public'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { FoodMenuClient } from '@/components/public-booking/FoodMenuClient'
@@ -40,7 +42,11 @@ export default async function MenuPage() {
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
-  const [branch, categories] = await Promise.all([getPublicBranch(tenant.id), getPublicMenu(tenant.id)])
+  const [branch, categories, branding] = await Promise.all([
+    getPublicBranch(tenant.id),
+    getPublicMenu(tenant.id),
+    getPublishedBranding(tenant.id),
+  ])
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
@@ -48,8 +54,11 @@ export default async function MenuPage() {
   const totalItems = categories.reduce((sum, cat) => sum + cat.items.length, 0)
 
   return (
-    <div className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
+    <div
+      className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
+      style={accentColorStyle(branding.accentColor)}
+    >
+      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
       <main className="flex-1 bg-background relative">
         {/* Layered premium ambient glow elements */}

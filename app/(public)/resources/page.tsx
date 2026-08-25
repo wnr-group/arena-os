@@ -3,6 +3,8 @@ import { Building2, Boxes, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIc
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { ResourceTypeCard } from '@/components/public-booking/ResourceTypeCard'
@@ -39,13 +41,14 @@ export default async function ResourcesPage() {
 
   const branch = await getPublicBranch(tenant.id)
   const resourceTypes = branch ? await getPublicResourceTypes(tenant.id, branch.id) : []
+  const branding = await getPublishedBranding(tenant.id)
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
+    <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
+      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
       <main className="flex-1 bg-background">
         <section className="relative overflow-hidden border-b border-border bg-gradient-to-b from-primary/5 to-transparent">

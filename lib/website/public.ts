@@ -26,6 +26,23 @@ export type PublishedWebsite = {
   settings: WebsiteBranding
 }
 
+/** Shared by getPublishedWebsite and getPublishedBranding — the one raw read
+ *  of website_pages, parsed down to its typed top-level shape (or null when
+ *  there's nothing published, or the snapshot doesn't even parse). */
+async function getPublishedSnapshot(tenantId: string) {
+  const [row] = await withPublicTenant(tenantId, (tx) =>
+    tx.select({ publishedSnapshot: websitePages.publishedSnapshot }).from(websitePages).where(eq(websitePages.tenantId, tenantId)).limit(1),
+  )
+  if (!row?.publishedSnapshot) return null
+
+  const shape = websiteSnapshotSchema.safeParse(row.publishedSnapshot)
+  if (!shape.success) {
+    console.error(`website_pages: malformed published_snapshot for tenant ${tenantId}`, shape.error)
+    return null
+  }
+  return shape.data
+}
+
 /**
  * The public homepage's only read of the website builder's data. Returns
  * null whenever there is nothing safe to render — no row, no snapshot yet,
@@ -37,19 +54,11 @@ export type PublishedWebsite = {
 export const getPublishedWebsite = cache(async function getPublishedWebsite(
   tenantId: string,
 ): Promise<PublishedWebsite | null> {
-  const [row] = await withPublicTenant(tenantId, (tx) =>
-    tx.select({ publishedSnapshot: websitePages.publishedSnapshot }).from(websitePages).where(eq(websitePages.tenantId, tenantId)).limit(1),
-  )
-  if (!row?.publishedSnapshot) return null
-
-  const shape = websiteSnapshotSchema.safeParse(row.publishedSnapshot)
-  if (!shape.success) {
-    console.error(`website_pages: malformed published_snapshot for tenant ${tenantId}`, shape.error)
-    return null
-  }
+  const shape = await getPublishedSnapshot(tenantId)
+  if (!shape) return null
 
   const sections: WebsiteSection[] = []
-  for (const raw of shape.data.sections) {
+  for (const raw of shape.sections) {
     const parsed = websiteSectionSchema.safeParse(raw)
     if (parsed.success) {
       sections.push(parsed.data)
@@ -57,7 +66,7 @@ export const getPublishedWebsite = cache(async function getPublishedWebsite(
       console.error(`website_pages: dropping invalid section for tenant ${tenantId}`, parsed.error)
     }
   }
-  const brandingParsed = websiteBrandingSchema.safeParse(shape.data.settings)
+  const brandingParsed = websiteBrandingSchema.safeParse(shape.settings)
   if (!brandingParsed.success) {
     console.error(`website_pages: malformed settings for tenant ${tenantId}`, brandingParsed.error)
   }
@@ -72,4 +81,19 @@ export const getPublishedWebsite = cache(async function getPublishedWebsite(
     sections: sections.sort((a, b) => a.position - b.position),
     settings,
   }
+})
+
+/**
+ * Just the published logo/accent-colour branding — every public page (not
+ * only the website-builder homepage) reads this so the tenant's uploaded
+ * logo and brand colour show up consistently on booking, menu, resources,
+ * and confirmation pages too, not only when a homepage has been built.
+ * Draft branding never reaches here — same publish/draft split as sections.
+ */
+export const getPublishedBranding = cache(async function getPublishedBranding(tenantId: string): Promise<WebsiteBranding> {
+  const shape = await getPublishedSnapshot(tenantId)
+  if (!shape) return EMPTY_BRANDING
+
+  const brandingParsed = websiteBrandingSchema.safeParse(shape.settings)
+  return brandingParsed.success ? brandingParsed.data : EMPTY_BRANDING
 })
