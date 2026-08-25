@@ -23,10 +23,6 @@ const EMPTY_BRANDING: WebsiteBranding = {
 // keep in sync with the h-11 on the banner below.
 const PREVIEW_BANNER_HEIGHT = 44
 
-// Fixed so the sticky navbar below can stick at exactly this many pixels —
-// keep in sync with the h-11 on the banner below.
-const PREVIEW_BANNER_HEIGHT = 44
-
 /**
  * Staff-only preview — renders the current DRAFT through the exact same
  * WebsitePage/WebsiteSections components the public homepage uses
