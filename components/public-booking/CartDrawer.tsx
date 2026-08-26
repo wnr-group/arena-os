@@ -6,7 +6,6 @@ import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { placeOnlineOrder } from '@/lib/actions/public-orders'
 import { useOrderCart } from './OrderCartProvider'
-import type { OrderableMenuCategory } from './OrderMenuClient'
 
 const TRANSITION_MS = 300
 
@@ -16,29 +15,31 @@ const TRANSITION_MS = 300
  * (CartDrawerHost) around the drawer itself so useBodyScrollLock (which
  * locks for as long as it's mounted) only ever runs while the drawer is
  * actually showing.
+ *
+ * `stationToken`/`stationName` are omitted on surfaces reached without a
+ * QR scan (homepage, /food-menu) — the order is then placed as a
+ * pickup/takeaway order tied only to the tenant's branch, no table.
  */
 export function CartDrawerHost({
   stationToken,
   stationName,
-  hasActiveBooking,
+  hasActiveBooking = false,
   currency,
-  categories,
 }: {
-  stationToken: string
-  stationName: string
-  hasActiveBooking: boolean
+  stationToken?: string
+  stationName?: string
+  hasActiveBooking?: boolean
   currency: string
-  categories: OrderableMenuCategory[]
 }) {
-  const { cartOpen, cart } = useOrderCart()
+  const { cartOpen, cartLines } = useOrderCart()
   if (!cartOpen) return null
 
-  const hasHappyHourLine = categories.some((c) => c.items.some((i) => i.discountedPrice !== null && cart[i.id]))
+  const hasHappyHourLine = cartLines.some((l) => l.hasDiscount)
 
   return (
     <CartDrawer
       stationToken={stationToken}
-      stationName={stationName}
+      stationName={stationName ?? 'Pickup order'}
       hasActiveBooking={hasActiveBooking}
       hasHappyHourLine={hasHappyHourLine}
       currency={currency}
@@ -57,7 +58,7 @@ function CartDrawer({
   hasHappyHourLine,
   currency,
 }: {
-  stationToken: string
+  stationToken?: string
   stationName: string
   hasActiveBooking: boolean
   hasHappyHourLine: boolean
@@ -165,7 +166,9 @@ function CartDrawer({
                 ? "The venue is confirming your order — we'll start it shortly."
                 : hasActiveBooking
                   ? 'This has been added to your current booking.'
-                  : "We'll bring it out to you shortly."}
+                  : stationToken
+                    ? "We'll bring it out to you shortly."
+                    : "We'll have it ready for pickup shortly."}
             </p>
             <button
               type="button"
