@@ -12,7 +12,6 @@ import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { OrderMenuClient, type OrderableMenuCategory } from '@/components/public-booking/OrderMenuClient'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
-import { CartDrawerHost } from '@/components/public-booking/CartDrawer'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -159,8 +158,6 @@ export default async function MenuPage() {
           address={branch?.address ?? null}
           phone={branch?.phone ?? null}
         />
-
-        {categories.length > 0 && <CartDrawerHost currency={tenant.currency} />}
       </OrderCartProvider>
     </div>
   )

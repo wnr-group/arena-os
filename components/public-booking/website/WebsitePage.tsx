@@ -6,7 +6,6 @@ import { publicSiteFont } from '@/lib/fonts'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
-import { CartDrawerHost } from '@/components/public-booking/CartDrawer'
 import { WebsiteSections } from './WebsiteSections'
 
 /**
@@ -85,7 +84,6 @@ export function WebsitePage({
         )}
         <WebsiteSections sections={sections} tenantId={tenantId} branch={branch} currency={currency} timezone={timezone} />
         {footer}
-        {hasMenu && <CartDrawerHost currency={currency} />}
       </OrderCartProvider>
     </div>
   )

@@ -12,7 +12,6 @@ import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
-import { CartDrawerHost } from '@/components/public-booking/CartDrawer'
 import { MenuHighlightsClient } from '@/components/public-booking/MenuHighlightsClient'
 
 const MENU_HIGHLIGHT_LIMIT = 8
@@ -160,8 +159,6 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
           address={branch?.address ?? null}
           phone={branch?.phone ?? null}
         />
-
-        {hasMenu && <CartDrawerHost currency={tenant.currency} />}
       </OrderCartProvider>
     </div>
   )

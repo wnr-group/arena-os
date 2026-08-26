@@ -30,6 +30,7 @@ export function proxy(request: NextRequest) {
   const isPublicRoute =
     pathname === '/' ||
     pathname === '/food-menu' ||
+    pathname === '/checkout' ||
     pathname === '/book' ||
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||

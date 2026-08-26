@@ -12,7 +12,6 @@ import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { OrderMenuClient, type OrderableMenuCategory } from '@/components/public-booking/OrderMenuClient'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
-import { CartDrawerHost } from '@/components/public-booking/CartDrawer'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -75,7 +74,9 @@ export default async function StationOrderPage({ params }: { params: Promise<{ s
       className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
       style={accentColorStyle(branding.accentColor)}
     >
-      <OrderCartProvider>
+      <OrderCartProvider
+        station={{ token: stationToken, name: station.resource.name, hasActiveBooking: station.bookingId !== null }}
+      >
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
         <main className="flex-1 bg-background relative">
@@ -119,20 +120,6 @@ export default async function StationOrderPage({ params }: { params: Promise<{ s
           address={branch?.address ?? null}
           phone={branch?.phone ?? null}
         />
-
-        {/* Rendered outside the z-10 content wrapper above (and outside
-            <main>) so its fixed, z-50 panel isn't trapped inside that div's
-            own stacking context — a z-10 stacking context caps everything
-            painted inside it at "10" when compared against siblings like the
-            navbar's z-40, regardless of the drawer's own z-index. */}
-        {categories.length > 0 && (
-          <CartDrawerHost
-            stationToken={stationToken}
-            stationName={station.resource.name}
-            hasActiveBooking={station.bookingId !== null}
-            currency={tenant.currency}
-          />
-        )}
       </OrderCartProvider>
     </div>
   )

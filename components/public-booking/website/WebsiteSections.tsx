@@ -260,8 +260,8 @@ function ResourceCardSkeleton() {
 
 /** The 'menu' case's data fetch, split out for the same reason as
  *  ResourcesContent above. Cart-aware (MenuHighlightsClient) so a visitor can
- *  add straight from the homepage — the same OrderCartProvider/CartDrawerHost
- *  that WebsitePage mounts around the whole section stack. */
+ *  add straight from the homepage — the same OrderCartProvider that
+ *  WebsitePage mounts around the whole section stack. */
 async function MenuContent({
   section,
   tinted,

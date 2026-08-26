@@ -13,18 +13,24 @@ export type CartLine = {
   hasDiscount: boolean
 }
 
-// Cart survives a refresh via localStorage — already scoped per tenant since
-// each tenant is its own subdomain/origin, so no tenant id needs to be baked
-// into the key. A cart left untouched past MAX_AGE_MS is dropped on next load
-// rather than restored: prices/availability may have drifted, and the order
-// is re-validated server-side regardless, but a week-old "cart" reappearing
-// is more confusing than helpful.
-const STORAGE_KEY = 'order-cart'
+/** Which table/station (if any) the cart is for — set once, at the QR-scan
+ *  entry point, then carried silently across every other page the customer
+ *  browses afterward (see the `station` prop below). */
+export type CartStation = { token: string; name: string; hasActiveBooking: boolean }
+
+// Cart (and station context) survive a refresh via localStorage — already
+// scoped per tenant since each tenant is its own subdomain/origin, so no
+// tenant id needs to be baked into the key. Left untouched past MAX_AGE_MS,
+// either is dropped on next load rather than restored: prices/availability
+// may have drifted, and the order is re-validated server-side regardless,
+// but a week-old "cart" reappearing is more confusing than helpful.
+const CART_STORAGE_KEY = 'order-cart'
+const STATION_STORAGE_KEY = 'order-station'
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 function loadStoredCart(): Record<string, CartLine> {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(CART_STORAGE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as { savedAt?: number; cart?: Record<string, CartLine> }
     if (!parsed.savedAt || Date.now() - parsed.savedAt > MAX_AGE_MS) return {}
@@ -34,14 +40,27 @@ function loadStoredCart(): Record<string, CartLine> {
   }
 }
 
+function loadStoredStation(): CartStation | null {
+  try {
+    const raw = window.localStorage.getItem(STATION_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { savedAt?: number; station?: CartStation }
+    if (!parsed.savedAt || Date.now() - parsed.savedAt > MAX_AGE_MS) return null
+    return parsed.station ?? null
+  } catch {
+    return null
+  }
+}
+
 type OrderCartContextValue = {
   cart: Record<string, CartLine>
   cartLines: CartLine[]
   cartCount: number
   cartTotal: number
-  cartOpen: boolean
-  openCart: () => void
-  closeCart: () => void
+  /** The table this order is for, or null for pickup/takeaway. Read by the
+   *  /checkout page — never trusted at order-placement time, which re-derives
+   *  everything server-side from the token alone. */
+  station: CartStation | null
   addOrIncrement: (item: OrderableMenuItem) => void
   incrementById: (menuItemId: string) => void
   decrementById: (menuItemId: string) => void
@@ -60,21 +79,43 @@ export function useOrderCart() {
 
 /**
  * Lifts the ordering cart out of OrderMenuClient into context so the navbar
- * (a sibling in the page tree, not a descendant) can show a live item count
- * and open the cart drawer — replaces the old bottom sticky-bar entry point.
+ * (a sibling in the page tree, not a descendant) can show a live item count,
+ * and so a click on the cart button can navigate to /checkout — a standalone
+ * route, not a drawer overlaid on the current page — with the cart already
+ * loaded, because it too mounts this same provider and hydrates from the
+ * same localStorage.
  */
-export function OrderCartProvider({ children }: { children: ReactNode }) {
-  // Starts empty so the server render and the client's first render match
-  // (localStorage doesn't exist on the server) — the persisted cart, if any,
-  // is loaded a moment later in the effect below.
+export function OrderCartProvider({
+  children,
+  station: incomingStation,
+}: {
+  children: ReactNode
+  /** Passed only by the QR-at-station entry point (/order/[stationToken]) —
+   *  every other page omits this so an already-set station survives a visit
+   *  to, say, /food-menu without being silently cleared back to pickup. */
+  station?: CartStation
+}) {
+  // Both start empty/null so the server render and the client's first render
+  // match (localStorage doesn't exist on the server) — the persisted values,
+  // if any, are loaded a moment later in the effect below.
   const [cart, setCart] = useState<Record<string, CartLine>>({})
+  const [station, setStation] = useState<CartStation | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [cartOpen, setCartOpen] = useState(false)
 
   useEffect(() => {
     setCart(loadStoredCart())
+    setStation(loadStoredStation())
     setLoaded(true)
   }, [])
+
+  // A page that DOES know its station (only the QR entry point) always wins
+  // over whatever was previously stored — scanning a different table's code
+  // must move the order there, not silently keep billing the old one.
+  useEffect(() => {
+    if (!incomingStation) return
+    setStation(incomingStation)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingStation?.token, incomingStation?.name, incomingStation?.hasActiveBooking])
 
   useEffect(() => {
     // Skip the pre-hydration pass (cart is still the empty initial value at
@@ -83,15 +124,28 @@ export function OrderCartProvider({ children }: { children: ReactNode }) {
     if (!loaded) return
     try {
       if (Object.keys(cart).length === 0) {
-        window.localStorage.removeItem(STORAGE_KEY)
+        window.localStorage.removeItem(CART_STORAGE_KEY)
       } else {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), cart }))
+        window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), cart }))
       }
     } catch {
       // Private browsing / quota exceeded — cart still works for this tab,
       // it just won't survive a refresh.
     }
   }, [cart, loaded])
+
+  useEffect(() => {
+    if (!loaded) return
+    try {
+      if (!station) {
+        window.localStorage.removeItem(STATION_STORAGE_KEY)
+      } else {
+        window.localStorage.setItem(STATION_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), station }))
+      }
+    } catch {
+      // Same private-browsing/quota caveat as the cart above.
+    }
+  }, [station, loaded])
 
   const cartLines = useMemo(() => Object.values(cart), [cart])
   const cartCount = useMemo(() => cartLines.reduce((sum, l) => sum + l.qty, 0), [cartLines])
@@ -161,9 +215,7 @@ export function OrderCartProvider({ children }: { children: ReactNode }) {
     cartLines,
     cartCount,
     cartTotal,
-    cartOpen,
-    openCart: () => setCartOpen(true),
-    closeCart: () => setCartOpen(false),
+    station,
     addOrIncrement,
     incrementById,
     decrementById,

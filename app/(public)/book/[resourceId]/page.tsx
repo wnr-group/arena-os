@@ -62,7 +62,6 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
         tenantName={tenant.name}
         icon={<Icon size={18} />}
         logoUrl={branding.logoUrl}
-        currency={tenant.currency}
         hasMenu={hasMenu}
       >
         <main className="flex-1 bg-background">
