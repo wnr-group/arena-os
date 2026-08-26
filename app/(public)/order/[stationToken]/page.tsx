@@ -131,7 +131,6 @@ export default async function StationOrderPage({ params }: { params: Promise<{ s
             stationName={station.resource.name}
             hasActiveBooking={station.bookingId !== null}
             currency={tenant.currency}
-            categories={categories}
           />
         )}
       </OrderCartProvider>

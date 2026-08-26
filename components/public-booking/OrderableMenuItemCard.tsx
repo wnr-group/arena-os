@@ -3,11 +3,10 @@ import { formatMoney } from '@/lib/format'
 import type { OrderableMenuItem } from './OrderMenuClient'
 
 /**
- * The ordering page's item card — same visual language as MenuItemCard (the
- * read-only /food-menu + homepage-highlights card), but that component is
- * shared by two display-only surfaces and must stay a plain card, so this is
- * a separate component rather than adding cart affordances to it. Adds:
- * a "Sold out" state, a happy-hour strikethrough price, and a qty stepper.
+ * The item card used everywhere a customer can add to cart — the full
+ * /order/[stationToken] and /food-menu grids (via OrderMenuClient) and the
+ * homepage "Menu Highlights" section (via MenuHighlightsClient). Adds a
+ * "Sold out" state, a happy-hour strikethrough price, and a qty stepper.
  */
 export function OrderableMenuItemCard({
   item,

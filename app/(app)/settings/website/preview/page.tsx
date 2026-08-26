@@ -90,6 +90,7 @@ export default async function WebsitePreviewPage() {
           tenantId={ctx.tenant.id}
           branch={branch}
           currency={ctx.tenant.currency}
+          timezone={ctx.tenant.timezone}
         />
       )}
     </div>

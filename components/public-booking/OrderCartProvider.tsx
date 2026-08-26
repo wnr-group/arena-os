@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { OrderableMenuItem } from './OrderMenuClient'
 
 export type CartLine = {
@@ -10,6 +10,28 @@ export type CartLine = {
   unitPrice: number
   qty: number
   specialInstructions: string
+  hasDiscount: boolean
+}
+
+// Cart survives a refresh via localStorage — already scoped per tenant since
+// each tenant is its own subdomain/origin, so no tenant id needs to be baked
+// into the key. A cart left untouched past MAX_AGE_MS is dropped on next load
+// rather than restored: prices/availability may have drifted, and the order
+// is re-validated server-side regardless, but a week-old "cart" reappearing
+// is more confusing than helpful.
+const STORAGE_KEY = 'order-cart'
+const MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+function loadStoredCart(): Record<string, CartLine> {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as { savedAt?: number; cart?: Record<string, CartLine> }
+    if (!parsed.savedAt || Date.now() - parsed.savedAt > MAX_AGE_MS) return {}
+    return parsed.cart ?? {}
+  } catch {
+    return {}
+  }
 }
 
 type OrderCartContextValue = {
@@ -42,8 +64,34 @@ export function useOrderCart() {
  * and open the cart drawer — replaces the old bottom sticky-bar entry point.
  */
 export function OrderCartProvider({ children }: { children: ReactNode }) {
+  // Starts empty so the server render and the client's first render match
+  // (localStorage doesn't exist on the server) — the persisted cart, if any,
+  // is loaded a moment later in the effect below.
   const [cart, setCart] = useState<Record<string, CartLine>>({})
+  const [loaded, setLoaded] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
+
+  useEffect(() => {
+    setCart(loadStoredCart())
+    setLoaded(true)
+  }, [])
+
+  useEffect(() => {
+    // Skip the pre-hydration pass (cart is still the empty initial value at
+    // that point) — writing then would clobber a previously saved cart with
+    // {} a split second before the real one loads.
+    if (!loaded) return
+    try {
+      if (Object.keys(cart).length === 0) {
+        window.localStorage.removeItem(STORAGE_KEY)
+      } else {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), cart }))
+      }
+    } catch {
+      // Private browsing / quota exceeded — cart still works for this tab,
+      // it just won't survive a refresh.
+    }
+  }, [cart, loaded])
 
   const cartLines = useMemo(() => Object.values(cart), [cart])
   const cartCount = useMemo(() => cartLines.reduce((sum, l) => sum + l.qty, 0), [cartLines])
@@ -58,7 +106,15 @@ export function OrderCartProvider({ children }: { children: ReactNode }) {
         ...prev,
         [item.id]: existing
           ? { ...existing, qty: existing.qty + 1 }
-          : { menuItemId: item.id, name: item.name, imageUrl: item.imageUrl, unitPrice, qty: 1, specialInstructions: '' },
+          : {
+              menuItemId: item.id,
+              name: item.name,
+              imageUrl: item.imageUrl,
+              unitPrice,
+              qty: 1,
+              specialInstructions: '',
+              hasDiscount: item.discountedPrice !== null,
+            },
       }
     })
   }

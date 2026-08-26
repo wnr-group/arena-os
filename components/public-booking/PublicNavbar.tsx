@@ -41,7 +41,7 @@ export function PublicNavbar({
   topOffset?: number
   /** Item count shown as a badge on the cart button. Only meaningful together with onCartClick. */
   cartCount?: number
-  /** When set, shows a cart button that opens the ordering cart — used only on the /order page. */
+  /** When set, shows a cart button that opens the ordering cart — passed by OrderNavbar on any page with a cart (station order, /food-menu, homepage menu highlights). */
   onCartClick?: () => void
 }) {
   const [open, setOpen] = useState(false)

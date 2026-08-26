@@ -4,9 +4,11 @@ import type { WebsiteSection } from '@/lib/website/types'
 import type { PublicBranch } from '@/lib/booking/public-availability'
 import { getPublicResourceTypes, getPublicWorkingHours } from '@/lib/booking/public-availability'
 import { getPublicMenu } from '@/lib/menu/public'
+import { getPublicActiveHappyHourRules } from '@/lib/happy-hours/public'
+import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
-import { MenuItemCard } from '@/components/public-booking/MenuItemCard'
+import { MenuHighlightsClient } from '@/components/public-booking/MenuHighlightsClient'
 import { ResourceTypeCard } from '@/components/public-booking/ResourceTypeCard'
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -25,17 +27,28 @@ export function WebsiteSections({
   tenantId,
   branch,
   currency,
+  timezone,
 }: {
   sections: WebsiteSection[]
   /** Needed by the dynamic sections (resources/menu/hours/map) to fetch their own live data. */
   tenantId: string
   branch: PublicBranch | null
   currency: string
+  /** Needed by the 'menu' section to price items against live happy-hour rules. */
+  timezone: string
 }) {
   return (
     <main className="flex-1">
       {sections.map((section, i) => (
-        <WebsiteSectionBlock key={section.id} section={section} tinted={i % 2 === 1} tenantId={tenantId} branch={branch} currency={currency} />
+        <WebsiteSectionBlock
+          key={section.id}
+          section={section}
+          tinted={i % 2 === 1}
+          tenantId={tenantId}
+          branch={branch}
+          currency={currency}
+          timezone={timezone}
+        />
       ))}
     </main>
   )
@@ -47,12 +60,14 @@ async function WebsiteSectionBlock({
   tenantId,
   branch,
   currency,
+  timezone,
 }: {
   section: WebsiteSection
   tinted: boolean
   tenantId: string
   branch: PublicBranch | null
   currency: string
+  timezone: string
 }) {
   switch (section.type) {
     case 'text':
@@ -136,7 +151,7 @@ async function WebsiteSectionBlock({
       const count = Math.min(section.content.limit, 4)
       return (
         <Suspense fallback={<MenuSkeleton heading={section.heading} tinted={tinted} count={count} />}>
-          <MenuContent section={section} tinted={tinted} tenantId={tenantId} currency={currency} />
+          <MenuContent section={section} tinted={tinted} tenantId={tenantId} currency={currency} timezone={timezone} />
         </Suspense>
       )
     }
@@ -244,27 +259,35 @@ function ResourceCardSkeleton() {
 }
 
 /** The 'menu' case's data fetch, split out for the same reason as
- *  ResourcesContent above. */
+ *  ResourcesContent above. Cart-aware (MenuHighlightsClient) so a visitor can
+ *  add straight from the homepage — the same OrderCartProvider/CartDrawerHost
+ *  that WebsitePage mounts around the whole section stack. */
 async function MenuContent({
   section,
   tinted,
   tenantId,
   currency,
+  timezone,
 }: {
   section: Extract<WebsiteSection, { type: 'menu' }>
   tinted: boolean
   tenantId: string
   currency: string
+  timezone: string
 }) {
-  const items = (await getPublicMenu(tenantId)).flatMap((c) => c.items).slice(0, section.content.limit)
+  const [menu, happyHourRules] = await Promise.all([getPublicMenu(tenantId), getPublicActiveHappyHourRules(tenantId)])
+  const items = menu.flatMap((c) => c.items).slice(0, section.content.limit)
   if (items.length === 0) return null
+
+  const now = new Date()
+  const orderableItems = items.map((item) => {
+    const applied = item.available ? applyHappyHour(Number(item.price), happyHourRules, now, timezone) : null
+    return { ...item, discountedPrice: applied ? applied.unitPrice.toFixed(2) : null }
+  })
+
   return (
     <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
-      <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
-        {items.map((item) => (
-          <MenuItemCard key={item.id} item={item} currency={currency} />
-        ))}
-      </div>
+      <MenuHighlightsClient items={orderableItems} currency={currency} />
       <p className="mt-8 text-center">
         <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
           View full menu &rarr;

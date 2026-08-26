@@ -6,7 +6,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { menuItems } from '@/db/schema'
 import { resolvePublicTenant } from '@/lib/tenant/public'
-import { getPublicStation } from '@/lib/booking/public-availability'
+import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
 import { rateLimit } from '@/lib/security/rate-limit'
@@ -20,7 +20,10 @@ async function callerIp(): Promise<string> {
 }
 
 const orderInput = z.object({
-  stationToken: z.string().uuid(),
+  // Present when the customer scanned a station's QR code; absent when
+  // ordering from the homepage/food-menu without a table — that order is
+  // placed as a pickup/takeaway order tied only to the tenant's branch.
+  stationToken: z.string().uuid().optional(),
   items: z
     .array(
       z.object({
@@ -36,12 +39,13 @@ const orderInput = z.object({
 export type PlaceOnlineOrderResult = { error?: string; orderNumber?: string; pendingAcceptance?: boolean }
 
 /**
- * A customer at a scanned station placing a food order — the online-ordering
- * counterpart of lib/actions/orders.ts:createOrder, sharing the exact same
- * createOrderCore (no forked pricing/KOT logic). The station token — not a
- * raw resourceId — is the only thing trusted from the client; everything
- * else (branch, resource, active booking, item availability, price) is
- * re-resolved server-side.
+ * A customer placing a food order — either at a scanned station, or (no
+ * stationToken) as a pickup/takeaway order off the homepage/food-menu. The
+ * online-ordering counterpart of lib/actions/orders.ts:createOrder, sharing
+ * the exact same createOrderCore (no forked pricing/KOT logic). The station
+ * token — not a raw resourceId — is the only thing trusted from the client;
+ * everything else (branch, resource, active booking, item availability,
+ * price) is re-resolved server-side.
  */
 export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise<PlaceOnlineOrderResult> {
   try {
@@ -56,13 +60,26 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
 
     const v = orderInput.parse(raw)
 
-    const station = await getPublicStation(tenant.id, v.stationToken)
-    if (!station) return { error: 'This station is not available for ordering right now.' }
+    let branchId: string
+    let resourceId: string | undefined
+    if (v.stationToken) {
+      const station = await getPublicStation(tenant.id, v.stationToken)
+      if (!station) return { error: 'This station is not available for ordering right now.' }
 
-    // Per-station on top of the per-IP check: catches a flood aimed at one
-    // table regardless of how many devices/IPs it comes from.
-    if (!rateLimit(`order:station:${station.resource.id}`, 20, 10 * 60_000).ok) {
-      return { error: RATE_LIMIT_MESSAGE }
+      // Per-station on top of the per-IP check: catches a flood aimed at one
+      // table regardless of how many devices/IPs it comes from.
+      if (!rateLimit(`order:station:${station.resource.id}`, 20, 10 * 60_000).ok) {
+        return { error: RATE_LIMIT_MESSAGE }
+      }
+
+      branchId = station.branchId
+      resourceId = station.resource.id
+    } else {
+      // No QR scan — a pickup/takeaway order against the tenant's primary
+      // branch, with no table/resource attached.
+      const branch = await getPublicBranch(tenant.id)
+      if (!branch) return { error: 'Online ordering is not available right now.' }
+      branchId = branch.id
     }
 
     const result = await withPublicTenant(tenant.id, async (tx) => {
@@ -87,8 +104,8 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         tx,
         { tenantId: tenant.id, timezone: tenant.timezone, membershipId: null },
         {
-          branchId: station.branchId,
-          resourceId: station.resource.id,
+          branchId,
+          resourceId,
           channel: 'online',
           acceptanceStatus: settings.autoAcceptOnlineOrders ? 'accepted' : 'pending',
           items: v.items,

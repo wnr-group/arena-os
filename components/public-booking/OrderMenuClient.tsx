@@ -74,13 +74,12 @@ function getCategoryIcon(name: string): CategoryIconType {
 }
 
 /**
- * The actual ordering surface at /order/[stationToken] (M14 #3) — browse,
- * build a cart, place the order. Reuses the same category/search UX as the
- * read-only FoodMenuClient (/food-menu) but with an add/remove stepper on
- * each card instead of a plain grid. Cart state itself lives in
- * OrderCartProvider (a page-level context) rather than here, so the navbar's
- * cart button — a sibling in the tree, not a descendant — can show the live
- * count and open the drawer.
+ * The ordering surface shared by /order/[stationToken] (QR-at-station) and
+ * /food-menu (browse-and-order without a table) — browse, build a cart,
+ * place the order. Cart state itself lives in OrderCartProvider (a
+ * page-level context) rather than here, so the navbar's cart button — a
+ * sibling in the tree, not a descendant — can show the live count and open
+ * the drawer.
  */
 export function OrderMenuClient({
   categories,
