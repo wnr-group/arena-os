@@ -132,16 +132,18 @@ export function CheckoutClient({
         return
       }
 
-      // The order now exists in the database either way — clear the cart
-      // regardless of how the payment step below goes, exactly like the
-      // pay-at-pickup path always has.
-      clearCart()
-
       if (res.awaitingPayment && res.orderId) {
+        // The cart stays intact until payment is actually submitted — see
+        // payForOrder's handler(). If the payment window is abandoned or
+        // fails to start, the customer still has their cart to retry with,
+        // rather than having to rebuild it from scratch.
         await payForOrder(res.orderId, res.orderNumber ?? '')
         return
       }
 
+      // No online payment involved — the order is placed the moment this
+      // resolves, so the cart clears immediately, as it always has.
+      clearCart()
       toast.success(
         res.pendingAcceptance ? `Order #${res.orderNumber} received!` : `Order #${res.orderNumber} sent to the kitchen!`,
         {
@@ -166,6 +168,12 @@ export function CheckoutClient({
    * releases the order to the kitchen. If the payment window is abandoned,
    * the order is left sitting unpaid (a known, accepted limitation — see the
    * M14 #6 plan) rather than silently retried or auto-cancelled.
+   *
+   * The cart is deliberately NOT cleared by this function except inside
+   * `handler()`, once Checkout actually reports a submitted payment — every
+   * other exit (intent creation failed, script failed to load, the modal was
+   * dismissed) leaves it untouched, so an abandoned or failed payment never
+   * costs the customer their cart.
    */
   async function payForOrder(orderId: string, orderNumber: string) {
     const res = await createOrderPaymentIntent({ orderId })
@@ -203,6 +211,8 @@ export function CheckoutClient({
         ...(phone ? { contact: phone } : {}),
       },
       handler: () => {
+        // Payment was actually submitted — only now is the cart cleared.
+        clearCart()
         toast.success('Payment submitted — confirming with the venue.', {
           description: "We'll start on your order the moment it clears.",
         })
