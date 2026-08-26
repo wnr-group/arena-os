@@ -211,7 +211,7 @@ async function ResourcesContent({
   const types = (await getPublicResourceTypes(tenantId, branch.id)).slice(0, section.content.limit)
   if (types.length === 0) return null
   return (
-    <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} wide>
+    <SectionShell heading={section.heading ?? 'What We Offer'} tinted={tinted} maxWidthClass="max-w-6xl">
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {types.map((t) => (
           <ResourceTypeCard key={t.id} type={t} currency={currency} />
@@ -226,7 +226,7 @@ async function ResourcesContent({
  *  placeholder) in case count is capped to the grid's own widest layout. */
 function ResourcesSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
   return (
-    <SectionShell heading={heading ?? 'What We Offer'} tinted={tinted} wide>
+    <SectionShell heading={heading ?? 'What We Offer'} tinted={tinted} maxWidthClass="max-w-6xl">
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: count }).map((_, i) => (
           <ResourceCardSkeleton key={i} />
@@ -286,7 +286,7 @@ async function MenuContent({
   })
 
   return (
-    <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} wide>
+    <SectionShell heading={section.heading ?? 'From the Menu'} tinted={tinted} maxWidthClass="max-w-6xl">
       <MenuHighlightsClient items={orderableItems} currency={currency} />
       <p className="mt-8 text-center">
         <a href="/food-menu" className="text-sm font-medium text-primary hover:underline">
@@ -299,7 +299,7 @@ async function MenuContent({
 
 function MenuSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
   return (
-    <SectionShell heading={heading ?? 'From the Menu'} tinted={tinted} wide>
+    <SectionShell heading={heading ?? 'From the Menu'} tinted={tinted} maxWidthClass="max-w-6xl">
       <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-3 lg:gap-6 xl:grid-cols-4">
         {Array.from({ length: count }).map((_, i) => (
           <MenuCardSkeleton key={i} />
@@ -337,16 +337,21 @@ function SectionShell({
   heading,
   tinted,
   wide,
+  maxWidthClass,
   children,
 }: {
   heading: string | null
   tinted: boolean
   wide?: boolean
+  /** Overrides the default wide/narrow max-width — the 'menu' section uses
+   *  this to match /food-menu's grid container (max-w-6xl) exactly, so cards
+   *  render at the same width/height there as everywhere else they appear. */
+  maxWidthClass?: string
   children: React.ReactNode
 }) {
   return (
     <section className={`scroll-mt-16 ${tinted ? 'bg-card/40' : ''}`}>
-      <div className={`mx-auto px-4 py-14 sm:px-6 sm:py-16 ${wide ? 'max-w-5xl' : 'max-w-3xl'}`}>
+      <div className={`mx-auto px-4 py-14 sm:px-6 sm:py-16 ${maxWidthClass ?? (wide ? 'max-w-5xl' : 'max-w-3xl')}`}>
         {heading && (
           <h2 className="mb-6 text-center text-2xl font-extrabold tracking-tight sm:text-3xl">{heading}</h2>
         )}
