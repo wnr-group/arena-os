@@ -612,7 +612,16 @@ export const orderChannel = pgEnum('order_channel', ['staff', 'online'])
 // Staff accept/reject gate for online orders (migration 0050) — defaults to
 // 'accepted' so every staff/POS order (and every pre-existing row) skips the
 // gate entirely; only an online order can ever be inserted as 'pending'.
-export const orderAcceptanceStatus = pgEnum('order_acceptance_status', ['pending', 'accepted', 'rejected'])
+// 'awaiting_payment' (migration 0051) — a standalone pay-now order between
+// being placed and its webhook confirming payment. Distinct from 'pending'
+// (the staff accept/reject queue) and invisible to it the same way; distinct
+// from 'accepted' (visible to /kitchen) until the webhook flips it there.
+export const orderAcceptanceStatus = pgEnum('order_acceptance_status', [
+  'pending',
+  'accepted',
+  'rejected',
+  'awaiting_payment',
+])
 
 export const orders = pgTable(
   'orders',
@@ -645,6 +654,10 @@ export const orders = pgTable(
   },
   (t) => [
     unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
+    // Target of payment_intents' composite (tenant_id, order_id) FK
+    // (migration 0051) — same device bookings/invoices/payment_intents
+    // themselves use for the same purpose.
+    unique('orders_tenant_id_key').on(t.tenantId, t.id),
     index('idx_orders_branch').on(t.tenantId, t.branchId),
     index('idx_orders_booking').on(t.bookingId),
     index('idx_orders_customer').on(t.tenantId, t.customerId),
@@ -903,7 +916,13 @@ export const paymentIntentStatus = pgEnum('payment_intent_status', [
   'failed',
   'cancelled',
 ])
-export const paymentIntentPurpose = pgEnum('payment_intent_purpose', ['booking_deposit'])
+// 'order_payment' (migration 0051) — pay-now for a standalone order with no
+// booking to add-to-bill against. See payment_intents' order_id/booking_id
+// note below for how the two purposes stay mutually exclusive.
+export const paymentIntentPurpose = pgEnum('payment_intent_purpose', [
+  'booking_deposit',
+  'order_payment',
+])
 
 export const paymentIntents = pgTable(
   'payment_intents',
@@ -915,7 +934,11 @@ export const paymentIntents = pgTable(
     branchId: uuid('branch_id')
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
-    bookingId: uuid('booking_id').notNull(),
+    // Exactly one of bookingId/orderId is set (migration 0051's
+    // payment_intents_exactly_one_target check) — a booking deposit or a
+    // standalone order's pay-now, never both, never neither.
+    bookingId: uuid('booking_id'),
+    orderId: uuid('order_id'),
     purpose: paymentIntentPurpose('purpose').notNull().default('booking_deposit'),
     gateway: text('gateway').notNull().default('razorpay'),
     /** Razorpay `order_…`. Written only after the gateway call returns. */
@@ -936,10 +959,21 @@ export const paymentIntents = pgTable(
       columns: [t.tenantId, t.bookingId],
       foreignColumns: [bookings.tenantId, bookings.id],
     }).onDelete('cascade'),
-    // At most ONE pending intent per booking+purpose — the idempotency rule.
-    uniqueIndex('idx_payment_intents_one_pending')
+    foreignKey({
+      name: 'payment_intents_order_tenant_fkey',
+      columns: [t.tenantId, t.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }).onDelete('cascade'),
+    // At most ONE pending intent per booking+purpose, and separately at most
+    // ONE per order+purpose — the idempotency rule, split in two (migration
+    // 0051) because bookingId/orderId are each null on the other's rows and a
+    // single index could no longer assume bookingId was always set.
+    uniqueIndex('idx_payment_intents_one_pending_booking')
       .on(t.tenantId, t.bookingId, t.purpose)
-      .where(sql`${t.status} = 'pending'`),
+      .where(sql`${t.status} = 'pending' and ${t.bookingId} is not null`),
+    uniqueIndex('idx_payment_intents_one_pending_order')
+      .on(t.tenantId, t.orderId, t.purpose)
+      .where(sql`${t.status} = 'pending' and ${t.orderId} is not null`),
     // AROS-50's webhook lookup. Deliberately not tenant-scoped: a Razorpay
     // order id is globally unique and must resolve to exactly one intent.
     uniqueIndex('idx_payment_intents_gateway_order').on(t.gateway, t.gatewayOrderId),
@@ -949,6 +983,7 @@ export const paymentIntents = pgTable(
       .on(t.gateway, t.gatewayPaymentId)
       .where(sql`${t.gatewayPaymentId} is not null`),
     index('idx_payment_intents_booking').on(t.tenantId, t.bookingId),
+    index('idx_payment_intents_order').on(t.tenantId, t.orderId),
   ],
 )
 

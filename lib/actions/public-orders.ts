@@ -10,6 +10,15 @@ import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availabi
 import { createOrderCore, OrderError } from '@/lib/orders/service'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
 import { findCustomerByRawPhone, findOrCreateCustomer } from '@/lib/customers/service'
+import {
+  createOrderPaymentIntent as createOrderPaymentIntentCore,
+  createOrderPaymentIntentInputSchema,
+  OrderPaymentError,
+  OrphanedOrderPaymentError,
+  type OrderPaymentCheckout,
+} from '@/lib/payments/order-payment'
+import { createRazorpayOrder, RazorpayApiError } from '@/lib/payments/razorpay'
+import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 import { zodErrorMessage } from '@/lib/utils/errors'
@@ -45,9 +54,24 @@ const orderInput = z.object({
   /** Honeypot — see HoneypotField. A non-empty value means whatever
    *  submitted this filled in every input it found, not a customer. */
   website: z.string().optional(),
+  /**
+   * M14 #6 (v2): the customer chose "pay online now" over "pay at pickup".
+   * Only honoured when the order turns out to be STANDALONE (see the
+   * `standalone` check below, re-derived server-side) — a table with an open
+   * booking always goes through add-to-bill instead, whatever this says.
+   */
+  payNow: z.boolean().optional(),
 })
 
-export type PlaceOnlineOrderResult = { error?: string; orderNumber?: string; pendingAcceptance?: boolean }
+export type PlaceOnlineOrderResult = {
+  error?: string
+  orderNumber?: string
+  /** Present on every success — needed to chain into createOrderPaymentIntent. */
+  orderId?: string
+  pendingAcceptance?: boolean
+  /** True when this order is sitting at acceptanceStatus='awaiting_payment' — the caller must now call createOrderPaymentIntent. */
+  awaitingPayment?: boolean
+}
 
 /**
  * A customer placing a food order — either at a scanned station, or (no
@@ -87,6 +111,12 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
 
     let branchId: string
     let resourceId: string | undefined
+    // A pickup order (no station), or a scanned station with no booking
+    // currently open against it — "no open booking to add to", the exact
+    // boundary M14 #6 (v2) draws for pay-now vs. add-to-bill. Re-derived here
+    // from the SAME station row already fetched for branchId/resourceId,
+    // never trusted from the client's stale hasActiveBooking.
+    let standalone = true
     if (v.stationToken) {
       const station = await getPublicStation(tenant.id, v.stationToken)
       if (!station) return { error: 'This station is not available for ordering right now.' }
@@ -99,12 +129,17 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
 
       branchId = station.branchId
       resourceId = station.resource.id
+      standalone = !station.bookingId
     } else {
       // No QR scan — a pickup/takeaway order against the tenant's primary
       // branch, with no table/resource attached.
       const branch = await getPublicBranch(tenant.id)
       if (!branch) return { error: 'Online ordering is not available right now.' }
       branchId = branch.id
+    }
+
+    if (v.payNow && !standalone) {
+      return { error: 'This table already has an open booking — add this order to the bill instead.' }
     }
 
     const result = await withPublicTenant(tenant.id, async (tx) => {
@@ -138,7 +173,11 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       // Whether this order needs a human to accept it before the kitchen sees
       // it (lib/orders/service.ts's acceptanceStatus gate) is a per-tenant
       // choice — read fresh, in this transaction, never cached across orders.
+      // Moot when payNow: a prepaid order skips the accept/reject queue
+      // entirely (payment is the confirmation) and goes straight to
+      // 'awaiting_payment' instead.
       const settings = await getOrderSettingsCore(tx, tenant.id)
+      const awaitingPayment = Boolean(v.payNow) && standalone
 
       const created = await createOrderCore(
         tx,
@@ -148,17 +187,114 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
           resourceId,
           customerId: customer.id,
           channel: 'online',
-          acceptanceStatus: settings.autoAcceptOnlineOrders ? 'accepted' : 'pending',
+          acceptanceStatus: awaitingPayment
+            ? 'awaiting_payment'
+            : settings.autoAcceptOnlineOrders
+              ? 'accepted'
+              : 'pending',
           items: v.items,
         },
       )
-      return { ...created, pendingAcceptance: !settings.autoAcceptOnlineOrders }
+      return {
+        ...created,
+        pendingAcceptance: !awaitingPayment && !settings.autoAcceptOnlineOrders,
+        awaitingPayment,
+      }
     })
 
-    return { orderNumber: result.orderNumber, pendingAcceptance: result.pendingAcceptance }
+    return {
+      orderNumber: result.orderNumber,
+      orderId: result.id,
+      pendingAcceptance: result.pendingAcceptance,
+      awaitingPayment: result.awaitingPayment,
+    }
   } catch (e) {
     if (e instanceof OrderError) return { error: e.message }
     if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }
+  }
+}
+
+/* ── M14 #6 (v2): pay-now for a standalone order ─────────────────────────────
+ *
+ * Sibling to createDepositOrder (lib/actions/payments.ts), but PUBLIC —
+ * customer-initiated from the unauthenticated /checkout page, not staff-
+ * initiated from a session. No requireContext()/canBill(): there is no staff
+ * member here to authorise, only a venue (resolved from the subdomain) and an
+ * order that already exists, awaiting payment.
+ *
+ * Creating a gateway order is NOT taking a payment. This leaves the intent at
+ * status='pending'; the webhook (lib/payments/webhook.ts) is the only thing
+ * that may ever mark it paid.
+ */
+
+export type CreateOrderPaymentIntentResult = {
+  error?: string
+  checkout?: OrderPaymentCheckout
+}
+
+/** Same narrow-failure discipline as lib/actions/payments.ts's failDeposit. */
+function failOrderPayment(e: unknown): CreateOrderPaymentIntentResult {
+  if (e instanceof OrderPaymentError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+
+  if (e instanceof OrphanedOrderPaymentError) {
+    console.error(
+      `[public-orders] order-payment intent NOT persisted after gateway order ${e.gatewayOrderId} was created — reconcile this order`,
+    )
+    return { error: e.message }
+  }
+
+  if (e instanceof RazorpayApiError) {
+    console.error(`[public-orders] razorpay order creation failed with status ${e.status}`)
+    return {
+      error: e.retriable
+        ? 'The payment gateway is not responding. Please try again in a moment.'
+        : e.message,
+    }
+  }
+
+  console.error('[public-orders] createOrderPaymentIntent failed:', e instanceof Error ? e.name : 'unknown')
+  return { error: 'Could not start the payment. Please try again.' }
+}
+
+/**
+ * Open a Razorpay order for a standalone order's total.
+ *
+ * The client sends only an order id. Credentials are loaded fresh for this
+ * tenant (never cached from an earlier call, never trusted from the client);
+ * a tenant with no Razorpay configured returns a friendly error rather than
+ * throwing — this is the "fall back / disable pay-now" path, mirrored by the
+ * checkout page proactively hiding the button when the same loader returns
+ * null server-side.
+ */
+export async function createOrderPaymentIntent(
+  input: z.input<typeof createOrderPaymentIntentInputSchema>,
+): Promise<CreateOrderPaymentIntentResult> {
+  try {
+    if (!rateLimit(`order-pay:ip:${await callerIp()}`, 8, 10 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+
+    const v = createOrderPaymentIntentInputSchema.parse(input)
+
+    const credentials = await loadRazorpayCredentialsForTenant(tenant.id)
+    if (!credentials) {
+      return { error: 'Online payment is not available for this venue right now.' }
+    }
+
+    const checkout = await createOrderPaymentIntentCore(v, {
+      runInTx: (fn) => withPublicTenant(tenant.id, fn),
+      credentials,
+      createOrder: createRazorpayOrder,
+      actor: { tenantId: tenant.id },
+    })
+
+    return { checkout }
+  } catch (e) {
+    return failOrderPayment(e)
   }
 }

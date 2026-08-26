@@ -38,9 +38,12 @@ export type CreateOrderInput = {
   // getActiveBookingForResource) — otherwise it stays standalone.
   channel?: 'staff' | 'online'
   // Accept/reject gate (migration 0050). Defaults to 'accepted' — only
-  // placeOnlineOrder (lib/actions/public-orders.ts) ever passes 'pending',
-  // and only when the tenant's auto-accept setting is off.
-  acceptanceStatus?: 'pending' | 'accepted'
+  // placeOnlineOrder (lib/actions/public-orders.ts) ever passes 'pending' or
+  // 'awaiting_payment'. 'pending' is the auto-accept-off staff review queue;
+  // 'awaiting_payment' (migration 0051) is a standalone order that chose
+  // pay-now — invisible to that queue AND to /kitchen until
+  // lib/payments/webhook.ts flips it to 'accepted' on confirmed payment.
+  acceptanceStatus?: 'pending' | 'accepted' | 'awaiting_payment'
   customerId?: string
   resourceId?: string
   items: CreateOrderItemInput[]

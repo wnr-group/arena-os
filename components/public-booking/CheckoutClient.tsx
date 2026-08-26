@@ -18,11 +18,14 @@ import {
   Phone,
   User,
   Mail,
+  CreditCard,
+  Wallet,
 } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
-import { placeOnlineOrder } from '@/lib/actions/public-orders'
+import { placeOnlineOrder, createOrderPaymentIntent } from '@/lib/actions/public-orders'
 import { lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { isValidPhone } from '@/lib/customers/phone'
+import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { useOrderCart } from './OrderCartProvider'
 import { HoneypotField } from './HoneypotField'
 
@@ -33,13 +36,34 @@ import { HoneypotField } from './HoneypotField'
  * stays in view while scrolling. `station` (table vs. pickup) comes from
  * OrderCartProvider, not a prop, since this page is reached from wherever
  * the cart was built.
+ *
+ * `razorpayConfigured` (M14 #6, v2) gates the "Pay online now" choice — read
+ * server-side (app/(public)/checkout/page.tsx) from the same credential
+ * loader that actually calls the gateway, so the button is hidden rather
+ * than offered and then failing.
  */
-export function CheckoutClient({ currency }: { currency: string }) {
+export function CheckoutClient({
+  currency,
+  venueName,
+  razorpayConfigured,
+}: {
+  currency: string
+  venueName: string
+  razorpayConfigured: boolean
+}) {
   const router = useRouter()
   const { cartLines, cartCount, cartTotal, station, incrementById, decrementById, removeLine, updateNote, clearCart } =
     useOrderCart()
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+
+  // "no open booking to add to" — a pickup order, or a scanned station
+  // currently unoccupied — mirrors the server's own re-derivation in
+  // placeOnlineOrder (lib/actions/public-orders.ts); this is only ever used
+  // to decide what the UI OFFERS, the server never trusts it.
+  const standalone = !station?.hasActiveBooking
+  const showPayNow = razorpayConfigured && standalone
+  const [payOnline, setPayOnline] = useState(false)
 
   // Same phone-first identification as the booking wizard
   // (ResourceBookingPage): look the number up as soon as it's long enough to
@@ -89,6 +113,7 @@ export function CheckoutClient({ currency }: { currency: string }) {
   function handlePlaceOrder() {
     setError(null)
     startTransition(async () => {
+      const wantsPayNow = showPayNow && payOnline
       const res = await placeOnlineOrder({
         stationToken: station?.token,
         items: cartLines.map((l) => ({
@@ -100,12 +125,23 @@ export function CheckoutClient({ currency }: { currency: string }) {
         customerPhone: phone,
         customerEmail: email,
         website,
+        payNow: wantsPayNow,
       })
       if (res.error) {
         setError(res.error)
         return
       }
+
+      // The order now exists in the database either way — clear the cart
+      // regardless of how the payment step below goes, exactly like the
+      // pay-at-pickup path always has.
       clearCart()
+
+      if (res.awaitingPayment && res.orderId) {
+        await payForOrder(res.orderId, res.orderNumber ?? '')
+        return
+      }
+
       toast.success(
         res.pendingAcceptance ? `Order #${res.orderNumber} received!` : `Order #${res.orderNumber} sent to the kitchen!`,
         {
@@ -120,6 +156,68 @@ export function CheckoutClient({ currency }: { currency: string }) {
       )
       router.push('/')
     })
+  }
+
+  /**
+   * Open Razorpay Checkout for an order already placed at
+   * acceptanceStatus='awaiting_payment'. Same honesty rule as DepositButton:
+   * the browser's success callback is unauthenticated client input, never
+   * proof of payment — the webhook (lib/payments/webhook.ts) is what actually
+   * releases the order to the kitchen. If the payment window is abandoned,
+   * the order is left sitting unpaid (a known, accepted limitation — see the
+   * M14 #6 plan) rather than silently retried or auto-cancelled.
+   */
+  async function payForOrder(orderId: string, orderNumber: string) {
+    const res = await createOrderPaymentIntent({ orderId })
+    if (res.error || !res.checkout) {
+      setError(res.error ?? 'Could not start the payment.')
+      toast.error(`Order #${orderNumber} was placed, but online payment could not be started.`, {
+        description: 'Please contact the venue to arrange payment.',
+      })
+      router.push('/')
+      return
+    }
+    const { orderId: gatewayOrderId, amount, currency: orderCurrency, keyId } = res.checkout
+
+    let Razorpay: RazorpayCtor
+    try {
+      Razorpay = await loadCheckoutScript()
+    } catch {
+      setError('Could not load the payment window. Check your connection and try again.')
+      toast.error(`Order #${orderNumber} was placed, but the payment window could not load.`, {
+        description: 'Please contact the venue to arrange payment.',
+      })
+      router.push('/')
+      return
+    }
+
+    const checkout = new Razorpay({
+      key: keyId,
+      order_id: gatewayOrderId,
+      amount,
+      currency: orderCurrency,
+      name: venueName,
+      description: `Order #${orderNumber}`,
+      prefill: {
+        ...(name ? { name } : {}),
+        ...(phone ? { contact: phone } : {}),
+      },
+      handler: () => {
+        toast.success('Payment submitted — confirming with the venue.', {
+          description: "We'll start on your order the moment it clears.",
+        })
+        router.push('/')
+      },
+      modal: {
+        ondismiss: () => {
+          toast(`Order #${orderNumber} is placed but not yet paid.`, {
+            description: 'Contact the venue if you’d like to complete payment another way.',
+          })
+          router.push('/')
+        },
+      },
+    })
+    checkout.open()
   }
 
   if (cartLines.length === 0) {
@@ -377,6 +475,36 @@ export function CheckoutClient({ currency }: { currency: string }) {
               </div>
             </div>
 
+            {showPayNow && (
+              <div className="border-t border-border/70 px-5 py-4">
+                <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPayOnline(false)}
+                    className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
+                      !payOnline
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:border-primary/40'
+                    }`}
+                  >
+                    <Wallet size={15} /> Pay at pickup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayOnline(true)}
+                    className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
+                      payOnline
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:border-primary/40'
+                    }`}
+                  >
+                    <CreditCard size={15} /> Pay online now
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="px-5 pb-5">
               {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
               <button
@@ -387,10 +515,12 @@ export function CheckoutClient({ currency }: { currency: string }) {
               >
                 <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
                 {pending && <Loader2 size={16} className="animate-spin" />}
-                {pending ? 'Placing order...' : 'Place order'}
+                {pending ? 'Placing order...' : showPayNow && payOnline ? 'Place order & pay' : 'Place order'}
               </button>
               <p className="mt-3 text-center text-[11px] font-medium text-muted-foreground/70">
-                Sent directly to the venue the moment you place it
+                {showPayNow && payOnline
+                  ? "You'll be asked to pay right after this"
+                  : 'Sent directly to the venue the moment you place it'}
               </p>
             </div>
           </div>

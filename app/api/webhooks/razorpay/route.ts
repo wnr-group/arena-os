@@ -12,7 +12,10 @@ import { applyVerifiedPaymentWebhook, logIgnoredEvent } from '@/lib/payments/web
 import { tenantSlugFromHost } from '@/lib/tenant/subdomain'
 
 /**
- * POST /api/webhooks/razorpay — the ONLY thing that may confirm a deposit.
+ * POST /api/webhooks/razorpay — the ONLY thing that may confirm a deposit or
+ * a standalone order's pay-now (M14 #6, v2). Same route, same signature +
+ * idempotency guarantees for both — see applyVerifiedPaymentWebhook's branch
+ * on the intent's `purpose`.
  *
  * A browser reaching Razorpay's success callback proves nothing: it is
  * unauthenticated client input. This route is the authority, and it earns that
@@ -156,7 +159,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       )
     } else if (outcome.kind === 'processed') {
       console.info(
-        `[razorpay-webhook] deposit captured for tenant ${tenant.tenantId}, intent ${outcome.intentId}`,
+        `[razorpay-webhook] ${outcome.purpose} captured for tenant ${tenant.tenantId}, intent ${outcome.intentId}`,
       )
     }
 

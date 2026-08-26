@@ -5,6 +5,7 @@ import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
+import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
@@ -43,7 +44,24 @@ export default async function CheckoutPage() {
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
-  const [branch, branding] = await Promise.all([getPublicBranch(tenant.id), getPublishedBranding(tenant.id)])
+  // Proactive disable, not "attempt then show an error": whether pay-now is
+  // even offered on this page is decided here, server-side, from the SAME
+  // owner-connection credential loader createOrderPaymentIntent uses to
+  // actually call the gateway (lib/settings/razorpay-credentials.ts) — never
+  // just the publishable key id, since a configured-but-secretless tenant
+  // could still not take a payment.
+  //
+  // A decryption fault here degrades to "pay-now unavailable", not a broken
+  // checkout page — a customer must still be able to place a pay-at-pickup
+  // order even if this tenant's stored secret is unusable.
+  const [branch, branding, razorpayCredentials] = await Promise.all([
+    getPublicBranch(tenant.id),
+    getPublishedBranding(tenant.id),
+    loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+      console.error('[checkout] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
+      return null
+    }),
+  ])
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
@@ -57,7 +75,11 @@ export default async function CheckoutPage() {
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
         <main className="flex-1 bg-background">
-          <CheckoutClient currency={tenant.currency} />
+          <CheckoutClient
+            currency={tenant.currency}
+            venueName={tenant.name}
+            razorpayConfigured={razorpayCredentials !== null}
+          />
         </main>
 
         <PublicFooter

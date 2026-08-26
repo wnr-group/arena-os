@@ -44,6 +44,11 @@ export async function listDepositStates(
 
   const byBooking: Record<string, DepositState> = {}
   for (const row of rows) {
+    // bookingId is only null on an order_payment intent (migration 0051),
+    // which the purpose='booking_deposit' filter above already excludes —
+    // this is belt-and-braces so the TS type (widened by that same
+    // migration) doesn't need an unsound assertion.
+    if (!row.bookingId) continue
     // 'paid' wins over 'pending': a booking that has settled a deposit and then
     // had a second order opened should read as paid.
     if (row.status === 'paid' || !byBooking[row.bookingId]) {

@@ -9,7 +9,10 @@
  * Covers: valid signature, tampered body, wrong secret, missing signature,
  * duplicate + concurrent delivery, replay, amount/currency/order/tenant/booking
  * mismatch, cancelled and already-settled intents, non-capture events, the
- * raw-body requirement, and the invoice projection.
+ * raw-body requirement, the invoice projection, and (M14 #6, v2) the SAME
+ * route settling a standalone order's pay-now: invoice + payment creation,
+ * the acceptance_status release to the kitchen, idempotency, and cross-tenant
+ * isolation for that path too.
  *
  * No secret is printed.
  *
@@ -151,6 +154,61 @@ async function main() {
     (await ownerPool.query('select * from payment_intents where id=$1', [id])).rows[0]
   const paymentCount = async (tenantId: string) =>
     Number((await ownerPool.query('select count(*)::int n from payments where tenant_id=$1', [tenantId])).rows[0].n)
+
+  // ── M14 #6 (v2) fixtures: a standalone (no-booking) order, paid via the
+  // SAME webhook a booking deposit uses — see lib/payments/webhook.ts's
+  // branch on payment_intents.purpose.
+  async function makeStandaloneOrder(
+    t: { tenantId: string; branchId: string },
+    o: { acceptanceStatus?: string; status?: string } = {},
+  ) {
+    seq++
+    const c = await ownerPool.query<{ id: string }>(
+      `insert into customers (tenant_id, phone, name) values ($1,$2,$3)
+       on conflict (tenant_id, phone) do update set name = excluded.name returning id`,
+      [t.tenantId, `+9198766${String(10000 + seq).slice(-5)}`, 'Order-WH Guest'],
+    )
+    const ord = await ownerPool.query<{ id: string }>(
+      `insert into orders (tenant_id,branch_id,order_number,status,channel,acceptance_status,customer_id)
+       values ($1,$2,$3,$4,'online',$5,$6) returning id`,
+      [
+        t.tenantId,
+        t.branchId,
+        `OR-WH-${String(seq).padStart(3, '0')}`,
+        o.status ?? 'open',
+        o.acceptanceStatus ?? 'awaiting_payment',
+        c.rows[0].id,
+      ],
+    )
+    return { dbOrderId: ord.rows[0].id, customerId: c.rows[0].id }
+  }
+
+  /** A single-line order totalling exactly `amount` (0% tax, qty 1). */
+  async function makeOrderIntent(
+    t: { tenantId: string; branchId: string },
+    amount: string,
+    o: { acceptanceStatus?: string; status?: string } = {},
+  ) {
+    seq++
+    const { dbOrderId, customerId } = await makeStandaloneOrder(t, o)
+    await ownerPool.query(
+      `insert into order_items (tenant_id, order_id, item_name, unit_price, tax_rate, qty, line_total)
+       values ($1,$2,'Test Item',$3,'0',1,$3)`,
+      [t.tenantId, dbOrderId, amount],
+    )
+    const orderId = `order_OWH${String(seq).padStart(10, '0')}`
+    const pi = await ownerPool.query<{ id: string }>(
+      `insert into payment_intents (tenant_id,branch_id,order_id,purpose,gateway_order_id,amount,currency,status)
+       values ($1,$2,$3,'order_payment',$4,$5,'INR','pending') returning id`,
+      [t.tenantId, t.branchId, dbOrderId, orderId, amount],
+    )
+    return { intentId: pi.rows[0].id, dbOrderId, customerId, orderId }
+  }
+
+  const orderRow = async (id: string) =>
+    (await ownerPool.query('select * from orders where id=$1', [id])).rows[0]
+  const paymentByGatewayId = async (gatewayPaymentId: string) =>
+    (await ownerPool.query('select * from payments where gateway_payment_id=$1', [gatewayPaymentId])).rows[0]
 
   const A = await makeTenant('testwha', SECRET_A)
   const B = await makeTenant('testwhb', SECRET_B)
@@ -455,6 +513,102 @@ async function main() {
           and razorpay_webhook_secret_encrypted !~ '^v[0-9]+:'`,
     )
     check('no plaintext webhook secret exists anywhere in the table', anyPlaintext.rows[0].n === 0)
+  }
+
+  // ── 13. order_payment: pay-now for a standalone order (M14 #6, v2) ────────
+  {
+    const { intentId, dbOrderId, customerId, orderId } = await makeOrderIntent(A, '354.00')
+
+    // Before payment: invisible to BOTH the staff accept/reject queue
+    // (which filters acceptance_status='pending') and /kitchen (which
+    // filters acceptance_status='accepted') — see lib/orders/data.ts and
+    // lib/kots/data.ts, neither of which needed a code change for this.
+    const before = await orderRow(dbOrderId)
+    check('before payment: the order sits at awaiting_payment', before.acceptance_status === 'awaiting_payment')
+    check('…neither pending (staff queue) nor accepted (kitchen)', before.acceptance_status !== 'pending' && before.acceptance_status !== 'accepted')
+
+    const body = capturedBody({ orderId, paymentId: 'pay_WH_ORD001', amountPaise: 35400 })
+    const res = await deliver(A.slug, body, { signature: sign(body, SECRET_A), eventId: 'evt_WH_ORD01' })
+
+    check('a validly signed order-payment is accepted (200)', res.status === 200)
+    check('…reported as processed', res.body.status === 'processed')
+
+    const intent = await intentRow(intentId)
+    check('…the intent is now PAID', intent.status === 'paid')
+    check('…it names the order, not a booking', intent.order_id === dbOrderId && intent.booking_id === null)
+
+    const order = await orderRow(dbOrderId)
+    check('…released to the kitchen (acceptance_status → accepted)', order.acceptance_status === 'accepted')
+    check('…and billed, so it can never be picked up by a bill a second time', order.status === 'billed')
+
+    const pay = await paymentByGatewayId('pay_WH_ORD001')
+    check('…a captured payment was recorded', pay !== undefined && pay.status === 'captured' && pay.method === 'online')
+    check('…for the full order total, with the gateway references attached', pay.amount === '354.00' && pay.gateway_order_id === orderId)
+    check('…with no collecting cashier (no human took this money)', pay.collected_by === null)
+
+    const inv = (await ownerPool.query('select * from invoices where id=$1', [pay.invoice_id])).rows[0]
+    check('…a standalone invoice was raised (no booking)', inv.booking_id === null)
+    check('…for the customer this order was placed under', inv.customer_id === customerId)
+    check('…totalling exactly the order, fully settled', inv.total === '354.00' && inv.status === 'paid')
+
+    const items = (await ownerPool.query('select * from invoice_items where invoice_id=$1', [inv.id])).rows
+    check('…exactly one food line, sourced from the order item', items.length === 1 && items[0].kind === 'food')
+  }
+
+  // Idempotency: a redelivery for an already-settled order must not raise a
+  // second invoice or re-flip a status that already moved.
+  {
+    const { intentId, dbOrderId, orderId } = await makeOrderIntent(A, '200.00')
+    const body = capturedBody({ orderId, paymentId: 'pay_WH_ORD002', amountPaise: 20000 })
+    const signature = sign(body, SECRET_A)
+
+    const first = await deliver(A.slug, body, { signature, eventId: 'evt_WH_ORD02' })
+    check('first delivery is processed', first.body.status === 'processed')
+    const invoicesAfterFirst = Number(
+      (await ownerPool.query('select count(*)::int n from invoices where tenant_id=$1', [A.tenantId])).rows[0].n,
+    )
+
+    const replay = await deliver(A.slug, body, { signature, eventId: 'evt_WH_ORD02' })
+    check('an exact replay is a no-op (duplicate)', replay.body.status === 'duplicate')
+    const invoicesAfterReplay = Number(
+      (await ownerPool.query('select count(*)::int n from invoices where tenant_id=$1', [A.tenantId])).rows[0].n,
+    )
+    check('…no second invoice was raised', invoicesAfterReplay === invoicesAfterFirst)
+
+    const retry = await deliver(A.slug, body, { signature, eventId: 'evt_WH_ORD02b' })
+    check('…nor under a different event id for the same payment', retry.body.status === 'duplicate')
+
+    check('…the intent settled exactly once', (await intentRow(intentId)).status === 'paid')
+    check(
+      '…and the order is still exactly one step past awaiting_payment',
+      (await orderRow(dbOrderId)).acceptance_status === 'accepted',
+    )
+  }
+
+  // An order NOT sitting at awaiting_payment (already accepted through some
+  // other path, or already billed) must refuse rather than double-process —
+  // the same discipline section 10 proves for a cancelled/failed deposit
+  // intent, here proved for the order's own state instead of the intent's.
+  {
+    const { orderId, dbOrderId, intentId } = await makeOrderIntent(A, '150.00', { acceptanceStatus: 'accepted' })
+    const body = capturedBody({ orderId, paymentId: 'pay_WH_ORD003', amountPaise: 15000 })
+    const res = await deliver(A.slug, body, { signature: sign(body, SECRET_A), eventId: 'evt_WH_ORD03' })
+
+    check('a payment for an order not awaiting payment is rejected', res.body.status === 'rejected')
+    check('…the intent stays pending, unsettled', (await intentRow(intentId)).status === 'pending')
+    const order = await orderRow(dbOrderId)
+    check('…the order status is untouched', order.status === 'open' && order.acceptance_status === 'accepted')
+    check('…no invoice or payment was created for it', (await paymentByGatewayId('pay_WH_ORD003')) === undefined)
+  }
+
+  // Cross-tenant: tenant A's signed webhook must not be able to settle
+  // tenant B's order-payment intent, mirroring section 9 for deposits.
+  {
+    const bIntent = await makeOrderIntent(B, '999.00')
+    const body = capturedBody({ orderId: bIntent.orderId, paymentId: 'pay_WH_ORD004', amountPaise: 99900 })
+    const crossed = await deliver(A.slug, body, { signature: sign(body, SECRET_A), eventId: 'evt_WH_ORD04' })
+    check("tenant A's signed webhook cannot settle tenant B's order", crossed.status === 200 && crossed.body.status === 'ignored')
+    check("…tenant B's order is untouched", (await orderRow(bIntent.dbOrderId)).acceptance_status === 'awaiting_payment')
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────

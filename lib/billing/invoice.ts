@@ -220,6 +220,45 @@ export async function loadFoodLines(
 }
 
 /**
+ * One standalone order's own lines, as priceBill lines — no booking/
+ * acceptanceStatus filter, unlike loadFoodLines: this is read once, at the
+ * single moment a pay-now order is being priced or invoiced (order-payment.ts
+ * for the gateway amount, issueInvoiceForOrder below for the bill), never as
+ * a repeatable "what's still owed" query the way loadFoodLines is. The
+ * caller is responsible for having already locked and validated the order's
+ * state before calling this.
+ *
+ * unit_price and tax_rate are read straight off order_items, unchanged — the
+ * same snapshot discipline loadFoodLines follows.
+ */
+export async function loadOrderFoodLines(
+  tx: Db,
+  tenantId: string,
+  orderId: string,
+): Promise<BillLine[]> {
+  const rows = await tx
+    .select({
+      id: orderItems.id,
+      itemName: orderItems.itemName,
+      unitPrice: orderItems.unitPrice,
+      taxRate: orderItems.taxRate,
+      qty: orderItems.qty,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)))
+    .orderBy(orderItems.id)
+
+  return rows.map((r) => ({
+    description: r.itemName,
+    kind: 'food' as const,
+    sourceId: r.id,
+    qty: r.qty,
+    unitPrice: Number(r.unitPrice),
+    taxPercent: Number(r.taxRate),
+  }))
+}
+
+/**
  * Every billable line for a booking: its time charges plus any food &
  * beverage ordered against it. One booking, one bill — the rest of the
  * pipeline (priceBill, invoice_items, the bill screen's sections) already
@@ -838,4 +877,82 @@ export async function issueWalletTopUpInvoice(
     loyalty: null,
     deposits: { applied: [], unapplied: [] },
   }
+}
+
+/**
+ * Raise the invoice for a PAID STANDALONE ORDER (M14 #6, v2's pay-now).
+ *
+ * Fourth sibling of issueInvoiceForBooking() / issueMembershipInvoice() /
+ * issueWalletTopUpInvoice(), sharing the same money infrastructure
+ * (priceBill, nextInvoiceNumber, loadInvoicePrefix, financialYearPeriod).
+ * Deliberately the simplest of the four: no promo code, no loyalty
+ * redemption, no membership benefit — a prepaid order is charged at face
+ * value, same scope decision issueWalletTopUpInvoice makes for a top-up.
+ *
+ * Called ONLY from lib/payments/webhook.ts, after a verified `payment.captured`
+ * for an `order_payment` intent, inside that webhook's transaction — so the
+ * invoice, its items and the flip of orders.status/acceptanceStatus (done by
+ * the caller, not here) commit or roll back together with the payment
+ * record `recordVerifiedGatewayPayment` writes right after this returns.
+ *
+ * Left at status 'issued', not short-circuited to 'paid': the caller settles
+ * it via recordVerifiedGatewayPayment in the same transaction, exactly like
+ * issueWalletTopUpInvoice leaves the transition to its own caller — one
+ * place owns "when does an invoice become paid".
+ */
+export async function issueInvoiceForOrder(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  order: { id: string; branchId: string; customerId: string | null; orderNumber: string },
+): Promise<{ invoiceId: string; invoiceNumber: string; pricing: PricingResult }> {
+  const lines = await loadOrderFoodLines(tx, tenant.id, order.id)
+  if (lines.length === 0) {
+    throw new BillingError('This order has nothing to bill.')
+  }
+
+  const pricing = priceBill({ lines })
+
+  const period = financialYearPeriod(todayInZone(tenant.timezone))
+  const prefix = await loadInvoicePrefix(tx, tenant.id)
+  const invoiceNumber = await nextInvoiceNumber(tx, tenant.id, period, prefix)
+
+  const [invoice] = await tx
+    .insert(invoices)
+    .values({
+      tenantId: tenant.id,
+      branchId: order.branchId,
+      invoiceNumber,
+      // No booking: this order was never attached to one — that's the whole
+      // reason it went through pay-now instead of add-to-bill.
+      bookingId: null,
+      customerId: order.customerId,
+      subtotal: pricing.subtotal.toFixed(2),
+      discount: pricing.discount.toFixed(2),
+      taxTotal: pricing.taxTotal.toFixed(2),
+      taxBreakup: pricing.taxBreakup.map((g) => ({
+        rate: g.percent,
+        cgst: g.cgst.toFixed(2),
+        sgst: g.sgst.toFixed(2),
+      })),
+      total: pricing.total.toFixed(2),
+      status: 'issued',
+      issuedAt: new Date(),
+    })
+    .returning({ id: invoices.id })
+
+  await tx.insert(invoiceItems).values(
+    pricing.items.map((item) => ({
+      tenantId: tenant.id,
+      invoiceId: invoice.id,
+      kind: item.kind,
+      sourceId: item.sourceId ?? null,
+      description: item.description,
+      qty: item.qty.toFixed(2),
+      unitPrice: item.unitPrice.toFixed(2),
+      taxRate: item.taxPercent.toFixed(2),
+      lineTotal: item.lineTotal.toFixed(2),
+    })),
+  )
+
+  return { invoiceId: invoice.id, invoiceNumber, pricing }
 }
