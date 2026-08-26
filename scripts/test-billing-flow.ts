@@ -170,19 +170,19 @@ async function main() {
   }
 
   let orderSeq = 0
-  /** A food order attached to a booking, with the given items (mirrors what createOrder snapshots onto order_items). */
+  /** A food order attached to a booking, with the given items (mirrors what createOrder/placeOnlineOrder snapshot onto order_items). */
   async function makeFoodOrder(
     t: { tenantId: string; branchId: string },
     bookingId: string,
     items: { name: string; unitPrice: string; qty: number; taxRate?: string }[],
-    opts: { status?: string } = {},
+    opts: { status?: string; channel?: string; acceptanceStatus?: string } = {},
   ) {
-    const { status = 'open' } = opts
+    const { status = 'open', channel = 'staff', acceptanceStatus = 'accepted' } = opts
     const n = ++orderSeq
     const ord = await ownerPool.query<{ id: string }>(
-      `insert into orders (tenant_id,branch_id,booking_id,order_number,status)
-       values ($1,$2,$3,$4,$5) returning id`,
-      [t.tenantId, t.branchId, bookingId, `FO-${n}`, status],
+      `insert into orders (tenant_id,branch_id,booking_id,order_number,status,channel,acceptance_status)
+       values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+      [t.tenantId, t.branchId, bookingId, `FO-${n}`, status, channel, acceptanceStatus],
     )
     const orderId = ord.rows[0].id
     for (const it of items) {
@@ -607,6 +607,117 @@ async function main() {
         await ownerPool.query(`select count(*)::int n from invoice_items where invoice_id=$1 and kind='food'`, [rUnrelated.invoiceId])
       ).rows[0].n
       check("…0 food lines — another booking's order does not cross over", foodCount === 0)
+    }
+  }
+
+  // ── 15. REGRESSION: online orders only fold into the bill once ACCEPTED ───
+  // M14 #5 — "add-to-bill settlement": a station's food orders auto-attach to
+  // its active booking (story #1) and are meant to fold into the bill for
+  // free, the same as a staff-placed order. But an online order sits in the
+  // accept/reject queue (lib/orders/data.ts) at status='open',
+  // acceptance_status='pending' before a human reviews it — the SAME
+  // status='open' a staff order and an already-accepted online order carry.
+  // Without gating loadFoodLines/the billed-flip on acceptance_status too, a
+  // booking billed while an order sat unreviewed would charge the customer
+  // for food the kitchen was never told to make.
+  {
+    // No booking_slot (slots: false) so the ONLY possible charge is the food
+    // order — otherwise the ₹900 time charge alone would make the booking
+    // billable regardless of whether the food line is picked up, masking
+    // exactly the bug this section exists to catch.
+    const pendingBooking = await makeBooking(A, { slots: false })
+    await makeFoodOrder(A, pendingBooking.bookingId, [{ name: 'Nachos', unitPrice: '150.00', qty: 1 }], {
+      channel: 'online',
+      acceptanceStatus: 'pending',
+    })
+    const reloadPending = await withUser(A.userId, (tx) => loadFoodLines(tx, A.tenantId, pendingBooking.bookingId))
+    check('a still-pending online order never appears in loadFoodLines', reloadPending.length === 0)
+
+    const rPending = await bill(A.userId, A.tenantId, { bookingId: pendingBooking.bookingId })
+    check(
+      'a booking whose only order is still pending has nothing to bill',
+      !rPending.ok && rPending.billing && /nothing to bill/i.test(rPending.message),
+    )
+
+    // Staff accepts it — from here it behaves exactly like any other open order.
+    await ownerPool.query(`update orders set acceptance_status='accepted' where booking_id=$1`, [
+      pendingBooking.bookingId,
+    ])
+    const rAccepted = await bill(A.userId, A.tenantId, { bookingId: pendingBooking.bookingId })
+    check('once accepted, the same online order bills successfully', rAccepted.ok)
+    if (rAccepted.ok) {
+      const foodCount = (
+        await ownerPool.query(`select count(*)::int n from invoice_items where invoice_id=$1 and kind='food'`, [
+          rAccepted.invoiceId,
+        ])
+      ).rows[0].n
+      check('…exactly 1 food line, the now-accepted order', foodCount === 1)
+      const orderStatus = (
+        await ownerPool.query('select status from orders where booking_id=$1', [pendingBooking.bookingId])
+      ).rows[0].status
+      check("…and the order flips to 'billed', settling exactly once", orderStatus === 'billed')
+    }
+
+    // A rejected order (rejectOrderCore: status→'cancelled', acceptance_status→'rejected')
+    // must never bill, even sitting alongside an accepted one on the same booking.
+    const mixedRejected = await makeBooking(A)
+    await makeFoodOrder(A, mixedRejected.bookingId, [{ name: 'Iced Tea', unitPrice: '80.00', qty: 1 }], {
+      channel: 'online',
+      acceptanceStatus: 'accepted',
+    })
+    await makeFoodOrder(A, mixedRejected.bookingId, [{ name: 'Extra Fries', unitPrice: '60.00', qty: 1 }], {
+      channel: 'online',
+      status: 'cancelled',
+      acceptanceStatus: 'rejected',
+    })
+    const rMixedRejected = await bill(A.userId, A.tenantId, { bookingId: mixedRejected.bookingId })
+    check('a booking with one accepted + one rejected online order bills successfully', rMixedRejected.ok)
+    if (rMixedRejected.ok) {
+      const items = (
+        await ownerPool.query(`select description from invoice_items where invoice_id=$1 and kind='food'`, [
+          rMixedRejected.invoiceId,
+        ])
+      ).rows
+      check(
+        '…exactly 1 food line (Iced Tea) — the rejected Extra Fries never reaches the bill',
+        items.length === 1 && items[0].description === 'Iced Tea',
+      )
+    }
+
+    // Same, but the second order is still pending rather than rejected — it
+    // must stay out of THIS bill without being consumed/marked billed either.
+    const mixedPending = await makeBooking(A)
+    await makeFoodOrder(A, mixedPending.bookingId, [{ name: 'Burger', unitPrice: '200.00', qty: 1 }], {
+      channel: 'online',
+      acceptanceStatus: 'accepted',
+    })
+    await makeFoodOrder(A, mixedPending.bookingId, [{ name: 'Shake', unitPrice: '110.00', qty: 1 }], {
+      channel: 'online',
+      acceptanceStatus: 'pending',
+    })
+    const rMixedPending = await bill(A.userId, A.tenantId, { bookingId: mixedPending.bookingId })
+    check('a booking with one accepted + one still-pending online order bills successfully', rMixedPending.ok)
+    if (rMixedPending.ok) {
+      const items = (
+        await ownerPool.query(`select description from invoice_items where invoice_id=$1 and kind='food'`, [
+          rMixedPending.invoiceId,
+        ])
+      ).rows
+      check(
+        '…exactly 1 food line (Burger) — the pending Shake stays off this bill',
+        items.length === 1 && items[0].description === 'Burger',
+      )
+      const shake = (
+        await ownerPool.query(
+          `select o.status from orders o join order_items oi on oi.order_id = o.id
+             where oi.item_name = 'Shake' and o.booking_id = $1`,
+          [mixedPending.bookingId],
+        )
+      ).rows[0]
+      check(
+        "…and the pending Shake order is left 'open', NOT silently marked 'billed' (or it could never be billed once accepted)",
+        shake.status === 'open',
+      )
     }
   }
 

@@ -171,6 +171,15 @@ export async function loadBookingLines(
  * flipped to `billed` it stops appearing in every future bill for this
  * booking, this function included.
  *
+ * Also gated on `acceptanceStatus = 'accepted'`: an online order still
+ * `pending` in the accept/reject queue (lib/orders/data.ts's
+ * listIncomingOnlineOrders) is `status = 'open'` too, same as an accepted
+ * one — nothing else distinguishes them — so without this a booking billed
+ * while an order sat unreviewed would charge the customer for food the
+ * kitchen was never told to make. A staff-placed order always has
+ * `acceptanceStatus = 'accepted'` (see createOrderCore's default), so this
+ * never excludes anything from the POS flow.
+ *
  * unit_price and tax_rate are read straight off order_items, unchanged: they
  * were already snapshotted at order time (including any happy-hour discount),
  * so this never re-prices a menu item against today's rate.
@@ -195,6 +204,7 @@ export async function loadFoodLines(
         eq(orders.tenantId, tenantId),
         eq(orders.bookingId, bookingId),
         eq(orders.status, 'open'),
+        eq(orders.acceptanceStatus, 'accepted'),
       ),
     )
     .orderBy(orderItems.id)
@@ -583,9 +593,14 @@ export async function issueInvoiceForBooking(
 
   // ── 7. mark the food orders billed ────────────────────────────────────────
   // The other half of double-billing prevention: loadFoodLines only reads
-  // status='open' orders, so flipping these to 'billed' here — in the same
-  // transaction as the invoice itself — means the same fries can never end up
-  // on a second bill, and a failure anywhere above rolls this back too.
+  // status='open', acceptanceStatus='accepted' orders, so flipping THE SAME
+  // set to 'billed' here — in the same transaction as the invoice itself —
+  // means the same fries can never end up on a second bill, and a failure
+  // anywhere above rolls this back too. The acceptanceStatus condition must
+  // stay identical to loadFoodLines': otherwise a still-pending order (not on
+  // this invoice) would get marked 'billed' anyway and vanish from both the
+  // accept/reject queue and every future bill without ever having been paid
+  // for.
   await tx
     .update(orders)
     .set({ status: 'billed' })
@@ -594,6 +609,7 @@ export async function issueInvoiceForBooking(
         eq(orders.tenantId, tenant.id),
         eq(orders.bookingId, booking.id),
         eq(orders.status, 'open'),
+        eq(orders.acceptanceStatus, 'accepted'),
       ),
     )
 
