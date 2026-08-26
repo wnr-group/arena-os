@@ -4,10 +4,11 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResource } from '@/lib/booking/public-availability'
 import { todayInZone } from '@/lib/booking/time'
+import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
 import { ResourceBookingPage } from '@/components/public-booking/ResourceBookingPage'
-import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
+import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 
 /** Matches a UUID, so a junk id 404s instead of erroring in the query. */
@@ -51,24 +52,31 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
 
   const branch = await getPublicBranch(tenant.id)
   const branding = await getPublishedBranding(tenant.id)
+  const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
     <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
-
-      <main className="flex-1 bg-background">
-        <ResourceBookingPage tenant={tenant} resource={resource} today={todayInZone(tenant.timezone)} />
-      </main>
-
-      <PublicFooter
+      <SitePageShell
         tenantName={tenant.name}
-        industryLabel={industryLabel}
-        icon={Icon}
-        address={branch?.address ?? null}
-        phone={branch?.phone ?? null}
-      />
+        icon={<Icon size={18} />}
+        logoUrl={branding.logoUrl}
+        currency={tenant.currency}
+        hasMenu={hasMenu}
+      >
+        <main className="flex-1 bg-background">
+          <ResourceBookingPage tenant={tenant} resource={resource} today={todayInZone(tenant.timezone)} />
+        </main>
+
+        <PublicFooter
+          tenantName={tenant.name}
+          industryLabel={industryLabel}
+          icon={Icon}
+          address={branch?.address ?? null}
+          phone={branch?.phone ?? null}
+        />
+      </SitePageShell>
     </div>
   )
 }
