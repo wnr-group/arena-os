@@ -210,28 +210,6 @@ export function OrderCartProvider({
     }
   }, [booking, loaded])
 
-  useEffect(() => {
-    setCart(loadStoredCart())
-    setLoaded(true)
-  }, [])
-
-  useEffect(() => {
-    // Skip the pre-hydration pass (cart is still the empty initial value at
-    // that point) — writing then would clobber a previously saved cart with
-    // {} a split second before the real one loads.
-    if (!loaded) return
-    try {
-      if (Object.keys(cart).length === 0) {
-        window.localStorage.removeItem(STORAGE_KEY)
-      } else {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), cart }))
-      }
-    } catch {
-      // Private browsing / quota exceeded — cart still works for this tab,
-      // it just won't survive a refresh.
-    }
-  }, [cart, loaded])
-
   const cartLines = useMemo(() => Object.values(cart), [cart])
   const cartCount = useMemo(() => cartLines.reduce((sum, l) => sum + l.qty, 0), [cartLines])
   const cartTotal = useMemo(() => cartLines.reduce((sum, l) => sum + l.unitPrice * l.qty, 0), [cartLines])
