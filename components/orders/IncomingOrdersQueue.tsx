@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Clock, MapPin, Check, X, Loader2, ShoppingBag } from 'lucide-react'
+import { Clock, MapPin, Check, X, Loader2, ShoppingBag, CreditCard } from 'lucide-react'
 import { acceptOnlineOrder, rejectOnlineOrder } from '@/lib/actions/orders'
 import { saveAutoAcceptOnlineOrders } from '@/lib/actions/order-settings'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -38,11 +38,13 @@ function elapsedLabel(createdAt: string, now: number): string {
 
 export function IncomingOrdersQueue({
   orders,
+  awaitingPaymentOrders = [],
   currency,
   autoAcceptEnabled,
   canManageSettings,
 }: {
   orders: IncomingOrder[]
+  awaitingPaymentOrders?: IncomingOrder[]
   currency: string
   autoAcceptEnabled: boolean
   canManageSettings: boolean
@@ -125,9 +127,11 @@ export function IncomingOrdersQueue({
       )}
 
       {orders.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border p-12 text-center text-base text-muted-foreground">
-          No orders waiting. New online orders will appear here automatically.
-        </div>
+        awaitingPaymentOrders.length === 0 && (
+          <div className="rounded-xl border border-dashed border-border p-12 text-center text-base text-muted-foreground">
+            No orders waiting. New online orders will appear here automatically.
+          </div>
+        )
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {orders.map((order) => {
@@ -186,6 +190,61 @@ export function IncomingOrdersQueue({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {awaitingPaymentOrders.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 dark:text-amber-400">
+            <CreditCard size={15} /> Awaiting payment ({awaitingPaymentOrders.length})
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Customer submitted payment for a pay-now order, but it hasn&apos;t been confirmed yet. These will move
+            into the queue above automatically once payment is confirmed. If one sits here for a while, the
+            customer&apos;s payment may not have gone through — check with them before assuming the order is real.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {awaitingPaymentOrders.map((order) => {
+              const total = order.items.reduce((sum, i) => sum + Number(i.lineTotal), 0)
+              return (
+                <div
+                  key={order.orderId}
+                  className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-4 shadow-sm"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-base font-semibold">
+                      <ShoppingBag size={15} className="text-amber-600 dark:text-amber-400" /> {order.orderNumber}
+                    </span>
+                    <span className="text-sm font-bold text-amber-700 dark:text-amber-400">
+                      {formatMoney(total, currency)}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                    <Clock size={12} /> waiting {elapsedLabel(order.createdAt, now)}
+                    {order.stationName && (
+                      <>
+                        {' '}
+                        · <MapPin size={12} /> {order.stationName}
+                      </>
+                    )}
+                  </p>
+
+                  <ul className="mt-3 space-y-1 text-sm">
+                    {order.items.map((item) => (
+                      <li key={item.itemId}>
+                        <span className="font-medium">
+                          {item.qty}× {item.itemName}
+                        </span>
+                        {item.specialInstructions && (
+                          <span className="block text-xs text-muted-foreground">— {item.specialInstructions}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 

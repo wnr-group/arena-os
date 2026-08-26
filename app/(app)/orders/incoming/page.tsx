@@ -4,7 +4,7 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { canManageIncomingOrders, isManager } from '@/lib/auth/roles'
-import { listIncomingOnlineOrders } from '@/lib/orders/data'
+import { listIncomingOnlineOrders, listAwaitingPaymentOrders } from '@/lib/orders/data'
 import { getOrderSettings } from '@/lib/orders/settings'
 import { IncomingOrdersQueue, type IncomingOrder } from '@/components/orders/IncomingOrdersQueue'
 
@@ -24,10 +24,44 @@ export default async function IncomingOrdersPage() {
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [rows, settings] = await Promise.all([listIncomingOnlineOrders(ctx, branch.id), getOrderSettings(ctx)])
+  const [rows, awaitingPaymentRows, settings] = await Promise.all([
+    listIncomingOnlineOrders(ctx, branch.id),
+    listAwaitingPaymentOrders(ctx, branch.id),
+    getOrderSettings(ctx),
+  ])
 
-  // Flat rows → one order per card, its items nested — same grouping shape as
-  // app/(app)/kitchen/page.tsx uses for KOTs.
+  return (
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <h1 className="text-2xl font-semibold">Incoming orders</h1>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Online orders awaiting your accept or reject — this screen updates itself every few seconds.
+      </p>
+      <IncomingOrdersQueue
+        orders={groupIntoOrders(rows)}
+        awaitingPaymentOrders={groupIntoOrders(awaitingPaymentRows)}
+        currency={ctx.tenant.currency}
+        autoAcceptEnabled={settings.autoAcceptOnlineOrders}
+        canManageSettings={isManager(ctx.role)}
+      />
+    </div>
+  )
+}
+
+// Flat rows → one order per card, its items nested — same grouping shape as
+// app/(app)/kitchen/page.tsx uses for KOTs.
+function groupIntoOrders(
+  rows: {
+    orderId: string
+    orderNumber: string
+    createdAt: Date
+    stationName: string | null
+    itemId: string | null
+    itemName: string | null
+    qty: number | null
+    specialInstructions: string | null
+    lineTotal: string | null
+  }[],
+): IncomingOrder[] {
   const ordersById = new Map<string, IncomingOrder>()
   for (const row of rows) {
     let order = ordersById.get(row.orderId)
@@ -51,19 +85,5 @@ export default async function IncomingOrdersPage() {
       })
     }
   }
-
-  return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <h1 className="text-2xl font-semibold">Incoming orders</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Online orders awaiting your accept or reject — this screen updates itself every few seconds.
-      </p>
-      <IncomingOrdersQueue
-        orders={[...ordersById.values()]}
-        currency={ctx.tenant.currency}
-        autoAcceptEnabled={settings.autoAcceptOnlineOrders}
-        canManageSettings={isManager(ctx.role)}
-      />
-    </div>
-  )
+  return [...ordersById.values()]
 }

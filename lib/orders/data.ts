@@ -64,3 +64,37 @@ export function listIncomingOnlineOrders(ctx: ActiveContext, branchId: string) {
       .orderBy(asc(orders.createdAt), asc(orderItems.id)),
   )
 }
+
+/** Flat order+item rows for a branch's pay-now orders still waiting on their
+ *  Razorpay webhook (acceptanceStatus='awaiting_payment', migration 0051) —
+ *  read-only visibility for staff so a delayed/missing webhook doesn't leave
+ *  a paid-for order silently invisible. Same shape as listIncomingOnlineOrders
+ *  (see components/orders/IncomingOrdersQueue.tsx). */
+export function listAwaitingPaymentOrders(ctx: ActiveContext, branchId: string) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        orderId: orders.id,
+        orderNumber: orders.orderNumber,
+        createdAt: orders.createdAt,
+        stationName: resources.name,
+        itemId: orderItems.id,
+        itemName: orderItems.itemName,
+        qty: orderItems.qty,
+        specialInstructions: orderItems.specialInstructions,
+        lineTotal: orderItems.lineTotal,
+      })
+      .from(orders)
+      .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .leftJoin(resources, eq(resources.id, orders.resourceId))
+      .where(
+        and(
+          eq(orders.tenantId, ctx.tenant.id),
+          eq(orders.branchId, branchId),
+          eq(orders.channel, 'online'),
+          eq(orders.acceptanceStatus, 'awaiting_payment'),
+        ),
+      )
+      .orderBy(asc(orders.createdAt), asc(orderItems.id)),
+  )
+}
