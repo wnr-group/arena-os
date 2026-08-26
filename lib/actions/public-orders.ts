@@ -9,6 +9,7 @@ import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
+import { findCustomerByRawPhone, findOrCreateCustomer } from '@/lib/customers/service'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 import { zodErrorMessage } from '@/lib/utils/errors'
@@ -34,6 +35,16 @@ const orderInput = z.object({
     )
     .min(1, 'Add at least one item')
     .max(30),
+  // Same phone-first identification as createPublicBooking (lib/actions/
+  // public-booking.ts): name is only required for a phone the directory
+  // doesn't already recognise — enforced again below, since the client's
+  // "already known" state can't be trusted.
+  customerName: z.string().trim().max(100).optional().or(z.literal('')),
+  customerPhone: z.string().trim().min(6, 'Enter a valid phone number.').max(20),
+  customerEmail: z.string().trim().email('Enter a valid email address.').max(255).optional().or(z.literal('')),
+  /** Honeypot — see HoneypotField. A non-empty value means whatever
+   *  submitted this filled in every input it found, not a customer. */
+  website: z.string().optional(),
 })
 
 export type PlaceOnlineOrderResult = { error?: string; orderNumber?: string; pendingAcceptance?: boolean }
@@ -59,6 +70,20 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
     if ('error' in tenant) return tenant
 
     const v = orderInput.parse(raw)
+
+    // Bot bait — see the `website` field's doc comment on orderInput. Fails
+    // the same generic way a real validation error would, so a bot reading
+    // the response can't tell it was caught by the honeypot.
+    if (v.website) {
+      return { error: 'Something went wrong. Please try again.' }
+    }
+
+    // Per-phone, on top of the per-IP check above: catches a script that
+    // rotates IPs but keeps hammering one number.
+    const phoneDigits = v.customerPhone.replace(/\D/g, '')
+    if (phoneDigits && !rateLimit(`order:phone:${phoneDigits}`, 5, 10 * 60_000).ok) {
+      return { error: 'Too many attempts for this phone number. Please wait a bit and try again.' }
+    }
 
     let branchId: string
     let resourceId: string | undefined
@@ -95,6 +120,21 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         throw new OrderError('One or more items in your order are no longer available. Please review your cart.')
       }
 
+      // Phone-first identification, exactly like createPublicBooking: a name
+      // is only required the first time this phone number is seen. Checked
+      // fresh here (never trusting the client's "already known" state) and
+      // find-or-created idempotently, so re-submitting never creates a
+      // duplicate customer for the same number.
+      const existingCustomer = await findCustomerByRawPhone(tx, tenant.id, v.customerPhone)
+      if (!existingCustomer && !v.customerName?.trim()) {
+        throw new OrderError('Enter your name.')
+      }
+      const customer = await findOrCreateCustomer(tx, tenant.id, {
+        phone: v.customerPhone,
+        name: v.customerName || undefined,
+        email: v.customerEmail || undefined,
+      })
+
       // Whether this order needs a human to accept it before the kitchen sees
       // it (lib/orders/service.ts's acceptanceStatus gate) is a per-tenant
       // choice — read fresh, in this transaction, never cached across orders.
@@ -106,6 +146,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         {
           branchId,
           resourceId,
+          customerId: customer.id,
           channel: 'online',
           acceptanceStatus: settings.autoAcceptOnlineOrders ? 'accepted' : 'pending',
           items: v.items,

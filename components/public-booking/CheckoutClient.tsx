@@ -1,19 +1,38 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { ArrowLeft, ShoppingBag, UtensilsCrossed, Minus, Plus, X, StickyNote, Loader2, MapPin, Flame, Truck } from 'lucide-react'
+import {
+  ArrowLeft,
+  ShoppingBag,
+  UtensilsCrossed,
+  Minus,
+  Plus,
+  X,
+  StickyNote,
+  Loader2,
+  MapPin,
+  Flame,
+  Truck,
+  Phone,
+  User,
+  Mail,
+} from 'lucide-react'
 import { formatMoney } from '@/lib/format'
 import { placeOnlineOrder } from '@/lib/actions/public-orders'
+import { lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
+import { isValidPhone } from '@/lib/customers/phone'
 import { useOrderCart } from './OrderCartProvider'
+import { HoneypotField } from './HoneypotField'
 
 /**
  * The standalone checkout screen (replaces the old slide-in CartDrawer) —
  * reviewing and placing an order gets a full page: a left column of editable
- * line items and a right-hand order-summary card that stays in view while
- * scrolling. `station` (table vs. pickup) comes from OrderCartProvider, not
- * a prop, since this page is reached from wherever the cart was built.
+ * line items and a right-hand rail (contact details + order summary) that
+ * stays in view while scrolling. `station` (table vs. pickup) comes from
+ * OrderCartProvider, not a prop, since this page is reached from wherever
+ * the cart was built.
  */
 export function CheckoutClient({ currency }: { currency: string }) {
   const router = useRouter()
@@ -22,7 +41,50 @@ export function CheckoutClient({ currency }: { currency: string }) {
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
+  // Same phone-first identification as the booking wizard
+  // (ResourceBookingPage): look the number up as soon as it's long enough to
+  // match, and only reveal name/email if the directory doesn't recognise it.
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
+  const [website, setWebsite] = useState('')
+  const [phoneLookup, setPhoneLookup] = useState<{ checking: boolean; checked: boolean; found: boolean }>({
+    checking: false,
+    checked: false,
+    found: false,
+  })
+
+  // A 10-digit Indian mobile number, same rule lib/customers/phone.ts enforces
+  // server-side (normalizePhone/isValidPhone) — checked here too so the field
+  // can show its own error and gate the lookup, instead of only failing after
+  // a round trip to the server.
+  const phoneIsComplete = phone.length === 10
+  const phoneIsValid = isValidPhone(phone)
+  const phoneError = phoneIsComplete && !phoneIsValid ? 'Enter a valid 10-digit mobile number.' : null
+
+  useEffect(() => {
+    setName('')
+    if (!phoneIsValid) {
+      setPhoneLookup({ checking: false, checked: false, found: false })
+      return
+    }
+    let cancelled = false
+    setPhoneLookup({ checking: true, checked: false, found: false })
+    const timer = setTimeout(() => {
+      lookupPublicCustomerByPhone({ phone }).then((r) => {
+        if (cancelled) return
+        const found = 'error' in r ? false : r.found
+        setPhoneLookup({ checking: false, checked: true, found })
+      })
+    }, 500)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [phone, phoneIsValid])
+
   const hasHappyHourLine = cartLines.some((l) => l.hasDiscount)
+  const canPlaceOrder = !pending && phoneLookup.checked && (phoneLookup.found || name.trim().length > 0)
 
   function handlePlaceOrder() {
     setError(null)
@@ -34,6 +96,10 @@ export function CheckoutClient({ currency }: { currency: string }) {
           qty: l.qty,
           specialInstructions: l.specialInstructions.trim() || undefined,
         })),
+        customerName: name,
+        customerPhone: phone,
+        customerEmail: email,
+        website,
       })
       if (res.error) {
         setError(res.error)
@@ -188,8 +254,98 @@ export function CheckoutClient({ currency }: { currency: string }) {
           ))}
         </div>
 
-        {/* Summary */}
-        <div className="lg:sticky lg:top-24 lg:self-start">
+        {/* Right rail: contact details + order summary */}
+        <div className="space-y-5 lg:sticky lg:top-24 lg:self-start">
+          {/* Contact details */}
+          <div className="overflow-hidden rounded-2xl border border-border/60 bg-card shadow-lg shadow-black/[0.03]">
+            <div className="bg-gradient-to-r from-primary/5 via-transparent to-transparent px-5 py-4">
+              <h2 className="text-base font-black tracking-tight text-foreground">Your details</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">So the venue knows who this order is for</p>
+            </div>
+
+            <div className="px-5 py-4">
+              <label className="block">
+                <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Phone size={14} /> Phone
+                </span>
+                <div className="relative">
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    readOnly={phoneLookup.checked}
+                    autoComplete="tel"
+                    maxLength={10}
+                    placeholder="10-digit mobile number"
+                    aria-invalid={phoneError !== null}
+                    className={`w-full rounded-xl border bg-background px-3.5 py-3 text-base outline-none transition focus:ring-2 read-only:bg-muted read-only:text-muted-foreground ${
+                      phoneError ? 'border-destructive focus:border-destructive focus:ring-destructive/20' : 'border-border focus:border-primary focus:ring-ring/30'
+                    }`}
+                  />
+                  {phoneLookup.checked && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhone('')
+                        setPhoneLookup({ checking: false, checked: false, found: false })
+                      }}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-primary transition hover:underline"
+                    >
+                      Change
+                    </button>
+                  )}
+                </div>
+              </label>
+
+              {phoneError ? (
+                <p className="mt-2 text-sm text-destructive">{phoneError}</p>
+              ) : phoneLookup.checking ? (
+                <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" /> Checking for an existing profile…
+                </p>
+              ) : phoneLookup.checked && phoneLookup.found ? (
+                <p className="mt-3 text-sm text-foreground">
+                  <span className="font-semibold">Welcome back!</span> We found a profile for this number —
+                  you&apos;re all set to order.
+                </p>
+              ) : phoneLookup.checked ? (
+                <>
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <User size={14} /> Name
+                    </span>
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="name"
+                      placeholder="Your full name"
+                      className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                    />
+                  </label>
+
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Mail size={14} /> Email <span className="font-normal text-muted-foreground/70">(optional)</span>
+                    </span>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      placeholder="you@example.com"
+                      className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              <HoneypotField value={website} onChange={setWebsite} />
+            </div>
+          </div>
+
+          {/* Order summary */}
           <div className="overflow-hidden rounded-2xl border border-border/60 bg-card shadow-lg shadow-black/[0.03]">
             <div className="bg-gradient-to-r from-primary/5 via-transparent to-transparent px-5 py-4">
               <h2 className="text-base font-black tracking-tight text-foreground">Order summary</h2>
@@ -226,7 +382,7 @@ export function CheckoutClient({ currency }: { currency: string }) {
               <button
                 type="button"
                 onClick={handlePlaceOrder}
-                disabled={pending}
+                disabled={!canPlaceOrder}
                 className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-primary py-3.5 text-sm font-bold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
