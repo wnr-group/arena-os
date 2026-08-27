@@ -15,6 +15,17 @@ import { bookingSlots, bookings } from '@/db/schema'
 type Db = NodePgDatabase<typeof schema>
 
 /**
+ * Booking lifecycle states where the booking is still "happening" — the only
+ * ones an order may ever attach to. Once a booking is completed, cancelled or
+ * a no-show, it's over: food must land as a standalone order instead, never
+ * folded into a bill that's already closed out (or never opened). Shared by
+ * every attribution path (createOrderCore's direct-bookingId check below,
+ * getActiveBookingForResource, and the public "add food to your visit" nudge
+ * in lib/booking/public-confirmation.ts) so the rule can't drift between them.
+ */
+export const ACTIVE_BOOKING_STATUSES = ['confirmed', 'checked_in'] as const
+
+/**
  * The booking currently occupying `resourceId`, if any — an active slot
  * (`booking_slots.active = true`) whose time range contains `now`, on a
  * booking that's still confirmed or checked in. Null when the resource is
@@ -38,7 +49,7 @@ export async function getActiveBookingForResource(
         eq(bookingSlots.active, true),
         lte(bookingSlots.startsAt, now),
         gt(bookingSlots.endsAt, now),
-        inArray(bookings.status, ['confirmed', 'checked_in']),
+        inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
       ),
     )
     .limit(1)

@@ -639,15 +639,21 @@ export function BookingsView({
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-muted-foreground">Food orders</h3>
-                <button
-                  onClick={() =>
-                    setOrderDialog({ bookingId: selected.bookingId, bookingLabel: selected.bookingNumber })
-                  }
-                  disabled={menuItems.length === 0}
-                  className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
-                >
-                  <Plus size={14} /> Add order
-                </button>
+                {/* Only while the booking is still active — createOrderCore
+                    (lib/orders/service.ts) enforces the same rule server-side,
+                    this just keeps staff from hitting that error needlessly
+                    on a booking that's already completed/cancelled/no-show. */}
+                {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
+                  <button
+                    onClick={() =>
+                      setOrderDialog({ bookingId: selected.bookingId, bookingLabel: selected.bookingNumber })
+                    }
+                    disabled={menuItems.length === 0}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    <Plus size={14} /> Add order
+                  </button>
+                )}
               </div>
               {(ordersByBooking[selected.bookingId] ?? []).length === 0 ? (
                 <p className="mt-2 text-sm text-muted-foreground">No food orders yet.</p>

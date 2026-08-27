@@ -15,7 +15,7 @@ import type * as schema from '@/db/schema'
 import { orders, orderItems, menuItems, taxRates, bookings, happyHours, kots } from '@/db/schema'
 import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
-import { getActiveBookingForResource } from '@/lib/booking/attribution'
+import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -98,11 +98,18 @@ export async function createOrderCore(
   let effectiveBookingId = input.bookingId ?? null
   if (effectiveBookingId) {
     const [booking] = await tx
-      .select({ id: bookings.id })
+      .select({ id: bookings.id, status: bookings.status })
       .from(bookings)
       .where(and(eq(bookings.id, effectiveBookingId), eq(bookings.tenantId, ctx.tenantId)))
       .limit(1)
     if (!booking) throw new OrderError('Booking not found.')
+    // Re-checked here, inside the transaction that actually creates the order
+    // — never trust an earlier, out-of-transaction status read (see
+    // getPublicBookingForOrder), which can race a staff action that
+    // completes/cancels the booking in between.
+    if (!ACTIVE_BOOKING_STATUSES.includes(booking.status as (typeof ACTIVE_BOOKING_STATUSES)[number])) {
+      throw new OrderError('This booking is no longer active — food can only be added to an active booking.')
+    }
   } else if (input.resourceId) {
     effectiveBookingId = await getActiveBookingForResource(tx, ctx.tenantId, input.resourceId)
   }
