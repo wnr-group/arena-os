@@ -120,6 +120,35 @@ body {
   animation: pulseGlow 10s ease-in-out infinite;
 }
 
+/* Happy-hour floating widget (components/public-booking/HappyHourFloatingWidget.tsx) —
+ * a slow bob so the badge reads as "alive" without being distracting, plus a
+ * light sweep across its surface on a long loop for a premium, glassy feel. */
+@keyframes happyHourFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes happyHourShine {
+  0% {
+    transform: translateX(-120%);
+  }
+  60%, 100% {
+    transform: translateX(220%);
+  }
+}
+
+.animate-happy-hour-float {
+  animation: happyHourFloat 3.5s ease-in-out infinite;
+}
+
+.animate-happy-hour-shine {
+  animation: happyHourShine 3.5s ease-in-out infinite;
+}
+
 /* Skeleton loading — a soft light sweep across a muted placeholder block,
  * used by card skeletons (e.g. the homepage's resource/menu sections while
  * their live data streams in) instead of a flat opacity pulse. */

@@ -3,7 +3,9 @@ import { CalendarDays, HandCoins, ChefHat, Boxes, Users, type LucideIcon } from 
 import { rootDomain } from '@/lib/tenant/subdomain'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
+import { getLiveHappyHourBanner } from '@/lib/happy-hours/public'
 import { TenantHome } from '@/components/public-booking/TenantHome'
+import { HappyHourFloatingWidget } from '@/components/public-booking/HappyHourFloatingWidget'
 import { MarketingNavbar } from '@/components/marketing/MarketingNavbar'
 import { MarketingFooter } from '@/components/marketing/MarketingFooter'
 
@@ -47,7 +49,13 @@ export default async function RootPage() {
   if (slug) {
     const tenant = await getPublicTenantBySlug(slug)
     if (!tenant) notFound()
-    return <TenantHome tenant={tenant} />
+    const happyHour = await getLiveHappyHourBanner(tenant.id, tenant.timezone)
+    return (
+      <>
+        <TenantHome tenant={tenant} />
+        <HappyHourFloatingWidget happyHour={happyHour} currency={tenant.currency} />
+      </>
+    )
   }
 
   return <PlatformHome />
