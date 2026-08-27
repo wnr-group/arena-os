@@ -99,7 +99,14 @@ export async function getRecentPublicBookingsByPhone(
         createdAt: b.createdAt.toISOString(),
         resourceNames: [...new Set(slots.map((s) => s.resourceName))],
         startsAt: slots[0]?.startsAt.toISOString() ?? null,
-        endsAt: slots.length > 0 ? slots[slots.length - 1].endsAt.toISOString() : null,
+        // The latest-ENDING slot, not the last-by-START-time one — slots is
+        // ordered by startsAt, and with overlapping/out-of-order slots those
+        // are not the same row (e.g. 10:00–12:00 then 11:00–11:30: the second
+        // starts later but ends earlier).
+        endsAt:
+          slots.length > 0
+            ? new Date(Math.max(...slots.map((s) => s.endsAt.getTime()))).toISOString()
+            : null,
       }
     })
   })
