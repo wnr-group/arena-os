@@ -97,10 +97,18 @@ export async function createOrderCore(
 
   let effectiveBookingId = input.bookingId ?? null
   if (effectiveBookingId) {
+    // FOR UPDATE, same as cancelOrderCore/lockPendingOnlineOrder below: a
+    // plain SELECT here would only re-check the status as of some earlier
+    // moment, not block against it changing underneath us. A staff action
+    // that completes/cancels this exact booking (setBookingStatus, a normal
+    // UPDATE) takes a row lock for the duration of ITS transaction either
+    // way — this lock just makes sure we wait for that to resolve and read
+    // the COMMITTED status, instead of racing it and reading stale data.
     const [booking] = await tx
       .select({ id: bookings.id, status: bookings.status })
       .from(bookings)
       .where(and(eq(bookings.id, effectiveBookingId), eq(bookings.tenantId, ctx.tenantId)))
+      .for('update')
       .limit(1)
     if (!booking) throw new OrderError('Booking not found.')
     // Re-checked here, inside the transaction that actually creates the order
