@@ -1,5 +1,6 @@
 import { CalendarDays, Sparkles, Wallet } from 'lucide-react'
 import { getPortalSummary } from '@/lib/portal/account'
+import { portalTenant } from '@/lib/portal/tenant'
 import { formatMoney } from '@/lib/format'
 
 /**
@@ -13,9 +14,25 @@ import { formatMoney } from '@/lib/format'
  *
  * No customer id appears anywhere on this page — not as a prop, not as a
  * param. The identity comes from the session inside getPortalSummary().
+ *
+ * ── Money is formatted in the VENUE's currency ──────────────────────────────
+ *
+ * formatMoney() defaults to INR when no currency is given, and this page used
+ * to rely on that default — so a venue trading in AED or USD showed ₹ here
+ * while /account/wallet and the booking detail page, which both pass
+ * tenant.currency, showed the right symbol for the same numbers.
+ *
+ * The tenant comes from portalTenant(), the way all three sibling portal pages
+ * already get it, rather than being threaded through getPortalSummary(): that
+ * reader runs inside withCustomer(), where `tenants` has no customer policy and
+ * is not readable at all, and currency is a DISPLAY property of the venue —
+ * exactly what lib/portal/tenant.ts exists to supply. It costs nothing extra:
+ * getPublicTenantBySlug() is wrapped in React cache(), and the portal layout
+ * has already resolved the same tenant for this request.
  */
 export default async function AccountPage() {
-  const summary = await getPortalSummary()
+  const [tenant, summary] = await Promise.all([portalTenant(), getPortalSummary()])
+  const currency = tenant.currency
 
   return (
     <div className="space-y-6">
@@ -38,7 +55,7 @@ export default async function AccountPage() {
         <StatCard
           icon={<Wallet size={18} />}
           label="Wallet balance"
-          value={formatMoney(summary.walletBalance)}
+          value={formatMoney(summary.walletBalance, currency)}
         />
         <StatCard
           icon={<Sparkles size={18} />}
@@ -76,7 +93,7 @@ export default async function AccountPage() {
                     {booking.createdAt.toLocaleDateString()} · {booking.status.replace('_', ' ')}
                   </p>
                 </div>
-                <span className="shrink-0 tabular-nums">{formatMoney(booking.total)}</span>
+                <span className="shrink-0 tabular-nums">{formatMoney(booking.total, currency)}</span>
               </li>
             ))}
           </ul>

@@ -109,8 +109,14 @@ export type PortalBookingLists = {
  */
 export type PortalTx = DB
 
-/** Statuses that can still be ahead of you. Everything else is history. */
-const LIVE_STATUSES = ['confirmed', 'checked_in'] as const
+/**
+ * Statuses that can still be ahead of you. Everything else is history.
+ *
+ * Exported for the same reason as bookingEndInstant below: the overview's
+ * "Upcoming bookings" count must classify a booking exactly as this page does,
+ * and the only way to guarantee that is for both to read the one list.
+ */
+export const LIVE_STATUSES = ['confirmed', 'checked_in'] as const
 
 /**
  * The aggregate columns shared by both listings and the detail read.
@@ -168,8 +174,24 @@ function summaryColumns(policy: CancellationPolicy) {
  * instants. No timezone arithmetic happens here at all; the venue's zone is
  * used only for DISPLAY, in the components.
  */
-const finished = sql`coalesce(max(${bookingSlots.endsAt}), ${bookings.createdAt}) <= now()`
-const notFinished = sql`coalesce(max(${bookingSlots.endsAt}), ${bookings.createdAt}) > now()`
+/**
+ * The instant a booking is treated as having ended.
+ *
+ * Exported because the portal OVERVIEW counts the same thing this page lists,
+ * and the two disagreeing is exactly the bug that made this a shared constant:
+ * lib/portal/account.ts used to count "upcoming" from status alone, so a
+ * confirmed booking whose slot ended yesterday and was never marked completed
+ * was counted as upcoming on the overview while appearing under Past here. At
+ * the end of a busy day the overview claimed upcoming bookings the list showed
+ * none of.
+ *
+ * Only usable in a GROUPED context — it aggregates with max(). See
+ * lib/portal/account.ts for how the count reuses it.
+ */
+export const bookingEndInstant = sql`coalesce(max(${bookingSlots.endsAt}), ${bookings.createdAt})`
+
+const finished = sql`${bookingEndInstant} <= now()`
+export const notFinished = sql`${bookingEndInstant} > now()`
 
 /**
  * Both sections, in one customer-scoped transaction.

@@ -36,6 +36,7 @@ const check = (label: string, cond: boolean) => {
 
 async function main() {
   const { readPortalBookings, readPortalBooking } = await import('../lib/portal/bookings')
+  const { readPortalSummary } = await import('../lib/portal/account')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL })
@@ -525,6 +526,87 @@ async function main() {
     blocked = true
   }
   check('…but a still-active window is still protected from double-booking', blocked)
+
+  // ══ the overview count must agree with THIS page ═══════════════════════════
+  //
+  // The two surfaces answer the same question — "how many bookings are still
+  // ahead of me?" — from two different queries, and they used to disagree. The
+  // overview counted status alone (confirmed/checked_in, no time test) while the
+  // list splits on whether the booking has actually finished. A confirmed
+  // booking whose slot ended yesterday and was never marked completed was
+  // therefore counted as upcoming on the overview and shown under Past here, so
+  // at the end of a busy day the overview advertised upcoming bookings the list
+  // showed none of.
+  //
+  // These assertions pin the two together. They are written against the numbers
+  // a customer actually sees, not against the SQL, so they would still catch a
+  // future divergence introduced a different way.
+  console.log('\n── overview count agrees with the list ──')
+
+  // No wipe(): it drops the shared resources these fixtures reference, and it is
+  // not needed — both readers run under withCustomer(), so RLS scopes every count
+  // and every list to this one fresh customer regardless of what else exists.
+  const agreeCustomer = await makeCustomer('+919000000901', 'Agree')
+
+  // A resource of its own, so these fixtures cannot collide with the slots
+  // earlier sections left behind on Booth 1/2 (booking_slots_no_overlap is an
+  // exclusion constraint over ACTIVE slots per resource).
+  const agreeRes = await owner.query<{ id: string }>(
+    `insert into resources (tenant_id, branch_id, resource_type_id, name)
+     values ($1, $2, $3, 'Agree Booth')
+     on conflict (tenant_id, name) do update set name = excluded.name returning id`,
+    [tenantId, branchId, rt.rows[0].id],
+  )
+  const agreeResIds = [agreeRes.rows[0].id]
+
+  // THE case that was broken: confirmed, but its slot finished yesterday.
+  await makeBooking(agreeCustomer, 'confirmed', '-2 days', '-1 days', '100.00', agreeResIds)
+  // Genuinely ahead of them.
+  await makeBooking(agreeCustomer, 'confirmed', '2 days', '2 days 2 hours', '100.00', agreeResIds)
+  // Happening right now — upcoming on both surfaces (max(ends_at) is future).
+  await makeBooking(agreeCustomer, 'checked_in', '-1 hours', '1 hours', '100.00', agreeResIds)
+  // Ordinary history.
+  await makeBooking(agreeCustomer, 'completed', '-5 days', '-5 days 2 hours', '100.00', agreeResIds)
+  await makeBooking(agreeCustomer, 'cancelled', '3 days', '3 days 1 hours', '100.00', agreeResIds)
+
+  const agreeLists = await withCustomer(agreeCustomer, (tx) => readPortalBookings(tx, tenantId))
+  const agreeSummary = await withCustomer(agreeCustomer, (tx) =>
+    readPortalSummary(tx, { id: agreeCustomer, name: 'Agree', phone: '+919000000901', email: null }),
+  )
+
+  check(
+    'the overview upcoming count equals the Upcoming list length',
+    agreeSummary.upcomingBookings === agreeLists.upcoming.length,
+  )
+  check('…which is 2 here, not 3', agreeSummary.upcomingBookings === 2)
+  check(
+    'a CONFIRMED booking that already finished is NOT counted upcoming',
+    agreeLists.upcoming.every((b) => b.endsAt === null || b.endsAt.getTime() > Date.now()),
+  )
+  check(
+    '…and it really is in the Past list',
+    agreeLists.past.some((b) => b.status === 'confirmed'),
+  )
+  check(
+    'the overview total equals upcoming + past',
+    agreeSummary.totalBookings === agreeLists.upcoming.length + agreeLists.past.length,
+  )
+
+  // A booking with no slots at all: the list gives it a defined answer via
+  // coalesce(..., created_at), and the count must use the same fallback.
+  await makeBooking(agreeCustomer, 'confirmed', null, null)
+  const slotlessLists = await withCustomer(agreeCustomer, (tx) => readPortalBookings(tx, tenantId))
+  const slotlessSummary = await withCustomer(agreeCustomer, (tx) =>
+    readPortalSummary(tx, { id: agreeCustomer, name: 'Agree', phone: '+919000000901', email: null }),
+  )
+  check(
+    'a slotless booking is classified identically by both',
+    slotlessSummary.upcomingBookings === slotlessLists.upcoming.length,
+  )
+  check(
+    '…and still counted in the total',
+    slotlessSummary.totalBookings === slotlessLists.upcoming.length + slotlessLists.past.length,
+  )
 
   await wipe()
   await owner.end()

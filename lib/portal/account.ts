@@ -1,14 +1,16 @@
 import 'server-only'
-import { and, desc, eq, gt, sql } from 'drizzle-orm'
-import { withCustomer } from '@/db'
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm'
+import { withCustomer, type DB } from '@/db'
 import {
   customers,
   bookings,
+  bookingSlots,
   walletTransactions,
   loyaltyTransactions,
   customerMemberships,
 } from '@/db/schema'
 import { requireCustomer } from '@/lib/auth/customer-guard'
+import { LIVE_STATUSES, notFinished } from './bookings'
 
 /**
  * Portal reads — everything the signed-in customer's own pages render.
@@ -78,8 +80,27 @@ const RECENT_LIMIT = 5
  */
 export async function getPortalSummary(): Promise<PortalSummary> {
   const customer = await requireCustomer()
+  return withCustomer(customer.id, (tx) => readPortalSummary(tx, customer))
+}
 
-  return withCustomer(customer.id, async (tx) => {
+/**
+ * The reads, over an ALREADY customer-scoped transaction.
+ *
+ * Split out for the same reason readPortalBookings() and readPortalWallet() are
+ * — `cookies()` only exists inside a request, and the queries are the part worth
+ * testing. This one was NOT split originally, and the consequence was a bug that
+ * lived undetected: the upcoming count disagreed with the bookings page, and no
+ * test could reach the query to notice. scripts/test-portal-bookings.ts now
+ * asserts the two surfaces agree.
+ *
+ * Takes the session's customer rather than an id: the tx is the authorisation,
+ * and the row is only used as a fallback if `customers` comes back empty.
+ */
+export async function readPortalSummary(
+  tx: DB,
+  customer: { id: string; name: string | null; phone: string; email: string | null },
+): Promise<PortalSummary> {
+  {
     const [account] = await tx
       .select({
         id: customers.id,
@@ -91,12 +112,42 @@ export async function getPortalSummary(): Promise<PortalSummary> {
       .where(eq(customers.id, customer.id))
       .limit(1)
 
+    // ── the counts, classified EXACTLY as /account/bookings classifies ──────
+    //
+    // This used to be `count(*) filter (where status in ('confirmed','checked_in'))`
+    // — status alone, with no time test — while the bookings page splits
+    // upcoming from past on whether the booking has actually FINISHED. The two
+    // disagreed for a real and common case: a confirmed booking whose slot ended
+    // yesterday and that staff never marked completed counted as upcoming here
+    // and appeared under Past there. By the end of a busy day the overview
+    // advertised upcoming bookings the list showed none of.
+    //
+    // The fix is not a second copy of the time predicate — that is how the two
+    // drifted in the first place. `LIVE_STATUSES` and `notFinished` are imported
+    // from lib/portal/bookings.ts, so there is exactly one definition of
+    // "upcoming" and both surfaces are answering the same question.
+    //
+    // The inner select is grouped per booking because notFinished aggregates
+    // with max() over the slots — the same shape, and the same LEFT JOIN, the
+    // listing uses. The outer aggregate then just counts the classified rows.
+    const classified = tx
+      .select({
+        id: bookings.id,
+        upcoming: sql<boolean>`(
+          ${inArray(bookings.status, [...LIVE_STATUSES])} and ${notFinished}
+        )`.as('upcoming'),
+      })
+      .from(bookings)
+      .leftJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
+      .groupBy(bookings.id)
+      .as('classified')
+
     const [bookingCounts] = await tx
       .select({
         total: sql<string>`count(*)`,
-        upcoming: sql<string>`count(*) filter (where ${bookings.status} in ('confirmed','checked_in'))`,
+        upcoming: sql<string>`count(*) filter (where ${classified.upcoming})`,
       })
-      .from(bookings)
+      .from(classified)
 
     // Balances are always DERIVED from the append-only ledgers — the same rule
     // lib/customers/ledger.ts states for the staff-facing profile. There is no
@@ -154,5 +205,5 @@ export async function getPortalSummary(): Promise<PortalSummary> {
       membership: membership ?? null,
       recentBookings,
     }
-  })
+  }
 }
