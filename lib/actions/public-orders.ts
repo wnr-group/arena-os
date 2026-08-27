@@ -23,6 +23,7 @@ import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-creden
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { MAX_ORDER_ITEM_QTY } from '@/lib/orders/limits'
 
 const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
 
@@ -53,7 +54,7 @@ const orderInput = z.object({
     .array(
       z.object({
         menuItemId: z.string().uuid(),
-        qty: z.coerce.number().int().min(1).max(20),
+        qty: z.coerce.number().int().min(1).max(MAX_ORDER_ITEM_QTY),
         specialInstructions: z.string().trim().max(300).optional(),
       }),
     )

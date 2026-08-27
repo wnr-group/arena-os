@@ -1,5 +1,6 @@
 import { UtensilsCrossed, Plus, Minus, Flame, type LucideIcon } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
+import { MAX_ORDER_ITEM_QTY } from '@/lib/orders/limits'
 import type { OrderableMenuItem } from './OrderMenuClient'
 
 /**
@@ -107,8 +108,9 @@ export function OrderableMenuItemCard({
               <button
                 type="button"
                 onClick={onIncrement}
-                aria-label="Add one more"
-                className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm active:scale-90"
+                disabled={qty >= MAX_ORDER_ITEM_QTY}
+                aria-label={qty >= MAX_ORDER_ITEM_QTY ? `Maximum ${MAX_ORDER_ITEM_QTY} per item` : 'Add one more'}
+                className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm active:scale-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
               >
                 <Plus size={12} />
               </button>

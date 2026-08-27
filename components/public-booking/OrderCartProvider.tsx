@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { OrderableMenuItem } from './OrderMenuClient'
+import { MAX_ORDER_ITEM_QTY } from '@/lib/orders/limits'
 
 export type CartLine = {
   menuItemId: string
@@ -217,6 +218,7 @@ export function OrderCartProvider({
     if (!item.available) return
     setCart((prev) => {
       const existing = prev[item.id]
+      if (existing && existing.qty >= MAX_ORDER_ITEM_QTY) return prev
       const unitPrice = Number(item.discountedPrice ?? item.price)
       return {
         ...prev,
@@ -235,10 +237,13 @@ export function OrderCartProvider({
     })
   }
 
+  // Clamped at MAX_ORDER_ITEM_QTY — the same limit lib/actions/public-orders.ts's
+  // zod schema enforces server-side, so the '+' button can never build a line
+  // placeOnlineOrder will then reject wholesale at checkout.
   function incrementById(menuItemId: string) {
     setCart((prev) => {
       const existing = prev[menuItemId]
-      if (!existing) return prev
+      if (!existing || existing.qty >= MAX_ORDER_ITEM_QTY) return prev
       return { ...prev, [menuItemId]: { ...existing, qty: existing.qty + 1 } }
     })
   }

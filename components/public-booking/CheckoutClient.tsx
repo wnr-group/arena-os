@@ -27,6 +27,7 @@ import { placeOnlineOrder, createOrderPaymentIntent, checkBookingStillActive } f
 import { lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { isValidPhone } from '@/lib/customers/phone'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
+import { MAX_ORDER_ITEM_QTY } from '@/lib/orders/limits'
 import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { useOrderCart } from './OrderCartProvider'
 import { HoneypotField } from './HoneypotField'
@@ -405,8 +406,9 @@ export function CheckoutClient({
                     <button
                       type="button"
                       onClick={() => incrementById(line.menuItemId)}
-                      aria-label="Add one more"
-                      className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm active:scale-90"
+                      disabled={line.qty >= MAX_ORDER_ITEM_QTY}
+                      aria-label={line.qty >= MAX_ORDER_ITEM_QTY ? `Maximum ${MAX_ORDER_ITEM_QTY} per item` : 'Add one more'}
+                      className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm active:scale-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
                     >
                       <Plus size={13} />
                     </button>
