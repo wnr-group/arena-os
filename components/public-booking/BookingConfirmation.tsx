@@ -59,11 +59,18 @@ function fmtTime(iso: string, timeZone: string): string {
  */
 export function BookingConfirmation({
   booking,
+  confirmationToken,
   tenant,
   qrSvg,
   hasMenu,
 }: {
   booking: PublicBookingConfirmation
+  /** The booking's own confirmation_token (the /b/[token] route param) —
+   *  threaded into the "Add food to your visit" link so the order this
+   *  nudge creates can attach to THIS booking (see getPublicBookingForOrder
+   *  in lib/booking/public-confirmation.ts), instead of landing as an
+   *  unlinked standalone order the venue's staff never sees against it. */
+  confirmationToken: string
   tenant: PublicTenant
   qrSvg: string
   /** Whether this venue sells food online at all — gates the "Add food to
@@ -114,7 +121,7 @@ export function BookingConfirmation({
 
       {canAddFood && (
         <Link
-          href="/food-menu"
+          href={`/food-menu?booking=${confirmationToken}`}
           className="group mt-6 flex items-center gap-4 overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg"
         >
           <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25 transition group-hover:scale-105">

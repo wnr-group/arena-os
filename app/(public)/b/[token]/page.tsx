@@ -73,7 +73,13 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
         hasMenu={hasMenu}
       >
         <main className="flex-1 bg-background">
-          <BookingConfirmation booking={booking} tenant={tenant} qrSvg={qrSvg} hasMenu={hasMenu} />
+          <BookingConfirmation
+            booking={booking}
+            confirmationToken={token}
+            tenant={tenant}
+            qrSvg={qrSvg}
+            hasMenu={hasMenu}
+          />
         </main>
 
         <PublicFooter

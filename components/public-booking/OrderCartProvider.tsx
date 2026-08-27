@@ -18,14 +18,26 @@ export type CartLine = {
  *  browses afterward (see the `station` prop below). */
 export type CartStation = { token: string; name: string; hasActiveBooking: boolean }
 
-// Cart (and station context) survive a refresh via localStorage — already
-// scoped per tenant since each tenant is its own subdomain/origin, so no
-// tenant id needs to be baked into the key. Left untouched past MAX_AGE_MS,
-// either is dropped on next load rather than restored: prices/availability
-// may have drifted, and the order is re-validated server-side regardless,
-// but a week-old "cart" reappearing is more confusing than helpful.
+/** Which device/resource booking (if any) the cart should attach to — set
+ *  once, from the "Add food to your visit" nudge on the booking confirmation
+ *  page (/food-menu?booking=<confirmationToken>), then carried the same way
+ *  `station` is so it survives the navigation to /checkout. Mutually
+ *  exclusive with `station` in practice (a table-QR order already attaches
+ *  to its own active booking via the station), but kept as an independent
+ *  field rather than folded into CartStation since there's no table/resource
+ *  involved here at all. */
+export type CartBooking = { token: string; bookingNumber: string }
+
+// Cart (and station/booking context) survive a refresh via localStorage —
+// already scoped per tenant since each tenant is its own subdomain/origin,
+// so no tenant id needs to be baked into the key. Left untouched past
+// MAX_AGE_MS, each is dropped on next load rather than restored:
+// prices/availability may have drifted, and the order is re-validated
+// server-side regardless, but a week-old "cart" reappearing is more
+// confusing than helpful.
 const CART_STORAGE_KEY = 'order-cart'
 const STATION_STORAGE_KEY = 'order-station'
+const BOOKING_STORAGE_KEY = 'order-booking'
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 function loadStoredCart(): Record<string, CartLine> {
@@ -52,6 +64,18 @@ function loadStoredStation(): CartStation | null {
   }
 }
 
+function loadStoredBooking(): CartBooking | null {
+  try {
+    const raw = window.localStorage.getItem(BOOKING_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { savedAt?: number; booking?: CartBooking }
+    if (!parsed.savedAt || Date.now() - parsed.savedAt > MAX_AGE_MS) return null
+    return parsed.booking ?? null
+  } catch {
+    return null
+  }
+}
+
 type OrderCartContextValue = {
   cart: Record<string, CartLine>
   cartLines: CartLine[]
@@ -61,6 +85,10 @@ type OrderCartContextValue = {
    *  /checkout page — never trusted at order-placement time, which re-derives
    *  everything server-side from the token alone. */
   station: CartStation | null
+  /** The device/resource booking this order should attach to (the
+   *  add-food-to-your-visit nudge), or null. Same never-trusted-at-submit-time
+   *  discipline as `station` — placeOnlineOrder re-resolves it from the token. */
+  booking: CartBooking | null
   addOrIncrement: (item: OrderableMenuItem) => void
   incrementById: (menuItemId: string) => void
   decrementById: (menuItemId: string) => void
@@ -88,23 +116,31 @@ export function useOrderCart() {
 export function OrderCartProvider({
   children,
   station: incomingStation,
+  booking: incomingBooking,
 }: {
   children: ReactNode
   /** Passed only by the QR-at-station entry point (/order/[stationToken]) —
    *  every other page omits this so an already-set station survives a visit
    *  to, say, /food-menu without being silently cleared back to pickup. */
   station?: CartStation
+  /** Passed only by /food-menu when reached via the booking confirmation
+   *  page's "Add food to your visit" nudge (?booking=<token>) — every other
+   *  entry point omits this so an already-set booking survives further
+   *  browsing the same way `station` does. */
+  booking?: CartBooking
 }) {
   // Both start empty/null so the server render and the client's first render
   // match (localStorage doesn't exist on the server) — the persisted values,
   // if any, are loaded a moment later in the effect below.
   const [cart, setCart] = useState<Record<string, CartLine>>({})
   const [station, setStation] = useState<CartStation | null>(null)
+  const [booking, setBooking] = useState<CartBooking | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     setCart(loadStoredCart())
     setStation(loadStoredStation())
+    setBooking(loadStoredBooking())
     setLoaded(true)
   }, [])
 
@@ -116,6 +152,14 @@ export function OrderCartProvider({
     setStation(incomingStation)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingStation?.token, incomingStation?.name, incomingStation?.hasActiveBooking])
+
+  // Same "fresh entry point always wins" rule as station, for the
+  // add-food-to-your-visit nudge.
+  useEffect(() => {
+    if (!incomingBooking) return
+    setBooking(incomingBooking)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingBooking?.token, incomingBooking?.bookingNumber])
 
   useEffect(() => {
     // Skip the pre-hydration pass (cart is still the empty initial value at
@@ -146,6 +190,19 @@ export function OrderCartProvider({
       // Same private-browsing/quota caveat as the cart above.
     }
   }, [station, loaded])
+
+  useEffect(() => {
+    if (!loaded) return
+    try {
+      if (!booking) {
+        window.localStorage.removeItem(BOOKING_STORAGE_KEY)
+      } else {
+        window.localStorage.setItem(BOOKING_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), booking }))
+      }
+    } catch {
+      // Same private-browsing/quota caveat as the cart above.
+    }
+  }, [booking, loaded])
 
   const cartLines = useMemo(() => Object.values(cart), [cart])
   const cartCount = useMemo(() => cartLines.reduce((sum, l) => sum + l.qty, 0), [cartLines])
@@ -216,6 +273,7 @@ export function OrderCartProvider({
     cartCount,
     cartTotal,
     station,
+    booking,
     addOrIncrement,
     incrementById,
     decrementById,

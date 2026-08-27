@@ -7,6 +7,7 @@ import { withPublicTenant } from '@/db'
 import { menuItems } from '@/db/schema'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
+import { getPublicBookingForOrder } from '@/lib/booking/public-confirmation'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
 import { findCustomerByRawPhone, findOrCreateCustomer, setNotifyOrderReady } from '@/lib/customers/service'
@@ -34,6 +35,12 @@ const orderInput = z.object({
   // ordering from the homepage/food-menu without a table — that order is
   // placed as a pickup/takeaway order tied only to the tenant's branch.
   stationToken: z.string().uuid().optional(),
+  // Present when this order was placed via the "Add food to your visit"
+  // nudge on the booking confirmation page (no station/table involved) — see
+  // getPublicBookingForOrder. Attaches the order straight to that booking so
+  // it lands on the same bill and is visible to staff against it, instead of
+  // sitting as an unlinked standalone order.
+  bookingToken: z.string().uuid().optional(),
   items: z
     .array(
       z.object({
@@ -114,11 +121,12 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
 
     let branchId: string
     let resourceId: string | undefined
-    // A pickup order (no station), or a scanned station with no booking
-    // currently open against it — "no open booking to add to", the exact
-    // boundary M14 #6 (v2) draws for pay-now vs. add-to-bill. Re-derived here
-    // from the SAME station row already fetched for branchId/resourceId,
-    // never trusted from the client's stale hasActiveBooking.
+    let bookingId: string | undefined
+    // A pickup order (no station and no attached booking), or a scanned
+    // station with no booking currently open against it — "no open booking
+    // to add to", the exact boundary M14 #6 (v2) draws for pay-now vs.
+    // add-to-bill. Re-derived here from the SAME station/booking rows just
+    // fetched, never trusted from the client's stale hasActiveBooking.
     let standalone = true
     if (v.stationToken) {
       const station = await getPublicStation(tenant.id, v.stationToken)
@@ -139,6 +147,18 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       const branch = await getPublicBranch(tenant.id)
       if (!branch) return { error: 'Online ordering is not available right now.' }
       branchId = branch.id
+
+      // The add-food-to-your-visit nudge: no table, but a specific booking to
+      // attach to. A stale/invalid/no-longer-open token degrades silently to
+      // the plain pickup order above rather than blocking checkout.
+      if (v.bookingToken) {
+        const booking = await getPublicBookingForOrder(tenant.id, v.bookingToken)
+        if (booking) {
+          branchId = booking.branchId
+          bookingId = booking.id
+          standalone = false
+        }
+      }
     }
 
     if (v.payNow && !standalone) {
@@ -189,6 +209,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         {
           branchId,
           resourceId,
+          bookingId,
           customerId: customer.id,
           channel: 'online',
           acceptanceStatus: awaitingPayment

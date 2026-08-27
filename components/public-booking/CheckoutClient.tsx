@@ -15,6 +15,7 @@ import {
   MapPin,
   Flame,
   Truck,
+  Ticket,
   Phone,
   User,
   Mail,
@@ -52,16 +53,27 @@ export function CheckoutClient({
   razorpayConfigured: boolean
 }) {
   const router = useRouter()
-  const { cartLines, cartCount, cartTotal, station, incrementById, decrementById, removeLine, updateNote, clearCart } =
-    useOrderCart()
+  const {
+    cartLines,
+    cartCount,
+    cartTotal,
+    station,
+    booking,
+    incrementById,
+    decrementById,
+    removeLine,
+    updateNote,
+    clearCart,
+  } = useOrderCart()
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
-  // "no open booking to add to" — a pickup order, or a scanned station
-  // currently unoccupied — mirrors the server's own re-derivation in
-  // placeOnlineOrder (lib/actions/public-orders.ts); this is only ever used
-  // to decide what the UI OFFERS, the server never trusts it.
-  const standalone = !station?.hasActiveBooking
+  // "no open booking to add to" — a pickup order, a scanned station
+  // currently unoccupied, and no booking attached via the add-food nudge
+  // either — mirrors the server's own re-derivation in placeOnlineOrder
+  // (lib/actions/public-orders.ts); this is only ever used to decide what
+  // the UI OFFERS, the server never trusts it.
+  const standalone = !station?.hasActiveBooking && !booking
   const showPayNow = razorpayConfigured && standalone
   const [payOnline, setPayOnline] = useState(false)
 
@@ -120,6 +132,7 @@ export function CheckoutClient({
       const wantsPayNow = showPayNow && payOnline
       const res = await placeOnlineOrder({
         stationToken: station?.token,
+        bookingToken: booking?.token,
         items: cartLines.map((l) => ({
           menuItemId: l.menuItemId,
           qty: l.qty,
@@ -154,7 +167,7 @@ export function CheckoutClient({
         {
           description: res.pendingAcceptance
             ? "The venue is confirming your order — we'll notify you shortly."
-            : station?.hasActiveBooking
+            : station?.hasActiveBooking || booking
               ? 'This has been added to your current booking.'
               : station
                 ? "We'll bring it out to you shortly."
@@ -269,13 +282,18 @@ export function CheckoutClient({
           <div>
             <h1 className="text-3xl font-black tracking-tight sm:text-4xl">Checkout</h1>
             <p className="mt-1.5 text-sm font-medium text-muted-foreground">
-              {cartCount} item{cartCount === 1 ? '' : 's'} · {station ? station.name : 'Pickup order'}
+              {cartCount} item{cartCount === 1 ? '' : 's'} ·{' '}
+              {station ? station.name : booking ? `Booking #${booking.bookingNumber}` : 'Pickup order'}
             </p>
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3.5 py-1.5 text-xs font-bold uppercase tracking-wide text-primary">
             {station ? (
               <>
                 <MapPin size={12} /> {station.name}
+              </>
+            ) : booking ? (
+              <>
+                <Ticket size={12} /> Booking #{booking.bookingNumber}
               </>
             ) : (
               <>
@@ -292,6 +310,11 @@ export function CheckoutClient({
           {station?.hasActiveBooking && (
             <p className="rounded-xl bg-primary/5 px-4 py-3 text-sm font-medium text-primary">
               This order will be linked to your current booking at {station.name}.
+            </p>
+          )}
+          {booking && (
+            <p className="rounded-xl bg-primary/5 px-4 py-3 text-sm font-medium text-primary">
+              This order will be added to booking #{booking.bookingNumber} — one bill for both.
             </p>
           )}
           {cartLines.map((line) => (

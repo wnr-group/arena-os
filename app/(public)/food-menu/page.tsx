@@ -3,6 +3,7 @@ import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, UtensilsCrossed, typ
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
+import { getPublicBookingForOrder } from '@/lib/booking/public-confirmation'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublicActiveHappyHourRules } from '@/lib/happy-hours/public'
 import { applyHappyHour } from '@/lib/happy-hours/apply'
@@ -40,18 +41,33 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
  * the same way every other app/(public) page does, since app/(public)/
  * layout.tsx can't hand computed props to a page. Also doubles as a QR-code
  * table menu when a tenant links here instead of /order/[stationToken].
+ *
+ * A `?booking=<confirmationToken>` query param — set only by the "Add food
+ * to your visit" nudge on the booking confirmation page
+ * (components/public-booking/BookingConfirmation.tsx) — attaches whatever
+ * gets ordered here to that device/resource booking, so it lands on the
+ * same bill and is visible to staff against the booking, not as an unlinked
+ * standalone order. A stale/invalid token silently falls back to a plain
+ * pickup order rather than erroring the page.
  */
-export default async function MenuPage() {
+export default async function MenuPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ booking?: string }>
+}) {
   const slug = await currentTenantSlug()
   if (!slug) notFound()
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
-  const [branch, menu, happyHourRules, branding] = await Promise.all([
+  const { booking: bookingToken } = await searchParams
+
+  const [branch, menu, happyHourRules, branding, bookingForOrder] = await Promise.all([
     getPublicBranch(tenant.id),
     getPublicMenu(tenant.id),
     getPublicActiveHappyHourRules(tenant.id),
     getPublishedBranding(tenant.id),
+    bookingToken ? getPublicBookingForOrder(tenant.id, bookingToken) : Promise.resolve(null),
   ])
 
   const now = new Date()
@@ -73,7 +89,9 @@ export default async function MenuPage() {
       className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
       style={accentColorStyle(branding.accentColor)}
     >
-      <OrderCartProvider>
+      <OrderCartProvider
+        booking={bookingForOrder ? { token: bookingToken!, bookingNumber: bookingForOrder.bookingNumber } : undefined}
+      >
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
         <main className="flex-1 bg-background relative">
