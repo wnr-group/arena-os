@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems } from '@/db/schema'
+import { menuCategories, menuItems, taxRates } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -105,6 +105,30 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
     const ctx = await requireManager()
     const v = menuItemInput.parse(input)
     await withUser(ctx.user.id, async (tx) => {
+      // categoryId/taxRateId are foreign keys, but neither is scoped to
+      // tenant_id at the DB level (menu_items.category_id is a plain FK to
+      // menu_categories(id), not a composite (tenant_id, id) one) — any
+      // *existing* uuid satisfies it, from any tenant. Re-check ownership
+      // here, inside the same transaction, since getPublicMenu now publishes
+      // every tenant's category ids on its no-login /food-menu page, making
+      // a foreign category id trivial to obtain and plant on another
+      // tenant's menu item otherwise.
+      const [category] = await tx
+        .select({ id: menuCategories.id })
+        .from(menuCategories)
+        .where(and(eq(menuCategories.id, v.categoryId), eq(menuCategories.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!category) throw new AuthError('Choose a category from this menu.')
+
+      if (v.taxRateId) {
+        const [taxRate] = await tx
+          .select({ id: taxRates.id })
+          .from(taxRates)
+          .where(and(eq(taxRates.id, v.taxRateId), eq(taxRates.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (!taxRate) throw new AuthError('Choose a tax rate from this menu.')
+      }
+
       const values = {
         tenantId: ctx.tenant.id,
         categoryId: v.categoryId,
