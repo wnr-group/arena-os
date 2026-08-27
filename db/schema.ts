@@ -1439,7 +1439,7 @@ export const sequences = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    kind: text('kind').$type<'booking' | 'invoice' | 'kot'>().notNull(),
+    kind: text('kind').$type<'booking' | 'invoice' | 'kot' | 'order'>().notNull(),
     period: text('period').notNull(),
     value: integer('value').notNull().default(0),
   },

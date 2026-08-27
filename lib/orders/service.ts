@@ -9,7 +9,7 @@
  * be charged for food the kitchen was never told about, and the kitchen can
  * never be shown a ticket for an order that failed to save.
  */
-import { and, eq, inArray, like, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { orders, orderItems, menuItems, taxRates, bookings, happyHours, kots } from '@/db/schema'
@@ -50,6 +50,30 @@ export type CreateOrderInput = {
 }
 
 export type CreatedOrder = { id: string; orderNumber: string; kotNumber: string }
+
+/**
+ * Next `PREFIX-YYYYMMDD-NNN` number for the tenant, atomically — same
+ * mechanism as lib/billing/invoice.ts:nextInvoiceNumber, against the same
+ * `sequences` table (0018), keyed by (tenant, kind, period) instead of this
+ * function's own row. The upsert's row lock is what makes it race-proof: two
+ * orders created in the same instant serialize on that one row instead of
+ * both reading the same `count(*)` and colliding on the unique order/KOT
+ * number index — which is exactly what the previous `count(*) + 1` version
+ * of this could do once online ordering opened the door to many concurrent,
+ * unauthenticated customers instead of one staff POS terminal at a time.
+ */
+async function nextDailyNumber(tx: Db, tenantId: string, kind: 'order' | 'kot', period: string): Promise<string> {
+  const prefix = kind === 'order' ? 'OR' : 'KOT'
+  const result = await tx.execute<{ value: number }>(sql`
+    insert into sequences (tenant_id, kind, period, value)
+    values (${tenantId}, ${kind}, ${period}, 1)
+    on conflict (tenant_id, kind, period)
+      do update set value = sequences.value + 1
+    returning value
+  `)
+  const value = Number(result.rows[0].value)
+  return `${prefix}-${period}-${String(value).padStart(3, '0')}`
+}
 
 /**
  * Place an order: snapshot its items' price/tax/happy-hour discount, then
@@ -125,12 +149,7 @@ export async function createOrderCore(
   const compact = todayInZone(ctx.timezone).replace(/-/g, '')
 
   // Order number: OR-YYYYMMDD-NNN, sequential per tenant per creation day.
-  const orderPrefix = `OR-${compact}`
-  const [{ n: orderN }] = await tx
-    .select({ n: sql<number>`count(*)` })
-    .from(orders)
-    .where(and(eq(orders.tenantId, ctx.tenantId), like(orders.orderNumber, `${orderPrefix}-%`)))
-  const orderNumber = `${orderPrefix}-${String(Number(orderN) + 1).padStart(3, '0')}`
+  const orderNumber = await nextDailyNumber(tx, ctx.tenantId, 'order', compact)
 
   const [order] = await tx
     .insert(orders)
@@ -186,12 +205,7 @@ export async function createOrderCore(
   // concept yet (grill vs bar vs dessert), so a burger and a coke land on the
   // same ticket. Splitting one order into several station-scoped KOTs is a
   // future enhancement, not something to build ahead of need here.
-  const kotPrefix = `KOT-${compact}`
-  const [{ n: kotN }] = await tx
-    .select({ n: sql<number>`count(*)` })
-    .from(kots)
-    .where(and(eq(kots.tenantId, ctx.tenantId), like(kots.kotNumber, `${kotPrefix}-%`)))
-  const kotNumber = `${kotPrefix}-${String(Number(kotN) + 1).padStart(3, '0')}`
+  const kotNumber = await nextDailyNumber(tx, ctx.tenantId, 'kot', compact)
 
   await tx.insert(kots).values({
     tenantId: ctx.tenantId,
