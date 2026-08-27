@@ -35,7 +35,10 @@ const SOURCE_LABELS: Record<string, string> = {
 
 function describe(entry: PortalLedgerEntry): string {
   const mapped = entry.sourceType ? SOURCE_LABELS[entry.sourceType] : undefined
-  return mapped ?? entry.reason?.trim() ?? 'Activity'
+  // `||`, not `??`: a reason of '   ' trims to '', which is non-nullish, so `??`
+  // would accept it and render a row with no description at all. Every step here
+  // is "use this if it is a non-empty label", which is what `||` means.
+  return mapped || entry.reason?.trim() || 'Activity'
 }
 
 export function LedgerList({
