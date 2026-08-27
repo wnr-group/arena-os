@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { ArrowRight, Menu, Ticket, ShoppingBag, X } from 'lucide-react'
+import { ArrowRight, Menu, ShoppingBag, X } from 'lucide-react'
 
 /** "My Booking" is spliced in after "Resources" (only when myBookingHref is
  *  passed) rather than living here, since it isn't a fixed link — see
@@ -141,17 +141,6 @@ export function PublicNavbar({
         </nav>
 
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
-          {myBookingHref && (
-            <button
-              type="button"
-              onClick={() => router.push(myBookingHref)}
-              aria-label="My Booking"
-              className="hidden sm:inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border border-primary/25 bg-primary/5 px-2.5 text-foreground transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/10 hover:text-primary hover:shadow-md hover:shadow-primary/10 active:translate-y-0 active:scale-95 lg:px-3.5"
-            >
-              <Ticket size={17} className="text-primary" />
-              <span className="hidden text-sm font-semibold lg:inline">My Booking</span>
-            </button>
-          )}
           {onCartClick && (
             <button
               type="button"
@@ -213,18 +202,6 @@ export function PublicNavbar({
                 </span>
               </button>
             ))}
-            {myBookingHref && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  router.push(myBookingHref)
-                }}
-                className="group flex items-center gap-2 rounded-xl px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
-              >
-                <Ticket size={15} /> My Booking
-              </button>
-            )}
           </div>
         </nav>
       )}
