@@ -726,6 +726,35 @@ export const kots = pgTable(
   ],
 )
 
+// ── notifications (migration 0054) ───────────────────────────────────────────
+// A minimal outbox, forward-compatible with the roadmap's eventual M3-C
+// design (notification_settings + notifications + retry) — see
+// lib/notifications/service.ts. No real SMS/WhatsApp provider is wired in
+// yet, so every row today is expected to land at status='skipped'.
+export const notificationChannel = pgEnum('notification_channel', ['sms'])
+export const notificationStatus = pgEnum('notification_status', ['sent', 'skipped', 'failed'])
+
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    channel: notificationChannel('channel').notNull(),
+    kind: text('kind').notNull(),
+    recipientPhone: text('recipient_phone'),
+    messageBody: text('message_body').notNull(),
+    status: notificationStatus('status').notNull(),
+    skipReason: text('skip_reason'),
+    providerMessageId: text('provider_message_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_notifications_order').on(t.tenantId, t.orderId)],
+)
+
 // ── customer module (migration 0006) ─────────────────────────────────────────
 // `phone` is stored NORMALISED to E.164 by lib/customers/phone.ts and is the
 // tenant-scoped identity key — see the unique index below.
@@ -742,6 +771,9 @@ export const customers = pgTable(
     dob: date('dob'),
     tags: text('tags').array().notNull().default([]),
     membershipStatus: text('membership_status'),
+    // Explicit, revisable opt-in for "order ready" texts (migration 0054) —
+    // checked by default at checkout; see lib/notifications/service.ts.
+    notifyOrderReady: boolean('notify_order_ready').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

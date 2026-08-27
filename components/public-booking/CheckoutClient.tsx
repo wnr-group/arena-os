@@ -109,6 +109,10 @@ export function CheckoutClient({
 
   const hasHappyHourLine = cartLines.some((l) => l.hasDiscount)
   const canPlaceOrder = !pending && phoneLookup.checked && (phoneLookup.found || name.trim().length > 0)
+  // Checked by default (M14 #7, v2) — persisted per-customer on every order,
+  // so they can change their mind order to order. See lib/notifications/
+  // service.ts for what this actually gates.
+  const [notifyOrderReady, setNotifyOrderReady] = useState(true)
 
   function handlePlaceOrder() {
     setError(null)
@@ -126,6 +130,7 @@ export function CheckoutClient({
         customerEmail: email,
         website,
         payNow: wantsPayNow,
+        notifyOrderReady,
       })
       if (res.error) {
         setError(res.error)
@@ -156,7 +161,7 @@ export function CheckoutClient({
                 : "We'll have it ready for pickup shortly.",
         },
       )
-      router.push('/')
+      router.push(`/o/${res.orderId}`)
     })
   }
 
@@ -182,7 +187,7 @@ export function CheckoutClient({
       toast.error(`Order #${orderNumber} was placed, but online payment could not be started.`, {
         description: 'Please contact the venue to arrange payment.',
       })
-      router.push('/')
+      router.push(`/o/${orderId}`)
       return
     }
     const { orderId: gatewayOrderId, amount, currency: orderCurrency, keyId } = res.checkout
@@ -195,7 +200,7 @@ export function CheckoutClient({
       toast.error(`Order #${orderNumber} was placed, but the payment window could not load.`, {
         description: 'Please contact the venue to arrange payment.',
       })
-      router.push('/')
+      router.push(`/o/${orderId}`)
       return
     }
 
@@ -216,14 +221,14 @@ export function CheckoutClient({
         toast.success('Payment submitted — confirming with the venue.', {
           description: "We'll start on your order the moment it clears.",
         })
-        router.push('/')
+        router.push(`/o/${orderId}`)
       },
       modal: {
         ondismiss: () => {
           toast(`Order #${orderNumber} is placed but not yet paid.`, {
             description: 'Contact the venue if you’d like to complete payment another way.',
           })
-          router.push('/')
+          router.push(`/o/${orderId}`)
         },
       },
     })
@@ -448,6 +453,18 @@ export function CheckoutClient({
                   </label>
                 </>
               ) : null}
+
+              {phoneLookup.checked && (
+                <label className="mt-4 flex items-center gap-2 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={notifyOrderReady}
+                    onChange={(e) => setNotifyOrderReady(e.target.checked)}
+                    className="size-4 rounded border-border accent-primary"
+                  />
+                  Text me when my order is ready
+                </label>
+              )}
 
               <HoneypotField value={website} onChange={setWebsite} />
             </div>

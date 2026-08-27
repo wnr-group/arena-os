@@ -7,11 +7,15 @@
 import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { kots } from '@/db/schema'
+import { kots, orders } from '@/db/schema'
 
 type Db = NodePgDatabase<typeof schema>
 
 export type KotStatus = 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled'
+
+/** The order a just-updated KOT belongs to — enough for the caller to fire an
+ *  order-ready notification (lib/actions/kots.ts) without a second query. */
+export type KotOrderRef = { orderId: string; orderNumber: string; customerId: string | null }
 
 /** Ticket status flow violations the caller is allowed to show verbatim. */
 export class KotError extends Error {}
@@ -35,10 +39,16 @@ export async function updateKotStatusCore(
   ctx: { tenantId: string },
   kotId: string,
   newStatus: KotStatus,
-): Promise<void> {
+): Promise<KotOrderRef> {
   const [kot] = await tx
-    .select({ status: kots.status })
+    .select({
+      status: kots.status,
+      orderId: kots.orderId,
+      orderNumber: orders.orderNumber,
+      customerId: orders.customerId,
+    })
     .from(kots)
+    .innerJoin(orders, eq(orders.id, kots.orderId))
     .where(and(eq(kots.id, kotId), eq(kots.tenantId, ctx.tenantId)))
     .for('update')
     .limit(1)
@@ -52,4 +62,6 @@ export async function updateKotStatusCore(
     .update(kots)
     .set({ status: newStatus })
     .where(and(eq(kots.id, kotId), eq(kots.tenantId, ctx.tenantId)))
+
+  return { orderId: kot.orderId, orderNumber: kot.orderNumber, customerId: kot.customerId }
 }

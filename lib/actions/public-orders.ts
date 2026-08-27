@@ -9,7 +9,7 @@ import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
-import { findCustomerByRawPhone, findOrCreateCustomer } from '@/lib/customers/service'
+import { findCustomerByRawPhone, findOrCreateCustomer, setNotifyOrderReady } from '@/lib/customers/service'
 import {
   createOrderPaymentIntent as createOrderPaymentIntentCore,
   createOrderPaymentIntentInputSchema,
@@ -61,6 +61,9 @@ const orderInput = z.object({
    * booking always goes through add-to-bill instead, whatever this says.
    */
   payNow: z.boolean().optional(),
+  /** M14 #7 (v2): opt-in for the "order ready" text — checked by default at
+   *  checkout, persisted per-customer (see setNotifyOrderReady). */
+  notifyOrderReady: z.boolean().optional().default(true),
 })
 
 export type PlaceOnlineOrderResult = {
@@ -169,6 +172,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         name: v.customerName || undefined,
         email: v.customerEmail || undefined,
       })
+      await setNotifyOrderReady(tx, tenant.id, customer.id, v.notifyOrderReady)
 
       // Whether this order needs a human to accept it before the kitchen sees
       // it (lib/orders/service.ts's acceptanceStatus gate) is a per-tenant

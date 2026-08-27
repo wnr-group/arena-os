@@ -36,7 +36,13 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
     pathname.startsWith('/b/') ||
-    pathname.startsWith('/order/')
+    pathname.startsWith('/order/') ||
+    // Order status tracking (M14 #7, v2) — /o/[orderId] is the no-login
+    // status page a customer lands on right after checkout, /track is the
+    // phone-lookup fallback to find it again later. Same "no session at all"
+    // trust model as /b/[token] above.
+    pathname.startsWith('/o/') ||
+    pathname === '/track'
   const hasSession = request.cookies.has(SESSION_COOKIE)
 
   // Coarse abuse gate (AROS-47): every write against the public booking site
