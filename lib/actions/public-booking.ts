@@ -6,8 +6,19 @@ import { z } from 'zod'
 import { withPublicTenant } from '@/db'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
-import { createBookingCore, BookingError } from '@/lib/booking/service'
+import { createBookingCore, priceBookingSlots, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
+import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
+import { round2 } from '@/lib/billing/pricing'
+import {
+  createBookingPaymentIntent as createBookingPaymentIntentCore,
+  createBookingPaymentIntentInputSchema,
+  BookingPaymentError,
+  OrphanedBookingPaymentError,
+  type BookingPaymentCheckout,
+} from '@/lib/payments/booking-payment'
+import { createRazorpayOrder, RazorpayApiError } from '@/lib/payments/razorpay'
+import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 
@@ -145,6 +156,10 @@ const bookingInput = z.object({
   /** Not a first-class column — the schema has no per-booking player count,
    * so this rides along as a note, same as staff bookings already do. */
   players: z.coerce.number().int().min(1).max(100).optional(),
+  /** M14 #8: the customer chose "pay online now" over "pay at the venue".
+   *  Only ever charges the booking's OWN total, re-priced server-side below —
+   *  never a figure trusted from the client. */
+  payNow: z.boolean().optional(),
   /** Honeypot: a real visitor never sees or fills this field (it's rendered
    * off-screen and excluded from the tab order — see HoneypotField). A
    * non-empty value means whatever submitted the form filled in every input
@@ -152,15 +167,28 @@ const bookingInput = z.object({
   website: z.string().optional(),
 })
 
-export type CreatePublicBookingResult = { error?: string; bookingNumber?: string; confirmationToken?: string }
+export type CreatePublicBookingResult = {
+  error?: string
+  bookingNumber?: string
+  confirmationToken?: string
+  /** Present on every success — needed to chain into createBookingPaymentIntent. */
+  bookingId?: string
+  /** True when payNow was honoured — the client must now call createBookingPaymentIntent. */
+  awaitingOnlinePayment?: boolean
+}
 
 /**
  * Step 6 (confirm) of the booking wizard. Shares createBookingCore with the
  * staff action (lib/actions/bookings.ts) but never trusts the client for
- * branch, source, discount or deposit: the branch is resolved server-side
- * from the subdomain, source is hardcoded 'online' (also enforced at the
- * database layer — see 0023_public_booking_create.sql), and discount/deposit
- * are always zero — a stranger can never discount their own booking.
+ * branch, source or discount: the branch is resolved server-side from the
+ * subdomain, source is hardcoded 'online' (also enforced at the database
+ * layer — see 0023_public_booking_create.sql), and discount is always zero —
+ * a stranger can never discount their own booking. `deposit` is the one
+ * exception: when payNow is set, it is seeded with the booking's OWN total
+ * (re-priced here via priceBookingSlots, never trusted from the client) so
+ * the booking is created already owing itself in full online — see
+ * createBookingPaymentIntent below for the gateway order that actually
+ * collects it.
  */
 export async function createPublicBooking(
   raw: z.input<typeof bookingInput>,
@@ -210,6 +238,30 @@ export async function createPublicBooking(
       return { error: 'Enter your name.' }
     }
 
+    const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }]
+
+    // Pay-now: price the slot BEFORE creating the booking, so a total too
+    // large to take online refuses cleanly rather than leaving a booking
+    // behind that can never be paid through this path. Re-priced again
+    // inside createBookingCore itself moments later — this is a preview for
+    // the deposit figure, never the value actually written without a second,
+    // independent computation.
+    let deposit = 0
+    if (v.payNow) {
+      const priced = await withPublicTenant(tenant.id, (tx) =>
+        priceBookingSlots(tx, { tenantId: tenant.id }, { branchId: branch.id, slots }),
+      )
+      const rupees = round2(priced.subtotal)
+      const amountPaise = paise(rupees)
+      if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+        return { error: 'This booking has nothing to pay for.' }
+      }
+      if (rupees > MAX_PAYMENT_AMOUNT) {
+        return { error: 'This booking total is too large to pay online.' }
+      }
+      deposit = rupees
+    }
+
     const result = await withPublicTenant(tenant.id, (tx) =>
       createBookingCore(
         tx,
@@ -222,14 +274,19 @@ export async function createPublicBooking(
           notes: v.players ? `Players: ${v.players}` : undefined,
           source: 'online',
           discount: 0,
-          deposit: 0,
-          slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }],
+          deposit,
+          slots,
         },
       ),
     )
 
     revalidatePath('/bookings')
-    return { bookingNumber: result.bookingNumber, confirmationToken: result.confirmationToken }
+    return {
+      bookingNumber: result.bookingNumber,
+      confirmationToken: result.confirmationToken,
+      bookingId: result.id,
+      awaitingOnlinePayment: Boolean(v.payNow),
+    }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
     // 23P01 = exclusion_violation: someone else took this slot first.
@@ -237,5 +294,75 @@ export async function createPublicBooking(
       return { error: 'That time was just taken. Please pick another slot.' }
     }
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }
+  }
+}
+
+/* ── M14 #8: pay online at booking time ──────────────────────────────────── */
+
+export type CreateBookingPaymentIntentResult = { error?: string; checkout?: BookingPaymentCheckout }
+
+/** Same narrow-failure discipline as lib/actions/public-orders.ts's failOrderPayment. */
+function failBookingPayment(e: unknown): CreateBookingPaymentIntentResult {
+  if (e instanceof BookingPaymentError) return { error: e.message }
+  if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
+
+  if (e instanceof OrphanedBookingPaymentError) {
+    console.error(
+      `[public-booking] booking-payment intent NOT persisted after gateway order ${e.gatewayOrderId} was created — reconcile this booking`,
+    )
+    return { error: e.message }
+  }
+
+  if (e instanceof RazorpayApiError) {
+    console.error(`[public-booking] razorpay order creation failed with status ${e.status}`)
+    return {
+      error: e.retriable
+        ? 'The payment gateway is not responding. Please try again in a moment.'
+        : e.message,
+    }
+  }
+
+  console.error('[public-booking] createBookingPaymentIntent failed:', e instanceof Error ? e.name : 'unknown')
+  return { error: 'Could not start the payment. Please try again.' }
+}
+
+/**
+ * Open a Razorpay order for a just-placed booking's full online prepayment.
+ *
+ * The client sends only a booking id. Credentials are loaded fresh for this
+ * tenant (never cached, never trusted from the client); a tenant with no
+ * Razorpay configured returns a friendly error rather than throwing — the
+ * booking pages proactively hide "pay online now" when the same loader
+ * returns null server-side, so this is the belt-and-braces path, not the
+ * expected one.
+ */
+export async function createBookingPaymentIntent(
+  input: z.input<typeof createBookingPaymentIntentInputSchema>,
+): Promise<CreateBookingPaymentIntentResult> {
+  try {
+    if (!rateLimit(`book-pay:ip:${await callerIp()}`, 8, 10 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+
+    const v = createBookingPaymentIntentInputSchema.parse(input)
+
+    const credentials = await loadRazorpayCredentialsForTenant(tenant.id)
+    if (!credentials) {
+      return { error: 'Online payment is not available for this venue right now.' }
+    }
+
+    const checkout = await createBookingPaymentIntentCore(v, {
+      runInTx: (fn) => withPublicTenant(tenant.id, fn),
+      credentials,
+      createOrder: createRazorpayOrder,
+      actor: { tenantId: tenant.id },
+    })
+
+    return { checkout }
+  } catch (e) {
+    return failBookingPayment(e)
   }
 }

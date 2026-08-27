@@ -1,8 +1,23 @@
 import Link from 'next/link'
-import { CalendarDays, Clock, Boxes, Sparkles, User, CheckCircle2, XCircle, UserX, type LucideIcon } from 'lucide-react'
+import {
+  CalendarDays,
+  Clock,
+  Boxes,
+  Sparkles,
+  User,
+  CheckCircle2,
+  XCircle,
+  UserX,
+  UtensilsCrossed,
+  type LucideIcon,
+} from 'lucide-react'
 import { formatMoney } from '@/lib/format'
 import type { PublicBookingConfirmation } from '@/lib/booking/public-confirmation'
 import type { PublicTenant } from '@/lib/tenant/public'
+
+/** Booking statuses where offering food still makes sense — not a cancelled
+ *  or no-show visit. */
+const CAN_ADD_FOOD_STATUSES = new Set(['confirmed', 'checked_in'])
 
 const STATUS_LABEL: Record<string, string> = {
   confirmed: 'Booking confirmed',
@@ -46,15 +61,20 @@ export function BookingConfirmation({
   booking,
   tenant,
   qrSvg,
+  hasMenu,
 }: {
   booking: PublicBookingConfirmation
   tenant: PublicTenant
   qrSvg: string
+  /** Whether this venue sells food online at all — gates the "Add food to
+   *  your visit" CTA the same way SitePageShell gates the cart button. */
+  hasMenu: boolean
 }) {
   const slot = booking.slots[0] ?? null
   const StatusIcon = STATUS_ICON[booking.status] ?? CheckCircle2
   const statusLabel = STATUS_LABEL[booking.status] ?? booking.status
   const showQr = booking.status === 'confirmed' || booking.status === 'checked_in'
+  const canAddFood = hasMenu && CAN_ADD_FOOD_STATUSES.has(booking.status)
 
   return (
     <div className="mx-auto max-w-md px-4 py-12 sm:px-6 sm:py-16">
@@ -92,10 +112,32 @@ export function BookingConfirmation({
         <SummaryRow icon={Sparkles} label="Total" value={formatMoney(booking.total, tenant.currency)} />
       </div>
 
-      <div className="mt-8 text-center">
+      {canAddFood && (
+        <Link
+          href="/food-menu"
+          className="group mt-6 flex items-center gap-4 overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg"
+        >
+          <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25 transition group-hover:scale-105">
+            <UtensilsCrossed size={22} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-foreground">Add food to your visit</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Order snacks and drinks now — we&apos;ll have them ready for you.
+            </p>
+          </div>
+          <span className="shrink-0 text-primary transition group-hover:translate-x-1">&rarr;</span>
+        </Link>
+      )}
+
+      <div className="mt-6 text-center">
         <Link
           href="/"
-          className="inline-flex items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition hover:-translate-y-0.5 hover:bg-primary-hover hover:shadow-lg active:translate-y-0"
+          className={
+            canAddFood
+              ? 'text-sm font-semibold text-muted-foreground transition hover:text-primary'
+              : 'inline-flex items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition hover:-translate-y-0.5 hover:bg-primary-hover hover:shadow-lg active:translate-y-0'
+          }
         >
           Back to venue
         </Link>

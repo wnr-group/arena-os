@@ -7,6 +7,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
+import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { ResourceTypeBookingPage } from '@/components/public-booking/ResourceTypeBookingPage'
 import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
@@ -58,6 +59,12 @@ export default async function ResourceTypeBookPage({
   const branch = await getPublicBranch(tenant.id)
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
+  // Same proactive-disable pattern as app/(public)/checkout/page.tsx and
+  // book/[resourceId]/page.tsx.
+  const razorpayCredentials = await loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+    console.error('[book-type] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
+    return null
+  })
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
@@ -70,7 +77,12 @@ export default async function ResourceTypeBookPage({
         hasMenu={hasMenu}
       >
         <main className="flex-1 bg-background">
-          <ResourceTypeBookingPage tenant={tenant} resourceType={resourceType} today={todayInZone(tenant.timezone)} />
+          <ResourceTypeBookingPage
+            tenant={tenant}
+            resourceType={resourceType}
+            today={todayInZone(tenant.timezone)}
+            razorpayConfigured={razorpayCredentials !== null}
+          />
         </main>
 
         <PublicFooter
