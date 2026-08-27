@@ -14,6 +14,8 @@
  * SendSmsOtpFn, which is the seam lib/otp/provider.ts exists to provide.
  */
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
@@ -193,6 +195,48 @@ async function main() {
     resolveOtpMode({ NODE_ENV: 'production' } as NodeJS.ProcessEnv) === 'msg91',
   )
   check('this process selected the real provider', getOtpProvider().name === 'msg91')
+
+  // ── the SHIPPED default, not just the code path ──────────────────────────
+  //
+  // resolveOtpMode() has always been right; what was wrong was the file people
+  // copy. .env.example shipped `OTP_DEV_BYPASS=true`, so every checkout — onto
+  // a laptop, a shared dev box, a staging server, a preview deploy — turned the
+  // bypass ON by default, and the fixed code 123456 signed the caller in as any
+  // customer of that venue. The NODE_ENV=production guard does not cover any of
+  // those environments.
+  //
+  // This asserts the artefact rather than the logic: the bypass must be OFF in
+  // the file as shipped, so re-introducing the unsafe default fails here.
+  const exampleEnv = readFileSync(resolve(process.cwd(), '.env.example'), 'utf8')
+  const activeAssignments = exampleEnv
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^[A-Z_0-9]+=/.test(l))
+
+  check(
+    '.env.example does not enable OTP_DEV_BYPASS',
+    !activeAssignments.some((l) => l.startsWith('OTP_DEV_BYPASS=')),
+  )
+  check(
+    '…it is still documented, just commented out',
+    /^#\s*OTP_DEV_BYPASS=/m.test(exampleEnv),
+  )
+  check(
+    '…and no other setting ships switched on either',
+    !activeAssignments.some((l) => /^[A-Z_0-9]+=(true|1|yes|on)$/i.test(l)),
+  )
+
+  // Parse the shipped file the way scripts/env.ts does and prove the mode it
+  // produces is the real provider — the end-to-end statement of the fix.
+  const shippedEnv: NodeJS.ProcessEnv = { NODE_ENV: 'development' }
+  for (const line of activeAssignments) {
+    const [k, ...rest] = line.split('=')
+    shippedEnv[k] = rest.join('=')
+  }
+  check(
+    'a fresh copy of .env.example resolves to the REAL provider, not the bypass',
+    resolveOtpMode(shippedEnv) === 'msg91',
+  )
 
   // ══ 2. code generation + hashing ═══════════════════════════════════════════
   console.log('\n── code + hashing ──')
