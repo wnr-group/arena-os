@@ -57,6 +57,12 @@ export function TakeOrderDialog({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
+  // Idempotency (migration 0058) — stable for as long as this dialog stays
+  // open, so a network retry or an impatient double-tap on "Place order"
+  // never cooks the food twice. The dialog unmounts on success (onCreated
+  // closes it), so a fresh key for the next order comes for free on remount.
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
+
   // Snapshotting "now" once per open keeps every price in the dialog
   // consistent with itself; the server re-evaluates for real at submit time,
   // so this is a preview only — never trusted for the actual charge.
@@ -132,6 +138,7 @@ export function TakeOrderDialog({
       const r = await createOrder({
         branchId,
         bookingId,
+        idempotencyKey,
         items: cart.map((l) => ({
           menuItemId: l.menuItemId,
           qty: l.qty,

@@ -46,6 +46,11 @@ export type CreateOrderInput = {
   acceptanceStatus?: 'pending' | 'accepted' | 'awaiting_payment'
   customerId?: string
   resourceId?: string
+  // Idempotency (migration 0058) — a client-generated key that stays the
+  // same across retries of ONE checkout/take-order attempt (a network retry,
+  // or an impatient double-tap on "Place order"), but changes for every new
+  // attempt. See the early return below.
+  idempotencyKey?: string
   items: CreateOrderItemInput[]
 }
 
@@ -76,6 +81,28 @@ async function nextDailyNumber(tx: Db, tenantId: string, kind: 'order' | 'kot', 
 }
 
 /**
+ * Look an order up by its idempotency key — the retry path for BOTH the
+ * common case (createOrderCore's own pre-check, same transaction) and the
+ * rare race (two requests with the same key both passed that pre-check and
+ * collided on orders_tenant_idempotency_key; the loser's transaction is
+ * already aborted by then, so its caller re-runs this in a FRESH one instead
+ * — see placeOnlineOrder/createOrder).
+ */
+export async function findOrderByIdempotencyKey(
+  tx: Db,
+  tenantId: string,
+  idempotencyKey: string,
+): Promise<CreatedOrder | null> {
+  const [existing] = await tx
+    .select({ id: orders.id, orderNumber: orders.orderNumber, kotNumber: kots.kotNumber })
+    .from(orders)
+    .innerJoin(kots, eq(kots.orderId, orders.id))
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.idempotencyKey, idempotencyKey)))
+    .limit(1)
+  return existing ?? null
+}
+
+/**
  * Place an order: snapshot its items' price/tax/happy-hour discount, then
  * fire a kitchen ticket for it in the SAME transaction.
  */
@@ -84,6 +111,15 @@ export async function createOrderCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateOrderInput,
 ): Promise<CreatedOrder> {
+  // Idempotency: a retry of an attempt that already succeeded reuses the
+  // SAME key, so it lands here and gets the original order back instead of
+  // cooking the food twice. Checked before any other work — cheapest
+  // possible exit for what should be the common case on a retry.
+  if (input.idempotencyKey) {
+    const existing = await findOrderByIdempotencyKey(tx, ctx.tenantId, input.idempotencyKey)
+    if (existing) return existing
+  }
+
   // Snapshot each item's current name/price/tax so the order stays accurate
   // even if the menu changes later.
   const ids = [...new Set(input.items.map((i) => i.menuItemId))]
@@ -164,6 +200,7 @@ export async function createOrderCore(
       customerId: input.customerId ?? null,
       resourceId: input.resourceId ?? null,
       createdBy: ctx.membershipId,
+      idempotencyKey: input.idempotencyKey ?? null,
     })
     .returning({ id: orders.id })
 

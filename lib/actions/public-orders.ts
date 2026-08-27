@@ -4,7 +4,7 @@ import { headers } from 'next/headers'
 import { z } from 'zod'
 import { and, eq, inArray } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { menuItems } from '@/db/schema'
+import { menuItems, orders } from '@/db/schema'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingForOrder } from '@/lib/booking/public-confirmation'
@@ -22,7 +22,7 @@ import { createRazorpayOrder, RazorpayApiError } from '@/lib/payments/razorpay'
 import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
 
@@ -41,6 +41,14 @@ const orderInput = z.object({
   // it lands on the same bill and is visible to staff against it, instead of
   // sitting as an unlinked standalone order.
   bookingToken: z.string().uuid().optional(),
+  /**
+   * Idempotency (migration 0058) — generated once by CheckoutClient per
+   * checkout attempt and reused verbatim on any retry of that SAME attempt
+   * (a network retry, or an impatient double-tap on "Place order"). Lets
+   * createOrderCore recognise a retry and hand back the original order
+   * instead of creating — and cooking — a second one.
+   */
+  idempotencyKey: z.string().uuid(),
   items: z
     .array(
       z.object({
@@ -241,6 +249,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
             : settings.autoAcceptOnlineOrders
               ? 'accepted'
               : 'pending',
+          idempotencyKey: v.idempotencyKey,
           items: v.items,
         },
       )
@@ -258,6 +267,37 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       awaitingPayment: result.awaitingPayment,
     }
   } catch (e) {
+    // Idempotency race: two requests with the same key both passed
+    // createOrderCore's own pre-check and collided on
+    // orders_tenant_idempotency_key — the transaction that hit this is
+    // already aborted, so re-fetch the winner's order in a fresh one and
+    // return THAT, instead of surfacing a raw conflict to whichever request
+    // happened to lose the race. Only ever matches a genuine retry of this
+    // exact attempt (same idempotencyKey), never a different customer's order.
+    const { code, constraint } = pgError(e)
+    if (code === '23505' && constraint === 'orders_tenant_idempotency_key') {
+      const tenant = await resolvePublicTenant()
+      if (!('error' in tenant)) {
+        const parsed = orderInput.safeParse(raw)
+        if (parsed.success) {
+          const existing = await withPublicTenant(tenant.id, (tx) =>
+            tx
+              .select({ id: orders.id, orderNumber: orders.orderNumber, acceptanceStatus: orders.acceptanceStatus })
+              .from(orders)
+              .where(and(eq(orders.tenantId, tenant.id), eq(orders.idempotencyKey, parsed.data.idempotencyKey)))
+              .limit(1),
+          )
+          if (existing[0]) {
+            return {
+              orderNumber: existing[0].orderNumber,
+              orderId: existing[0].id,
+              pendingAcceptance: existing[0].acceptanceStatus === 'pending',
+              awaitingPayment: existing[0].acceptanceStatus === 'awaiting_payment',
+            }
+          }
+        }
+      }
+    }
     if (e instanceof OrderError) return { error: e.message }
     if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }

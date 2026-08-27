@@ -137,6 +137,14 @@ export function CheckoutClient({
     }
   }, [phone, phoneIsValid])
 
+  // Idempotency (migration 0058) — stable across every retry of ONE
+  // checkout attempt (the button disables while pending, but a failed
+  // network request re-enables it, or the customer just double-taps before
+  // that disable paints), so a retry never cooks the food twice. Only
+  // regenerated once THIS attempt has fully succeeded (see the two
+  // clearCart() call sites below) — the next order is a genuinely new one.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+
   const hasHappyHourLine = cartLines.some((l) => l.hasDiscount)
   const canPlaceOrder = !pending && phoneLookup.checked && (phoneLookup.found || name.trim().length > 0)
   // Checked by default (M14 #7, v2) — persisted per-customer on every order,
@@ -151,6 +159,7 @@ export function CheckoutClient({
       const res = await placeOnlineOrder({
         stationToken: station?.token,
         bookingToken: booking?.token,
+        idempotencyKey,
         items: cartLines.map((l) => ({
           menuItemId: l.menuItemId,
           qty: l.qty,
@@ -180,6 +189,7 @@ export function CheckoutClient({
       // No online payment involved — the order is placed the moment this
       // resolves, so the cart clears immediately, as it always has.
       clearCart()
+      setIdempotencyKey(crypto.randomUUID())
       toast.success(
         res.pendingAcceptance ? `Order #${res.orderNumber} received!` : `Order #${res.orderNumber} sent to the kitchen!`,
         {
@@ -249,6 +259,7 @@ export function CheckoutClient({
       handler: () => {
         // Payment was actually submitted — only now is the cart cleared.
         clearCart()
+        setIdempotencyKey(crypto.randomUUID())
         toast.success('Payment submitted — confirming with the venue.', {
           description: "We'll start on your order the moment it clears.",
         })

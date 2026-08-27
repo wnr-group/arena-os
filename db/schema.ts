@@ -649,6 +649,11 @@ export const orders = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    // Idempotency (migration 0058) — a client-generated key, reused verbatim
+    // on any retry of the SAME checkout/take-order attempt, so createOrderCore
+    // can recognise a retry and hand back the original order instead of
+    // creating a second one. Null for rows that predate this column.
+    idempotencyKey: uuid('idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -658,6 +663,9 @@ export const orders = pgTable(
     // (migration 0051) — same device bookings/invoices/payment_intents
     // themselves use for the same purpose.
     unique('orders_tenant_id_key').on(t.tenantId, t.id),
+    // NULLs are never equal to each other under a UNIQUE constraint, so a
+    // caller that omits idempotencyKey never collides with any other row.
+    unique('orders_tenant_idempotency_key').on(t.tenantId, t.idempotencyKey),
     index('idx_orders_branch').on(t.tenantId, t.branchId),
     index('idx_orders_booking').on(t.bookingId),
     index('idx_orders_customer').on(t.tenantId, t.customerId),
