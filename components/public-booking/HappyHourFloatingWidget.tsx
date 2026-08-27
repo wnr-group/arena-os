@@ -49,12 +49,20 @@ export function HappyHourFloatingWidget({
     tick()
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
-  }, [happyHour?.endsAt])
+  }, [happyHour])
 
   if (!happyHour || happyHour.id === dismissedId) return null
   if (remainingMs !== null && remainingMs <= 0) return null
 
-  const [h, m, s] = splitClock(remainingMs ?? new Date(happyHour.endsAt).getTime() - Date.now())
+  // remainingMs is only ever set client-side, by the effect above, after
+  // mount — never computed inline from Date.now() during render. That
+  // inline computation used to run a second time (with a different result)
+  // on the client's first paint, after already running once during SSR,
+  // which is exactly what a React hydration mismatch is. Rendering a static
+  // placeholder here instead keeps the server-rendered HTML and the client's
+  // first paint byte-identical; the real digits swap in a moment later via
+  // the state update, same as any other post-mount data fetch.
+  const digits = remainingMs === null ? null : splitClock(remainingMs)
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4 sm:inset-x-auto sm:right-5 sm:justify-end sm:px-0">
@@ -80,13 +88,14 @@ export function HappyHourFloatingWidget({
           <p className="truncate text-sm font-bold text-white">{happyHour.name}</p>
         </div>
 
-        {/* Premium digital-clock countdown. */}
+        {/* Premium digital-clock countdown — "--" until the client-side tick
+            has run once (see the digits computation above). */}
         <div className="relative flex shrink-0 items-center gap-0.5 rounded-xl bg-black/30 px-2.5 py-1.5 shadow-inner ring-1 ring-white/10">
-          {[h, m, s].map((unit, i) => (
+          {(digits ?? [null, null, null]).map((unit, i) => (
             <span key={i} className="flex items-center">
               {i > 0 && <span className="px-0.5 font-mono text-sm font-bold text-white/40">:</span>}
               <span className="min-w-[1.5ch] text-center font-mono text-base font-bold tabular-nums text-white [text-shadow:0_0_10px_rgba(255,255,255,0.55)]">
-                {pad(unit)}
+                {unit === null ? '--' : pad(unit)}
               </span>
             </span>
           ))}
