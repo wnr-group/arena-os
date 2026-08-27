@@ -90,6 +90,14 @@ export type PlaceOnlineOrderResult = {
   pendingAcceptance?: boolean
   /** True when this order is sitting at acceptanceStatus='awaiting_payment' — the caller must now call createOrderPaymentIntent. */
   awaitingPayment?: boolean
+  /** True when the customer asked to pay online now, but the table turned out
+   *  to already have an open booking (discovered fresh server-side, possibly
+   *  after the client's cached station.hasActiveBooking went stale) — the
+   *  order was placed anyway, added to that booking's bill instead of taken
+   *  as a prepaid standalone order. The caller should tell the customer their
+   *  payment preference couldn't be honoured, not silently treat this like a
+   *  normal pay-later order. */
+  payNowDowngraded?: boolean
 }
 
 /**
@@ -194,9 +202,18 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       }
     }
 
-    if (v.payNow && !standalone) {
-      return { error: 'This table already has an open booking — add this order to the bill instead.' }
-    }
+    // The customer may have picked "pay online now" while the cart's cached
+    // station.hasActiveBooking (set at QR-scan time) was still stale — staff
+    // or another guest can open a booking on the table after that. `standalone`
+    // above was just re-derived fresh, so this is the authoritative check: a
+    // table with an open booking always goes through add-to-bill, whatever
+    // payNow says (see its doc comment). Rather than hard-failing the whole
+    // order over a preference that can no longer be honoured, silently drop
+    // it and let the order fold into the bill instead — `awaitingPayment`
+    // below naturally comes out false, so the normal (non-payNow) flow takes
+    // over. `payNowDowngraded` tells the client this happened, so it can
+    // adjust its post-submit messaging instead of assuming payNow went through.
+    const payNowDowngraded = Boolean(v.payNow) && !standalone
 
     const result = await withPublicTenant(tenant.id, async (tx) => {
       // Re-check availability fresh, in this transaction — never trust the
@@ -266,6 +283,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       orderId: result.id,
       pendingAcceptance: result.pendingAcceptance,
       awaitingPayment: result.awaitingPayment,
+      payNowDowngraded,
     }
   } catch (e) {
     // Idempotency race: two requests with the same key both passed
@@ -293,11 +311,16 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
               .limit(1)
           })
           if (existing[0]) {
+            const awaitingPayment = existing[0].acceptanceStatus === 'awaiting_payment'
             return {
               orderNumber: existing[0].orderNumber,
               orderId: existing[0].id,
               pendingAcceptance: existing[0].acceptanceStatus === 'pending',
-              awaitingPayment: existing[0].acceptanceStatus === 'awaiting_payment',
+              awaitingPayment,
+              // payNow only ever skips awaiting_payment (see the awaitingPayment
+              // formula above) when the order turned out non-standalone — same
+              // inference the main path makes explicitly via `standalone`.
+              payNowDowngraded: Boolean(parsed.data.payNow) && !awaitingPayment,
             }
           }
         }

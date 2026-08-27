@@ -192,6 +192,19 @@ export function CheckoutClient({
       // resolves, so the cart clears immediately, as it always has.
       clearCart()
       setIdempotencyKey(newIdempotencyKey())
+
+      if (res.payNowDowngraded) {
+        // The client's cached station.hasActiveBooking was stale — a booking
+        // opened on this table after the QR scan. The server placed the order
+        // anyway, folded into that booking's bill, rather than hard-failing
+        // over a payment preference that could no longer be honoured.
+        toast.success(`Order #${res.orderNumber} sent to the kitchen!`, {
+          description: 'This table now has an open booking, so your order was added to it instead of paid online.',
+        })
+        router.push(`/o/${res.orderId}`)
+        return
+      }
+
       toast.success(
         res.pendingAcceptance ? `Order #${res.orderNumber} received!` : `Order #${res.orderNumber} sent to the kitchen!`,
         {
