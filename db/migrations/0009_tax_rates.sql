@@ -22,10 +22,8 @@ create trigger trg_tax_rates_updated before update on public.tax_rates
 -- ── RLS + grants ─────────────────────────────────────────────────────────────
 alter table public.tax_rates enable row level security;
 
-drop policy if exists tax_rates_select on public.tax_rates;
 create policy tax_rates_select on public.tax_rates
   for select using (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists tax_rates_write on public.tax_rates;
 create policy tax_rates_write on public.tax_rates
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));

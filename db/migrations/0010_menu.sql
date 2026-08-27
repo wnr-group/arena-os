@@ -68,26 +68,20 @@ alter table public.menu_categories enable row level security;
 alter table public.menu_items      enable row level security;
 alter table public.happy_hours     enable row level security;
 
-drop policy if exists menu_categories_select on public.menu_categories;
 create policy menu_categories_select on public.menu_categories
   for select using (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists menu_categories_write on public.menu_categories;
 create policy menu_categories_write on public.menu_categories
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
-drop policy if exists menu_items_select on public.menu_items;
 create policy menu_items_select on public.menu_items
   for select using (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists menu_items_write on public.menu_items;
 create policy menu_items_write on public.menu_items
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
-drop policy if exists happy_hours_select on public.happy_hours;
 create policy happy_hours_select on public.happy_hours
   for select using (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists happy_hours_write on public.happy_hours;
 create policy happy_hours_write on public.happy_hours
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
