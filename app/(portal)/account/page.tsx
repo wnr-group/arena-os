@@ -1,7 +1,8 @@
 import { CalendarDays, Sparkles, Wallet } from 'lucide-react'
 import { getPortalSummary } from '@/lib/portal/account'
 import { portalTenant } from '@/lib/portal/tenant'
-import { formatMoney } from '@/lib/format'
+import { formatMoney, prettyDate } from '@/lib/format'
+import { todayInZone } from '@/lib/booking/time'
 
 /**
  * The portal home (AROS-88).
@@ -29,10 +30,27 @@ import { formatMoney } from '@/lib/format'
  * exactly what lib/portal/tenant.ts exists to supply. It costs nothing extra:
  * getPublicTenantBySlug() is wrapped in React cache(), and the portal layout
  * has already resolved the same tenant for this request.
+ *
+ * ── And dates in the VENUE's timezone ───────────────────────────────────────
+ *
+ * Same cause, same shape of bug. These were `Date.toLocaleDateString()`, which
+ * formats in the SERVER's locale and timezone. A booking created at 00:30 venue
+ * time is still the PREVIOUS calendar day on a UTC server, so this page could
+ * show a date one day behind what /account/bookings and the booking detail page
+ * show for the very same booking.
+ *
+ * `prettyDate(todayInZone(tz, date), tz)` is the pair every other portal surface
+ * already uses: todayInZone() resolves the instant to the venue's calendar date,
+ * and prettyDate() then formats that date with a fixed en-GB style — so neither
+ * the day nor the wording drifts with wherever the server happens to run.
  */
 export default async function AccountPage() {
   const [tenant, summary] = await Promise.all([portalTenant(), getPortalSummary()])
   const currency = tenant.currency
+  const tz = tenant.timezone
+
+  /** An instant → the venue's calendar date, worded as the rest of the portal words it. */
+  const venueDate = (at: Date) => prettyDate(todayInZone(tz, at), tz)
 
   return (
     <div className="space-y-6">
@@ -69,7 +87,7 @@ export default async function AccountPage() {
           <h2 className="text-sm font-semibold">Membership</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {summary.membership.planName} · {summary.membership.discountPercent}% off · valid until{' '}
-            {summary.membership.expiresAt.toLocaleDateString()}
+            {venueDate(summary.membership.expiresAt)}
           </p>
         </section>
       )}
@@ -90,7 +108,7 @@ export default async function AccountPage() {
                 <div className="min-w-0">
                   <p className="truncate font-medium">{booking.bookingNumber}</p>
                   <p className="text-xs text-muted-foreground">
-                    {booking.createdAt.toLocaleDateString()} · {booking.status.replace('_', ' ')}
+                    {venueDate(booking.createdAt)} · {booking.status.replace('_', ' ')}
                   </p>
                 </div>
                 <span className="shrink-0 tabular-nums">{formatMoney(booking.total, currency)}</span>
