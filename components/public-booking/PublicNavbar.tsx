@@ -2,9 +2,12 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { ArrowRight, Menu, Ticket, ShoppingBag, X } from 'lucide-react'
+import { ArrowRight, Menu, ShoppingBag, X } from 'lucide-react'
 
-const NAV_LINKS = [
+/** "My Booking" is spliced in after "Resources" (only when myBookingHref is
+ *  passed) rather than living here, since it isn't a fixed link — see
+ *  buildNavLinks. */
+const BASE_NAV_LINKS = [
   { id: 'home', label: 'Home' },
   { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
@@ -16,6 +19,15 @@ const NAV_LINKS = [
 const ROUTES: Record<string, string> = {
   menu: '/food-menu',
   resources: '/resources',
+}
+
+function buildNavLinks(myBookingHref?: string) {
+  if (!myBookingHref) return BASE_NAV_LINKS
+  return [
+    ...BASE_NAV_LINKS.slice(0, 3),
+    { id: 'my-booking', label: 'My Booking' },
+    ...BASE_NAV_LINKS.slice(3),
+  ]
 }
 
 function scrollToId(id: string) {
@@ -51,6 +63,7 @@ export function PublicNavbar({
   const [scrolled, setScrolled] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
+  const navLinks = buildNavLinks(myBookingHref)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
@@ -59,10 +72,15 @@ export function PublicNavbar({
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
-  // "Menu" and "Resources" always live at their own route. Every other link
-  // is a same-page anchor on the homepage — scroll to it directly when we're
+  // "My Booking" goes straight to the phone-lookup hub. "Menu" and
+  // "Resources" always live at their own route. Every other link is a
+  // same-page anchor on the homepage — scroll to it directly when we're
   // already there, otherwise navigate back to the homepage anchor.
   const goTo = (id: string) => {
+    if (id === 'my-booking') {
+      if (myBookingHref) router.push(myBookingHref)
+      return
+    }
     if (ROUTES[id]) {
       router.push(ROUTES[id])
       return
@@ -84,7 +102,7 @@ export function PublicNavbar({
       }`}
     >
       <div
-        className={`mx-auto flex max-w-6xl items-center gap-3 px-4 transition-all duration-300 sm:px-6 ${
+        className={`mx-auto flex max-w-7xl items-center gap-4 px-5 transition-all duration-300 sm:px-8 ${
           scrolled ? 'py-2.5' : 'py-4'
         }`}
       >
@@ -102,38 +120,27 @@ export function PublicNavbar({
                 {icon}
               </span>
             )}
-            <span className="truncate text-lg font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
+            <span className="truncate text-xl font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
               {tenantName}
             </span>
           </button>
         </div>
 
-        <nav className="hidden md:flex justify-center items-center gap-1">
-          {NAV_LINKS.map((link) => (
+        <nav className="hidden md:flex justify-center items-center">
+          {navLinks.map((link) => (
             <button
               key={link.id}
               type="button"
               onClick={() => goTo(link.id)}
-              className="group relative px-4 py-2 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95"
+              className="group relative whitespace-nowrap px-2.5 py-2.5 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95 lg:px-3.5 lg:text-lg"
             >
               {link.label}
-              <span className="absolute bottom-1.5 left-4 right-4 h-[2px] origin-left scale-x-0 rounded-full bg-primary transition-transform duration-300 group-hover:scale-x-100" />
+              <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-primary transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
             </button>
           ))}
         </nav>
 
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
-          {myBookingHref && (
-            <button
-              type="button"
-              onClick={() => router.push(myBookingHref)}
-              aria-label="My Booking"
-              className="hidden sm:inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border border-primary/25 bg-primary/5 px-2.5 text-foreground transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/10 hover:text-primary hover:shadow-md hover:shadow-primary/10 active:translate-y-0 active:scale-95 lg:px-3.5"
-            >
-              <Ticket size={17} className="text-primary" />
-              <span className="hidden text-sm font-semibold lg:inline">My Booking</span>
-            </button>
-          )}
           {onCartClick && (
             <button
               type="button"
@@ -152,7 +159,7 @@ export function PublicNavbar({
           <button
             type="button"
             onClick={() => router.push('/resources')}
-            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-5 group"
+            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-base font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
           >
             {/* Shimmer overlay effect */}
             <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
@@ -179,7 +186,7 @@ export function PublicNavbar({
       {open && (
         <nav className="border-t border-border/80 bg-background/95 px-4 pb-5 pt-3 shadow-[0_15px_30px_-10px_rgba(0,0,0,0.1)] backdrop-blur-xl md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex flex-col gap-1.5">
-            {NAV_LINKS.map((link) => (
+            {navLinks.map((link) => (
               <button
                 key={link.id}
                 type="button"
@@ -187,7 +194,7 @@ export function PublicNavbar({
                   setOpen(false)
                   goTo(link.id)
                 }}
-                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
+                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-base font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
               >
                 <span>{link.label}</span>
                 <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary">
@@ -195,18 +202,6 @@ export function PublicNavbar({
                 </span>
               </button>
             ))}
-            {myBookingHref && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  router.push(myBookingHref)
-                }}
-                className="group flex items-center gap-2 rounded-xl px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
-              >
-                <Ticket size={15} /> My Booking
-              </button>
-            )}
           </div>
         </nav>
       )}
