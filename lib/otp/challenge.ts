@@ -101,15 +101,43 @@ export async function createChallenge(
 /**
  * Kill a challenge we just created but could not deliver.
  *
- * Marked consumed rather than deleted so the row still occupies the resend
- * cooldown window — a gateway outage must not become a way to make the app
- * hammer the gateway once per request.
+ * The row is EXPIRED, not consumed, and not deleted. Each of those three is a
+ * deliberate choice and the difference between them is the whole point:
+ *
+ *   deleted   — claimAttempt() would find nothing, but so would the cooldown
+ *               guard, so a gateway that fails on every call would let the app
+ *               hammer it once per request. Also loses the evidence.
+ *
+ *   consumed  — what this used to do, and it had exactly the same hole.
+ *               createChallenge()'s guard counts only rows with
+ *               `consumed_at is null`, so marking the row consumed took it
+ *               straight back out of the cooldown window it was supposed to
+ *               hold. The comment here claimed the opposite for a while; the
+ *               test that was meant to catch it only asserted the row still
+ *               existed, which it did.
+ *
+ *   expired   — claimAttempt() requires `expires_at > now()`, so the code can
+ *               never be presented again (a delivery we recorded as failed but
+ *               which the gateway actually completed must not leave a usable
+ *               code standing), while `consumed_at` stays NULL so the row goes
+ *               on occupying the resend cooldown for the rest of its 60s.
+ *
+ * So a delivery failure costs the caller the same wait as a successful send,
+ * and neither the gateway nor the challenge table can be driven in a loop.
+ * pruneExpiredChallenges() clears these out a day later like any other expiry.
+ *
+ * A SUCCESSFUL login still sets `consumed_at` (consumeChallenge) and therefore
+ * still releases the cooldown immediately — signing out and back in must not
+ * make anyone wait a minute. Those are genuinely different cases, and using two
+ * different columns is what lets them stay different.
  */
 export async function voidChallenge(tx: Db, id: string): Promise<void> {
   await tx.execute(sql`
     update public.customer_otp_challenges
-       set consumed_at = now()
-     where id = ${id}::uuid and consumed_at is null
+       set expires_at = now()
+     where id = ${id}::uuid
+       and consumed_at is null
+       and expires_at > now()
   `)
 }
 

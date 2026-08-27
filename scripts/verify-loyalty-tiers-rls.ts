@@ -131,16 +131,34 @@ async function main() {
   // ── seeded defaults ───────────────────────────────────────────────────────
   console.log('\n── default tiers ──')
 
+  // Migration 0049 seeds only tenants that EXISTED when it ran, so whether the
+  // demo tenant has rows depends on whether it was created before or after the
+  // migration — and the README's own quickstart runs `db:migrate` BEFORE
+  // `seed:demo`, which produces no rows at all. Asserting "it has three rows"
+  // unconditionally would therefore fail on a clean install for a reason that
+  // says nothing about the code, exactly the order-dependence the comment below
+  // warns against.
+  //
+  // What is actually invariant is: IF the seed applied, it applied exactly the
+  // documented ladder. The "no rows" case is the fallback case, and it is
+  // asserted directly further down against DEFAULT_TIERS.
   const demo = await owner.query<{ id: string }>("select id from tenants where slug='demo'")
   if (demo.rowCount) {
     const seeded = await owner.query<{ name: string; threshold: number }>(
       'select name, threshold from loyalty_tiers where tenant_id=$1 order by threshold',
       [demo.rows[0].id],
     )
-    check(
-      'the migration seeded Bronze/Silver/Gold for an existing tenant',
-      seeded.rows.map((r) => `${r.name}:${r.threshold}`).join(',') === 'Bronze:0,Silver:500,Gold:1000',
-    )
+    if (seeded.rowCount) {
+      check(
+        'the migration seeded Bronze/Silver/Gold for a tenant that predates it',
+        seeded.rows.map((r) => `${r.name}:${r.threshold}`).join(',') ===
+          'Bronze:0,Silver:500,Gold:1000',
+      )
+    } else {
+      console.log(
+        'ⓘ  demo tenant was created after migration 0049 — no seeded rows, code defaults apply (asserted below)',
+      )
+    }
   }
 
   // Re-running the seed must add nothing.

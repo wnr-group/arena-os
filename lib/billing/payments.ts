@@ -172,42 +172,25 @@ export const recordPaymentInputSchema = z.object({
   method: z.enum(POS_PAYMENT_METHODS, {
     errorMap: () => ({ message: 'Choose cash, card or UPI.' }),
   }),
-  amount: z.coerce
-
-    .number({ invalid_type_error: 'Enter a valid amount.' })
-
-    .finite('Enter a valid amount.')
-
-    .positive('Enter an amount greater than zero.')
-
-    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
-
-  /**
-
-   * Retry token. A double-clicked button or a retried request carries the
-
-   * SAME key, and the second attempt returns the first result rather than
-
-   * taking the money twice. Optional so server-side callers that are
-
-   * already idempotent by other means need not supply one.
-
-   */
-
-  idempotencyKey: z.string().trim().min(8).max(128).optional(),
-
+  amount: z.coerce
+    .number({ invalid_type_error: 'Enter a valid amount.' })
+    .finite('Enter a valid amount.')
+    .positive('Enter an amount greater than zero.')
+    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
+  /**
+   * Retry token. A double-clicked button or a retried request carries the
+   * SAME key, and the second attempt returns the first result rather than
+   * taking the money twice. Optional so server-side callers that are
+   * already idempotent by other means need not supply one.
+   */
+  idempotencyKey: z.string().trim().min(8).max(128).optional(),
 })
 
-export type RecordPaymentInput = {
-
-  invoiceId: string
-
-  method: PosPaymentMethod
-
-  amount: number
-
-  idempotencyKey?: string
-
+export type RecordPaymentInput = {
+  invoiceId: string
+  method: PosPaymentMethod
+  amount: number
+  idempotencyKey?: string
 }
 
 export type RecordPaymentResult = {
@@ -216,14 +199,10 @@ export type RecordPaymentResult = {
   balance: number
   invoiceStatus: string
   settled: boolean
-  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
-
-  bookingId: string | null
-
-  /** True when this call recognised itself as a retry and took no money. */
-
-  deduplicated?: boolean
-
+  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
+  bookingId: string | null
+  /** True when this call recognised itself as a retry and took no money. */
+  deduplicated?: boolean
 }
 
 /**
@@ -264,90 +243,48 @@ export async function recordPaymentForInvoice(
     .for('update')
     .limit(1)
 
-  if (!invoice) throw new PaymentError('Invoice not found.')
-
-
-
-  // ── 1b. have we already taken this exact tender? ──────────────────────────
-
-  // Checked AFTER the invoice lock, which is what makes it race-free: two
-
-  // simultaneous submissions of one click serialise on that lock, so the
-
-  // second sees the first's row rather than a stale absence. The unique index
-
-  // on (tenant_id, idempotency_key) is the backstop if they ever did not.
-
-  //
-
-  // A recognised retry is NOT an error — it returns what the first call
-
-  // returned, which is what a cashier who clicked twice expects to see.
-
-  if (input.idempotencyKey) {
-
-    const [existing] = await tx
-
-      .select({ id: payments.id, invoiceId: payments.invoiceId })
-
-      .from(payments)
-
-      .where(
-
-        and(
-
-          eq(payments.tenantId, actor.tenantId),
-
-          eq(payments.idempotencyKey, input.idempotencyKey),
-
-        ),
-
-      )
-
-      .limit(1)
-
-
-
-    if (existing) {
-
-      // A key is minted per attempt, so reuse against a DIFFERENT invoice
-
-      // means the client is confused — refuse rather than silently ignore.
-
-      if (existing.invoiceId !== invoice.id) {
-
-        throw new PaymentError('That payment reference has already been used.')
-
-      }
-
-      const paidNow = await capturedTotal(tx, actor.tenantId, invoice.id)
-
-      const invoiceTotal = round2(Number(invoice.total))
-
-      return {
-
-        paymentId: existing.id,
-
-        paid: paidNow,
-
-        balance: round2(invoiceTotal - paidNow),
-
-        invoiceStatus: invoice.status,
-
-        settled: paise(paidNow) >= paise(invoiceTotal),
-
-        bookingId: invoice.bookingId,
-
-        deduplicated: true,
-
-      }
-
-    }
-
-  }
-
-
-
+  if (!invoice) throw new PaymentError('Invoice not found.')
+
+  // ── 1b. have we already taken this exact tender? ──────────────────────────
+  // Checked AFTER the invoice lock, which is what makes it race-free: two
+  // simultaneous submissions of one click serialise on that lock, so the
+  // second sees the first's row rather than a stale absence. The unique index
+  // on (tenant_id, idempotency_key) is the backstop if they ever did not.
+  //
+  // A recognised retry is NOT an error — it returns what the first call
+  // returned, which is what a cashier who clicked twice expects to see.
+  if (input.idempotencyKey) {
+    const [existing] = await tx
+      .select({ id: payments.id, invoiceId: payments.invoiceId })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.tenantId, actor.tenantId),
+          eq(payments.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1)
+
+    if (existing) {
+      // A key is minted per attempt, so reuse against a DIFFERENT invoice
+      // means the client is confused — refuse rather than silently ignore.
+      if (existing.invoiceId !== invoice.id) {
+        throw new PaymentError('That payment reference has already been used.')
+      }
+      const paidNow = await capturedTotal(tx, actor.tenantId, invoice.id)
+      const invoiceTotal = round2(Number(invoice.total))
+      return {
+        paymentId: existing.id,
+        paid: paidNow,
+        balance: round2(invoiceTotal - paidNow),
+        invoiceStatus: invoice.status,
+        settled: paise(paidNow) >= paise(invoiceTotal),
+        bookingId: invoice.bookingId,
+        deduplicated: true,
+      }
+    }
+  }
+
   // ── 2. can this invoice still take money? ─────────────────────────────────
   if (invoice.status === 'paid') throw new PaymentError('This invoice is already paid.')
   if (invoice.status === 'void') throw new PaymentError('This invoice has been voided.')
@@ -386,14 +323,10 @@ export async function recordPaymentForInvoice(
       invoiceId: invoice.id,
       method: input.method,
       amount: amount.toFixed(2),
-      status: 'captured',
-
-      collectedBy: actor.membershipId,
-
-      idempotencyKey: input.idempotencyKey ?? null,
-
-    })
-
+      status: 'captured',
+      collectedBy: actor.membershipId,
+      idempotencyKey: input.idempotencyKey ?? null,
+    })
     .returning({ id: payments.id })
 
   // ── 6. settle the invoice, only once the money is actually recorded ───────

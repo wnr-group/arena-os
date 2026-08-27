@@ -87,7 +87,7 @@ export default async function ResourceTypeBookPage({
           tenant={tenant}
           resourceType={resourceType}
           today={todayInZone(tenant.timezone)}
-          initialDuration={clampPrefill(prefill.duration, 30, 240, 30)}
+          initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
           initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}
         />
       </main>

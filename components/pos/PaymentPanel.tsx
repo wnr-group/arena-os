@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation'
 import { BadgeCheck, Wallet } from 'lucide-react'
 import { recordPayment, payInvoiceFromWallet } from '@/lib/actions/payments'
 import { round2 } from '@/lib/billing/pricing'
-import { formatMoney, timeInZone } from '@/lib/format'
-
+import { formatMoney, timeInZone } from '@/lib/format'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
 
 /**

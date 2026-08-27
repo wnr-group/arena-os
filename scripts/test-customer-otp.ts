@@ -406,16 +406,58 @@ async function main() {
   check('the CORRECT code no longer works once attempts are exhausted', burned)
 
   // ── voided challenge (failed SMS delivery) ──
+  //
+  // The cooldown half of this used to be asserted by checking the row still
+  // existed, which it always did — and the row was being marked CONSUMED, which
+  // takes it straight back out of the cooldown window. Row existence is not the
+  // property that matters; whether createChallenge() actually refuses the next
+  // send is. That is what is asserted below.
   await reset()
   const voided = await seedChallenge(tenantA, PHONE, goodCode)
   await withPublicTenant(tenantA, (tx) => voidChallenge(tx, voided.id))
   const afterVoid = await withPublicTenant(tenantA, (tx) => claimAttempt(tx, tenantA, PHONE))
   check('a challenge voided after a delivery failure cannot be used', afterVoid === null)
-  const voidedRow = await ownerPool.query(
-    'select consumed_at from customer_otp_challenges where id = $1',
+
+  const voidedRow = await ownerPool.query<{ consumed_at: Date | null; expired: boolean }>(
+    'select consumed_at, expires_at <= now() as expired from customer_otp_challenges where id = $1',
     [voided.id],
   )
-  check('…and it stays on file, so it still occupies the resend cooldown', voidedRow.rowCount === 1)
+  check('…and it stays on file', voidedRow.rowCount === 1)
+  check('…expired rather than consumed', voidedRow.rows[0]?.expired === true)
+  check('…so consumed_at is still null', voidedRow.rows[0]?.consumed_at === null)
+
+  // The property the void actually exists to protect: a gateway that fails on
+  // every call must not become a way to make the app call it once per request.
+  const resendAfterVoid = await withPublicTenant(tenantA, (tx) =>
+    createChallenge(tx, {
+      id: crypto.randomUUID(),
+      tenantId: tenantA,
+      phone: PHONE,
+      codeHash: hashOtpCode({ challengeId: crypto.randomUUID(), tenantId: tenantA, phone: PHONE, code: goodCode }),
+    }),
+  )
+  check('…and it STILL occupies the resend cooldown', resendAfterVoid.ok === false)
+  check(
+    '…so an unreachable gateway cannot be hammered once per request',
+    resendAfterVoid.ok === false &&
+      resendAfterVoid.reason === 'cooldown' &&
+      resendAfterVoid.retryAfterSeconds > 0,
+  )
+
+  // A SUCCESSFUL login is the opposite case and must NOT hold the cooldown —
+  // signing out and back in cannot be made to wait a minute.
+  await reset()
+  const spent = await seedChallenge(tenantA, PHONE, goodCode)
+  await withPublicTenant(tenantA, (tx) => consumeChallenge(tx, spent.id))
+  const resendAfterLogin = await withPublicTenant(tenantA, (tx) =>
+    createChallenge(tx, {
+      id: crypto.randomUUID(),
+      tenantId: tenantA,
+      phone: PHONE,
+      codeHash: hashOtpCode({ challengeId: crypto.randomUUID(), tenantId: tenantA, phone: PHONE, code: goodCode }),
+    }),
+  )
+  check('a CONSUMED challenge releases the cooldown immediately', resendAfterLogin.ok === true)
 
   // ── concurrency: two correct codes at once ──
   await reset()
