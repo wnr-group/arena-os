@@ -48,7 +48,7 @@ const orderInput = z.object({
    * createOrderCore recognise a retry and hand back the original order
    * instead of creating — and cooking — a second one.
    */
-  idempotencyKey: z.string().uuid(),
+  idempotencyKey: z.string().trim().min(8).max(128),
   items: z
     .array(
       z.object({

@@ -649,11 +649,13 @@ export const orders = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
-    // Idempotency (migration 0058) — a client-generated key, reused verbatim
-    // on any retry of the SAME checkout/take-order attempt, so createOrderCore
-    // can recognise a retry and hand back the original order instead of
-    // creating a second one. Null for rows that predate this column.
-    idempotencyKey: uuid('idempotency_key'),
+    // Idempotency (migration 0058, column type fixed in 0061) — a
+    // client-generated key (lib/utils/idempotency-key.ts's newIdempotencyKey,
+    // NOT crypto.randomUUID — see 0061 for why), reused verbatim on any retry
+    // of the SAME checkout/take-order attempt, so createOrderCore can
+    // recognise a retry and hand back the original order instead of creating
+    // a second one. Null for rows that predate this column.
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

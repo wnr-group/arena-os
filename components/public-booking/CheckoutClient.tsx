@@ -26,6 +26,7 @@ import { formatMoney } from '@/lib/format'
 import { placeOnlineOrder, createOrderPaymentIntent, checkBookingStillActive } from '@/lib/actions/public-orders'
 import { lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { isValidPhone } from '@/lib/customers/phone'
+import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
 import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { useOrderCart } from './OrderCartProvider'
 import { HoneypotField } from './HoneypotField'
@@ -143,7 +144,7 @@ export function CheckoutClient({
   // that disable paints), so a retry never cooks the food twice. Only
   // regenerated once THIS attempt has fully succeeded (see the two
   // clearCart() call sites below) — the next order is a genuinely new one.
-  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+  const [idempotencyKey, setIdempotencyKey] = useState(() => newIdempotencyKey())
 
   const hasHappyHourLine = cartLines.some((l) => l.hasDiscount)
   const canPlaceOrder = !pending && phoneLookup.checked && (phoneLookup.found || name.trim().length > 0)
@@ -189,7 +190,7 @@ export function CheckoutClient({
       // No online payment involved — the order is placed the moment this
       // resolves, so the cart clears immediately, as it always has.
       clearCart()
-      setIdempotencyKey(crypto.randomUUID())
+      setIdempotencyKey(newIdempotencyKey())
       toast.success(
         res.pendingAcceptance ? `Order #${res.orderNumber} received!` : `Order #${res.orderNumber} sent to the kitchen!`,
         {
@@ -259,7 +260,7 @@ export function CheckoutClient({
       handler: () => {
         // Payment was actually submitted — only now is the cart cleared.
         clearCart()
-        setIdempotencyKey(crypto.randomUUID())
+        setIdempotencyKey(newIdempotencyKey())
         toast.success('Payment submitted — confirming with the venue.', {
           description: "We'll start on your order the moment it clears.",
         })

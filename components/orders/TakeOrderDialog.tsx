@@ -5,6 +5,7 @@ import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap } from 'lucide-react
 import { createOrder } from '@/lib/actions/orders'
 import { formatMoney } from '@/lib/format'
 import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
+import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
 
 export type CategoryOption = { id: string; name: string }
 export type MenuItemOption = {
@@ -61,7 +62,7 @@ export function TakeOrderDialog({
   // open, so a network retry or an impatient double-tap on "Place order"
   // never cooks the food twice. The dialog unmounts on success (onCreated
   // closes it), so a fresh key for the next order comes for free on remount.
-  const [idempotencyKey] = useState(() => crypto.randomUUID())
+  const [idempotencyKey] = useState(() => newIdempotencyKey())
 
   // Snapshotting "now" once per open keeps every price in the dialog
   // consistent with itself; the server re-evaluates for real at submit time,
