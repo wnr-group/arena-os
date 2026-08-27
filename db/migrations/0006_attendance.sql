@@ -30,7 +30,6 @@ create trigger trg_attendance_updated before update on public.attendance
 -- ── RLS + grants ─────────────────────────────────────────────────────────────
 alter table public.attendance enable row level security;
 
-drop policy if exists attendance_rw on public.attendance;
 create policy attendance_rw on public.attendance
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));

@@ -31,13 +31,10 @@ create trigger trg_kots_updated before update on public.kots
 alter table public.kots enable row level security;
 
 -- read + create for any member; kitchen_staff/manager/owner may update status
-drop policy if exists kots_select on public.kots;
 create policy kots_select on public.kots
   for select using (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists kots_insert on public.kots;
 create policy kots_insert on public.kots
   for insert with check (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists kots_update on public.kots;
 create policy kots_update on public.kots
   for update using (public.auth_role_in(tenant_id) in ('owner','manager','kitchen_staff'))
              with check (public.auth_role_in(tenant_id) in ('owner','manager','kitchen_staff'));

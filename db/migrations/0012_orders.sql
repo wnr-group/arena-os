@@ -48,11 +48,9 @@ create index if not exists idx_order_items_order on public.order_items(order_id)
 alter table public.orders      enable row level security;
 alter table public.order_items enable row level security;
 
-drop policy if exists orders_rw on public.orders;
 create policy orders_rw on public.orders
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));
-drop policy if exists order_items_rw on public.order_items;
 create policy order_items_rw on public.order_items
   for all using (tenant_id in (select public.auth_tenant_ids()))
           with check (tenant_id in (select public.auth_tenant_ids()));
