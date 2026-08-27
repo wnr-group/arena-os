@@ -2,7 +2,7 @@
 
 import { headers } from 'next/headers'
 import { z } from 'zod'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { menuItems, orders } from '@/db/schema'
 import { resolvePublicTenant } from '@/lib/tenant/public'
@@ -280,13 +280,17 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       if (!('error' in tenant)) {
         const parsed = orderInput.safeParse(raw)
         if (parsed.success) {
-          const existing = await withPublicTenant(tenant.id, (tx) =>
-            tx
+          const existing = await withPublicTenant(tenant.id, async (tx) => {
+            // Pins orders_public_select (migration 0060) to this one key.
+            await tx.execute(
+              sql`select set_config('app.public_order_idempotency_key', ${parsed.data.idempotencyKey}, true)`,
+            )
+            return tx
               .select({ id: orders.id, orderNumber: orders.orderNumber, acceptanceStatus: orders.acceptanceStatus })
               .from(orders)
               .where(and(eq(orders.tenantId, tenant.id), eq(orders.idempotencyKey, parsed.data.idempotencyKey)))
-              .limit(1),
-          )
+              .limit(1)
+          })
           if (existing[0]) {
             return {
               orderNumber: existing[0].orderNumber,

@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, desc, eq, gte, inArray } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { orders, orderItems, kots, customers } from '@/db/schema'
 import type { KotStatus } from '@/lib/kots/service'
@@ -87,6 +87,11 @@ export type PublicOrderStatus = {
  */
 export async function getPublicOrderStatus(tenantId: string, orderId: string): Promise<PublicOrderStatus | null> {
   return withPublicTenant(tenantId, async (tx) => {
+    // Pins orders_public_select/order_items_public_select/kots_public_select
+    // (migration 0060) to this one order — the id is already this function's
+    // whole trust boundary (see the doc comment above), now enforced by the
+    // database too, not just by every reader here remembering to filter by it.
+    await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)
     const [order] = await tx
       .select({
         orderNumber: orders.orderNumber,
@@ -161,6 +166,12 @@ export async function getRecentPublicOrdersByPhone(tenantId: string, rawPhone: s
       .where(and(eq(customers.tenantId, tenantId), eq(customers.phone, phone)))
       .limit(1)
     if (!customer) return []
+
+    // Pins orders_public_select/kots_public_select (migration 0060) to this
+    // one customer — the customer row just resolved by phone above is
+    // already this function's whole trust boundary (see the doc comment
+    // above), now enforced by the database too.
+    await tx.execute(sql`select set_config('app.public_customer_id', ${customer.id}, true)`)
 
     const since = new Date(Date.now() - RECENT_LOOKUP_WINDOW_MS)
     const orderRows = await tx

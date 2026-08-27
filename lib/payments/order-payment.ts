@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type * as schema from '@/db/schema'
@@ -114,6 +114,10 @@ type PayableOrderRow = {
  * moves.
  */
 async function loadPayableOrder(tx: Db, tenantId: string, orderId: string): Promise<PayableOrderRow> {
+  // Pins orders_public_select (migration 0060) to this one order — every
+  // caller of this function already knows a specific orderId going in (see
+  // createOrderPaymentIntent below), now enforced by the database too.
+  await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)
   const [order] = await tx
     .select({
       id: orders.id,

@@ -93,6 +93,11 @@ export async function findOrderByIdempotencyKey(
   tenantId: string,
   idempotencyKey: string,
 ): Promise<CreatedOrder | null> {
+  // Pins orders_public_select/kots_public_select (migration 0060) to this
+  // one key for a public (withPublicTenant) caller — a no-op for a staff
+  // (withUser) caller, which reads via the separate, unaffected
+  // orders_rw/kots_select policies instead.
+  await tx.execute(sql`select set_config('app.public_order_idempotency_key', ${idempotencyKey}, true)`)
   const [existing] = await tx
     .select({ id: orders.id, orderNumber: orders.orderNumber, kotNumber: kots.kotNumber })
     .from(orders)

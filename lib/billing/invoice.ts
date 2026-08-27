@@ -236,6 +236,11 @@ export async function loadOrderFoodLines(
   tenantId: string,
   orderId: string,
 ): Promise<BillLine[]> {
+  // Pins order_items_public_select (migration 0060) to this one order — a
+  // no-op under the owner-role connection issueInvoiceForOrder below runs on
+  // (RLS-exempt), and redundant-but-harmless when the caller (order-payment.ts)
+  // already set the same value via loadPayableOrder moments earlier.
+  await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)
   const rows = await tx
     .select({
       id: orderItems.id,
