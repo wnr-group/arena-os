@@ -95,6 +95,11 @@ type OrderCartContextValue = {
   removeLine: (menuItemId: string) => void
   updateNote: (menuItemId: string, text: string) => void
   clearCart: () => void
+  /** Drops a booking attachment that turned out to be stale (the booking was
+   *  completed/cancelled since the nudge link was first opened) — called by
+   *  CheckoutClient after re-checking with the server, never assumed true
+   *  just because it was cached. */
+  clearBooking: () => void
 }
 
 const OrderCartContext = createContext<OrderCartContextValue | null>(null)
@@ -280,6 +285,7 @@ export function OrderCartProvider({
     removeLine,
     updateNote,
     clearCart: () => setCart({}),
+    clearBooking: () => setBooking(null),
   }
 
   return <OrderCartContext.Provider value={value}>{children}</OrderCartContext.Provider>

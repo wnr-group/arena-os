@@ -23,7 +23,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
-import { placeOnlineOrder, createOrderPaymentIntent } from '@/lib/actions/public-orders'
+import { placeOnlineOrder, createOrderPaymentIntent, checkBookingStillActive } from '@/lib/actions/public-orders'
 import { lookupPublicCustomerByPhone } from '@/lib/actions/public-booking'
 import { isValidPhone } from '@/lib/customers/phone'
 import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
@@ -64,9 +64,27 @@ export function CheckoutClient({
     removeLine,
     updateNote,
     clearCart,
+    clearBooking,
   } = useOrderCart()
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+
+  // The cached booking attachment can be stale — the customer may have sat
+  // on /food-menu or this page long after staff completed/cancelled the
+  // booking the nudge link pointed at. Re-check on arrival so the page never
+  // confidently promises "this will be added to booking #X" for a booking
+  // that can no longer accept orders (createOrderCore would reject it).
+  useEffect(() => {
+    if (!booking) return
+    let cancelled = false
+    checkBookingStillActive(booking.token).then((r) => {
+      if (!cancelled && !r.active) clearBooking()
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booking?.token])
 
   // "no open booking to add to" — a pickup order, a scanned station
   // currently unoccupied, and no booking attached via the add-food nudge

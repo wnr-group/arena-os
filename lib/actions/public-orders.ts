@@ -84,6 +84,30 @@ export type PlaceOnlineOrderResult = {
 }
 
 /**
+ * Re-checks whether a booking the cart attached to earlier (the "Add food to
+ * your visit" nudge, cached client-side in OrderCartProvider/localStorage for
+ * up to a day — see CartBooking) is still active. The customer may sit on
+ * /food-menu or /checkout long after staff completed, cancelled or no-showed
+ * the booking; without this the checkout page keeps confidently showing
+ * "this will be added to booking #X" for a booking that no longer accepts
+ * orders. CheckoutClient calls this on mount and drops the cached attachment
+ * (falling back to a plain pickup order) when it comes back false. This is
+ * only ever a UI freshness check — createOrderCore re-validates the same
+ * ACTIVE_BOOKING_STATUSES gate, inside the actual order transaction, as the
+ * authoritative rule.
+ */
+export async function checkBookingStillActive(bookingToken: string): Promise<{ active: boolean }> {
+  const parsed = z.string().uuid().safeParse(bookingToken)
+  if (!parsed.success) return { active: false }
+
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return { active: false }
+
+  const booking = await getPublicBookingForOrder(tenant.id, parsed.data)
+  return { active: booking !== null }
+}
+
+/**
  * A customer placing a food order — either at a scanned station, or (no
  * stationToken) as a pickup/takeaway order off the homepage/food-menu. The
  * online-ordering counterpart of lib/actions/orders.ts:createOrder, sharing
