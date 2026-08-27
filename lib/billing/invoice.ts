@@ -24,6 +24,7 @@ import {
   backfillDepositOrderIds,
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
+import { cancelPendingOrdersForBilledBooking } from '@/lib/orders/service'
 import { loadInvoicePrefix } from '@/lib/settings/business-profile'
 import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
 import {
@@ -657,8 +658,17 @@ export async function issueInvoiceForBooking(
       ),
     )
 
+  // ── 7b. void anything still unreviewed ────────────────────────────────────
+  // The other side of the same gap: an order that was still `pending` when
+  // this bill was raised was excluded above (see loadFoodLines' comment) and
+  // just skipped the 'billed' flip too — left `open`/`pending` forever. Left
+  // alone, staff could later accept it from /orders/incoming and the kitchen
+  // would serve food against an invoice that already closed. Reject it here,
+  // in the same transaction as the invoice, so it can never become billable
+  // again — see cancelPendingOrdersForBilledBooking's own comment.
+  await cancelPendingOrdersForBilledBooking(tx, { tenantId: tenant.id }, booking.id)
 
-  // ── 7. carry over any deposit already paid online ─────────────────────────
+  // ── 8. carry over any deposit already paid online ─────────────────────────
   // The usual order is deposit first, bill later, so this is where the money
   // the venue already holds becomes a captured payment against the invoice.
   // From here on the M1 balance — total minus captured — is simply correct, and

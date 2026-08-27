@@ -707,16 +707,22 @@ async function main() {
         '…exactly 1 food line (Burger) — the pending Shake stays off this bill',
         items.length === 1 && items[0].description === 'Burger',
       )
+      // Revenue-leak regression: a pending order left 'open' after its booking
+      // is billed could later be accepted from /orders/incoming — the kitchen
+      // would cook and serve it against an invoice that already closed, with
+      // nobody ever charged. issueInvoiceForBooking now rejects any order
+      // still pending at bill time (cancelPendingOrdersForBilledBooking), so
+      // it can never become billable again.
       const shake = (
         await ownerPool.query(
-          `select o.status from orders o join order_items oi on oi.order_id = o.id
+          `select o.status, o.acceptance_status from orders o join order_items oi on oi.order_id = o.id
              where oi.item_name = 'Shake' and o.booking_id = $1`,
           [mixedPending.bookingId],
         )
       ).rows[0]
       check(
-        "…and the pending Shake order is left 'open', NOT silently marked 'billed' (or it could never be billed once accepted)",
-        shake.status === 'open',
+        "…and the pending Shake order is auto-rejected ('cancelled'/'rejected'), so it can never be accepted and served unbilled",
+        shake.status === 'cancelled' && shake.acceptance_status === 'rejected',
       )
     }
   }

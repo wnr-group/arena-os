@@ -403,3 +403,50 @@ export async function cancelOpenOrdersForBooking(
 
   await cancelKotsForOrders(tx, ctx.tenantId, orderIds)
 }
+
+/**
+ * Cancel every still-`pending` (unreviewed) online order on a booking, and
+ * their kitchen tickets — called from issueInvoiceForBooking the moment a
+ * bill is raised, in the SAME transaction as the invoice.
+ *
+ * loadFoodLines/the billed-status flip both read `acceptanceStatus =
+ * 'accepted'` (see lib/billing/invoice.ts), so a `pending` order is never on
+ * the bill and never flips to `billed` — it just sits there, `open` and
+ * `pending`, after the invoice closes. Without this cascade, staff could
+ * later accept it from /orders/incoming: acceptOrderCore only checks the
+ * order itself, not whether its booking was already billed, so the kitchen
+ * would cook and serve food against an invoice that already closed — served
+ * but never charged. Voiding it here, before that becomes possible, is what
+ * closes the gap: an order can no longer become billable after its booking
+ * has been billed.
+ *
+ * Never throws: most bookings have no pending orders at bill time (auto-accept
+ * on, or nothing left unreviewed), and that is the common case, not an error.
+ */
+export async function cancelPendingOrdersForBilledBooking(
+  tx: Db,
+  ctx: { tenantId: string },
+  bookingId: string,
+): Promise<void> {
+  const pendingOrders = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.bookingId, bookingId),
+        eq(orders.tenantId, ctx.tenantId),
+        eq(orders.status, 'open'),
+        eq(orders.acceptanceStatus, 'pending'),
+      ),
+    )
+  if (pendingOrders.length === 0) return
+
+  const orderIds = pendingOrders.map((o) => o.id)
+
+  await tx
+    .update(orders)
+    .set({ status: 'cancelled', acceptanceStatus: 'rejected', rejectionReason: 'Booking was billed before this order was reviewed.' })
+    .where(and(inArray(orders.id, orderIds), eq(orders.tenantId, ctx.tenantId)))
+
+  await cancelKotsForOrders(tx, ctx.tenantId, orderIds)
+}
