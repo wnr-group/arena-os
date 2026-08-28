@@ -19,7 +19,7 @@ import { loyaltyTenderState, type LoyaltyRule } from './loyalty'
 import { getInvoiceSettlement, type InvoiceSettlement } from './payments'
 import { walletTenderState } from './wallet-payments'
 import { loadInvoiceReceipt, type InvoiceReceipt } from './receipt'
-import { priceBill, type BillLine } from './pricing'
+import { priceBill, type BillLine, type PricingResult } from './pricing'
 
 /**
  * Everything the POS bill screen renders, loaded in ONE RLS-scoped transaction
@@ -241,5 +241,78 @@ export async function listBookingBillingStates(
       }
     }
     return out
+  })
+}
+
+export type RunningTab = {
+  booking: {
+    id: string
+    bookingNumber: string
+    status: string
+    customerName: string | null
+    customerPhone: string | null
+    coverCount: number | null
+    /** The table's resource name (M17), when this is a table session. Null
+     *  for a timed booking — the running tab works for either. */
+    tableName: string | null
+    checkedInAt: string | null
+  }
+  lines: BillLine[]
+  pricing: PricingResult
+  /** Set once the booking already has a live (non-void) invoice — at that
+   *  point loadBillLines legitimately returns nothing (its orders flipped to
+   *  'billed'), so the page should point to the real invoice instead of
+   *  showing an empty "tab". */
+  existingInvoice: ExistingInvoice | null
+}
+
+/**
+ * The table/booking's CURRENT running tab (M17 #4) — everything still open,
+ * priced live. Deliberately always loadBillLines(), never loadInvoiceLines():
+ * this is the "what does it add up to right now" display a waiter pulls up
+ * mid-meal, not the frozen invoice snapshot getBillableForBooking switches to
+ * once one exists. Nothing here is written — no order ever flips to
+ * 'billed', no invoice is ever created. Only issueInvoiceForBooking does that.
+ */
+export async function getRunningTab(ctx: ActiveContext, bookingId: string): Promise<RunningTab | null> {
+  return withUser(ctx.user.id, async (tx) => {
+    const [row] = await tx
+      .select({
+        id: bookings.id,
+        bookingNumber: bookings.bookingNumber,
+        status: bookings.status,
+        bookingCustomerName: bookings.customerName,
+        bookingCustomerPhone: bookings.customerPhone,
+        directoryName: customers.name,
+        directoryPhone: customers.phone,
+        coverCount: bookings.coverCount,
+        checkedInAt: bookings.checkedInAt,
+        tableName: resources.name,
+      })
+      .from(bookings)
+      .leftJoin(customers, eq(customers.id, bookings.customerId))
+      .leftJoin(resources, eq(resources.id, bookings.resourceId))
+      .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenant.id)))
+      .limit(1)
+    if (!row) return null
+
+    const lines = await loadBillLines(tx, ctx.tenant.id, row.id, ctx.tenant.timezone)
+    const existingInvoice = await findLiveInvoice(tx, ctx.tenant.id, row.id)
+
+    return {
+      booking: {
+        id: row.id,
+        bookingNumber: row.bookingNumber,
+        status: row.status,
+        customerName: row.directoryName ?? row.bookingCustomerName,
+        customerPhone: row.directoryPhone ?? row.bookingCustomerPhone,
+        coverCount: row.coverCount,
+        tableName: row.tableName,
+        checkedInAt: row.checkedInAt ? row.checkedInAt.toISOString() : null,
+      },
+      lines,
+      pricing: priceBill({ lines }),
+      existingInvoice,
+    }
   })
 }
