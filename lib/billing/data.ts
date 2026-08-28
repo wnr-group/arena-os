@@ -7,6 +7,7 @@ import {
   findLiveInvoice,
   isBillableBookingStatus,
   loadBillLines,
+  loadFoodLines,
   loadInvoiceLines,
   type ExistingInvoice,
 } from './invoice'
@@ -208,4 +209,37 @@ export async function getInvoice(
   invoiceId: string,
 ): Promise<InvoiceReceipt | null> {
   return withUser(ctx.user.id, (tx) => loadInvoiceReceipt(tx, ctx.tenant.id, invoiceId))
+}
+
+export type BookingBillingState = {
+  /** Current open-orders total (not yet billed) — the floor map's running tab. */
+  runningTotal: number
+  /** Whether the booking already has a live (non-void) invoice — see
+   *  lib/booking/table-status.ts, where this is the "needs_cleaning" signal. */
+  hasLiveInvoice: boolean
+}
+
+/**
+ * Per-booking billing snapshot for the M17 floor map: one query per booking,
+ * same transaction, reusing the exact readers issueInvoiceForBooking itself
+ * is built on (loadFoodLines + priceBill for the total, findLiveInvoice for
+ * "already billed") — no parallel total-computing logic.
+ */
+export async function listBookingBillingStates(
+  ctx: ActiveContext,
+  bookingIds: string[],
+): Promise<Record<string, BookingBillingState>> {
+  if (bookingIds.length === 0) return {}
+  return withUser(ctx.user.id, async (tx) => {
+    const out: Record<string, BookingBillingState> = {}
+    for (const bookingId of bookingIds) {
+      const lines = await loadFoodLines(tx, ctx.tenant.id, bookingId)
+      const existing = await findLiveInvoice(tx, ctx.tenant.id, bookingId)
+      out[bookingId] = {
+        runningTotal: priceBill({ lines }).total,
+        hasLiveInvoice: existing !== null,
+      }
+    }
+    return out
+  })
 }

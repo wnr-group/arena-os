@@ -264,6 +264,9 @@ export const bookings = pgTable(
     // comment). Null for every timed booking in every other industry.
     coverCount: integer('cover_count'),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
+    // M17 (0065): when the table's bill was requested. Null for every
+    // non-restaurant booking.
+    billRequestedAt: timestamp('bill_requested_at', { withTimezone: true }),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),

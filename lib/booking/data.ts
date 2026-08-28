@@ -84,6 +84,7 @@ export function listTables(ctx: ActiveContext, branchId: string) {
         customerName: bookings.customerName,
         customerPhone: bookings.customerPhone,
         checkedInAt: bookings.checkedInAt,
+        billRequestedAt: bookings.billRequestedAt,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))

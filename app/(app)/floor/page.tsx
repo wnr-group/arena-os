@@ -6,11 +6,17 @@ import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
 import { listMenuItems } from '@/lib/menu/data'
 import { listOrdersForBookings } from '@/lib/orders/data'
+import { listKotStatusesForBookings } from '@/lib/kots/data'
+import { listBookingBillingStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
-import { TablesView } from '@/components/tables/TablesView'
+import { deriveTableStatus } from '@/lib/booking/table-status'
+import { FloorView } from '@/components/tables/FloorView'
 import type { OrderSummary } from '@/components/bookings/BookingsView'
 
-export default async function TablesPage() {
+/** KOT states the kitchen hasn't finished — see lib/booking/table-status.ts. */
+const ACTIVE_KOT_STATUSES = new Set(['pending', 'preparing', 'ready'])
+
+export default async function FloorPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
   // Restaurant-only surface (M17): gated here, not just by hiding the nav
@@ -33,9 +39,16 @@ export default async function TablesPage() {
   ])
 
   const bookingIds = [...new Set(tables.map((t) => t.bookingId).filter((id): id is string => Boolean(id)))]
-  const orderRows = await listOrdersForBookings(ctx, bookingIds)
+  const [orderRows, kotRows, billingStates] = await Promise.all([
+    listOrdersForBookings(ctx, bookingIds),
+    listKotStatusesForBookings(ctx, bookingIds),
+    listBookingBillingStates(ctx, bookingIds),
+  ])
 
   const ordersByBooking: Record<string, OrderSummary[]> = {}
+  // Distinct open orders per booking (a left-joined item row would otherwise
+  // double-count the same order once per item).
+  const openOrderIdsByBooking: Record<string, Set<string>> = {}
   for (const row of orderRows) {
     if (!row.bookingId) continue
     const list = (ordersByBooking[row.bookingId] ??= [])
@@ -57,6 +70,15 @@ export default async function TablesPage() {
         happyHourDiscountValue: row.happyHourDiscountValue,
       })
     }
+    if (row.status === 'open') {
+      const set = (openOrderIdsByBooking[row.bookingId] ??= new Set())
+      set.add(row.orderId)
+    }
+  }
+
+  const activeKotByBooking = new Set<string>()
+  for (const row of kotRows) {
+    if (row.bookingId && ACTIVE_KOT_STATUSES.has(row.status)) activeKotByBooking.add(row.bookingId)
   }
 
   const availableItems = menuItemRows.filter((i) => i.status === 'available')
@@ -83,22 +105,35 @@ export default async function TablesPage() {
   }))
 
   return (
-    <TablesView
+    <FloorView
       branchId={branch.id}
       currency={ctx.tenant.currency}
       timeZone={ctx.tenant.timezone}
-      tables={tables.map((t) => ({
-        id: t.id,
-        name: t.name,
-        typeName: t.typeName,
-        color: t.color,
-        bookingId: t.bookingId,
-        bookingNumber: t.bookingNumber,
-        coverCount: t.coverCount,
-        customerName: t.customerName,
-        customerPhone: t.customerPhone,
-        checkedInAt: t.checkedInAt ? t.checkedInAt.toISOString() : null,
-      }))}
+      tables={tables.map((t) => {
+        const billing = t.bookingId ? billingStates[t.bookingId] : undefined
+        const status = deriveTableStatus({
+          hasBooking: Boolean(t.bookingId),
+          hasLiveInvoice: billing?.hasLiveInvoice ?? false,
+          billRequestedAt: t.billRequestedAt,
+          openOrderCount: t.bookingId ? (openOrderIdsByBooking[t.bookingId]?.size ?? 0) : 0,
+          hasActiveKot: t.bookingId ? activeKotByBooking.has(t.bookingId) : false,
+        })
+        return {
+          id: t.id,
+          name: t.name,
+          typeName: t.typeName,
+          color: t.color,
+          bookingId: t.bookingId,
+          bookingNumber: t.bookingNumber,
+          coverCount: t.coverCount,
+          customerName: t.customerName,
+          customerPhone: t.customerPhone,
+          checkedInAt: t.checkedInAt ? t.checkedInAt.toISOString() : null,
+          billRequestedAt: t.billRequestedAt ? t.billRequestedAt.toISOString() : null,
+          status,
+          runningTotal: billing?.runningTotal ?? 0,
+        }
+      })}
       categories={categories}
       menuItems={menuItems}
       happyHours={happyHours}
