@@ -3,9 +3,12 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Clock3, Loader2, Plus, Receipt, ReceiptText, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
+import { TransferTableDialog } from './TransferTableDialog'
+import { MergeTablesDialog } from './MergeTablesDialog'
+import { SplitTableDialog } from './SplitTableDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, cancelBooking, requestBill } from '@/lib/actions/bookings'
@@ -99,6 +102,9 @@ export function FloorView({
   const [seatTarget, setSeatTarget] = useState<TableRow | null>(null)
   const [selected, setSelected] = useState<TableRow | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string } | null>(null)
+  const [transferTarget, setTransferTarget] = useState<TableRow | null>(null)
+  const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null)
+  const [splitTarget, setSplitTarget] = useState<TableRow | null>(null)
   const [pending, start] = useTransition()
   const [actingAction, setActingAction] = useState<string | null>(null)
 
@@ -116,6 +122,7 @@ export function FloorView({
   // selected table's status (another terminal took an order, the kitchen
   // marked it served) is reflected without the waiter having to reopen it.
   const liveSelected = selected ? (tables.find((t) => t.id === selected.id) ?? null) : null
+  const freeTables = tables.filter((t) => !t.bookingId)
 
   function act(action: string, fn: () => Promise<{ error?: string }>) {
     setActingAction(action)
@@ -326,6 +333,31 @@ export function FloorView({
                 {actingAction === 'complete' && <Loader2 size={14} className="animate-spin" />}
                 {liveSelected.status === 'needs_cleaning' ? 'Table cleaned' : 'Mark table free'}
               </button>
+              {liveSelected.status !== 'needs_cleaning' && (
+                <>
+                  <button
+                    onClick={() => setTransferTarget(liveSelected)}
+                    disabled={pending || freeTables.length === 0}
+                    className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+                  >
+                    <ArrowLeftRight size={15} /> Transfer
+                  </button>
+                  <button
+                    onClick={() => setMergeTarget(liveSelected)}
+                    disabled={pending || tables.filter((t) => t.bookingId && t.id !== liveSelected.id).length === 0}
+                    className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+                  >
+                    <Combine size={15} /> Merge
+                  </button>
+                  <button
+                    onClick={() => setSplitTarget(liveSelected)}
+                    disabled={pending || freeTables.length === 0}
+                    className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+                  >
+                    <Split size={15} /> Split
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => handleCancel(liveSelected)}
                 disabled={pending}
@@ -364,6 +396,56 @@ export function FloorView({
             </div>
           </div>
         </div>
+      )}
+
+      {transferTarget && transferTarget.bookingId && (
+        <TransferTableDialog
+          bookingId={transferTarget.bookingId}
+          sourceTableName={transferTarget.name}
+          freeTables={freeTables}
+          onClose={() => setTransferTarget(null)}
+          onTransferred={(targetName) => {
+            setTransferTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`${transferTarget.name} moved to ${targetName}.`)
+          }}
+        />
+      )}
+
+      {mergeTarget && mergeTarget.bookingId && (
+        <MergeTablesDialog
+          bookingId={mergeTarget.bookingId}
+          sourceTableName={mergeTarget.name}
+          otherOccupiedTables={tables
+            .filter((t) => t.bookingId && t.id !== mergeTarget.id)
+            .map((t) => ({ bookingId: t.bookingId!, name: t.name, coverCount: t.coverCount }))}
+          onClose={() => setMergeTarget(null)}
+          onMerged={(intoTableName) => {
+            setMergeTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`${mergeTarget.name} merged into ${intoTableName}.`)
+          }}
+        />
+      )}
+
+      {splitTarget && splitTarget.bookingId && (
+        <SplitTableDialog
+          bookingId={splitTarget.bookingId}
+          sourceTableName={splitTarget.name}
+          sourceCoverCount={splitTarget.coverCount}
+          openOrders={(ordersByBooking[splitTarget.bookingId] ?? []).filter((o) => o.status === 'open')}
+          freeTables={freeTables}
+          currency={currency}
+          onClose={() => setSplitTarget(null)}
+          onSplit={(_newBookingId, newBookingNumber, targetName) => {
+            setSplitTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`Split off to ${targetName} as ${newBookingNumber}.`)
+          }}
+        />
       )}
 
       {orderDialog && (

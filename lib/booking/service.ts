@@ -9,10 +9,11 @@ import 'server-only'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog } from '@/db/schema'
 import { durationHours } from './availability'
 import { todayInZone } from './time'
 import { resolveBookingCustomer } from './customer'
+import { findLiveInvoice } from '@/lib/billing/invoice'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -251,4 +252,309 @@ export async function seatTableSessionCore(
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
+}
+
+// ── Table transfer / merge / split (M17 #5) ────────────────────────────────
+//
+// All three below move `bookings.resource_id` and/or `orders.booking_id`
+// around, so each locks the row(s) it touches FOR UPDATE and re-validates
+// against the locked state, then leans on idx_bookings_open_table_session
+// (0064) to catch a destination that got occupied a moment ago — the same
+// "let the constraint reject it" discipline seatTableSessionCore above uses,
+// not a check-then-write race.
+
+export type AuditActor = { tenantId: string; membershipId: string | null }
+
+/** Append one audit row. Same shape as lib/billing/refunds.ts's private
+ *  writeAudit — no shared audit module exists; each domain keeps its own. */
+async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: {
+    action: string
+    entityType: string
+    entityId: string
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
+
+async function lockTableSession(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<{
+  id: string
+  branchId: string
+  resourceId: string | null
+  coverCount: number | null
+  status: string
+}> {
+  const [row] = await tx
+    .select({
+      id: bookings.id,
+      branchId: bookings.branchId,
+      resourceId: bookings.resourceId,
+      coverCount: bookings.coverCount,
+      status: bookings.status,
+    })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .for('update')
+    .limit(1)
+  if (!row) throw new BookingError('Table session not found.')
+  if (!row.resourceId) throw new BookingError('That booking is not a table session.')
+  if (row.status !== 'checked_in') {
+    throw new BookingError(`This table session is ${row.status.replace('_', ' ')} — it can't be moved.`)
+  }
+  return row
+}
+
+async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string): Promise<void> {
+  const existing = await findLiveInvoice(tx, tenantId, bookingId)
+  if (existing) {
+    throw new BookingError(`This table has already been billed as invoice ${existing.invoiceNumber} — nothing to move.`)
+  }
+}
+
+export type TransferTableInput = { bookingId: string; targetResourceId: string }
+
+/** Move a table session to a different table. Its orders "come with it" for
+ *  free — they key off bookings.id, which never changes here, only its
+ *  resource_id does. */
+export async function transferTableCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  input: TransferTableInput,
+): Promise<{ resourceName: string }> {
+  const session = await lockTableSession(tx, ctx.tenantId, input.bookingId)
+  if (session.resourceId === input.targetResourceId) {
+    throw new BookingError('Already seated at that table.')
+  }
+  await requireNoLiveInvoice(tx, ctx.tenantId, input.bookingId)
+
+  const [fromResource] = await tx
+    .select({ name: resources.name })
+    .from(resources)
+    .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, session.resourceId!)))
+    .limit(1)
+
+  const [target] = await tx
+    .select({ id: resources.id, branchId: resources.branchId, status: resources.status, name: resources.name })
+    .from(resources)
+    .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, input.targetResourceId)))
+    .limit(1)
+  if (!target) throw new BookingError('Target table not found.')
+  if (target.branchId !== session.branchId) throw new BookingError('Target table belongs to a different branch.')
+  if (target.status !== 'available') throw new BookingError('Target table is not available.')
+
+  // idx_bookings_open_table_session rejects this (23505) if the target was
+  // seated by someone else a moment ago — translated to a friendly message
+  // by lib/actions/bookings.ts:fail(), same as seatTable's race.
+  await tx
+    .update(bookings)
+    .set({ resourceId: target.id })
+    .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  await writeAudit(tx, ctx, {
+    action: 'transfer_table',
+    entityType: 'booking',
+    entityId: input.bookingId,
+    before: { resourceId: session.resourceId, resourceName: fromResource?.name ?? null },
+    after: { resourceId: target.id, resourceName: target.name },
+  })
+
+  return { resourceName: target.name }
+}
+
+export type MergeTablesInput = { intoBookingId: string; fromBookingId: string }
+
+/** Fold one table session into another: all of "from"'s open orders move to
+ *  "into", cover counts sum, and "from" closes (completed) — freeing its
+ *  table via idx_bookings_open_table_session the same way "Mark table free"
+ *  already does. */
+export async function mergeTablesCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  input: MergeTablesInput,
+): Promise<{ movedOrderCount: number }> {
+  if (input.intoBookingId === input.fromBookingId) {
+    throw new BookingError('Pick two different tables to merge.')
+  }
+
+  // Lock both rows in a fixed order (by id) so a concurrent reverse merge
+  // can't deadlock against this one.
+  const [firstId, secondId] =
+    input.intoBookingId < input.fromBookingId
+      ? [input.intoBookingId, input.fromBookingId]
+      : [input.fromBookingId, input.intoBookingId]
+  const first = await lockTableSession(tx, ctx.tenantId, firstId)
+  const second = await lockTableSession(tx, ctx.tenantId, secondId)
+  const into = first.id === input.intoBookingId ? first : second
+  const from = first.id === input.fromBookingId ? first : second
+
+  if (into.branchId !== from.branchId) {
+    throw new BookingError('Both tables must be in the same branch to merge.')
+  }
+  await requireNoLiveInvoice(tx, ctx.tenantId, into.id)
+  await requireNoLiveInvoice(tx, ctx.tenantId, from.id)
+
+  const moved = await tx
+    .update(orders)
+    .set({ bookingId: into.id })
+    .where(and(eq(orders.bookingId, from.id), eq(orders.tenantId, ctx.tenantId), eq(orders.status, 'open')))
+    .returning({ id: orders.id })
+
+  const combinedCovers = (into.coverCount ?? 0) + (from.coverCount ?? 0)
+  await tx
+    .update(bookings)
+    .set({ coverCount: combinedCovers })
+    .where(and(eq(bookings.id, into.id), eq(bookings.tenantId, ctx.tenantId)))
+
+  const now = new Date()
+  await tx
+    .update(bookings)
+    .set({ status: 'completed', completedAt: now })
+    .where(and(eq(bookings.id, from.id), eq(bookings.tenantId, ctx.tenantId)))
+
+  await writeAudit(tx, ctx, {
+    action: 'merge_tables_into',
+    entityType: 'booking',
+    entityId: into.id,
+    before: { coverCount: into.coverCount },
+    after: { coverCount: combinedCovers, mergedFromBookingId: from.id, movedOrderIds: moved.map((o) => o.id) },
+  })
+  await writeAudit(tx, ctx, {
+    action: 'merge_tables_from',
+    entityType: 'booking',
+    entityId: from.id,
+    before: { status: 'checked_in', coverCount: from.coverCount },
+    after: { status: 'completed', mergedIntoBookingId: into.id },
+  })
+
+  return { movedOrderCount: moved.length }
+}
+
+export type SplitTableInput = {
+  sourceBookingId: string
+  targetResourceId: string
+  orderIds: string[]
+  coverCount: number
+}
+
+/** Split a subset of a table session's open orders onto a brand-new session
+ *  on a different (currently free) table — a second, separate tab for the
+ *  same visit. Bill-level splitting of one tab's payment is a later
+ *  milestone (M18); this only ever moves whole orders. */
+export async function splitTableCore(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string; membershipId: string | null },
+  input: SplitTableInput,
+): Promise<CreatedBooking & { movedOrderCount: number }> {
+  const source = await lockTableSession(tx, ctx.tenantId, input.sourceBookingId)
+  await requireNoLiveInvoice(tx, ctx.tenantId, input.sourceBookingId)
+
+  if (!Number.isInteger(input.coverCount) || input.coverCount < 1) {
+    throw new BookingError('Cover count must be a whole number of at least 1.')
+  }
+  const sourceCovers = source.coverCount ?? 0
+  if (input.coverCount >= sourceCovers) {
+    throw new BookingError('At least one guest must stay at the original table — that would move everyone.')
+  }
+
+  const [customer] = await tx
+    .select({
+      customerId: bookings.customerId,
+      customerName: bookings.customerName,
+      customerPhone: bookings.customerPhone,
+      customerEmail: bookings.customerEmail,
+    })
+    .from(bookings)
+    .where(and(eq(bookings.id, input.sourceBookingId), eq(bookings.tenantId, ctx.tenantId)))
+    .limit(1)
+
+  const [target] = await tx
+    .select({ id: resources.id, branchId: resources.branchId, status: resources.status })
+    .from(resources)
+    .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, input.targetResourceId)))
+    .limit(1)
+  if (!target) throw new BookingError('Target table not found.')
+  if (target.branchId !== source.branchId) throw new BookingError('Target table belongs to a different branch.')
+  if (target.status !== 'available') throw new BookingError('Target table is not available.')
+
+  const bookingNumber = await nextBookingNumber(tx, ctx)
+  const now = new Date()
+
+  // idx_bookings_open_table_session rejects this (23505) if the target was
+  // seated by someone else a moment ago, same as seatTableSessionCore.
+  const [newBooking] = await tx
+    .insert(bookings)
+    .values({
+      tenantId: ctx.tenantId,
+      branchId: source.branchId,
+      resourceId: target.id,
+      coverCount: input.coverCount,
+      bookingNumber,
+      customerName: customer?.customerName ?? null,
+      customerPhone: customer?.customerPhone ?? null,
+      customerEmail: customer?.customerEmail ?? null,
+      customerId: customer?.customerId ?? null,
+      status: 'checked_in',
+      source: 'walk_in',
+      createdBy: ctx.membershipId,
+      checkedInAt: now,
+    })
+    .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
+
+  let movedOrderCount = 0
+  if (input.orderIds.length > 0) {
+    const moved = await tx
+      .update(orders)
+      .set({ bookingId: newBooking.id })
+      .where(
+        and(
+          inArray(orders.id, input.orderIds),
+          eq(orders.bookingId, input.sourceBookingId),
+          eq(orders.tenantId, ctx.tenantId),
+          eq(orders.status, 'open'),
+        ),
+      )
+      .returning({ id: orders.id })
+    if (moved.length !== input.orderIds.length) {
+      throw new BookingError('One of the selected orders is no longer open — reload and try again.')
+    }
+    movedOrderCount = moved.length
+  }
+
+  await tx
+    .update(bookings)
+    .set({ coverCount: sourceCovers - input.coverCount })
+    .where(and(eq(bookings.id, input.sourceBookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  await writeAudit(tx, ctx, {
+    action: 'split_table_from',
+    entityType: 'booking',
+    entityId: input.sourceBookingId,
+    before: { coverCount: sourceCovers },
+    after: { coverCount: sourceCovers - input.coverCount, splitToBookingId: newBooking.id, movedOrderIds: input.orderIds },
+  })
+  await writeAudit(tx, ctx, {
+    action: 'split_table_into',
+    entityType: 'booking',
+    entityId: newBooking.id,
+    before: {},
+    after: { coverCount: input.coverCount, splitFromBookingId: input.sourceBookingId, resourceId: target.id },
+  })
+
+  return { id: newBooking.id, bookingNumber, confirmationToken: newBooking.confirmationToken, movedOrderCount }
 }
