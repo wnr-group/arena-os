@@ -112,8 +112,35 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
       ),
     )
 
-    revalidatePath('/tables')
+    revalidatePath('/floor')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Flag a table session's bill as requested (M17 #2) — the floor map's
+ * "bill_requested" status has no other signal to derive it from (see
+ * lib/booking/table-status.ts), so this just stamps the timestamp.
+ * Industry-gated like seatTable: the column only means anything for a
+ * table session, but the gate is enforced here, not assumed from the column
+ * being unused elsewhere.
+ */
+export async function requestBill(bookingId: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Table service is not enabled for this business.')
+    }
+    await withUser(ctx.user.id, (tx) =>
+      tx
+        .update(bookings)
+        .set({ billRequestedAt: new Date() })
+        .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenant.id))),
+    )
+    revalidatePath('/floor')
+    return {}
   } catch (e) {
     return fail(e)
   }
@@ -163,6 +190,7 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
     })
     revalidatePath('/bookings')
     revalidatePath('/kitchen')
+    revalidatePath('/floor')
     return {}
   } catch (e) {
     return fail(e)

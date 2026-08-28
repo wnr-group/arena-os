@@ -79,7 +79,7 @@ const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
   // Dine-in table service (M17) — restaurant tenants only.
-  { href: '/tables', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
+  { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.

@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, notInArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { kots, orders, orderItems, bookings, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -40,6 +40,27 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
         ),
       )
       .orderBy(asc(kots.createdAt), asc(orderItems.id)),
+  )
+}
+
+/**
+ * Each booking's open orders' KOT status — the M17 floor map's "ordered" vs
+ * "served" signal (see lib/booking/table-status.ts). One row per order:
+ * every order gets exactly one KOT (lib/orders/service.ts, "one KOT per
+ * order, always"), so no item-level join is needed here.
+ */
+export function listKotStatusesForBookings(ctx: ActiveContext, bookingIds: string[]) {
+  if (bookingIds.length === 0) return Promise.resolve([])
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        bookingId: orders.bookingId,
+        orderId: orders.id,
+        status: kots.status,
+      })
+      .from(kots)
+      .innerJoin(orders, eq(orders.id, kots.orderId))
+      .where(and(eq(kots.tenantId, ctx.tenant.id), inArray(orders.bookingId, bookingIds))),
   )
 }
 
