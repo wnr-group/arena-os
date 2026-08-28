@@ -6,7 +6,14 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { createBookingCore, seatTableSessionCore, BookingError } from '@/lib/booking/service'
+import {
+  createBookingCore,
+  seatTableSessionCore,
+  transferTableCore,
+  mergeTablesCore,
+  splitTableCore,
+  BookingError,
+} from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -15,23 +22,32 @@ import { zodErrorMessage } from '@/lib/utils/errors'
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
 type Result = { error?: string }
 
+/**
+ * Drizzle wraps every driver error in a DrizzleQueryError — the pg error
+ * (with `.code`/`.constraint`) lives on `.cause`, not on the wrapper itself.
+ * Checking `e.code` directly (as this used to) silently never matches.
+ */
+function pgError(e: unknown): { code?: string; constraint?: string } | null {
+  if (!e || typeof e !== 'object') return null
+  const cause = 'cause' in e ? (e as { cause?: unknown }).cause : undefined
+  if (cause && typeof cause === 'object' && 'code' in cause) return cause as { code?: string; constraint?: string }
+  if ('code' in e) return e as { code?: string; constraint?: string }
+  return null
+}
+
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof BookingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
+  const pg = pgError(e)
   // 23P01 = exclusion_violation: the exclusion constraint caught an overlap.
-  if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === '23P01') {
+  if (pg?.code === '23P01') {
     return { error: 'That time was just taken for one of the selected resources. Please pick another slot.' }
   }
-  // 23505 on idx_bookings_open_table_session = someone else just seated this
-  // table (see 0064_table_sessions.sql) — the DB caught the race, not us.
-  if (
-    e &&
-    typeof e === 'object' &&
-    'code' in e &&
-    (e as { code?: string }).code === '23505' &&
-    (e as { constraint?: string }).constraint === 'idx_bookings_open_table_session'
-  ) {
-    return { error: 'This table was just seated by someone else. Pick another table.' }
+  // 23505 on idx_bookings_open_table_session = someone else just seated (or
+  // was just transferred/split onto) this table (see 0064_table_sessions.sql)
+  // — the DB caught the race, not us.
+  if (pg?.code === '23505' && pg.constraint === 'idx_bookings_open_table_session') {
+    return { error: 'That table was just taken. Pick another table.' }
   }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
@@ -141,6 +157,82 @@ export async function requestBill(bookingId: string): Promise<Result> {
     )
     revalidatePath('/floor')
     return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const transferTableInput = z.object({
+  bookingId: z.string().uuid(),
+  targetResourceId: z.string().uuid(),
+})
+
+/** Move a table session to a different table (M17 #5) — its orders follow
+ *  automatically since they key off the booking, not the table. */
+export async function transferTable(input: z.input<typeof transferTableInput>): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Table service is not enabled for this business.')
+    }
+    const v = transferTableInput.parse(input)
+    await withUser(ctx.user.id, (tx) =>
+      transferTableCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+    revalidatePath('/floor')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const mergeTablesInput = z.object({
+  intoBookingId: z.string().uuid(),
+  fromBookingId: z.string().uuid(),
+})
+
+/** Fold one table session into another (M17 #5) — every open order from
+ *  "from" moves onto "into", cover counts sum, "from" closes and its table
+ *  frees up. */
+export async function mergeTables(input: z.input<typeof mergeTablesInput>): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Table service is not enabled for this business.')
+    }
+    const v = mergeTablesInput.parse(input)
+    await withUser(ctx.user.id, (tx) =>
+      mergeTablesCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+    revalidatePath('/floor')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const splitTableInput = z.object({
+  sourceBookingId: z.string().uuid(),
+  targetResourceId: z.string().uuid(),
+  orderIds: z.array(z.string().uuid()),
+  coverCount: z.coerce.number().int().positive('Guest count must be at least 1.'),
+})
+
+/** Split a subset of a table session's open orders onto a brand-new session
+ *  on a different, currently free table (M17 #5) — a second, separate tab
+ *  for the same visit. */
+export async function splitTable(input: z.input<typeof splitTableInput>): Promise<CreateResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Table service is not enabled for this business.')
+    }
+    const v = splitTableInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      splitTableCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
+    )
+    revalidatePath('/floor')
+    return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
     return fail(e)
   }

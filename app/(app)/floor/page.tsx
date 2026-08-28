@@ -99,7 +99,9 @@ export default async function FloorPage() {
     taxPercent: i.taxPercent,
     status: i.status,
   }))
-  const popularItemIds = popularItemRows.map((r) => r.menuItemId)
+  // menuItemId is null for a row whose menu item has since been deleted
+  // (order_items.menu_item_id is ON DELETE SET NULL) — nothing to quick-add.
+  const popularItemIds = popularItemRows.map((r) => r.menuItemId).filter((id): id is string => id !== null)
   const happyHours = happyHourRows.map((h) => ({
     id: h.id,
     name: h.name,
