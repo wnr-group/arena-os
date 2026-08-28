@@ -36,6 +36,7 @@ import { HoneypotField } from './HoneypotField'
 import {
   DURATIONS,
   DATE_WINDOW_DAYS,
+  SLOT_MINUTES,
   addDays,
   dateCardParts,
   prettyDateLong,
@@ -102,6 +103,10 @@ export function ResourceTypeBookingPage({
   const endsAt = selectedSlot
     ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     : null
+  // Slots already in the past (only relevant for today) are dropped rather
+  // than shown disabled — there's nothing useful for the customer to do with
+  // a start time that's already gone.
+  const visibleSlots = slots ? slots.filter((s) => new Date(s.startsAt).getTime() >= Date.now()) : null
 
   // Times reload for whichever date/duration is current; a fresh fetch
   // invalidates any previously picked slot (its assigned unit may change).
@@ -361,13 +366,16 @@ export function ResourceTypeBookingPage({
                       </div>
                     ) : slotsError ? (
                       <EmptyNotice>{slotsError}</EmptyNotice>
-                    ) : !slots || slots.length === 0 ? (
+                    ) : !visibleSlots || visibleSlots.length === 0 ? (
                       <EmptyNotice>No slots fit this duration today. Try a shorter duration or another day.</EmptyNotice>
                     ) : (
                       <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                        {slots.map((s) => {
+                        {visibleSlots.map((s) => {
                           const isSelected = selectedSlot?.startsAt === s.startsAt
-                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + duration * 60_000).toISOString()
+                          const startsAt = selectedSlot?.startsAt ?? null
+                          const inRange =
+                            !isSelected && startsAt && endsAt && s.startsAt >= startsAt && s.startsAt < endsAt
+                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
                           return (
                             <button
                               key={s.startsAt}
@@ -375,7 +383,9 @@ export function ResourceTypeBookingPage({
                               className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
                                 isSelected
                                   ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                                  : 'border-border bg-card text-foreground hover:border-primary/40'
+                                  : inRange
+                                    ? 'border-primary/50 bg-primary/10 text-primary'
+                                    : 'border-border bg-card text-foreground hover:border-primary/40'
                               }`}
                             >
                               {time12(s.startsAt, tenant.timezone)} – {time12(rangeEnd, tenant.timezone)}

@@ -35,6 +35,8 @@ import { HoneypotField } from './HoneypotField'
 
 export const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
 export const DATE_WINDOW_DAYS = 7
+/** Grid step for candidate start times — matches the server's slotMinutes (see availableStartTimes). */
+export const SLOT_MINUTES = 30
 
 type Slot = { startsAt: string; available: boolean }
 type Step = 'select' | 'details'
@@ -132,6 +134,10 @@ export function ResourceBookingPage({
   const priceFor = (minutes: number) => (hourlyRate * minutes) / 60
   const total = priceFor(duration)
   const endsAt = startsAt ? new Date(new Date(startsAt).getTime() + duration * 60_000).toISOString() : null
+  // Slots already in the past (only relevant for today) are dropped rather
+  // than shown disabled — there's nothing useful for the customer to do with
+  // a start time that's already gone.
+  const visibleSlots = slots ? slots.filter((s) => new Date(s.startsAt).getTime() >= Date.now()) : null
 
   // Times reload for whichever date/duration is current; a fresh fetch
   // invalidates any previously picked start time.
@@ -397,14 +403,16 @@ export function ResourceBookingPage({
                         </div>
                       ) : slotsError ? (
                         <EmptyNotice>{slotsError}</EmptyNotice>
-                      ) : !slots || slots.length === 0 ? (
+                      ) : !visibleSlots || visibleSlots.length === 0 ? (
                         <EmptyNotice>No slots fit this duration today. Try a shorter duration.</EmptyNotice>
                       ) : (
                         <>
                           <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                            {slots.map((s) => {
+                            {visibleSlots.map((s) => {
                               const isSelected = startsAt === s.startsAt
-                              const rangeEnd = new Date(new Date(s.startsAt).getTime() + duration * 60_000).toISOString()
+                              const inRange =
+                                !isSelected && s.available && startsAt && endsAt && s.startsAt >= startsAt && s.startsAt < endsAt
+                              const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
                               return (
                                 <button
                                   key={s.startsAt}
@@ -413,9 +421,11 @@ export function ResourceBookingPage({
                                   className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
                                     isSelected
                                       ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                                      : s.available
-                                        ? 'border-border bg-card text-foreground hover:border-primary/40'
-                                        : 'cursor-not-allowed border-border/40 bg-muted/40 text-muted-foreground/40 line-through'
+                                      : !s.available
+                                        ? 'cursor-not-allowed border-border/40 bg-muted/40 text-muted-foreground/40 line-through'
+                                        : inRange
+                                          ? 'border-primary/50 bg-primary/10 text-primary'
+                                          : 'border-border bg-card text-foreground hover:border-primary/40'
                                   }`}
                                 >
                                   {time12(s.startsAt, tenant.timezone)} – {time12(rangeEnd, tenant.timezone)}
@@ -423,7 +433,7 @@ export function ResourceBookingPage({
                               )
                             })}
                           </div>
-                          {slots.every((s) => !s.available) && (
+                          {visibleSlots.every((s) => !s.available) && (
                             <p className="mt-3 text-sm text-muted-foreground">
                               Every slot on this date is taken for this duration — try another date.
                             </p>
