@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { Building2, Boxes, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
+import { Building2, Boxes, Gamepad2, Glasses, Music4, Mic2, Radio, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
@@ -16,6 +16,7 @@ const INDUSTRY_LABELS: Record<string, string> = {
   podcast_studio: 'Podcast Studio',
   dance_studio: 'Dance Studio',
   vr_centre: 'VR Centre',
+  restaurant: 'Restaurant',
   other: 'Business',
 }
 
@@ -25,6 +26,7 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
   podcast_studio: Radio,
   dance_studio: Music4,
   vr_centre: Glasses,
+  restaurant: UtensilsCrossed,
   other: Building2,
 }
 

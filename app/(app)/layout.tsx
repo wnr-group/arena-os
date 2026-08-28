@@ -11,6 +11,7 @@ const INDUSTRY_LABELS: Record<string, string> = {
   podcast_studio: 'Podcast Studio',
   dance_studio: 'Dance Studio',
   vr_centre: 'VR Centre',
+  restaurant: 'Restaurant',
   other: 'Business',
 }
 
@@ -46,6 +47,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     // the invoice receipt depends on therefore lives inside AppShell now.
     <AppShell
       industryLabel={INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
+      industry={tenant.industry}
       tenantName={tenant.name}
       role={role}
       userEmail={user.email}

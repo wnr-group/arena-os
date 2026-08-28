@@ -35,6 +35,7 @@ export const tenantIndustry = pgEnum('tenant_industry', [
   'podcast_studio',
   'dance_studio',
   'vr_centre',
+  'restaurant',
   'other',
 ])
 export const branchStatus = pgEnum('branch_status', ['active', 'inactive'])
@@ -264,6 +265,11 @@ export const bookings = pgTable(
      * the staff work queue, and only staff ever lower it.
      */
     depositReviewRequired: boolean('deposit_review_required').notNull().default(false),
+    // M17 (0064): an open-ended table session's guest count and its direct
+    // resource link (in place of booking_slots — see that migration's
+    // comment). Null for every timed booking in every other industry.
+    coverCount: integer('cover_count'),
+    resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -273,6 +279,8 @@ export const bookings = pgTable(
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
     index('idx_bookings_status').on(t.tenantId, t.status),
     index('idx_bookings_customer').on(t.tenantId, t.customerId),
+    // Partial (resource_id is not null) in the DB — see 0064_table_sessions.sql.
+    index('idx_bookings_resource').on(t.tenantId, t.resourceId),
   ],
 )
 
