@@ -4,7 +4,7 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
-import { listMenuItems } from '@/lib/menu/data'
+import { listMenuItems, listMostOrderedItemIds } from '@/lib/menu/data'
 import { listOrdersForBookings } from '@/lib/orders/data'
 import { listKotStatusesForBookings } from '@/lib/kots/data'
 import { listBookingBillingStates } from '@/lib/billing/data'
@@ -32,10 +32,11 @@ export default async function FloorPage() {
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [tables, menuItemRows, happyHourRows] = await Promise.all([
+  const [tables, menuItemRows, happyHourRows, popularItemRows] = await Promise.all([
     listTables(ctx, branch.id),
     listMenuItems(ctx),
     listHappyHours(ctx),
+    listMostOrderedItemIds(ctx, branch.id),
   ])
 
   const bookingIds = [...new Set(tables.map((t) => t.bookingId).filter((id): id is string => Boolean(id)))]
@@ -81,18 +82,24 @@ export default async function FloorPage() {
     if (row.bookingId && ACTIVE_KOT_STATUSES.has(row.status)) activeKotByBooking.add(row.bookingId)
   }
 
-  const availableItems = menuItemRows.filter((i) => i.status === 'available')
+  // Hidden items never reach the picker; out-of-stock ones do, shown
+  // disabled with an "86'd" badge (TakeOrderDialog) instead of vanishing —
+  // a waiter should still be able to tell a guest something's out, and
+  // createOrderCore rejects ordering it either way.
+  const orderableItems = menuItemRows.filter((i) => i.status !== 'hidden')
   const categoryMap = new Map<string, string>()
-  for (const i of availableItems) categoryMap.set(i.categoryId, i.categoryName)
+  for (const i of orderableItems) categoryMap.set(i.categoryId, i.categoryName)
   const categories = [...categoryMap.entries()].map(([id, name]) => ({ id, name }))
-  const menuItems = availableItems.map((i) => ({
+  const menuItems = orderableItems.map((i) => ({
     id: i.id,
     name: i.name,
     price: i.price,
     categoryId: i.categoryId,
     categoryName: i.categoryName,
     taxPercent: i.taxPercent,
+    status: i.status,
   }))
+  const popularItemIds = popularItemRows.map((r) => r.menuItemId)
   const happyHours = happyHourRows.map((h) => ({
     id: h.id,
     name: h.name,
@@ -137,6 +144,7 @@ export default async function FloorPage() {
       categories={categories}
       menuItems={menuItems}
       happyHours={happyHours}
+      popularItemIds={popularItemIds}
       ordersByBooking={ordersByBooking}
     />
   )

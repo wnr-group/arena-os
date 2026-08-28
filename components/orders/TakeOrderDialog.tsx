@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
-import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap } from 'lucide-react'
+import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, Flame } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
 import { formatMoney } from '@/lib/format'
 import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
@@ -15,6 +15,10 @@ export type MenuItemOption = {
   categoryId: string
   categoryName: string
   taxPercent: string | null
+  /** 'hidden' items should never be included by the caller — this is only
+   *  ever 'available' or 'out_of_stock' in practice, but typed loosely so an
+   *  unexpected value fails safe (disabled) rather than orderable. */
+  status?: string
 }
 type CartLine = {
   menuItemId: string
@@ -38,6 +42,7 @@ export function TakeOrderDialog({
   menuItems,
   happyHours,
   timeZone,
+  popularItemIds,
   onClose,
   onCreated,
 }: {
@@ -49,6 +54,10 @@ export function TakeOrderDialog({
   menuItems: MenuItemOption[]
   happyHours: HappyHourRule[]
   timeZone: string
+  /** Top-ordered item ids for the branch (lib/menu/data.ts::listMostOrderedItemIds)
+   *  — rendered as a quick-tap "Popular" row so a waiter can fire the usual
+   *  round without searching. Optional: omit for callers with no order history yet. */
+  popularItemIds?: string[]
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -91,6 +100,15 @@ export function TakeOrderDialog({
     })
   }, [menuItems, search, categoryFilter])
 
+  // Only shown on the unfiltered default view — once a waiter is searching
+  // or has picked a category, the popular row would just be noise above the
+  // list they already narrowed down.
+  const popularItems = useMemo(() => {
+    if (!popularItemIds || search.trim() || categoryFilter !== 'all') return []
+    const byId = new Map(menuItems.map((m) => [m.id, m]))
+    return popularItemIds.map((id) => byId.get(id)).filter((m): m is MenuItemOption => Boolean(m))
+  }, [popularItemIds, menuItems, search, categoryFilter])
+
   const totals = useMemo(() => {
     let subtotal = 0
     let tax = 0
@@ -104,6 +122,7 @@ export function TakeOrderDialog({
   }, [cart, priced])
 
   function addToCart(item: MenuItemOption) {
+    if (item.status && item.status !== 'available') return
     setError(null)
     setCart((lines) => {
       const existing = lines.find((l) => l.menuItemId === item.id)
@@ -179,6 +198,31 @@ export function TakeOrderDialog({
             </p>
           )}
 
+          {popularItems.length > 0 && (
+            <div className="mt-4">
+              <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Flame size={13} /> Popular
+              </p>
+              <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1">
+                {popularItems.map((item) => {
+                  const outOfStock = item.status === 'out_of_stock'
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => addToCart(item)}
+                      disabled={outOfStock}
+                      title={outOfStock ? '86\'d — currently out of stock' : undefined}
+                      className="shrink-0 whitespace-nowrap rounded-full border border-border px-3 py-1.5 text-sm font-medium transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-transparent"
+                    >
+                      {item.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="relative mt-4">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} />
             <input
@@ -210,15 +254,24 @@ export function TakeOrderDialog({
             ) : (
               filteredItems.map((item) => {
                 const applied = priced(item.price)
+                const outOfStock = item.status === 'out_of_stock'
                 return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => addToCart(item)}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition hover:border-primary/50 hover:bg-muted/40"
+                  disabled={outOfStock}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-base font-medium">{item.name}</p>
+                    <p className="truncate text-base font-medium">
+                      {item.name}
+                      {outOfStock && (
+                        <span className="ml-2 inline-flex items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
+                          86&apos;d
+                        </span>
+                      )}
+                    </p>
                     <p className="truncate text-sm text-muted-foreground">{item.categoryName}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -232,9 +285,11 @@ export function TakeOrderDialog({
                         {formatMoney(applied ? applied.unitPrice : item.price, currency)}
                       </span>
                     </div>
-                    <span className="rounded-md bg-primary/10 p-1.5 text-primary">
-                      <Plus size={14} />
-                    </span>
+                    {!outOfStock && (
+                      <span className="rounded-md bg-primary/10 p-1.5 text-primary">
+                        <Plus size={14} />
+                      </span>
+                    )}
                   </div>
                 </button>
                 )

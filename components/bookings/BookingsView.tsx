@@ -124,6 +124,7 @@ export function BookingsView({
   categories,
   menuItems,
   happyHours,
+  popularItemIds,
   ordersByBooking,
   venueName,
   depositStates,
@@ -144,6 +145,7 @@ export function BookingsView({
   categories: CategoryOption[]
   menuItems: MenuItemOption[]
   happyHours: HappyHourRule[]
+  popularItemIds?: string[]
   ordersByBooking: Record<string, OrderSummary[]>
   venueName: string
   /** bookingId → deposit state, read from payment_intents (AROS-49). */
@@ -707,6 +709,7 @@ export function BookingsView({
           categories={categories}
           menuItems={menuItems}
           happyHours={happyHours}
+          popularItemIds={popularItemIds}
           timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={(num) => {

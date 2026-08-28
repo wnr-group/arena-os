@@ -80,6 +80,7 @@ export function FloorView({
   categories,
   menuItems,
   happyHours,
+  popularItemIds,
   ordersByBooking,
 }: {
   branchId: string
@@ -89,6 +90,7 @@ export function FloorView({
   categories: CategoryOption[]
   menuItems: MenuItemOption[]
   happyHours: HappyHourRule[]
+  popularItemIds?: string[]
   ordersByBooking: Record<string, OrderSummary[]>
 }) {
   const router = useRouter()
@@ -367,6 +369,7 @@ export function FloorView({
           categories={categories}
           menuItems={menuItems}
           happyHours={happyHours}
+          popularItemIds={popularItemIds}
           timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={() => {

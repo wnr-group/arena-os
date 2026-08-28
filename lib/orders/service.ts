@@ -133,6 +133,7 @@ export async function createOrderCore(
       id: menuItems.id,
       name: menuItems.name,
       price: menuItems.price,
+      status: menuItems.status,
       taxPercent: taxRates.percent,
     })
     .from(menuItems)
@@ -141,6 +142,16 @@ export async function createOrderCore(
 
   const byId = new Map(rows.map((r) => [r.id, r]))
   if (byId.size !== ids.length) throw new OrderError('One or more menu items were not found.')
+
+  // The true authority, not just a UI filter: the picker (TakeOrderDialog)
+  // already hides 'hidden' items and shows 'out_of_stock' ones disabled, but
+  // a stale client (a menu that went 86'd after the screen loaded) or a
+  // replayed request must not still be able to place them.
+  for (const r of rows) {
+    if (r.status !== 'available') {
+      throw new OrderError(`${r.name} is not available right now.`)
+    }
+  }
 
   // Rules to weigh against every line. Read once per order, then matched in
   // memory — the "is it happy hour right now" decision is made here, on the
