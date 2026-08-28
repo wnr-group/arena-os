@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Clock3, Loader2, Plus, ReceiptText, Users, X } from 'lucide-react'
+import { Clock3, Loader2, Plus, Receipt, ReceiptText, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
@@ -296,6 +296,12 @@ export function FloorView({
               >
                 <Plus size={15} /> Take order
               </button>
+              <Link
+                href={`/tab/${liveSelected.bookingId}`}
+                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+              >
+                <Receipt size={15} /> View tab
+              </Link>
               <Link
                 href={`/pos/${liveSelected.bookingId}`}
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
