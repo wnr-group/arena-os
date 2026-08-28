@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, eq, max, min } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { bookings, bookingSlots, branches, customers } from '@/db/schema'
+import { bookings, bookingSlots, branches, customers, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import {
   findLiveInvoice,
@@ -99,10 +99,15 @@ export async function getBillableForBooking(
         bookingCustomerPhone: bookings.customerPhone,
         directoryName: customers.name,
         directoryPhone: customers.phone,
+        // M17: a table session links straight to its resource (0064) instead
+        // of booking_slots, so its name has to come from here rather than
+        // from a booking-kind line below.
+        tableResourceName: resources.name,
       })
       .from(bookings)
       .innerJoin(branches, eq(branches.id, bookings.branchId))
       .leftJoin(customers, eq(customers.id, bookings.customerId))
+      .leftJoin(resources, eq(resources.id, bookings.resourceId))
       .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenant.id)))
       .limit(1)
 
@@ -169,7 +174,12 @@ export async function getBillableForBooking(
         customerPhone: row.directoryPhone ?? row.bookingCustomerPhone,
         startsAt: window?.startsAt ? new Date(window.startsAt).toISOString() : null,
         endsAt: window?.endsAt ? new Date(window.endsAt).toISOString() : null,
-        resourceNames: [...new Set(bookingLines.map((l) => l.description.split(' · ')[0]))],
+        resourceNames:
+          bookingLines.length > 0
+            ? [...new Set(bookingLines.map((l) => l.description.split(' · ')[0]))]
+            : row.tableResourceName
+              ? [row.tableResourceName]
+              : [],
       },
       lines,
       existingInvoice,

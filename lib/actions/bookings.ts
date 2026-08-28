@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { createBookingCore, BookingError } from '@/lib/booking/service'
+import { createBookingCore, seatTableSessionCore, BookingError } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -21,6 +21,17 @@ function fail(e: unknown): Result {
   // 23P01 = exclusion_violation: the exclusion constraint caught an overlap.
   if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === '23P01') {
     return { error: 'That time was just taken for one of the selected resources. Please pick another slot.' }
+  }
+  // 23505 on idx_bookings_open_table_session = someone else just seated this
+  // table (see 0064_table_sessions.sql) — the DB caught the race, not us.
+  if (
+    e &&
+    typeof e === 'object' &&
+    'code' in e &&
+    (e as { code?: string }).code === '23505' &&
+    (e as { constraint?: string }).constraint === 'idx_bookings_open_table_session'
+  ) {
+    return { error: 'This table was just seated by someone else. Pick another table.' }
   }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
@@ -59,6 +70,49 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
     )
 
     revalidatePath('/bookings')
+    return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const seatTableInput = z.object({
+  branchId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  coverCount: z.coerce.number().int().positive('Guest count must be at least 1.'),
+  customerName: z.string().trim().optional(),
+  customerPhone: z
+    .string()
+    .trim()
+    .optional()
+    .refine((v) => !v || isValidPhone(v), 'Enter a valid 10-digit phone number.'),
+  notes: z.string().trim().optional(),
+})
+
+/**
+ * Seat a walk-in party at a table (M17 #1) — the restaurant-only sibling of
+ * createBooking. Gated at the action layer, not just by hiding the UI: a
+ * non-restaurant tenant that somehow reaches this action (a stale tab, a
+ * replayed request) gets rejected here regardless of what the client sent,
+ * per the epic's "industry-gated" rule.
+ */
+export async function seatTable(input: z.input<typeof seatTableInput>): Promise<CreateResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Table service is not enabled for this business.')
+    }
+    const v = seatTableInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      seatTableSessionCore(
+        tx,
+        { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+        v,
+      ),
+    )
+
+    revalidatePath('/tables')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
     return fail(e)

@@ -39,6 +39,7 @@ import {
   PiggyBank,
   Globe,
   Bell,
+  Armchair,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -64,12 +65,19 @@ type NavItem = {
   label: string
   icon: LucideIcon
   can?: (role: MemberRole) => boolean
+  // M17: restricts an entry to specific tenant industries. Omit for every
+  // entry every industry should see — every existing entry omits it, so a
+  // gaming-cafe/studio tenant's nav is completely unaffected by this field
+  // existing at all.
+  industries?: string[]
   children?: NavChild[]
 }
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
+  // Dine-in table service (M17) — restaurant tenants only.
+  { href: '/tables', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.
@@ -166,9 +174,21 @@ function isChildActive(pathname: string, children: NavChild[]) {
   return children.some((c) => pathname === c.href || pathname.startsWith(c.href + '/'))
 }
 
-export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boolean }) {
+export function Sidebar({
+  role,
+  industry,
+  collapsed,
+}: {
+  role: MemberRole
+  industry: string
+  collapsed?: boolean
+}) {
   const pathname = usePathname()
-  const items = useMemo(() => NAV.filter((n) => !n.can || n.can(role)), [role])
+  const items = useMemo(
+    () =>
+      NAV.filter((n) => (!n.can || n.can(role)) && (!n.industries || n.industries.includes(industry))),
+    [role, industry],
+  )
   const [openLabel, setOpenLabel] = useState<string | null>(
     () => items.find((n) => n.children && isChildActive(pathname, n.children))?.label ?? null,
   )

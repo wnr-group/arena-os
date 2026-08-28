@@ -14,6 +14,7 @@ const INDUSTRIES = [
   ['podcast_studio', 'Podcast Studio'],
   ['dance_studio', 'Dance Studio'],
   ['vr_centre', 'VR Centre'],
+  ['restaurant', 'Restaurant'],
   ['other', 'Other'],
 ] as const
 
