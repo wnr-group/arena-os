@@ -165,13 +165,12 @@ export function ResourceBookingPage({
     }
   }, [resource.id, date, duration])
 
-  // Look the phone up (debounced) as soon as it looks complete enough to
-  // match — same minimum length the booking submission itself requires — so
-  // the name field only appears once we know whether to ask for it.
+  // Look the phone up (debounced) once a full 10-digit number is entered —
+  // phone is already digits-only (see the input's onChange below), so the
+  // name field only appears once we know whether to ask for it.
   useEffect(() => {
     setName('')
-    const digits = phone.replace(/\D/g, '')
-    if (digits.length < 6) {
+    if (phone.length !== 10) {
       setPhoneLookup({ checking: false, checked: false, found: false })
       return
     }
@@ -490,11 +489,13 @@ export function ResourceBookingPage({
                   <div className="relative">
                     <input
                       type="tel"
+                      inputMode="numeric"
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
+                      onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       readOnly={phoneLookup.checked}
                       autoComplete="tel"
-                      placeholder="Your phone number"
+                      maxLength={10}
+                      placeholder="10-digit phone number"
                       className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30 read-only:bg-muted read-only:text-muted-foreground"
                     />
                     {phoneLookup.checked && (
