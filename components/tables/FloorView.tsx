@@ -60,12 +60,25 @@ const STATUS_BADGE: Record<TableStatus, string> = {
 }
 
 const STATUS_TILE: Record<TableStatus, string> = {
-  free: 'border-dashed hover:bg-muted/40',
-  seated: 'border-blue-500/40 bg-blue-500/5',
-  ordered: 'border-amber-500/40 bg-amber-500/5',
-  served: 'border-emerald-500/40 bg-emerald-500/5',
-  bill_requested: 'border-violet-500/40 bg-violet-500/5',
-  needs_cleaning: 'border-rose-500/40 bg-rose-500/5',
+  free: 'border-dashed border-border hover:border-primary/40 hover:bg-muted/30',
+  seated: 'border-blue-500/30 bg-gradient-to-b from-blue-500/[0.07] to-transparent hover:border-blue-500/50',
+  ordered: 'border-amber-500/30 bg-gradient-to-b from-amber-500/[0.07] to-transparent hover:border-amber-500/50',
+  served: 'border-emerald-500/30 bg-gradient-to-b from-emerald-500/[0.07] to-transparent hover:border-emerald-500/50',
+  bill_requested: 'border-violet-500/30 bg-gradient-to-b from-violet-500/[0.07] to-transparent hover:border-violet-500/50',
+  needs_cleaning: 'border-rose-500/30 bg-gradient-to-b from-rose-500/[0.07] to-transparent hover:border-rose-500/50',
+}
+
+/** Solid accent used for the card's top bar and status-dot — one shade up
+ *  from STATUS_BADGE's tinted background, for a stronger hover/at-a-glance
+ *  read on the floor grid. Free carries no accent: an empty table needs no
+ *  emphasis. */
+const STATUS_ACCENT: Record<TableStatus, string> = {
+  free: 'bg-transparent',
+  seated: 'bg-blue-500',
+  ordered: 'bg-amber-500',
+  served: 'bg-emerald-500',
+  bill_requested: 'bg-violet-500',
+  needs_cleaning: 'bg-rose-500',
 }
 
 function elapsedLabel(since: string, now: number): string {
@@ -169,15 +182,20 @@ export function FloorView({
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Floor</h1>
-          <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-muted-foreground">
+          <div className="mt-2.5 flex flex-wrap gap-2">
             {(Object.keys(STATUS_LABEL) as TableStatus[])
               .filter((s) => counts[s] > 0)
               .map((s) => (
-                <span key={s}>
-                  {counts[s]} {STATUS_LABEL[s].toLowerCase()}
+                <span
+                  key={s}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/30 py-1 pl-2.5 pr-3 text-xs font-medium text-muted-foreground shadow-sm"
+                >
+                  <span className={`size-1.5 rounded-full ${s === 'free' ? 'bg-muted-foreground/40' : STATUS_ACCENT[s]}`} />
+                  <span className="font-semibold text-foreground tabular-nums">{counts[s]}</span>
+                  {STATUS_LABEL[s].toLowerCase()}
                 </span>
               ))}
-          </p>
+          </div>
         </div>
       </div>
 
@@ -187,38 +205,54 @@ export function FloorView({
           add tables to it.
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
           {tables.map((t) => {
             const isOccupied = Boolean(t.bookingId)
             return (
               <button
                 key={t.id}
                 onClick={() => (isOccupied ? setSelected(t) : setSeatTarget(t))}
-                className={`rounded-lg border p-3 text-left transition hover:shadow-sm ${STATUS_TILE[t.status]}`}
+                className={`group relative overflow-hidden rounded-xl border p-4 text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${STATUS_TILE[t.status]}`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{t.name}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[t.status]}`}>
+                <span className={`absolute inset-x-0 top-0 h-1 opacity-80 transition-opacity duration-300 group-hover:opacity-100 ${STATUS_ACCENT[t.status]}`} />
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-base font-semibold tracking-tight">{t.name}</span>
+                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[t.status]}`}>
+                    {t.status !== 'free' && <span className={`size-1.5 rounded-full ${STATUS_ACCENT[t.status]}`} />}
                     {STATUS_LABEL[t.status]}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">{t.typeName}</p>
-                {isOccupied && (
-                  <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <Users size={13} />
-                      {t.coverCount ?? '—'}
-                      {t.customerName ? ` · ${t.customerName}` : ''}
+                <p className="mt-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">{t.typeName}</p>
+
+                {isOccupied ? (
+                  <div className="mt-3 space-y-1.5 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <Users size={13} className="shrink-0 text-muted-foreground/60" />
+                      <span className="truncate">
+                        {t.coverCount ?? '—'}
+                        {t.customerName ? ` · ${t.customerName}` : ''}
+                      </span>
                     </div>
                     {t.checkedInAt && (
-                      <div className="flex items-center gap-1">
-                        <Clock3 size={13} />
-                        {elapsedLabel(t.checkedInAt, now)}
+                      <div className="flex items-center gap-1.5">
+                        <Clock3 size={13} className="shrink-0 text-muted-foreground/60" />
+                        <span>{elapsedLabel(t.checkedInAt, now)}</span>
                       </div>
                     )}
-                    {t.runningTotal > 0 && (
-                      <div className="font-medium text-foreground">{formatMoney(t.runningTotal, currency)}</div>
-                    )}
+                  </div>
+                ) : (
+                  <div className="mt-3 flex items-center gap-1.5 text-xs font-medium text-muted-foreground/50 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                    <Plus size={13} /> Tap to seat
+                  </div>
+                )}
+
+                {isOccupied && t.runningTotal > 0 && (
+                  <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5">
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground/60">Running total</span>
+                    <span className="text-sm font-semibold tabular-nums text-foreground">
+                      {formatMoney(t.runningTotal, currency)}
+                    </span>
                   </div>
                 )}
               </button>
