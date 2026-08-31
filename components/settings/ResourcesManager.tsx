@@ -325,16 +325,21 @@ export function ResourcesManager({
                   <tr key={row.id} className="transition hover:bg-muted/20">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        {row.imageUrl ?? row.typeImageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={row.imageUrl ?? row.typeImageUrl ?? ''}
-                            alt=""
-                            className="h-11 w-11 shrink-0 rounded-md border object-cover"
-                          />
-                        ) : (
-                          <div className="h-11 w-11 shrink-0 rounded-md border border-dashed bg-muted/40" />
-                        )}
+                        {/* Restaurant tenants never set a photo (the dialog
+                         *  has no photo field for them — see ResourceModal),
+                         *  so this would only ever be an empty placeholder
+                         *  box; skip the thumbnail entirely instead. */}
+                        {!isRestaurant &&
+                          (row.imageUrl ?? row.typeImageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={row.imageUrl ?? row.typeImageUrl ?? ''}
+                              alt=""
+                              className="h-11 w-11 shrink-0 rounded-md border object-cover"
+                            />
+                          ) : (
+                            <div className="h-11 w-11 shrink-0 rounded-md border border-dashed bg-muted/40" />
+                          ))}
                         <span className="font-medium">{row.name}</span>
                       </div>
                     </td>
