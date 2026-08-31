@@ -1504,6 +1504,17 @@ export const vDailyRevenue = pgView('v_daily_revenue', {
   invoiceCount: integer('invoice_count').notNull(),
 }).existing()
 
+// ── report refresh log (migration 0050) ──────────────────────────────────────
+// When each reporting materialized view was last rebuilt, so a report can state
+// its own age rather than implying freshness it does not have. One global row
+// per view — a refresh covers every tenant at once, so there is no tenant_id
+// here and deliberately no RLS. Read-only to arena_app; the only writer is the
+// SECURITY DEFINER refresh function.
+export const reportRefreshLog = pgTable('report_refresh_log', {
+  viewName: text('view_name').primaryKey(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 // ── expenses module (migration 0033) ─────────────────────────────────────────
 // Settings-shaped catalogues plus the ledger that spends against them, the same
 // read-all / manager-write split as the menu tables. `amount` is numeric, so it

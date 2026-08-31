@@ -1,5 +1,5 @@
 import 'server-only'
-import { asc, desc, eq, inArray, notInArray, or, sql } from 'drizzle-orm'
+import { asc, desc, eq, inArray, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { withCustomer, type DB } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireCustomer } from '@/lib/auth/customer-guard'
@@ -97,11 +97,50 @@ export type PortalBookingDetail = PortalBookingSummary & {
 }
 
 export type PortalBookingLists = {
+  /** The requested page of upcoming bookings — NOT the whole list. */
   upcoming: PortalBookingSummary[]
+  /** The requested page of history — NOT the whole list. */
   past: PortalBookingSummary[]
+  /** Where each list above sits in its full set, so the UI can page through. */
+  pagination: { upcoming: PortalPageInfo; past: PortalPageInfo }
   /** The venue's rule, so the UI can state it before asking anyone to confirm. */
   policy: CancellationPolicy
 }
+
+/**
+ * Where one rendered page sits within its full list.
+ *
+ * `total` is the size of the WHOLE list, not of the page — the section heading
+ * shows it, so a customer with 200 bookings sees "200" and not "10".
+ */
+export type PortalPageInfo = {
+  /** 1-based, and already clamped into [1, pageCount]. */
+  page: number
+  pageSize: number
+  /** Rows in the entire list. */
+  total: number
+  /** At least 1, so "page 1 of 1" is what an empty list reads. */
+  pageCount: number
+}
+
+/** Which page of each list to read. Absent, invalid or out-of-range → page 1. */
+export type PortalBookingPages = { upcoming?: number; past?: number }
+
+/**
+ * Rows per page, per section.
+ *
+ * Both lists are paged, for different reasons. `past` grows without bound —
+ * every booking a customer ever made stays in it forever, each carrying an
+ * array_agg of its resource names — so an unbounded read gets slower for
+ * exactly the loyal customers a venue can least afford to annoy. `upcoming` is
+ * naturally smaller, but nothing stops somebody block-booking fifty slots, and
+ * a section that silently grew to fifty rows would bury the cancel button for
+ * the booking they actually came to find.
+ *
+ * Ten keeps both sections glanceable on a phone, which is where a portal is
+ * mostly read.
+ */
+export const BOOKINGS_PAGE_SIZE = 10
 
 /**
  * A customer-scoped transaction, as produced by withCustomer(). Holding one is
@@ -222,9 +261,9 @@ export const notFinished = sql`${bookingEndInstant} > now()`
  * already reduced `bookings` to this customer's rows, which is precisely why an
  * unqualified `from bookings` is a correct "my bookings" here.
  */
-export async function getPortalBookings(): Promise<PortalBookingLists> {
+export async function getPortalBookings(pages: PortalBookingPages = {}): Promise<PortalBookingLists> {
   const customer = await requireCustomer()
-  return withCustomer(customer.id, (tx) => readPortalBookings(tx, customer.tenantId))
+  return withCustomer(customer.id, (tx) => readPortalBookings(tx, customer.tenantId, pages))
 }
 
 /**
@@ -239,36 +278,102 @@ export async function getPortalBookings(): Promise<PortalBookingLists> {
 export async function readPortalBookings(
   tx: PortalTx,
   tenantId: string,
+  pages: PortalBookingPages = {},
 ): Promise<PortalBookingLists> {
   // One policy read per page, then reused by both queries — the cutoff is part
   // of the SELECT, so it has to be known before either runs.
   const policy = await getCancellationPolicy(tx, tenantId)
   const cols = summaryColumns(policy)
 
-  {
-    const upcoming = await tx
-      .select(cols)
+  // The two classifications, named once. Both queries below and both counts
+  // read these SAME expressions, so a page can never be counted by one rule and
+  // listed by another — which would show "page 2 of 3" over an empty section.
+  const upcomingHaving = notFinished
+  const pastHaving = or(notInArray(bookings.status, [...LIVE_STATUSES]), finished)
+
+  /**
+   * How many bookings the section holds in total.
+   *
+   * Counted BEFORE the page is read, because the page number has to be clamped
+   * against something: a hand-typed ?past=99 must land on the last real page
+   * rather than an empty section that still claims there is more. A window
+   * function (count(*) over ()) cannot do this — it rides along on result rows,
+   * and an over-range page has none to carry it.
+   *
+   * The inner select is grouped per booking because both HAVING clauses
+   * aggregate with max() over the slots; the outer aggregate then counts the
+   * classified rows. Same shape as the overview's count in lib/portal/account.ts.
+   */
+  const countOf = async (where: SQL | undefined, having: SQL | undefined) => {
+    const grouped = tx
+      .select({ id: bookings.id })
       .from(bookings)
       .leftJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
-      .where(inArray(bookings.status, [...LIVE_STATUSES]))
+      .where(where)
       .groupBy(bookings.id)
-      .having(notFinished)
-      .orderBy(sql`min(${bookingSlots.startsAt}) asc nulls last`, asc(bookings.createdAt))
-
-    const past = await tx
-      .select(cols)
-      .from(bookings)
-      .leftJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
-      .groupBy(bookings.id)
-      .having(or(notInArray(bookings.status, [...LIVE_STATUSES]), finished))
-      .orderBy(sql`min(${bookingSlots.startsAt}) desc nulls last`, desc(bookings.createdAt))
-
-    return {
-      upcoming: upcoming.map(normalise),
-      past: past.map(normalise),
-      policy,
-    }
+      .having(having)
+      .as('grouped')
+    const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(grouped)
+    return row?.n ?? 0
   }
+
+  const upcomingTotal = await countOf(inArray(bookings.status, [...LIVE_STATUSES]), upcomingHaving)
+  const pastTotal = await countOf(undefined, pastHaving)
+
+  const upcomingPage = pageInfo(pages.upcoming, upcomingTotal)
+  const pastPage = pageInfo(pages.past, pastTotal)
+
+  const upcoming = await tx
+    .select(cols)
+    .from(bookings)
+    .leftJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
+    .where(inArray(bookings.status, [...LIVE_STATUSES]))
+    .groupBy(bookings.id)
+    .having(upcomingHaving)
+    // Soonest first: the next thing you are doing is the thing you came to see.
+    .orderBy(sql`min(${bookingSlots.startsAt}) asc nulls last`, asc(bookings.createdAt))
+    .limit(upcomingPage.pageSize)
+    .offset((upcomingPage.page - 1) * upcomingPage.pageSize)
+
+  const past = await tx
+    .select(cols)
+    .from(bookings)
+    .leftJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
+    .groupBy(bookings.id)
+    .having(pastHaving)
+    // Most recent first: history is read backwards.
+    .orderBy(sql`min(${bookingSlots.startsAt}) desc nulls last`, desc(bookings.createdAt))
+    .limit(pastPage.pageSize)
+    .offset((pastPage.page - 1) * pastPage.pageSize)
+
+  return {
+    upcoming: upcoming.map(normalise),
+    past: past.map(normalise),
+    pagination: { upcoming: upcomingPage, past: pastPage },
+    policy,
+  }
+}
+
+/**
+ * Turn a requested page number into a real one.
+ *
+ * The input arrives from a query string, so it is anything at all: absent, a
+ * word, 0, -3, 1e9, or a legitimate page that has since gone out of range
+ * because bookings moved from Upcoming to Past between two visits. Every one of
+ * those resolves to a page that exists rather than to an empty section, and the
+ * CLAMPED number is what the UI renders — so the pager always describes the
+ * page actually shown.
+ *
+ * pageCount is at least 1: an empty list reads "page 1 of 1", not "1 of 0".
+ */
+export function pageInfo(requested: unknown, total: number): PortalPageInfo {
+  const pageCount = Math.max(1, Math.ceil(total / BOOKINGS_PAGE_SIZE))
+  const asNumber = typeof requested === 'string' ? Number(requested) : requested
+  const page =
+    typeof asNumber === 'number' && Number.isInteger(asNumber) && asNumber >= 1
+      ? Math.min(asNumber, pageCount)
+      : 1
+  return { page, pageSize: BOOKINGS_PAGE_SIZE, total, pageCount }
 }
 
 /** array_agg comes back as null rather than '{}' on some paths; pin it to []. */

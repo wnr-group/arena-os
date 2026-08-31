@@ -31,6 +31,7 @@ const check = (label: string, cond: boolean) => {
 
 async function main() {
   const { readPortalWallet, LEDGER_LIMIT } = await import('../lib/portal/wallet')
+  const { readPortalSummary } = await import('../lib/portal/account')
   const { walletBalance, loyaltyPoints } = await import('../lib/customers/ledger')
   const { readOwnProfile, updateOwnProfile, ProfileError } = await import('../lib/portal/profile')
 
@@ -94,7 +95,8 @@ async function main() {
     return c.rows[0].id
   }
 
-  const alice = await makeCustomer(tA.tenantId, '+919000008001', 'Alice')
+  const alicePhone = '+919000008001'
+  const alice = await makeCustomer(tA.tenantId, alicePhone, 'Alice')
   const bob = await makeCustomer(tA.tenantId, '+919000008002', 'Bob')
   const carol = await makeCustomer(tB.tenantId, '+919000008003', 'Carol')
 
@@ -142,6 +144,30 @@ async function main() {
   check('portal wallet balance === walletBalance() as staff sees it', data.walletBalance === posWallet)
   check('portal loyalty points === loyaltyPoints() as staff sees it', data.loyaltyPoints === posPoints)
 
+  // ── the THIRD surface: /account, the portal overview ──────────────────────
+  // The checks above pin /account/wallet and the staff side together. The
+  // overview shows the same two numbers on a different page, and it used to
+  // reach them by re-summing the ledgers inline instead of calling the shared
+  // helpers. That re-implementation agreed by coincidence, so no assertion
+  // comparing either surface to a CONSTANT could have caught it drifting —
+  // only comparing the surfaces to EACH OTHER can, which is what this does.
+  const overview = await withCustomer(alice, (tx) =>
+    readPortalSummary(tx, {
+      id: alice,
+      tenantId: tA.tenantId,
+      name: 'Alice',
+      phone: alicePhone,
+      email: null,
+    }),
+  )
+  check('overview wallet === /account/wallet', overview.walletBalance === data.walletBalance)
+  check('overview wallet === staff walletBalance()', overview.walletBalance === posWallet)
+  check('overview points === /account/wallet', overview.loyaltyPoints === data.loyaltyPoints)
+  check('overview points === staff loyaltyPoints()', overview.loyaltyPoints === posPoints)
+  // The fixture has both a spend and a redemption, so a surface that summed a
+  // different subset of the ledger would land on a different number here.
+  check('…and the figures are not trivially zero', overview.walletBalance === 1200 && overview.loyaltyPoints === 30)
+
   // Independent arithmetic, straight from the table, as a third opinion.
   const raw = await owner.query<{ w: string; p: string }>(
     `select coalesce((select sum(amount) from wallet_transactions where customer_id=$1),0)::text w,
@@ -172,6 +198,27 @@ async function main() {
   check('the newest loyalty entry is the redemption', data.loyalty[0].sourceType === 'invoice_redeem')
   check('redemptions are negative', Number(data.loyalty[0].amount) === -20)
   check('earnings are positive', data.loyalty.some((e) => Number(e.amount) === 40))
+
+  // ── the SHAPE that reaches the browser ────────────────────────────────────
+  // `points` is an integer column mapped onto the shared `amount` string. A
+  // spread that kept the original row shipped the raw integer alongside it as
+  // an extra, undeclared field. PortalLedgerEntry never declared `points`, so
+  // the type checker could not see it either way — only the serialised object
+  // can be asked. JSON.stringify is what a server component actually hands the
+  // client, so that is what is inspected.
+  const declaredKeys = ['amount', 'createdAt', 'id', 'reason', 'sourceType']
+  const wireLoyalty = JSON.parse(JSON.stringify(data.loyalty)) as Array<Record<string, unknown>>
+  const wireWallet = JSON.parse(JSON.stringify(data.wallet)) as Array<Record<string, unknown>>
+  check('no loyalty row carries a stray `points` field', wireLoyalty.every((r) => !('points' in r)))
+  check(
+    'every loyalty row has EXACTLY the declared PortalLedgerEntry keys',
+    wireLoyalty.every((r) => JSON.stringify(Object.keys(r).sort()) === JSON.stringify(declaredKeys)),
+  )
+  check(
+    'wallet rows have the same shape, so one component renders both',
+    wireWallet.every((r) => JSON.stringify(Object.keys(r).sort()) === JSON.stringify(declaredKeys)),
+  )
+  check('…and the sign survived the integer → string conversion', wireLoyalty[0].amount === '-20')
 
   // The LIMIT is real, and the limit takes the NEWEST rows.
   for (let i = 0; i < LEDGER_LIMIT + 5; i++) {

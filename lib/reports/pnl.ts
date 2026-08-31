@@ -1,7 +1,13 @@
 import 'server-only'
 import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { expenseCategories, expenses, payslips, vDailyRevenue } from '@/db/schema'
+import {
+  expenseCategories,
+  expenses,
+  payslips,
+  reportRefreshLog,
+  vDailyRevenue,
+} from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
@@ -68,6 +74,21 @@ import type { DateRange } from './date-range'
  *
  * Consequence worth knowing: `netProfit` is only a true like-for-like figure
  * when the range is whole months. The UI says so when it is not.
+ *
+ * ── THE OTHER LIKE-FOR-LIKE CAVEAT: REVENUE IS A SNAPSHOT ───────────────────
+ *
+ * Revenue comes from a materialized view that something has to refresh
+ * (scripts/refresh-reports.ts); expenses and payroll are read live. So an
+ * invoice raised since the last refresh is missing from revenue while the wage
+ * bill and the spend beside it are current, and `netProfit` is understated by
+ * exactly that much.
+ *
+ * `revenueRefreshedAt` reports when the snapshot was last rebuilt (migration
+ * 0050) so the page can say how old it is. That does not make the number
+ * fresher — only a scheduled refresh would, and 0043 notes this project has no
+ * scheduler — but it turns a silently wrong profit into a visibly dated one,
+ * which is the difference between a manager mis-deciding and a manager knowing
+ * to hit refresh.
  */
 
 export type PnlExpenseCategoryRow = {
@@ -104,6 +125,13 @@ export type PnlReport = {
   }
   /** revenue.net − expenses.total − payroll.total */
   netProfit: number
+  /**
+   * When mv_daily_revenue was last rebuilt, or null if it never has been.
+   *
+   * The revenue line is a snapshot while expenses and payroll are live, so this
+   * is how stale the profit figure's income half is. See the note below.
+   */
+  revenueRefreshedAt: Date | null
 }
 
 /**
@@ -196,6 +224,25 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         ),
       )
 
+    // ── how stale is the revenue half? ────────────────────────────────────
+    // Revenue is a snapshot; expenses and payroll are live. Reporting the age
+    // of the snapshot is what lets the page distinguish "you are down this
+    // month" from "the income side has not been rebuilt since Tuesday". One
+    // global row (migration 0050) — a refresh covers every tenant at once, so
+    // there is no tenant predicate to apply here.
+    const [refreshRow] = await tx
+      .select({ refreshedAt: reportRefreshLog.refreshedAt })
+      .from(reportRefreshLog)
+      .where(eq(reportRefreshLog.viewName, 'mv_daily_revenue'))
+      .limit(1)
+
+    // 'epoch' is the seed 0050 writes for a database that has never refreshed
+    // since the migration ran. Reported as "unknown" rather than as 1970.
+    const refreshedAt =
+      refreshRow?.refreshedAt && refreshRow.refreshedAt.getTime() > 0
+        ? refreshRow.refreshedAt
+        : null
+
     const revenueNet = round2(Number(revenueRow?.net ?? 0))
     const expenseTotal = round2(Number(expenseRow?.total ?? 0))
     const payrollTotal = round2(Number(payrollRow?.total ?? 0))
@@ -228,6 +275,7 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
       // Rounded once, from three figures that are each already exact to 2dp,
       // so the displayed total always equals the displayed lines subtracted.
       netProfit: round2(revenueNet - expenseTotal - payrollTotal),
+      revenueRefreshedAt: refreshedAt,
     }
   })
 }

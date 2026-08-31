@@ -22,8 +22,10 @@ const check = (label: string, cond: boolean) => {
   else fail++
 }
 const money = (n: number) => n.toFixed(2)
+const round2 = (n: number) => Math.round(n * 100) / 100
 
 async function main() {
+  const { getPayrollCostReport } = await import('../lib/reports/payroll')
   const { getPnlReport, monthsOverlapping, isWholeMonths, pnlCsvRows } = await import(
     '../lib/reports/pnl'
   )
@@ -287,6 +289,58 @@ async function main() {
   check('an empty period is zeros, not an error', empty.revenue.net === 0 && empty.expenses.total === 0)
   check('…with an empty breakdown', empty.expenses.byCategory.length === 0)
   check('…and a net of 0', empty.netProfit === 0)
+
+  // ══ reconciliation with the Payroll Cost Report ═══════════════════════════
+  // The two reports read the same payslips and must land on the same wage bill.
+  // Asserting each against a constant separately would not have caught the
+  // AROS-184 bug — both were "correct" in isolation while disagreeing by the
+  // withholding. Comparing them to EACH OTHER is what pins it.
+  console.log('\n── the two payroll figures reconcile ──')
+
+  const payrollReport = await getPayrollCostReport(ctxFor(tA, 'manager'), '2026-03', '2026-03')
+  check(
+    'P&L payroll === payroll report totalGross',
+    r.payroll.total === payrollReport.totals.totalGross,
+  )
+  check(
+    '…and the report does NOT agree on net, so the check has teeth',
+    payrollReport.totals.totalNetPay !== payrollReport.totals.totalGross,
+  )
+  check(
+    'the deductions and advance make up the difference exactly',
+    round2(payrollReport.totals.totalGross - payrollReport.totals.totalNetPay) ===
+      round2(payrollReport.totals.totalDeductions + payrollReport.totals.totalAdvanceRecovered),
+  )
+  check('both reports count the same payslips', r.payroll.payslipCount === payrollReport.totals.payslipCount)
+
+  // ══ revenue staleness (migration 0050) ════════════════════════════════════
+  // Revenue is a snapshot; expenses and payroll are live. The report has to be
+  // able to say how old the snapshot is, or a manager cannot tell a genuine
+  // loss from an un-refreshed one.
+  console.log('\n── the revenue snapshot reports its own age ──')
+
+  check('the report carries a refresh timestamp', r.revenueRefreshedAt instanceof Date)
+  check(
+    '…and it is the real one, not the epoch sentinel',
+    r.revenueRefreshedAt !== null && r.revenueRefreshedAt.getTime() > 0,
+  )
+  // The suite refreshed just before reading, so the stamp must be recent. A
+  // stamp that never moves is the failure this guards: the log has to be
+  // written BY the refresh, not seeded once and left.
+  check(
+    '…written by the refresh itself, so it is current',
+    r.revenueRefreshedAt !== null && Date.now() - r.revenueRefreshedAt.getTime() < 10 * 60_000,
+  )
+
+  const beforeRefresh = r.revenueRefreshedAt!
+  await owner.query('select public.refresh_daily_revenue()')
+  const afterRefresh = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+  check(
+    'a second refresh moves the timestamp forward',
+    afterRefresh.revenueRefreshedAt !== null &&
+      afterRefresh.revenueRefreshedAt.getTime() >= beforeRefresh.getTime(),
+  )
+  check('…and the figures are unchanged by it', afterRefresh.netProfit === r.netProfit)
 
   // ══ CSV ═══════════════════════════════════════════════════════════════════
   console.log('\n── CSV export ──')

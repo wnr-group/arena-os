@@ -142,26 +142,42 @@ export function BookingSection({
   title,
   emptyMessage,
   bookings,
+  count,
   timeZone,
   currency,
   cutoffHours,
   showRebook,
+  footer,
 }: {
   title: string
   emptyMessage: string
+  /** The rows to render — one page of them, when the caller is paging. */
   bookings: PortalBookingSummary[]
+  /**
+   * How many bookings the section holds ALTOGETHER, for the heading badge.
+   *
+   * Distinct from `bookings.length` on purpose: once the list is paged, the
+   * page length is 10 for everyone, and a badge reading "10" next to a pager
+   * saying "1–10 of 47" would be its own small lie. Defaults to the row count
+   * for callers that pass every row.
+   */
+  count?: number
   timeZone: string
   currency: string
   cutoffHours: number
   showRebook?: boolean
+  /** Rendered inside the section's border, below the rows — the pager. */
+  footer?: React.ReactNode
 }) {
+  const total = count ?? bookings.length
+
   return (
     <section className="rounded-xl border border-border bg-card">
       <h2 className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-semibold">
         {title}
-        {bookings.length > 0 && (
+        {total > 0 && (
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-            {bookings.length}
+            {total}
           </span>
         )}
       </h2>
@@ -182,6 +198,11 @@ export function BookingSection({
           ))}
         </ul>
       )}
+
+      {/* Below the rows and inside the border, so the pager reads as part of
+          the section it pages rather than as a floating control. Skipped on an
+          empty section: there is nothing to page. */}
+      {bookings.length > 0 && footer}
     </section>
   )
 }

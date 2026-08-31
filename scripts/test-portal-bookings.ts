@@ -35,7 +35,9 @@ const check = (label: string, cond: boolean) => {
 }
 
 async function main() {
-  const { readPortalBookings, readPortalBooking } = await import('../lib/portal/bookings')
+  const { readPortalBookings, readPortalBooking, pageInfo, BOOKINGS_PAGE_SIZE } = await import(
+    '../lib/portal/bookings',
+  )
   const { readPortalSummary } = await import('../lib/portal/account')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -589,7 +591,11 @@ async function main() {
   )
   check(
     'the overview total equals upcoming + past',
-    agreeSummary.totalBookings === agreeLists.upcoming.length + agreeLists.past.length,
+    // Compared against the PAGE TOTALS, not the rendered rows: once a list is
+    // paged those are different numbers, and the pagination section below
+    // asserts they diverge exactly as intended.
+    agreeSummary.totalBookings ===
+      agreeLists.pagination.upcoming.total + agreeLists.pagination.past.total,
   )
 
   // A booking with no slots at all: the list gives it a defined answer via
@@ -605,8 +611,143 @@ async function main() {
   )
   check(
     '…and still counted in the total',
-    slotlessSummary.totalBookings === slotlessLists.upcoming.length + slotlessLists.past.length,
+    slotlessSummary.totalBookings ===
+      slotlessLists.pagination.upcoming.total + slotlessLists.pagination.past.total,
   )
+
+  // ══ pagination ════════════════════════════════════════════════════════════
+  // Both lists are paged. The properties worth proving are the ones a customer
+  // would notice going wrong: no booking is skipped or shown twice across
+  // pages, the counts describe the WHOLE list rather than the page, ordering
+  // holds ACROSS the page boundary and not just inside a page, and a junk page
+  // number lands somewhere real.
+  console.log('\n── pagination ──')
+
+  const heavy = await makeCustomer('+919000000902', 'Heavy')
+  const heavyRes = await owner.query<{ id: string }>(
+    `insert into resources (tenant_id, branch_id, resource_type_id, name)
+     values ($1, $2, $3, 'Heavy Booth')
+     on conflict (tenant_id, name) do update set name = excluded.name returning id`,
+    [tenantId, branchId, rt.rows[0].id],
+  )
+  const heavyResIds = [heavyRes.rows[0].id]
+
+  const readHeavy = (pages?: { upcoming?: number; past?: number }) =>
+    withCustomer(heavy, (tx) => readPortalBookings(tx, tenantId, pages))
+
+  const emptyLists = await readHeavy()
+  check('an empty list reports page 1 of 1', emptyLists.pagination.past.pageCount === 1)
+  check('…with a total of 0', emptyLists.pagination.past.total === 0)
+  check('…and no rows', emptyLists.past.length === 0)
+
+  // 25 past + 12 upcoming: both sections spill over PAGE_SIZE (10), and 25 is
+  // deliberately not a multiple of it so the short last page is exercised.
+  const PAST_N = 25
+  const UPCOMING_N = 12
+  for (let i = 0; i < PAST_N; i++) {
+    await makeBooking(heavy, 'completed', `-${i + 2} days`, `-${i + 2} days + 2 hours`, '100.00', heavyResIds)
+  }
+  for (let i = 0; i < UPCOMING_N; i++) {
+    await makeBooking(heavy, 'confirmed', `${i + 2} days`, `${i + 2} days + 2 hours`, '100.00', heavyResIds)
+  }
+
+  const p1 = await readHeavy()
+  check(`page 1 of past holds ${BOOKINGS_PAGE_SIZE} rows`, p1.past.length === BOOKINGS_PAGE_SIZE)
+  check('…and reports the FULL total, not the page length', p1.pagination.past.total === PAST_N)
+  check('…across 3 pages', p1.pagination.past.pageCount === 3)
+  check('…starting on page 1', p1.pagination.past.page === 1)
+  check(
+    'upcoming pages independently',
+    p1.upcoming.length === BOOKINGS_PAGE_SIZE && p1.pagination.upcoming.total === UPCOMING_N,
+  )
+  check('…over 2 pages', p1.pagination.upcoming.pageCount === 2)
+
+  const p2 = await readHeavy({ past: 2 })
+  const p3 = await readHeavy({ past: 3 })
+  check('page 2 is full', p2.past.length === BOOKINGS_PAGE_SIZE)
+  check('the last page holds the remainder', p3.past.length === PAST_N % BOOKINGS_PAGE_SIZE)
+  check('…and knows which page it is', p3.pagination.past.page === 3)
+
+  // THE property: the three pages are a partition of the list. Nothing is
+  // dropped between pages and nothing appears on two of them — the classic
+  // off-by-one in any offset pager.
+  const paged = [...p1.past, ...p2.past, ...p3.past].map((b) => b.id)
+  check('every past booking appears exactly once across the pages', paged.length === PAST_N)
+  check('…with no duplicates', new Set(paged).size === PAST_N)
+
+  const everyPastId = await owner.query<{ id: string }>(
+    `select id from bookings where customer_id = $1`,
+    [heavy],
+  )
+  const pastOnly = new Set(paged)
+  check(
+    '…and together they are the whole history',
+    everyPastId.rows.filter((r) => pastOnly.has(r.id)).length === PAST_N,
+  )
+
+  // Ordering must hold ACROSS pages, not merely within one: page 2's newest
+  // row has to be older than page 1's oldest, or the sort and the offset are
+  // disagreeing and rows would shuffle between visits.
+  const endsOf = (rows: typeof p1.past) => rows.map((b) => b.endsAt!.getTime())
+  check(
+    'most-recent-first ordering survives the page boundary',
+    Math.min(...endsOf(p1.past)) >= Math.max(...endsOf(p2.past)) &&
+      Math.min(...endsOf(p2.past)) >= Math.max(...endsOf(p3.past)),
+  )
+  check(
+    'upcoming keeps SOONEST-first across its boundary',
+    Math.max(...endsOf(p1.upcoming)) <=
+      Math.min(...endsOf((await readHeavy({ upcoming: 2 })).upcoming)),
+  )
+
+  // The two sections page independently — moving through history must not
+  // reset Upcoming, which is what the page's href builder relies on.
+  const both = await readHeavy({ upcoming: 2, past: 3 })
+  check('both sections can sit on different pages at once', both.pagination.upcoming.page === 2 && both.pagination.past.page === 3)
+  check('…and each returns its own slice', both.upcoming.length === UPCOMING_N - BOOKINGS_PAGE_SIZE && both.past.length === PAST_N % BOOKINGS_PAGE_SIZE)
+
+  // The overview counts everything; the list shows a page. They are different
+  // numbers by design, and the pagination total is what reconciles them.
+  const heavySummary = await withCustomer(heavy, (tx) =>
+    readPortalSummary(tx, { id: heavy, tenantId, name: 'Heavy', phone: '+919000000902', email: null }),
+  )
+  check(
+    'the overview total equals both page totals summed',
+    heavySummary.totalBookings === p1.pagination.past.total + p1.pagination.upcoming.total,
+  )
+  check('…and exceeds a single page', heavySummary.totalBookings > p1.past.length)
+  check(
+    'the overview upcoming count equals the upcoming TOTAL',
+    heavySummary.upcomingBookings === p1.pagination.upcoming.total,
+  )
+
+  // ── junk and out-of-range page numbers ────────────────────────────────────
+  // These arrive from a query string, so they are whatever someone typed. Every
+  // one must land on a page that exists, and report the page it actually shows.
+  console.log('\n── a bad page number lands somewhere real ──')
+
+  const overflow = await readHeavy({ past: 99 })
+  check('an out-of-range page clamps to the last one', overflow.pagination.past.page === 3)
+  check('…and returns that page’s rows, not an empty list', overflow.past.length === PAST_N % BOOKINGS_PAGE_SIZE)
+
+  for (const [label, value] of [
+    ['zero', 0],
+    ['negative', -5],
+    ['a fraction', 1.5],
+    ['NaN, as Number("abc") gives', Number('abc')],
+    ['Infinity', Infinity],
+  ] as Array<[string, number]>) {
+    const r = await readHeavy({ past: value })
+    check(`${label} falls back to page 1`, r.pagination.past.page === 1 && r.past.length === BOOKINGS_PAGE_SIZE)
+  }
+
+  // pageInfo() is exported and pure, so the clamping rules can be stated
+  // directly rather than inferred from row counts.
+  check('pageInfo: an empty list is page 1 of 1', pageInfo(undefined, 0).pageCount === 1)
+  check('pageInfo: a partial page still counts as a page', pageInfo(1, 1).pageCount === 1)
+  check('pageInfo: exactly one full page is not two', pageInfo(1, BOOKINGS_PAGE_SIZE).pageCount === 1)
+  check('pageInfo: one over spills to a second', pageInfo(1, BOOKINGS_PAGE_SIZE + 1).pageCount === 2)
+  check('pageInfo: a string page number is accepted', pageInfo('2', 30).page === 2)
 
   await wipe()
   await owner.end()
