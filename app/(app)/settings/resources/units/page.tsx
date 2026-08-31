@@ -36,6 +36,7 @@ export default async function ResourcesUnitsPage() {
       <ResourcesManager
         branchId={branch.id}
         currency={ctx.tenant.currency}
+        industry={ctx.tenant.industry}
         types={types.map((t) => ({
           id: t.id,
           name: t.name,
