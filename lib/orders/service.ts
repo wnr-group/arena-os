@@ -169,12 +169,23 @@ export async function createOrderCore(
     // UPDATE) takes a row lock for the duration of ITS transaction either
     // way — this lock just makes sure we wait for that to resolve and read
     // the COMMITTED status, instead of racing it and reading stale data.
-    const [booking] = await tx
+    //
+    // Only for a STAFF caller, though (ctx.membershipId set — see
+    // lib/actions/orders.ts). Postgres requires a row to also pass the
+    // table's UPDATE policy to be lockable with FOR UPDATE, and bookings has
+    // no public UPDATE policy (0023) — only public SELECT/INSERT — so under
+    // the public connection (lib/actions/public-orders.ts's "add food to
+    // your visit" nudge, ctx.membershipId === null) that lock silently
+    // matches zero rows and this threw "Booking not found" for every guest.
+    // A plain SELECT is safe there: status is re-checked again at billing
+    // time (issueInvoiceForBooking), so a guest racing a staff cancellation
+    // in this narrow window just gets caught later instead of never.
+    const bookingQuery = tx
       .select({ id: bookings.id, status: bookings.status })
       .from(bookings)
       .where(and(eq(bookings.id, effectiveBookingId), eq(bookings.tenantId, ctx.tenantId)))
-      .for('update')
       .limit(1)
+    const [booking] = ctx.membershipId ? await bookingQuery.for('update') : await bookingQuery
     if (!booking) throw new OrderError('Booking not found.')
     // Re-checked here, inside the transaction that actually creates the order
     // — never trust an earlier, out-of-transaction status read (see

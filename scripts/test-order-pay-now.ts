@@ -45,6 +45,7 @@ async function main() {
   loadEnv()
   const { withPublicTenant, ownerDb } = await import('../db')
   const { createOrderCore } = await import('../lib/orders/service')
+  const { getPublicBookingForOrder } = await import('../lib/booking/public-confirmation')
   const { loadOrderFoodLines } = await import('../lib/billing/invoice')
   const {
     createOrderPaymentIntent,
@@ -98,6 +99,7 @@ async function main() {
         customerId,
         channel: 'online',
         acceptanceStatus: 'awaiting_payment',
+        idempotencyKey: randomUUID(),
         items: [{ menuItemId, qty: 2 }],
       },
     ),
@@ -171,25 +173,36 @@ async function main() {
 
   // ── 5. an order attached to a booking is refused — pay-now is standalone
   //      only, "no open booking to add to". ────────────────────────────────
-  const bk = await ownerPool.query<{ id: string }>(
+  const bk = await ownerPool.query<{ confirmation_token: string }>(
     `insert into bookings (tenant_id,branch_id,booking_number,customer_name,status,source,subtotal,total)
-     values ($1,$2,$3,'Guest','confirmed','online','0','0') returning id`,
+     values ($1,$2,$3,'Guest','confirmed','online','0','0') returning confirmation_token`,
     [tenantId, branchId, `BK-PN-${randomUUID().slice(0, 8)}`],
   )
+
+  // Resolved through the same public path the "add food to your visit"
+  // nudge uses (lib/actions/public-orders.ts), not the raw id from the
+  // fixture insert above — this is what actually exercises the
+  // withPublicTenant bookingId branch in createOrderCore end-to-end,
+  // including the RLS-shaped SELECT that resolves the token.
+  const resolvedBooking = await getPublicBookingForOrder(tenantId, bk.rows[0].confirmation_token)
+  check('booking resolves via the public confirmation-token path', Boolean(resolvedBooking))
+
   const withBooking = await withPublicTenant(tenantId, (tx) =>
     createOrderCore(
       tx,
       { tenantId, timezone: 'Asia/Kolkata', membershipId: null },
       {
         branchId,
-        bookingId: bk.rows[0].id,
+        bookingId: resolvedBooking!.id,
         customerId,
         channel: 'online',
         acceptanceStatus: 'awaiting_payment',
+        idempotencyKey: randomUUID(),
         items: [{ menuItemId, qty: 1 }],
       },
     ),
   )
+  check('order attaches to the booking under withPublicTenant (no false "Booking not found")', Boolean(withBooking.id))
   try {
     await createOrderPaymentIntent(createOrderPaymentIntentInputSchema.parse({ orderId: withBooking.id }), {
       runInTx: (fn) => withPublicTenant(tenantId, fn),
