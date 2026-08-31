@@ -332,6 +332,21 @@ async function main() {
     )
     check('splitting a no-longer-open order is refused', !staleOrder.ok && staleOrder.bookingError)
 
+    // guard: a table with fewer than 2 guests has no valid split at all —
+    // there'd be no one left to move.
+    const lonelyGuest = await seat(A, A.tables[2], 1)
+    const notEnoughGuests = await attempt(() =>
+      withUser(A.userId, (tx) =>
+        splitTableCore(
+          tx,
+          { tenantId: A.tenantId, timezone: TZ, membershipId: A.membershipId },
+          { sourceBookingId: lonelyGuest.id, targetResourceId: A.tables[3], orderIds: [], coverCount: 1 },
+        ),
+      ),
+    )
+    check('splitting a table with fewer than 2 guests is refused', !notEnoughGuests.ok && notEnoughGuests.bookingError)
+    await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, lonelyGuest.id)))
+
     await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, source.id)))
     await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, newBookingId)))
   }
