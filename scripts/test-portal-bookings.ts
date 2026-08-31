@@ -571,7 +571,7 @@ async function main() {
 
   const agreeLists = await withCustomer(agreeCustomer, (tx) => readPortalBookings(tx, tenantId))
   const agreeSummary = await withCustomer(agreeCustomer, (tx) =>
-    readPortalSummary(tx, { id: agreeCustomer, name: 'Agree', phone: '+919000000901', email: null }),
+    readPortalSummary(tx, { id: agreeCustomer, tenantId, name: 'Agree', phone: '+919000000901', email: null }),
   )
 
   check(
@@ -597,7 +597,7 @@ async function main() {
   await makeBooking(agreeCustomer, 'confirmed', null, null)
   const slotlessLists = await withCustomer(agreeCustomer, (tx) => readPortalBookings(tx, tenantId))
   const slotlessSummary = await withCustomer(agreeCustomer, (tx) =>
-    readPortalSummary(tx, { id: agreeCustomer, name: 'Agree', phone: '+919000000901', email: null }),
+    readPortalSummary(tx, { id: agreeCustomer, tenantId, name: 'Agree', phone: '+919000000901', email: null }),
   )
   check(
     'a slotless booking is classified identically by both',

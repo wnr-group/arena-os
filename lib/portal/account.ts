@@ -1,14 +1,8 @@
 import 'server-only'
 import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { withCustomer, type DB } from '@/db'
-import {
-  customers,
-  bookings,
-  bookingSlots,
-  walletTransactions,
-  loyaltyTransactions,
-  customerMemberships,
-} from '@/db/schema'
+import { customers, bookings, bookingSlots, customerMemberships } from '@/db/schema'
+import { walletBalance, loyaltyPoints } from '@/lib/customers/ledger'
 import { requireCustomer } from '@/lib/auth/customer-guard'
 import { LIVE_STATUSES, notFinished } from './bookings'
 
@@ -95,10 +89,21 @@ export async function getPortalSummary(): Promise<PortalSummary> {
  *
  * Takes the session's customer rather than an id: the tx is the authorisation,
  * and the row is only used as a fallback if `customers` comes back empty.
+ *
+ * `tenantId` and `id` are read off it only to satisfy the shared ledger
+ * helpers' existing signature — neither is trusted as authorisation. Both come
+ * from the validated session, and RLS has already reduced every table here to
+ * this customer's rows regardless. Same note as readPortalWallet().
  */
 export async function readPortalSummary(
   tx: DB,
-  customer: { id: string; name: string | null; phone: string; email: string | null },
+  customer: {
+    id: string
+    tenantId: string
+    name: string | null
+    phone: string
+    email: string | null
+  },
 ): Promise<PortalSummary> {
   {
     const [account] = await tx
@@ -149,16 +154,16 @@ export async function readPortalSummary(
       })
       .from(classified)
 
-    // Balances are always DERIVED from the append-only ledgers — the same rule
-    // lib/customers/ledger.ts states for the staff-facing profile. There is no
-    // balance column anywhere, and the portal must not invent one.
-    const [wallet] = await tx
-      .select({ total: sql<string>`coalesce(sum(${walletTransactions.amount}), 0)` })
-      .from(walletTransactions)
-
-    const [loyalty] = await tx
-      .select({ total: sql<string>`coalesce(sum(${loyaltyTransactions.points}), 0)` })
-      .from(loyaltyTransactions)
+    // Balances are always DERIVED from the append-only ledgers — and derived by
+    // CALLING lib/customers/ledger.ts, not by repeating its arithmetic here.
+    // There is no balance column anywhere, and no second sum in this file: the
+    // staff profile, the till and /account/wallet all go through these same two
+    // helpers, so if either ever changes what it counts (excludes a
+    // source_type, skips voided rows) this overview moves with them instead of
+    // silently disagreeing with the counter. Same reasoning as
+    // lib/portal/wallet.ts, which reads the identical pair.
+    const balance = await walletBalance(tx, customer.tenantId, customer.id)
+    const points = await loyaltyPoints(tx, customer.tenantId, customer.id)
 
     const [membership] = await tx
       .select({
@@ -200,8 +205,8 @@ export async function readPortalSummary(
       },
       totalBookings: Number(bookingCounts?.total ?? 0),
       upcomingBookings: Number(bookingCounts?.upcoming ?? 0),
-      walletBalance: Number(wallet?.total ?? 0),
-      loyaltyPoints: Number(loyalty?.total ?? 0),
+      walletBalance: balance,
+      loyaltyPoints: points,
       membership: membership ?? null,
       recentBookings,
     }
