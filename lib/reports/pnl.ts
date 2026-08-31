@@ -23,11 +23,30 @@ import type { DateRange } from './date-range'
  *   expenses  public.expenses, RLS-scoped, filtered on `spent_on`.
  *
  *   payroll   public.payslips, RLS-scoped (payslips_manager_select), filtered
- *             on `period`. See the granularity note below — this is the one
- *             line that cannot be sliced to an arbitrary day.
+ *             on `period`. SUM(gross) — see the gross-not-net note below. Also
+ *             the one line that cannot be sliced to an arbitrary day.
  *
  * Every figure is aggregated in SQL. No report loads rows to add them up, and
  * nothing is filtered in the browser.
+ *
+ * ── THE PAYROLL LINE IS GROSS, NOT NET (AROS-184) ───────────────────────────
+ *
+ * `net_pay` is the cash the employee receives: gross − deductions_total −
+ * advance_instalment. Neither subtraction belongs in a P&L expense line.
+ *
+ *   deductions_total    is still money the business pays out — it goes to the
+ *                       tax authority and the PF fund instead of into the
+ *                       employee's hand. An expense either way.
+ *   advance_instalment  is the recovery of a loan made in an EARLIER period, a
+ *                       balance-sheet movement, not a reduction in this
+ *                       period's wage cost.
+ *
+ * Summing net_pay therefore understates the wage bill — and overstates
+ * netProfit — for any tenant that withholds tax/PF or is recovering an advance.
+ * `gross` is what it costs to employ someone for the period, so `gross` is what
+ * this line reads. That also reconciles with the sibling report
+ * lib/reports/payroll.ts, whose headline figure is `totalGross` with deductions
+ * and advance recoveries broken out separately.
  *
  * ── THE PAYROLL GRANULARITY DECISION ────────────────────────────────────────
  *
@@ -75,6 +94,7 @@ export type PnlReport = {
     byCategory: PnlExpenseCategoryRow[]
   }
   payroll: {
+    /** SUM(payslips.gross) — the wage bill before withholding. See the note above. */
     total: number
     payslipCount: number
     /** The 'YYYY-MM' periods actually included — see the note above. */
@@ -158,9 +178,13 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
     // Period strings compare lexicographically the same as chronologically
     // ('2026-02' < '2026-11'), which is why plain gte/lte works with no
     // parsing — the same property lib/reports/payroll.ts relies on.
+    //
+    // gross, NOT net_pay: withheld tax/PF is still money the business spends,
+    // and an advance instalment is a loan repayment rather than a lower wage
+    // bill. See the AROS-184 note at the top.
     const [payrollRow] = await tx
       .select({
-        total: sql<string>`coalesce(sum(${payslips.netPay}), 0)`,
+        total: sql<string>`coalesce(sum(${payslips.gross}), 0)`,
         payslipCount: sql<number>`count(*)::int`,
       })
       .from(payslips)

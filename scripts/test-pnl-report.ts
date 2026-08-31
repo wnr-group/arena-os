@@ -139,13 +139,30 @@ async function main() {
     )
   }
 
-  async function payslip(t: typeof tA, membershipId: string, period: string, netPay: string) {
+  // gross and net_pay are seeded DELIBERATELY DIFFERENT (AROS-184). The P&L
+  // payroll line must read gross — the withheld tax/PF is still money the
+  // business spends, and an advance instalment is a loan repayment — so a
+  // fixture where the two were equal could not tell a correct report from one
+  // that summed net_pay.
+  async function payslip(
+    t: typeof tA,
+    membershipId: string,
+    period: string,
+    gross: string,
+    deductionsTotal = '0.00',
+    advanceInstalment = '0.00',
+  ) {
+    const netPay = (Number(gross) - Number(deductionsTotal) - Number(advanceInstalment)).toFixed(2)
     await owner.query(
       `insert into payslips (tenant_id, membership_id, period, base, days_in_period, days_present,
-                             gross, net_pay)
-       values ($1,$2,$3,$4,30,30,$4,$5)
-       on conflict (membership_id, period) do update set net_pay = excluded.net_pay`,
-      [t.tenantId, membershipId, period, netPay, netPay],
+                             gross, deductions_total, advance_instalment, net_pay)
+       values ($1,$2,$3,$4,30,30,$4,$5,$6,$7)
+       on conflict (membership_id, period) do update
+         set gross = excluded.gross,
+             deductions_total = excluded.deductions_total,
+             advance_instalment = excluded.advance_instalment,
+             net_pay = excluded.net_pay`,
+      [t.tenantId, membershipId, period, gross, deductionsTotal, advanceInstalment, netPay],
     )
   }
 
@@ -166,15 +183,17 @@ async function main() {
   await expense(tA, rent, '2026-02-28', '5555.00') // outside
   await expense(tA, rent, '2026-04-01', '6666.00') // outside
 
-  await payslip(tA, tA.manager.membershipId, '2026-03', '2500.00')
-  await payslip(tA, tA.cashier.membershipId, '2026-03', '1500.00')
-  await payslip(tA, tA.manager.membershipId, '2026-04', '9999.00') // outside
+  // March gross 4000 (2500 + 1500); net_pay would only be 3200 (2500−400−100 +
+  // 1500−300). The P&L must report 4000.
+  await payslip(tA, tA.manager.membershipId, '2026-03', '2500.00', '400.00', '100.00')
+  await payslip(tA, tA.cashier.membershipId, '2026-03', '1500.00', '300.00')
+  await payslip(tA, tA.manager.membershipId, '2026-04', '9999.00', '999.00') // outside
 
   // Tenant B: unmistakable numbers that must never appear in A's report.
   const bCat = await category(tB, 'Rent')
   await invoice(tB, '2026-03-10', '123456.00', 'paid')
   await expense(tB, bCat, '2026-03-10', '54321.00')
-  await payslip(tB, tB.manager.membershipId, '2026-03', '99999.00')
+  await payslip(tB, tB.manager.membershipId, '2026-03', '99999.00', '9999.00')
 
   // Revenue is read from v_daily_revenue, which sits on a MATERIALIZED view.
   // It does not see the invoices above until it is refreshed — the same reason
@@ -213,6 +232,9 @@ async function main() {
   check('expenses total 3000', r.expenses.total === 3000)
   check('…across 3 expense rows', r.expenses.count === 3)
   check('payroll totals 4000 from 2 payslips', r.payroll.total === 4000 && r.payroll.payslipCount === 2)
+  // AROS-184: the wage bill is gross. Summing net_pay would report 3200 here
+  // and inflate net profit by the 800 of withholding and advance recovery.
+  check('…which is GROSS, not net pay (3200)', r.payroll.total !== 3200)
   check(
     'net profit = revenue − expenses − payroll = 3000',
     r.netProfit === 3000 && r.netProfit === r.revenue.net - r.expenses.total - r.payroll.total,
@@ -256,7 +278,7 @@ async function main() {
   const partial = await getPnlReport(ctxFor(tA, 'manager'), { start: '2026-03-15', end: '2026-04-20' })
   check('a part-month range IS flagged approximate', partial.payroll.isApproximate === true)
   check('…covering both months', partial.payroll.periods.join(',') === '2026-03,2026-04')
-  check('…so payroll includes April too (4000 + 9999)', partial.payroll.total === 13999)
+  check('…so payroll includes April too (gross 4000 + 9999)', partial.payroll.total === 13999)
 
   // ══ empty ═════════════════════════════════════════════════════════════════
   console.log('\n── empty period ──')
