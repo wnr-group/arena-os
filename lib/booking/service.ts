@@ -464,10 +464,20 @@ export async function splitTableCore(
   const source = await lockTableSession(tx, ctx.tenantId, input.sourceBookingId)
   await requireNoLiveInvoice(tx, ctx.tenantId, input.sourceBookingId)
 
+  // Checked against the LOCKED cover count, not whatever the dialog last
+  // rendered: a merge/edit landing between the dialog opening and this
+  // running could have changed it. A split needs someone to move AND
+  // someone to stay, so anything under 2 has no valid split at all — this
+  // is the authoritative gate; SplitTableDialog/FloorView only pre-empt it
+  // in the UI so a waiter isn't let all the way to a rejected submit.
+  const sourceCovers = source.coverCount ?? 0
+  if (sourceCovers < 2) {
+    throw new BookingError('This table needs at least 2 guests to split.')
+  }
+
   if (!Number.isInteger(input.coverCount) || input.coverCount < 1) {
     throw new BookingError('Cover count must be a whole number of at least 1.')
   }
-  const sourceCovers = source.coverCount ?? 0
   if (input.coverCount >= sourceCovers) {
     throw new BookingError('At least one guest must stay at the original table — that would move everyone.')
   }

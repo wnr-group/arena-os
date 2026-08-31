@@ -385,7 +385,8 @@ export function FloorView({
                   </button>
                   <button
                     onClick={() => setSplitTarget(liveSelected)}
-                    disabled={pending || freeTables.length === 0}
+                    disabled={pending || freeTables.length === 0 || (liveSelected.coverCount ?? 0) < 2}
+                    title={(liveSelected.coverCount ?? 0) < 2 ? 'Needs at least 2 guests to split' : undefined}
                     className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
                   >
                     <Split size={15} /> Split
