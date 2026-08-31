@@ -139,8 +139,13 @@ export async function readPortalWallet(
     loyaltyPoints: points,
     wallet,
     // `points` is an integer column; the shared entry type carries a string so
-    // both statements render through one component.
-    loyalty: loyalty.map((row) => ({ ...row, amount: String(row.points) })),
+    // both statements render through one component. Destructured rather than
+    // spread over, so the raw integer does not ride along as an undeclared
+    // extra field in what gets serialised to the client.
+    loyalty: loyalty.map(({ points: rowPoints, ...rest }) => ({
+      ...rest,
+      amount: String(rowPoints),
+    })),
     lifetimePoints,
     tier: computeTierStanding(lifetimePoints, tiers),
   }
