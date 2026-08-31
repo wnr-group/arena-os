@@ -97,11 +97,20 @@ export function proxy(request: NextRequest) {
   // accepted by the staff gate below: they are different cookie names looked
   // up in different tables, so neither audience can borrow the other's session.
   if (slug && isPortalRoute && !isCustomerLoginRoute && !hasCustomerSession) {
+    // The whole destination, query string included. `pathname` alone would drop
+    // it, so a deep link like /account/bookings?tab=past came back from login as
+    // the default view rather than the one the link pointed at.
+    const destination = pathname + request.nextUrl.search
+
     const url = request.nextUrl.clone()
     url.pathname = '/account/login'
+    // clone() carries the original query over too. Those params describe the
+    // destination, not the login page, and they now travel inside `next` — so
+    // clear them rather than leaving a confusing duplicate on the login URL.
+    url.search = ''
     // So login can return them where they were headed. Validated on the far
     // end by safeCustomerNext() — never trusted as given.
-    url.searchParams.set('next', pathname)
+    url.searchParams.set('next', destination)
     return NextResponse.redirect(url)
   }
 
