@@ -74,6 +74,10 @@ export function ResourceTypesManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // A table isn't priced by the hour (see TypeModal), so there's nothing
+  // meaningful to show in a Rate column for a restaurant tenant.
+  const isRestaurant = industry === 'restaurant'
+  const columnCount = isRestaurant ? 3 : 4
 
   const run: Run = (fn, onSuccess) => {
     start(async () => {
@@ -136,7 +140,7 @@ export function ResourceTypesManager({
             <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Type</th>
-                <th className="px-4 py-3 font-medium">Rate</th>
+                {!isRestaurant && <th className="px-4 py-3 font-medium">Rate</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
@@ -144,7 +148,7 @@ export function ResourceTypesManager({
             <tbody className="divide-y divide-border">
               {types.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No resource types yet. Add one to get started.
                   </td>
                 </tr>
@@ -153,7 +157,10 @@ export function ResourceTypesManager({
                 <tr key={row.id} className="transition hover:bg-muted/20">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <Thumb imageUrl={row.imageUrl} />
+                      {/* Restaurant tenants never set a photo (no photo
+                       *  field in TypeModal for them) — skip the thumbnail
+                       *  instead of showing an empty placeholder box. */}
+                      {!isRestaurant && <Thumb imageUrl={row.imageUrl} />}
                       <div>
                         <p className="font-medium">{row.name}</p>
                         {(row.capacity || row.bufferMinutes > 0) && (
@@ -166,7 +173,9 @@ export function ResourceTypesManager({
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">{formatMoney(row.hourlyRate, currency)}/hr</td>
+                  {!isRestaurant && (
+                    <td className="px-4 py-3 text-muted-foreground">{formatMoney(row.hourlyRate, currency)}/hr</td>
+                  )}
                   <td className="px-4 py-3">
                     <span
                       className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${

@@ -315,7 +315,9 @@ export function ResourcesManager({
                 <tr>
                   <th className="px-4 py-3 font-medium">Resource</th>
                   <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">Rate</th>
+                  {/* A table doesn't have an hourly rate to override (see
+                   *  ResourceModal) — nothing to show for a restaurant tenant. */}
+                  {!isRestaurant && <th className="px-4 py-3 font-medium">Rate</th>}
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
@@ -344,9 +346,11 @@ export function ResourcesManager({
                       </div>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{row.typeName}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {row.rateOverride ? `${formatMoney(row.rateOverride, currency)}/hr` : '—'}
-                    </td>
+                    {!isRestaurant && (
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {row.rateOverride ? `${formatMoney(row.rateOverride, currency)}/hr` : '—'}
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[row.status]}`}>
                         {STATUS_LABELS[row.status]}
