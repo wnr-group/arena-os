@@ -58,7 +58,17 @@ function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number
   )
 }
 
-export function ResourceTypesManager({ currency, types }: { currency: string; types: TypeRow[] }) {
+export function ResourceTypesManager({
+  currency,
+  types,
+  industry,
+}: {
+  currency: string
+  types: TypeRow[]
+  /** Gates the simplified name/capacity-only form in TypeModal — restaurant
+   *  tenants only, every other industry's dialog is unaffected. */
+  industry: string
+}) {
   const router = useRouter()
   const confirm = useConfirm()
   const [pending, start] = useTransition()
@@ -196,6 +206,7 @@ export function ResourceTypesManager({ currency, types }: { currency: string; ty
         <TypeModal
           row={modal.mode === 'edit' ? modal.row : undefined}
           currency={currency}
+          industry={industry}
           pending={pending}
           run={run}
           onClose={() => setModal(null)}
@@ -250,7 +261,9 @@ function TypeVisual({ imageUrl, isActive }: { imageUrl?: string | null; isActive
   )
 }
 
-/** Name/rate/capacity/description block shared by the modal's live preview. */
+/** Name/rate/capacity/description block shared by the modal's live preview
+ *  (non-restaurant tenants only — see TypeModal, which skips this panel
+ *  entirely for a restaurant's table types). */
 function TypeCardBody({
   name,
   rate,
@@ -287,16 +300,25 @@ function TypeCardBody({
 function TypeModal({
   row,
   currency,
+  industry,
   pending,
   run,
   onClose,
 }: {
   row?: TypeRow
   currency: string
+  industry: string
   pending: boolean
   run: Run
   onClose: () => void
 }) {
+  // Restaurant tenants only: a table isn't priced by the hour, doesn't need
+  // a buffer/color/photo, and is active the moment it's created — so the
+  // dialog collects only what actually matters for a table, name and seat
+  // count. Every other field still submits (upsertResourceType/the schema
+  // are unchanged) — it just keeps its default value since its input never
+  // renders. Every other industry's dialog is completely unaffected.
+  const isRestaurant = industry === 'restaurant'
   const [name, setName] = useState(row?.name ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
   const [rate, setRate] = useState(row?.hourlyRate ?? '')
@@ -367,10 +389,34 @@ function TypeModal({
     )
   }
 
+  // Restaurant only: no live preview panel (see below), so the dialog is a
+  // single narrow column instead of the two-column form+preview layout.
+  const actions = (
+    <div className="mt-5 flex items-center justify-between gap-2">
+      <button
+        className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={pending}
+        onClick={onClose}
+      >
+        Cancel
+      </button>
+      <button
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={pending || uploading}
+        onClick={submit}
+      >
+        {pending && <Loader2 size={15} className="animate-spin" />}
+        {pending ? 'Saving…' : row ? 'Save Changes' : isRestaurant ? 'Add Table Type' : 'Add Resource Type'}
+      </button>
+    </div>
+  )
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-xl border border-border bg-card shadow-2xl md:grid-cols-[1.3fr_1fr]"
+        className={`relative grid max-h-[92vh] w-full overflow-y-auto rounded-xl border border-border bg-card shadow-2xl ${
+          isRestaurant ? 'max-w-sm grid-cols-1' : 'max-w-4xl grid-cols-1 md:grid-cols-[1.3fr_1fr]'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -383,8 +429,14 @@ function TypeModal({
 
         {/* Form */}
         <div className="order-2 p-6 pt-8 md:order-1">
-          <h2 className="text-xl font-semibold">{row ? 'Edit resource type' : 'Add resource type'}</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">Fill in the details — the preview updates as you type.</p>
+          <h2 className="text-xl font-semibold">
+            {isRestaurant ? (row ? 'Edit table type' : 'Add table type') : row ? 'Edit resource type' : 'Add resource type'}
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {isRestaurant
+              ? 'Just a name and how many guests it seats.'
+              : 'Fill in the details — the preview updates as you type.'}
+          </p>
 
           <div className="mt-4 space-y-3">
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
@@ -395,7 +447,7 @@ function TypeModal({
               </label>
               <input
                 className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
-                placeholder="e.g. PS5 Station"
+                placeholder={isRestaurant ? 'e.g. 4-Seater' : 'e.g. PS5 Station'}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={100}
@@ -403,42 +455,8 @@ function TypeModal({
               />
               {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
             </div>
-            <div>
-              <label className={label}>Description (optional)</label>
-              <textarea
-                className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
-                rows={2}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-              {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={label}>Hourly rate</label>
-                <input
-                  className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={rate}
-                  onChange={(e) => setRate(e.target.value)}
-                />
-                {submitted && errors.rate && <p className={errorText}>{errors.rate}</p>}
-              </div>
-              <div>
-                <label className={label}>Buffer (minutes)</label>
-                <input
-                  className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
-                  type="number"
-                  min="0"
-                  value={buffer}
-                  onChange={(e) => setBuffer(e.target.value)}
-                />
-                {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+
+            {isRestaurant ? (
               <div>
                 <label className={label}>Capacity (optional)</label>
                 <input
@@ -450,101 +468,148 @@ function TypeModal({
                 />
                 {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
               </div>
-              <div>
-                <label className={label}>Calendar color (optional)</label>
-                <input className={input} placeholder="#3b82f6" value={color} onChange={(e) => setColor(e.target.value)} />
+            ) : (
+              <>
+                <div>
+                  <label className={label}>Description (optional)</label>
+                  <textarea
+                    className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
+                    rows={2}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                  />
+                  {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={label}>Hourly rate</label>
+                    <input
+                      className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={rate}
+                      onChange={(e) => setRate(e.target.value)}
+                    />
+                    {submitted && errors.rate && <p className={errorText}>{errors.rate}</p>}
+                  </div>
+                  <div>
+                    <label className={label}>Buffer (minutes)</label>
+                    <input
+                      className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
+                      type="number"
+                      min="0"
+                      value={buffer}
+                      onChange={(e) => setBuffer(e.target.value)}
+                    />
+                    {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={label}>Capacity (optional)</label>
+                    <input
+                      className={`${input} ${submitted && errors.capacity ? inputInvalid : ''}`}
+                      type="number"
+                      min="1"
+                      value={capacity}
+                      onChange={(e) => setCapacity(e.target.value)}
+                    />
+                    {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
+                  </div>
+                  <div>
+                    <label className={label}>Calendar color (optional)</label>
+                    <input
+                      className={input}
+                      placeholder="#3b82f6"
+                      value={color}
+                      onChange={(e) => setColor(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+                  Active
+                </label>
+                <div>
+                  <label className={label}>Photo</label>
+                  <label
+                    className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
+                      uploading
+                        ? 'cursor-not-allowed border-border opacity-60'
+                        : 'border-border hover:border-primary/50 hover:bg-muted/30'
+                    }`}
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 size={20} className="animate-spin text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Uploading…</span>
+                      </>
+                    ) : fileName ? (
+                      <>
+                        <FileImage size={20} className="text-primary" />
+                        <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
+                        <span className="text-xs text-muted-foreground">Click to replace</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadCloud size={20} className="text-muted-foreground" />
+                        <span className="text-sm font-medium">Click to upload a photo</span>
+                        <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={handleFile}
+                    />
+                  </label>
+                  {fileName && !uploading && (
+                    <button
+                      type="button"
+                      className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        setImageUrl('')
+                        setFileName(null)
+                      }}
+                    >
+                      Remove Image
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Restaurant tenants get no live preview panel (nothing here needs
+           *  previewing) — the actions sit right under the form instead. */}
+          {isRestaurant && actions}
+        </div>
+
+        {/* Live preview — every other industry only; a table type has no
+         *  photo/color/pricing to preview. */}
+        {!isRestaurant && (
+          <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
+            <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
+            <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+              <div className="group">
+                <TypeVisual imageUrl={imageUrl} isActive={isActive} />
               </div>
+              <TypeCardBody
+                name={name}
+                rate={rate === '' ? 0 : Number(rate)}
+                currency={currency}
+                capacity={capacity === '' ? null : Number(capacity)}
+                bufferMinutes={buffer === '' ? 0 : Number(buffer)}
+                description={description}
+              />
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-              Active
-            </label>
-            <div>
-              <label className={label}>Photo</label>
-              <label
-                className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-                  uploading
-                    ? 'cursor-not-allowed border-border opacity-60'
-                    : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                }`}
-              >
-                {uploading ? (
-                  <>
-                    <Loader2 size={20} className="animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Uploading…</span>
-                  </>
-                ) : fileName ? (
-                  <>
-                    <FileImage size={20} className="text-primary" />
-                    <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
-                    <span className="text-xs text-muted-foreground">Click to replace</span>
-                  </>
-                ) : (
-                  <>
-                    <UploadCloud size={20} className="text-muted-foreground" />
-                    <span className="text-sm font-medium">Click to upload a photo</span>
-                    <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
-                  </>
-                )}
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  className="hidden"
-                  disabled={uploading}
-                  onChange={handleFile}
-                />
-              </label>
-              {fileName && !uploading && (
-                <button
-                  type="button"
-                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    setImageUrl('')
-                    setFileName(null)
-                  }}
-                >
-                  Remove Image
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
 
-        {/* Live preview */}
-        <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
-          <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
-          <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-            <div className="group">
-              <TypeVisual imageUrl={imageUrl} isActive={isActive} />
-            </div>
-            <TypeCardBody
-              name={name}
-              rate={rate === '' ? 0 : Number(rate)}
-              currency={currency}
-              capacity={capacity === '' ? null : Number(capacity)}
-              bufferMinutes={buffer === '' ? 0 : Number(buffer)}
-              description={description}
-            />
+            {actions}
           </div>
-
-          <div className="mt-5 flex items-center justify-between gap-2">
-            <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pending}
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pending || uploading}
-              onClick={submit}
-            >
-              {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource Type'}
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   )
