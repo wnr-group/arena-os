@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
+import { canManageIncomingOrders } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
@@ -73,6 +74,9 @@ export default async function BookingsPage({
         originalUnitPrice: row.originalUnitPrice,
         happyHourDiscountType: row.happyHourDiscountType,
         happyHourDiscountValue: row.happyHourDiscountValue,
+        voidStatus: row.voidStatus!,
+        voidReason: row.voidReason,
+        pendingVoidMode: row.pendingVoidMode,
       })
     }
   }
@@ -161,6 +165,7 @@ export default async function BookingsPage({
       ordersByBooking={ordersByBooking}
       venueName={ctx.tenant.name}
       depositStates={depositStates}
+      canRequestVoidComp={canManageIncomingOrders(ctx.role)}
     />
   )
 }

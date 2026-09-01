@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
+  Ban,
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
@@ -21,6 +22,7 @@ import { toast } from 'sonner'
 import { NewBookingDialog } from './NewBookingDialog'
 import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
+import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
@@ -60,6 +62,12 @@ export type OrderItemLine = {
   originalUnitPrice: string | null
   happyHourDiscountType: 'percentage' | 'fixed' | null
   happyHourDiscountValue: string | null
+  /** M17 #6 — 'active' unless voided/comped (only ever reached via an
+   *  approved request — see pendingVoidMode below). */
+  voidStatus: 'active' | 'voided' | 'comped'
+  voidReason: string | null
+  /** Set while a void/comp request on this line awaits manager approval. */
+  pendingVoidMode: 'void' | 'comp' | null
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
@@ -128,6 +136,7 @@ export function BookingsView({
   ordersByBooking,
   venueName,
   depositStates,
+  canRequestVoidComp,
 }: {
   branchId: string
   branchName: string
@@ -150,6 +159,11 @@ export function BookingsView({
   venueName: string
   /** bookingId → deposit state, read from payment_intents (AROS-49). */
   depositStates: Record<string, 'pending' | 'paid'>
+  /** Gates the void/comp button — a UI nicety only; requestVoidOrderItem
+   *  re-checks the role server-side regardless (M17 #6). A manager/owner's
+   *  request is applied immediately; anyone else's goes to the approval
+   *  queue at /orders/void-requests. */
+  canRequestVoidComp: boolean
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -158,6 +172,7 @@ export function BookingsView({
   const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
+  const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
@@ -669,23 +684,60 @@ export function BookingsView({
                       </div>
                       <ul className="mt-1 space-y-0.5">
                         {o.items.map((it) => (
-                          <li key={it.itemId} className="flex justify-between gap-2 text-muted-foreground">
+                          <li
+                            key={it.itemId}
+                            className={`flex justify-between gap-2 text-muted-foreground ${it.voidStatus !== 'active' ? 'opacity-50' : ''}`}
+                          >
                             <span className="truncate">
-                              {it.qty}× {it.itemName}
+                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
+                                {it.qty}× {it.itemName}
+                              </span>
                               {it.specialInstructions ? ` — ${it.specialInstructions}` : ''}
                               {it.happyHourName && (
                                 <span className="ml-1.5 inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">
                                   {it.happyHourName}
                                 </span>
                               )}
+                              {it.voidStatus !== 'active' && (
+                                <span
+                                  className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                    it.voidStatus === 'comped'
+                                      ? 'bg-violet-500/10 text-violet-600'
+                                      : 'bg-destructive/10 text-destructive'
+                                  }`}
+                                  title={it.voidReason ?? undefined}
+                                >
+                                  {it.voidStatus === 'comped' ? 'Comped' : 'Voided'}
+                                </span>
+                              )}
+                              {it.voidStatus === 'active' && it.pendingVoidMode && (
+                                <span
+                                  className="ml-1.5 inline-flex items-center rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600"
+                                  title="Awaiting manager approval"
+                                >
+                                  {it.pendingVoidMode === 'comp' ? 'Comp requested' : 'Void requested'}
+                                </span>
+                              )}
                             </span>
-                            <span className="shrink-0 text-right">
+                            <span className="flex shrink-0 items-center gap-1.5 text-right">
                               {it.originalUnitPrice && Number(it.originalUnitPrice) !== Number(it.unitPrice) && (
-                                <span className="mr-1.5 line-through opacity-60">
+                                <span className="line-through opacity-60">
                                   {formatMoney(Number(it.originalUnitPrice) * it.qty, currency)}
                                 </span>
                               )}
-                              {formatMoney(Number(it.unitPrice) * it.qty, currency)}
+                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
+                                {formatMoney(Number(it.unitPrice) * it.qty, currency)}
+                              </span>
+                              {canRequestVoidComp && it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setVoidTarget({ itemId: it.itemId, itemName: it.itemName, qty: it.qty })}
+                                  title="Void or comp this item"
+                                  className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  <Ban size={13} />
+                                </button>
+                              )}
                             </span>
                           </li>
                         ))}
@@ -715,6 +767,22 @@ export function BookingsView({
           onCreated={(num) => {
             setOrderDialog(null)
             toast.success(`Order ${num} created.`)
+            router.refresh()
+          }}
+        />
+      )}
+
+      {voidTarget && (
+        <VoidCompDialog
+          item={voidTarget}
+          onClose={() => setVoidTarget(null)}
+          onDone={(mode, status) => {
+            setVoidTarget(null)
+            if (status === 'pending') {
+              toast.success('Sent for manager approval.')
+            } else {
+              toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
+            }
             router.refresh()
           }}
         />

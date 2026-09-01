@@ -692,6 +692,12 @@ export const orders = pgTable(
   ],
 )
 
+// Void/comp (migration 0066). See lib/orders/service.ts's voidOrderItemCore —
+// 'voided' (removed, ordered by mistake) and 'comped' (given free) are both
+// excluded from billing identically; the status is only what tells them
+// apart on the void/comp report (M20).
+export const orderItemVoidStatus = pgEnum('order_item_void_status', ['active', 'voided', 'comped'])
+
 export const orderItems = pgTable(
   'order_items',
   {
@@ -716,8 +722,46 @@ export const orderItems = pgTable(
     originalUnitPrice: numeric('original_unit_price', { precision: 10, scale: 2 }),
     happyHourDiscountType: discountType('happy_hour_discount_type'),
     happyHourDiscountValue: numeric('happy_hour_discount_value', { precision: 10, scale: 2 }),
+    voidStatus: orderItemVoidStatus('void_status').notNull().default('active'),
+    voidReason: text('void_reason'),
+    voidedBy: uuid('voided_by').references(() => memberships.id, { onDelete: 'set null' }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
+)
+
+// ── order item void/comp requests (migration 0067) ──────────────────────────
+// A waiter-raised request awaiting manager approval — see
+// lib/orders/service.ts's requestVoidOrderItemCore/decideVoidRequestCore.
+// Approval flips the linked order_items row above; rejection leaves it
+// untouched. Kept forever either way, for the void/comp report (M20).
+export const orderItemVoidRequestMode = pgEnum('order_item_void_request_mode', ['void', 'comp'])
+export const orderItemVoidRequestStatus = pgEnum('order_item_void_request_status', [
+  'pending',
+  'approved',
+  'rejected',
+])
+
+export const orderItemVoidRequests = pgTable(
+  'order_item_void_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id')
+      .notNull()
+      .references(() => orderItems.id, { onDelete: 'cascade' }),
+    mode: orderItemVoidRequestMode('mode').notNull(),
+    reason: text('reason').notNull(),
+    status: orderItemVoidRequestStatus('status').notNull().default('pending'),
+    requestedBy: uuid('requested_by').references(() => memberships.id, { onDelete: 'set null' }),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedBy: uuid('decided_by').references(() => memberships.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionNote: text('decision_note'),
+  },
+  (t) => [index('idx_order_item_void_requests_pending').on(t.tenantId, t.requestedAt)],
 )
 
 // ── kots (migration 0013) ────────────────────────────────────────────────────
