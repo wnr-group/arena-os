@@ -6,6 +6,8 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { memberships } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
+import { countActiveStaff, lockTenantUsage } from '@/lib/platform/usage'
 import { findOrCreateUser } from '@/lib/platform/provision'
 import type { MemberRole } from '@/lib/auth/roles'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -14,6 +16,9 @@ type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  // A plan refusal, not a permission one — the message already tells the user
+  // what to do about it, so it goes straight through like AuthError's does.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code } = pgError(e)
   if (code === '23505') return { error: 'That person is already on the team.' }
@@ -49,8 +54,35 @@ export async function inviteStaff(input: z.input<typeof inviteInput>): Promise<R
       return { error: 'This is a new person — set a temporary password for them.' }
     }
 
-    await withUser(ctx.user.id, (tx) =>
-      tx
+    await withUser(ctx.user.id, async (tx) => {
+      // ── plan seat limit (M16 #2) ──────────────────────────────────────────
+      // Only when this invite would consume a NEW seat. The upsert below also
+      // re-activates or re-roles somebody already on the team, and charging
+      // that against the cap would mean a full tenant could not fix a typo in
+      // an existing member's name.
+      //
+      // Counted inside this transaction, never taken from the caller — see
+      // lib/platform/usage.ts.
+      const [existing] = await tx
+        .select({ status: memberships.status })
+        .from(memberships)
+        .where(and(eq(memberships.tenantId, ctx.tenant.id), eq(memberships.userId, userId)))
+        .limit(1)
+
+      const consumesSeat = !existing || existing.status !== 'active'
+      if (consumesSeat) {
+        // Serialise this tenant's seat check for the rest of the transaction.
+        // Without it the count below and the insert further down are a
+        // check-then-act, and concurrent invitations all pass the same check —
+        // measured at 8 admitted against a cap of 3. See lib/platform/usage.ts.
+        await lockTenantUsage(tx, ctx.tenant.id)
+        await checkLimitIn(tx, ctx.tenant.id, 'max_staff', await countActiveStaff(tx, ctx.tenant.id), {
+          one: 'staff member',
+          many: 'staff members',
+        })
+      }
+
+      await tx
         .insert(memberships)
         .values({
           tenantId: ctx.tenant.id,
@@ -64,8 +96,8 @@ export async function inviteStaff(input: z.input<typeof inviteInput>): Promise<R
         .onConflictDoUpdate({
           target: [memberships.tenantId, memberships.userId],
           set: { role: v.role, status: 'active', fullName: v.fullName, email: v.email.toLowerCase() },
-        }),
-    )
+        })
+    })
 
     revalidatePath('/settings/team')
     return {}

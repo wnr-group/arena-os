@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import {
   listExpenses,
@@ -38,6 +39,10 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
   const ctx = await getActiveContext()
   if (!ctx) return null // the layout already guards a missing session
   if (!isManager(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.expenses'))) redirect('/dashboard')
 
   const sp = await searchParams
   const filters: ExpenseFilters = {

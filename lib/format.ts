@@ -1,5 +1,8 @@
 export function formatMoney(amount: number | string, currency = 'INR'): string {
   const n = typeof amount === 'string' ? Number(amount) : amount
+  // A non-numeric string reaches this from a numeric column that was null or
+  // malformed. Rendering "₹NaN" is worse than rendering the raw value.
+  if (!Number.isFinite(n)) return `${currency} ${String(amount)}`
   try {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -7,9 +10,27 @@ export function formatMoney(amount: number | string, currency = 'INR'): string {
       maximumFractionDigits: 2,
     }).format(n)
   } catch {
+    // Intl throws RangeError on a MALFORMED currency code ("A1B", "12$"), which
+    // `check (length(currency) = 3)` in migration 0050 does not exclude. Every
+    // billing screen formats a currency that came from that column, so without
+    // this catch one bad row is a hard render crash for the whole page.
     return `${currency} ${n.toFixed(2)}`
   }
 }
+
+/**
+ * `formatMoney` with the argument order the billing screens read best —
+ * currency first, because that is what varies between rows there.
+ *
+ * A thin adapter, NOT a second implementation: it delegates, so the rounding
+ * rule and the malformed-currency fallback are defined exactly once. Five M16
+ * components had each grown their own `money()` with three different
+ * `maximumFractionDigits` and only two of the five guarding Intl at all, which
+ * is how the platform dashboard came to round MRR to whole rupees while the
+ * drill-down beside it showed paise.
+ */
+export const money = (currency: string, amount: number | string): string =>
+  formatMoney(amount, currency)
 
 export function timeInZone(iso: string | Date, timeZone: string): string {
   const d = typeof iso === 'string' ? new Date(iso) : iso

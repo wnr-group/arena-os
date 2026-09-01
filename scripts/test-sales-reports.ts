@@ -17,6 +17,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { loadEnv } from './env'
+import { entitleTenant } from './entitle-fixture'
 import type { ActiveContext } from '../lib/tenant/context'
 
 type Db = NodePgDatabase<typeof schema>
@@ -65,6 +66,10 @@ async function main() {
        on conflict (slug) do update set timezone = excluded.timezone returning id`,
       [slug, `${slug} co`, TZ],
     )
+    // Entitlement enforcement is fail-closed (M16 #2): a tenant with no
+    // plan is granted nothing, so this fixture states that it is a paying
+    // customer. See scripts/entitle-fixture.ts.
+    await entitleTenant(ownerPool, t.rows[0].id)
     const u = await ownerPool.query<{ id: string }>(
       `insert into users (email,password_hash) values ($1,'x')
        on conflict (email) do update set email = excluded.email returning id`,

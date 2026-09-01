@@ -5,6 +5,7 @@ import { attendance, bookings, memberships, payments } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import { addDays } from '@/lib/booking/data'
 
@@ -29,10 +30,13 @@ export type EmployeeAnalyticsRow = {
  * instant window once and reused for both; attendance stays keyed on
  * `work_date`, already a plain date, like the performance dashboard.
  */
-export function getEmployeeAnalytics(ctx: ActiveContext, from: string, to: string) {
+export async function getEmployeeAnalytics(ctx: ActiveContext, from: string, to: string) {
   // Defence in depth, matching the rest of lib/reports — the page redirects a
   // non-manager, but this reader refuses on its own account too.
   requireReportAccess(ctx)
+  // Module gate (M16 #2): the plan must include Reports. Authoritative —
+  // the page redirects for presentation, this is what actually refuses.
+  await requireEntitlement(ctx, 'module.reports')
 
   const tz = ctx.tenant.timezone
   const rangeStart = zonedTimeToUtc(from, '00:00', tz)

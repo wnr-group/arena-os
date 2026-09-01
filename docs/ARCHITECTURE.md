@@ -86,7 +86,133 @@ RLS protects tenant-vs-tenant. Two paths legitimately sit outside it and use
 | `{slug}.arenaos.app` | **Staff app** — all modules | Staff session (membership) |
 | `{slug}.arenaos.app/book` | **Public booking** — link/QR, optional deposit | None (public) |
 | `{slug}.arenaos.app/b/{bookingNumber}` | Booking confirmation / QR | None (holds a token) |
-| `/api/webhooks/razorpay` | Payment webhooks | Signature-verified |
+| `{slug}.arenaos.app/api/webhooks/razorpay` | **Tenant** deposit webhooks — the venue's OWN Razorpay account | Signature-verified against that tenant's webhook secret |
+| `arenaos.app/api/webhooks/platform-razorpay` | **Platform** subscription webhooks — Arena OS's own Razorpay account, charging businesses | Signature-verified against the single platform webhook secret |
+
+The two webhook routes are deliberately separate and share no secret, no
+account and no `gateway` discriminator. The tenant one identifies its tenant
+from the subdomain (each venue registers its own URL on its own account); the
+platform one has no tenant in the URL at all and discovers it afterwards from
+`tenant_subscriptions.gateway_subscription_id`. A tenant's secret can never
+verify a platform delivery, or the reverse.
+
+A verified `subscription.charged` on the platform route also raises the GST
+invoice for that renewal, in the same transaction as the state change
+(`platform_invoices`, migration 0052). It is the ONLY event that bills: the
+platform account emits `payment.captured` and `invoice.paid` for the same
+rupees, and acting on more than one view of a single charge would invoice a
+business twice.
+
+### Dunning — what happens when a renewal fails (AROS-113)
+
+The policy lives in exactly one file, `lib/platform/billing/dunning-policy.ts`,
+and every deadline shown to an owner is computed from it, so the billing banner
+cannot promise a date the scheduled job does not honour.
+
+| day | what happens | subscription | tenant | access |
+| --- | --- | --- | --- | --- |
+| 0 | renewal charge fails (`subscription.pending`) | `past_due` | `active` | **unchanged — everything works** |
+| 0 / 3 / 6 | reminders: payment failed → grace reminder → final warning | — | — | unchanged |
+| 7 | grace expires with no successful charge | `expired` | `suspended` | **all entitlements revoked** |
+| 21 | still unpaid a fortnight after suspension | `cancelled` | `cancelled` | blocked; nothing deleted |
+
+**Arena OS does not retry charges.** Razorpay Subscriptions owns retries; a
+second retry engine here is how a business gets charged twice for one month. The
+grace period is a DEADLINE on Razorpay's retries, not a schedule of our own —
+in the ordinary case the gateway resolves the arrears first (a retry succeeds →
+`subscription.charged` → active; retries exhausted → `subscription.halted` →
+suspended) and the clock never fires. It exists for the case the webhook path
+cannot cover: a delivery that never arrives. Without it one dropped webhook
+means a business keeps its plan forever without paying.
+
+**Recovery.** `past_due → active` and `suspended → active` both happen on the
+next successful charge, with no new code: `applySubscriptionState()` already maps
+an `active` entity to subscription `active` + tenant `active` from any
+non-terminal state, and dunning only adds the clearing of the two clocks so no
+stale deadline re-suspends a paying business. `cancelled → active` does NOT
+happen — `cancelled` is terminal, so a late webhook cannot resurrect a closed
+account. Recovering from cancellation means choosing a plan again, which creates
+a new subscription; the old row, its invoices and its notices all remain.
+
+**Enforcement stays where it was.** There is no `if (tenant.status ===
+'suspended')` anywhere. Suspension moves the subscription out of the three live
+statuses, `readEntitlements()` returns its empty answer, and every gate in
+`lib/platform/entitlement-guard.ts` closes — which blocks CREATING limited items
+and ENTERING gated modules, and never blocks reading, editing or deleting what a
+business already has. Nothing is deleted at any point in the lifecycle.
+
+`readEntitlements()` was extended in one place only: during `past_due` the
+effective expiry is the LATER of `current_period_end` and the grace deadline.
+`current_period_end` keeps meaning exactly what it always meant (the period an
+invoice documents), and a business in grace keeps the access it is still being
+asked to pay for.
+
+**Scheduling.** `npm run billing:dunning` (`scripts/run-dunning.ts`), run hourly
+by the host scheduler — the same tsx-script pattern as `reports:refresh` and
+`expenses:recurring`, since this project has no cron route, job table or queue.
+One transaction per subscription; every transition guarded by the status it
+moves from; reminders claimed by a unique index before they are sent. Safe to
+run twice, safe to interrupt.
+
+**Notifications.** There is no email or SMS provider in this project, so nothing
+is duplicated and nothing is invented. `platform_dunning_notices` records what
+was sent (its unique index is what makes an hourly job unable to spam), the
+owner-facing message is the billing portal's existing status banner extended
+with real deadlines, and Razorpay itself mails the mandate holder about failed
+charges (`customer_notify: 1`). `lib/platform/billing/dunning-notify.ts` holds
+the single seam a real provider plugs into.
+
+### Platform billing dashboard (AROS-114)
+
+`/admin/revenue` — platform-admin only. Deliberately NOT `/admin/billing`, which
+is the platform's own Razorpay account and GST letterhead; this one is the money.
+
+**Everything is derived.** No `mrr` column, no metrics table, no rollup, no
+cache. Every figure is a `filter (where …)` aggregate over `plans`,
+`tenant_subscriptions`, `tenants`, `platform_invoices` and `platform_refunds`, in
+one transaction so the tiles, the mix, the churn rate and the tenant table cannot
+come from four different instants. The only JS is merging two already-aggregated
+bucket series.
+
+| metric | definition |
+| --- | --- |
+| **MRR** | `monthly` → `plans.monthly_price`; `annual` → `plans.annual_price ÷ 12`. Counted for `status = 'active'` **and** `current_period_end > now()`. Grouped by currency and never summed across them. |
+| **ARR** | MRR × 12, computed once in `metrics.ts`. |
+| **At-risk MRR** | the same normalisation over `past_due`. Reported beside MRR, never inside it. |
+| **Mix** | counted **per tenant**, via `distinct on (tenant_id)` over the live row: trial / active / past due / suspended / cancelled / no plan. The six buckets are exclusive and sum to the tenant count. |
+| **Churn** | tenants live at the range's first instant that are not live at its last, ÷ tenants live at the first. `null` when the denominator is 0 — never 0, never NaN. |
+| **Revenue** | `platform_invoices` where `kind='subscription' and status='paid'`, bucketed by `invoice_date` (day/week/month); minus `platform_refunds` with `status='processed'`, bucketed by when they processed. |
+
+Excluded from MRR and why: trials (nobody has paid), `past_due` (reported
+separately), `expired`/`cancelled`, and refunds — MRR is a run-rate, so refunding
+last month does not change what recurs next month. Refunds are subtracted from
+*revenue over time*, which is the cash view.
+
+**Credit notes are reported, never netted off.** A credit note carries no gateway
+payment (`platform_invoices_credit_note_unpaid`, 0052) because no money moved; it
+is spent by lowering the `adjustment` on a later invoice, whose total is already
+smaller. Subtracting it again would deduct the same credit twice.
+
+**Churn is measured per tenant, not per subscription row** — this codebase changes
+a plan by cancelling the old subscription and opening a new one, so counting rows
+would register every upgrade as a churn. Liveness at a past instant is
+reconstructed from `created_at`, `cancelled_at` and `current_period_end`; nothing
+else is available and nothing is back-filled.
+
+**Manual overrides**, all platform-admin only, all audited into `audit_log`:
+
+| override | behaviour |
+| --- | --- |
+| **Change plan** | the existing `assignPlan()`, which still refuses to touch a subscription with a live Razorpay mandate. Old row closed, new row opened, history kept. |
+| **Extend trial** | moves `current_period_end` — the field the entitlement reader actually tests. Trials only, and refused for a gateway-backed subscription, where the next webhook would overwrite it. |
+| **Comp / discount** | a **credit note**, applied in full against the next invoice by the `consumeProrationCredit()` path AROS-4 already built. No second discount model, no comp period, no zero-price subscription. Whole notes only. |
+| **Refund** | reserve → instruct Razorpay → settle. A pending row counts against the invoice's refundable balance, so concurrent refunds cannot exceed it; a 4xx marks the row failed and releases the amount; a timeout leaves it pending, because releasing a cap against money that may already be gone is the one mistake that cannot be undone. `refund.processed` / `refund.failed` webhooks are authoritative. |
+| **Force cancel** | the existing `cancelTenantSubscription()` — at the end of the paid period by default, `immediate` as a platform-admin-only override. The gateway is told first. The **account** is not closed; that stays a separate action. |
+
+**Authorization.** Every reader calls `requirePlatformAdmin()` itself (a page
+guard would leak into the RSC payload), and every mutation server action calls it
+before parsing its input — a server action is a public POST endpoint. A refund's
+tenant is read from the locked invoice row, never from the request.
 
 Resolution: `proxy.ts` extracts the slug from the host, forwards it as
 `x-tenant-slug`, and bounces the signed-out off protected routes. Reserved

@@ -3,6 +3,7 @@ import { asc, desc, eq } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { memberships, salaryStructures, type SalaryComponent } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 
 export type SalaryStructureRow = {
   id: string
@@ -22,7 +23,11 @@ export type SalaryStructureRow = {
  * want "the one row effective as of a given date per membership"; that's a
  * different, narrower query this table's shape supports but doesn't need yet.
  */
-export function listSalaryStructures(ctx: ActiveContext) {
+export async function listSalaryStructures(ctx: ActiveContext) {
+  // Module gate (M16 #2). Authoritative for READS — the page redirect is
+  // presentation only; this is what a plan without Payroll actually blocks.
+  await requireEntitlement(ctx, 'module.payroll')
+
   return withUser(ctx.user.id, (tx) =>
     tx
       .select({

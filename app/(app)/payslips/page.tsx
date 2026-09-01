@@ -1,12 +1,18 @@
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { FileText } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { listMyPayslips } from '@/lib/payroll/payslips'
 import { formatMoney, formatPayrollPeriod } from '@/lib/format'
 
 export default async function MyPayslipsPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.payroll'))) redirect('/dashboard')
 
   // RLS (payslips_self_select, migration 0030) already scopes this to the
   // caller's own membership_id — the explicit filter in listMyPayslips is

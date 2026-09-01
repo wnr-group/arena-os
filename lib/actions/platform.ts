@@ -4,10 +4,10 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { ownerDb } from '@/db'
-import { tenants, branches, memberships, expenseCategories } from '@/db/schema'
-import { DEFAULT_EXPENSE_CATEGORIES } from '@/lib/expenses/defaults'
+import { tenants, branches, memberships } from '@/db/schema'
 import { requirePlatformAdmin, PlatformError } from '@/lib/platform/guard'
-import { findOrCreateUser } from '@/lib/platform/provision'
+import { findOrCreateUser, provisionTenant } from '@/lib/platform/provision'
+import { SLUG_PATTERN, SLUG_RULES } from '@/lib/platform/slug'
 import { RESERVED_SLUGS } from '@/lib/tenant/subdomain'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -22,11 +22,14 @@ function fail(e: unknown): Result {
   return { error: 'Something went wrong. Please try again.' }
 }
 
+// The shape rule now lives in lib/platform/slug.ts, shared with self-serve
+// signup (M16 #6) so the two entry points cannot drift. Same regex, same
+// reserved set, same wording — this is a re-export in Zod form, not a variant.
 const slugSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .regex(/^[a-z0-9](?:[a-z0-9-]{1,48}[a-z0-9])$/, 'Use 3–50 chars: lowercase letters, numbers, hyphens')
+  .regex(SLUG_PATTERN, SLUG_RULES)
   .refine((s) => !RESERVED_SLUGS.has(s), 'That subdomain is reserved')
 
 const createInput = z.object({
@@ -56,47 +59,20 @@ export async function createCompany(input: z.input<typeof createInput>): Promise
     const [taken] = await ownerDb.select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, v.slug)).limit(1)
     if (taken) return { error: 'That subdomain is already taken.' }
 
-    const { userId } = await findOrCreateUser({
-      email: v.ownerEmail,
-      fullName: v.ownerName,
-      password: v.ownerPassword,
-    })
-
-    await ownerDb.transaction(async (tx) => {
-      const [tenant] = await tx
-        .insert(tenants)
-        .values({
-          slug: v.slug,
-          name: v.companyName,
-          industry: v.industry,
-          status: 'active',
-          currency: v.currency,
-          timezone: v.timezone,
-        })
-        .returning({ id: tenants.id })
-
-      const [branch] = await tx
-        .insert(branches)
-        .values({ tenantId: tenant.id, name: 'Main Branch', isPrimary: true })
-        .returning({ id: branches.id })
-
-      await tx.insert(memberships).values({
-        tenantId: tenant.id,
-        userId,
-        branchId: branch.id,
-        role: 'owner',
-        status: 'active',
-        fullName: v.ownerName,
-        email: v.ownerEmail.toLowerCase(),
-      })
-
-      // Starter expense categories, the same way this transaction seeds a
-      // 'Main Branch': an expense requires a category, so a brand-new tenant
-      // would otherwise open the Expenses page onto a form it cannot submit.
-      // Ordinary rows — renameable, retirable, and addable to.
-      await tx.insert(expenseCategories).values(
-        DEFAULT_EXPENSE_CATEGORIES.map((name) => ({ tenantId: tenant.id, name })),
-      )
+    // The provisioning transaction itself now lives in lib/platform/provision.ts
+    // and is shared with self-serve signup (M16 #6), so an admin-created tenant
+    // and a self-registered one get byte-for-byte the same base setup. Behaviour
+    // here is unchanged: same four inserts, same order, same 'active' status —
+    // which is why `status` is left to its default rather than passed.
+    await provisionTenant({
+      companyName: v.companyName,
+      slug: v.slug,
+      industry: v.industry,
+      currency: v.currency,
+      timezone: v.timezone,
+      ownerEmail: v.ownerEmail,
+      ownerName: v.ownerName,
+      ownerPassword: v.ownerPassword,
     })
 
     revalidatePath('/admin')

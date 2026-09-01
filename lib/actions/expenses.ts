@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { expenses } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { uploadReceipt, deleteObject } from '@/lib/storage/s3'
 
 type Result = { error?: string }
@@ -46,6 +47,9 @@ function pgError(e: unknown): { code?: string; constraint?: string } {
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  // The plan does not include Expenses — a refusal about what the business
+  // bought, not about who is asking.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
 
   const { code, constraint } = pgError(e)
@@ -146,6 +150,7 @@ export async function uploadExpenseReceipt(
 ): Promise<{ url?: string; error?: string }> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.expenses')
     const file = formData.get('file')
     if (!(file instanceof File)) return { error: 'No file provided.' }
     // Type, size and emptiness are all validated server-side inside
@@ -165,6 +170,7 @@ export async function createExpense(input: z.input<typeof expenseInput>): Promis
   let v: z.output<typeof expenseInput> | undefined
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.expenses')
     v = expenseInput.parse(input)
 
     await withUser(ctx.user.id, (tx) =>
@@ -198,6 +204,7 @@ export async function updateExpense(
   let uploadedNew = false
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.expenses')
     const target = expenseId.parse(id)
     v = expenseInput.parse(input)
 
@@ -253,6 +260,7 @@ export async function updateExpense(
 export async function deleteExpense(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.expenses')
     const target = expenseId.parse(id)
 
     const [row] = await withUser(ctx.user.id, async (tx) => {

@@ -5,6 +5,7 @@ import { memberships, payslips } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 
 export type PayrollCostRow = {
   membershipId: string
@@ -59,12 +60,15 @@ const emptyTotals: PayrollCostTotals = {
  * (An earlier version of this comment said AROS-64 "was never built". That was
  * true when it was written; migration 0043 landed afterwards.)
  */
-export function getPayrollCostReport(ctx: ActiveContext, fromPeriod: string, toPeriod: string): Promise<PayrollCostReport> {
+export async function getPayrollCostReport(ctx: ActiveContext, fromPeriod: string, toPeriod: string): Promise<PayrollCostReport> {
   // Defence in depth, matching the rest of lib/reports: the PAGE redirects a
   // non-manager and payslips_manager_select RLS would return nothing anyway,
   // but a reader callable from anywhere should refuse on its own account rather
   // than relying on every caller being careful.
   requireReportAccess(ctx)
+  // Module gate (M16 #2): the plan must include Reports. Authoritative —
+  // the page redirects for presentation, this is what actually refuses.
+  await requireEntitlement(ctx, 'module.reports')
 
   return withUser(ctx.user.id, async (tx) => {
     const rows = await tx

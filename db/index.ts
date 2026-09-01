@@ -18,8 +18,9 @@ import * as schema from './schema'
  */
 /**
  * The Drizzle handle every wrapper below hands to its callback. Exported so a
- * reader can declare "I take an already-scoped transaction" in its signature
- * (see lib/portal/bookings.ts) rather than taking an id it would have to trust.
+ * module can declare "I take an already-scoped transaction" in its signature
+ * (see lib/portal/bookings.ts, lib/platform/usage.ts) rather than taking an id
+ * it would have to trust.
  */
 export type DB = NodePgDatabase<typeof schema>
 

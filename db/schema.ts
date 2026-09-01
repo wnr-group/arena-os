@@ -1155,6 +1155,13 @@ export const webhookEvents = pgTable(
     paymentId: text('payment_id'),
     /** 'processed' | 'duplicate' | 'ignored' | 'rejected' */
     outcome: text('outcome').notNull(),
+    /**
+     * The Razorpay SUBSCRIPTION this delivery concerned (migration 0051), for
+     * the platform billing stream (`gateway = 'platform_razorpay'`). Null for
+     * the tenant deposit stream, which has orders instead — `order_id` is
+     * deliberately not overloaded to carry a subscription id.
+     */
+    subscriptionId: text('subscription_id'),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -1162,6 +1169,9 @@ export const webhookEvents = pgTable(
       .on(t.gateway, t.eventId)
       .where(sql`${t.eventId} is not null`),
     index('idx_webhook_events_tenant').on(t.tenantId, t.receivedAt),
+    index('idx_webhook_events_subscription')
+      .on(t.gateway, t.subscriptionId)
+      .where(sql`${t.subscriptionId} is not null`),
   ],
 )
 
@@ -2092,3 +2102,486 @@ export const websitePages = pgTable('website_pages', {
   publishedSnapshot: jsonb('published_snapshot').$type<Record<string, unknown>>(),
   publishedAt: timestamp('published_at', { withTimezone: true }),
 })
+
+// ── platform plans, entitlements & tenant subscriptions (M16, 0050) ──────────
+// The only tables in this file with NO tenant_id: one catalogue for the whole
+// platform, authored by the operator. `plans` here is what a BUSINESS pays
+// Arena OS — not to be confused with `membershipPlans` above, which is a
+// venue's own customer-facing product catalogue.
+
+export const billingPeriod = pgEnum('billing_period', ['monthly', 'annual'])
+export const tenantSubscriptionStatus = pgEnum('tenant_subscription_status', [
+  'trialing',
+  'active',
+  'past_due',
+  'cancelled',
+  'expired',
+])
+
+export const plans = pgTable(
+  'plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    monthlyPrice: numeric('monthly_price', { precision: 10, scale: 2 }).notNull().default('0'),
+    annualPrice: numeric('annual_price', { precision: 10, scale: 2 }).notNull().default('0'),
+    currency: text('currency').notNull().default('INR'),
+    active: boolean('active').notNull().default(true),
+    /**
+     * The gateway these plan references belong to (migration 0051) — the
+     * PLATFORM's own account, never a tenant's. 'razorpay' today.
+     */
+    gateway: text('gateway'),
+    /**
+     * Razorpay Subscription plan ids (`plan_…`), one per billing period,
+     * because monthly_price and annual_price are two different prices and
+     * Razorpay models a recurring price as a plan object carrying its own
+     * amount. Stored explicitly rather than derived: subscribe.ts reads the
+     * column matching the requested period and refuses when it is null, with
+     * no fallback to the other one.
+     */
+    gatewayMonthlyPlanId: text('gateway_monthly_plan_id'),
+    gatewayAnnualPlanId: text('gateway_annual_plan_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Unique across the WHOLE catalogue, not just live plans — subscriptions
+    // point at a plan for years, so a name is never reused.
+    uniqueIndex('idx_plans_name').on(sql`lower(btrim(${t.name}))`),
+    index('idx_plans_active').on(t.active),
+    // No Razorpay plan may back two Arena OS plans, or a charge could not be
+    // attributed. Per-column; the cross-column case is checked in the action.
+    uniqueIndex('idx_plans_gateway_monthly')
+      .on(t.gateway, t.gatewayMonthlyPlanId)
+      .where(sql`${t.gatewayMonthlyPlanId} is not null`),
+    uniqueIndex('idx_plans_gateway_annual')
+      .on(t.gateway, t.gatewayAnnualPlanId)
+      .where(sql`${t.gatewayAnnualPlanId} is not null`),
+  ],
+)
+
+export const planEntitlements = pgTable(
+  'plan_entitlements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id, { onDelete: 'cascade' }),
+    /** Dotted lowercase key, e.g. `max_branches` or `module.payroll`. */
+    key: text('key').notNull(),
+    /**
+     * A JSON SCALAR — number, boolean, string or null — enforced by a check in
+     * 0050 so every reader's contract stays flat.
+     */
+    value: jsonb('value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('plan_entitlements_plan_key_key').on(t.planId, t.key)],
+)
+
+export const tenantSubscriptions = pgTable(
+  'tenant_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // restrict: retiring a plan someone pays for must fail loudly.
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id, { onDelete: 'restrict' }),
+    billingPeriod: billingPeriod('billing_period').notNull().default('monthly'),
+    status: tenantSubscriptionStatus('status').notNull().default('trialing'),
+    currentPeriodStart: timestamp('current_period_start', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /**
+     * Null for an admin-assigned plan. Filled in by the Razorpay Subscriptions
+     * flow (migration 0051): gateway = 'razorpay' on the PLATFORM's account.
+     */
+    gateway: text('gateway'),
+    gatewaySubscriptionId: text('gateway_subscription_id'),
+    /** Razorpay customer (`cust_…`), reused across this tenant's subscriptions. */
+    gatewayCustomerId: text('gateway_customer_id'),
+    /**
+     * A cancellation requested but not yet effective (Razorpay
+     * cancel_at_cycle_end). NOT `cancelled_at`, which the 0050 CHECK ties to
+     * status = 'cancelled'; the webhook remains the source of truth for the
+     * final provider state.
+     */
+    cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+    /** Last Razorpay payment applied. Reconciliation only — never a ledger. */
+    gatewayLastPaymentId: text('gateway_last_payment_id'),
+    /**
+     * Whether `currentPeriodStart/End` came from the PROVIDER (migration 0055).
+     *
+     * False while they are the placeholder subscribeTenantToPlan() seeds from
+     * the tenant's remaining runway; true once a verified webhook has set them
+     * from Razorpay's own `current_start`/`current_end`.
+     *
+     * lib/platform/billing/lifecycle.ts reads it to decide whether the
+     * never-move-backwards rule applies: a placeholder is replaced wholesale in
+     * either direction, a provider period is only ever extended.
+     */
+    periodFromGateway: boolean('period_from_gateway').notNull().default(false),
+    /**
+     * ── the dunning clocks (migration 0053) ─────────────────────────────────
+     *
+     * `pastDueSince` is when this subscription entered past_due, and the grace
+     * deadline is measured from it — NOT from `currentPeriodEnd`, which a
+     * failed renewal leaves in the past because Razorpay does not extend a
+     * period it could not charge for. Cleared when a payment clears.
+     *
+     * `suspendedAt` is when the account was suspended for non-payment; the
+     * cancellation deadline is measured from it. Also cleared on recovery, so a
+     * business that pays carries no stale deadline.
+     *
+     * The durations live in lib/platform/billing/dunning-policy.ts, once.
+     */
+    pastDueSince: timestamp('past_due_since', { withTimezone: true }),
+    suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+    /** What the gateway said. Diagnostics and owner-facing copy; nothing branches on it. */
+    lastPaymentFailureAt: timestamp('last_payment_failure_at', { withTimezone: true }),
+    lastPaymentFailureReason: text('last_payment_failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // At most one live subscription per tenant; old rows stay for history.
+    uniqueIndex('idx_tenant_subscriptions_one_live')
+      .on(t.tenantId)
+      .where(sql`status in ('trialing','active','past_due')`),
+    index('idx_tenant_subscriptions_tenant').on(t.tenantId, t.currentPeriodStart.desc()),
+    index('idx_tenant_subscriptions_plan').on(t.planId),
+    index('idx_tenant_subscriptions_period_end').on(t.status, t.currentPeriodEnd),
+    uniqueIndex('idx_tenant_subscriptions_gateway_ref')
+      .on(t.gateway, t.gatewaySubscriptionId)
+      .where(sql`gateway_subscription_id is not null`),
+    index('idx_tenant_subscriptions_gateway_customer')
+      .on(t.gateway, t.gatewayCustomerId)
+      .where(sql`gateway_customer_id is not null`),
+    // The dunning processor's only scan. Partial: a healthy subscription
+    // carries no clock, and a job with nothing to do should touch nothing.
+    index('idx_tenant_subscriptions_dunning')
+      .on(t.pastDueSince)
+      .where(sql`past_due_since is not null`),
+  ],
+)
+
+// ── dunning notices (migration 0053) ─────────────────────────────────────────
+//
+// One row per reminder ACTUALLY SENT during an arrears episode. NOT a
+// notification framework — this project has no email or SMS provider, and this
+// table does not pretend otherwise. Its whole job is the unique index below,
+// which is what stops an hourly scheduled job from sending the same warning
+// twenty-four times a day. Delivery is one injectable function in
+// lib/platform/billing/dunning-notify.ts.
+//
+// Owner-read-only (`auth_role_in(tenant_id) = 'owner'`, the same rule
+// platformInvoices uses); written only on the owner connection.
+export const platformDunningNotices = pgTable(
+  'platform_dunning_notices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // restrict: the record of what a business was warned about must not vanish
+    // under it. Historical billing data is never deleted.
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => tenantSubscriptions.id, { onDelete: 'restrict' }),
+    /**
+     * THE EPISODE KEY — the `past_due_since` that anchored this dunning run.
+     * Within one episode each stage is sent once; a business that recovers and
+     * fails again months later gets a fresh anchor, so it is warned again
+     * rather than silenced forever by a notice it received once.
+     */
+    dunningCycle: timestamp('dunning_cycle', { withTimezone: true }).notNull(),
+    /** 'payment_failed' | 'grace_reminder' | 'final_warning' | 'suspended' | 'cancelled' */
+    stage: text('stage').notNull(),
+    /** 'log' today. 'email'/'sms' the day a provider is wired in — no schema change. */
+    channel: text('channel').notNull().default('log'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // THE idempotency guarantee. An index, not an application-level check:
+    // two concurrent runs racing on one subscription cannot both win.
+    uniqueIndex('idx_platform_dunning_notices_once').on(
+      t.subscriptionId,
+      t.dunningCycle,
+      t.stage,
+    ),
+    index('idx_platform_dunning_notices_tenant').on(t.tenantId, t.sentAt.desc()),
+  ],
+)
+
+// ── the PLATFORM's own Razorpay account (migration 0051) ─────────────────────
+//
+// A SINGLETON, and not to be confused with `paymentSettings` above:
+//
+//   paymentSettings           → a TENANT's own Razorpay keys. Collects booking
+//                               deposits from that venue's CUSTOMERS.
+//   platformPaymentSettings   → ARENA OS's Razorpay keys. Charges the
+//                               BUSINESSES their Arena OS subscription.
+//
+// The secrets are AES-256-GCM ciphertext sealed with the fixed AAD
+// 'platform:razorpay' (not a tenant id), so the two accounts' ciphertexts can
+// never be swapped. `arena_app` has NO grants on this table at all — the only
+// reader is lib/platform/billing/credentials.ts on the owner connection.
+export const platformPaymentSettings = pgTable('platform_payment_settings', {
+  /** Always true. The primary key admits exactly one row. */
+  id: boolean('id').primaryKey().default(true),
+  /** Publishable — shows WHICH account is configured (rzp_test_… / rzp_live_…). */
+  razorpayKeyId: text('razorpay_key_id'),
+  razorpayKeySecretEncrypted: text('razorpay_key_secret_encrypted'),
+  razorpayWebhookSecretEncrypted: text('razorpay_webhook_secret_encrypted'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── platform invoices: Arena OS → the business (migration 0052) ──────────────
+//
+// NOT `invoices` above, which is a VENUE billing ITS CUSTOMER under the venue's
+// own GSTIN and its own `sequences` counter. This is ARENA OS billing THE VENUE
+// under Arena OS's GSTIN and `platformSequences`. Opposite direction, different
+// supplier, deliberately different table — a subscription fee must never land
+// in a tenant's own revenue reports.
+//
+// Money is numeric(10,2) rupees and GST-INCLUSIVE: 0051's subscribe path
+// requires the Razorpay plan amount to equal the catalogue price exactly, so
+// the captured rupees ARE the price and the tax is back-computed out of them.
+// See lib/platform/billing/gst.ts.
+
+/** Arena OS's own letterhead. Singleton; snapshotted onto every invoice. */
+export const platformBillingSettings = pgTable('platform_billing_settings', {
+  /** Always true. The primary key admits exactly one row. */
+  id: boolean('id').primaryKey().default(true),
+  sellerLegalName: text('seller_legal_name'),
+  sellerGstin: text('seller_gstin'),
+  sellerAddress: text('seller_address'),
+  /** GST state code (01–38, 97). Decides CGST+SGST vs IGST. */
+  sellerStateCode: text('seller_state_code'),
+  /** Rate applied to a SaaS subscription. Every invoice snapshots the rate used. */
+  gstRate: numeric('gst_rate', { precision: 5, scale: 2 }).notNull().default('18.00'),
+  invoicePrefix: text('invoice_prefix').notNull().default('AOS'),
+  creditNotePrefix: text('credit_note_prefix').notNull().default('AOC'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Supplier-side invoice numbering. The same (kind, period) → value bump idiom
+ * as `sequences` (0018) minus tenant_id, because GST numbering belongs to the
+ * SUPPLIER and Arena OS is the supplier.
+ */
+export const platformSequences = pgTable(
+  'platform_sequences',
+  {
+    /** 'invoice' | 'credit_note' */
+    kind: text('kind').notNull(),
+    /** Indian financial year, e.g. '2026-27'. Numbering restarts on 1 April. */
+    period: text('period').notNull(),
+    value: integer('value').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.kind, t.period] })],
+)
+
+export const platformInvoiceKind = pgEnum('platform_invoice_kind', [
+  'subscription',
+  'credit_note',
+])
+
+export const platformInvoices = pgTable(
+  'platform_invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // restrict: a subscription or plan an invoice references must not be
+    // deletable out from under it.
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => tenantSubscriptions.id, { onDelete: 'restrict' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id, { onDelete: 'restrict' }),
+    kind: platformInvoiceKind('kind').notNull().default('subscription'),
+
+    invoiceNumber: text('invoice_number').notNull(),
+    invoiceDate: date('invoice_date').notNull(),
+    /** The financial year the number was drawn from. */
+    period: text('period').notNull(),
+
+    /** Taken from Razorpay's own current_start/current_end — absolute, so a replay recomputes the same period. */
+    billingPeriodStart: timestamp('billing_period_start', { withTimezone: true }).notNull(),
+    billingPeriodEnd: timestamp('billing_period_end', { withTimezone: true }).notNull(),
+    billingPeriodType: billingPeriod('billing_period_type').notNull(),
+
+    // ── snapshots, so an old invoice never changes ─────────────────────────
+    planName: text('plan_name').notNull(),
+    planPrice: numeric('plan_price', { precision: 10, scale: 2 }).notNull(),
+    sellerLegalName: text('seller_legal_name').notNull(),
+    sellerGstin: text('seller_gstin'),
+    sellerAddress: text('seller_address'),
+    sellerStateCode: text('seller_state_code'),
+    buyerLegalName: text('buyer_legal_name').notNull(),
+    buyerGstin: text('buyer_gstin'),
+    buyerAddress: text('buyer_address'),
+    buyerStateCode: text('buyer_state_code'),
+    placeOfSupply: text('place_of_supply'),
+
+    // ── money (GST-inclusive) ─────────────────────────────────────────────
+    // total = taxable_value + tax_total = subtotal - adjustment, all enforced
+    // by CHECK constraints in 0052 so a rounding bug fails the INSERT.
+    subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull(),
+    /** A gross proration credit applied to this bill. Never exceeds subtotal. */
+    adjustment: numeric('adjustment', { precision: 10, scale: 2 }).notNull().default('0'),
+    taxableValue: numeric('taxable_value', { precision: 10, scale: 2 }).notNull(),
+    gstRate: numeric('gst_rate', { precision: 5, scale: 2 }).notNull(),
+    cgst: numeric('cgst', { precision: 10, scale: 2 }).notNull().default('0'),
+    sgst: numeric('sgst', { precision: 10, scale: 2 }).notNull().default('0'),
+    igst: numeric('igst', { precision: 10, scale: 2 }).notNull().default('0'),
+    taxTotal: numeric('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    total: numeric('total', { precision: 10, scale: 2 }).notNull(),
+    currency: text('currency').notNull().default('INR'),
+
+    /** `public.invoice_status` (0018) reused — one status vocabulary, not two. */
+    status: invoiceStatus('status').notNull().default('issued'),
+
+    // ── reconciliation ────────────────────────────────────────────────────
+    gateway: text('gateway'),
+    gatewayPaymentId: text('gateway_payment_id'),
+    gatewaySubscriptionId: text('gateway_subscription_id'),
+    gatewayInvoiceId: text('gateway_invoice_id'),
+    gatewayEventId: text('gateway_event_id'),
+    /** A stored document, when one exists. Null today — see 0052 for why. */
+    documentUrl: text('document_url'),
+    notes: text('notes'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('platform_invoices_number_key').on(t.invoiceNumber),
+    // THE money idempotency rule: one Razorpay payment bills exactly once,
+    // enforced by Postgres rather than by an application existence check.
+    uniqueIndex('idx_platform_invoices_gateway_payment')
+      .on(t.gateway, t.gatewayPaymentId)
+      .where(sql`${t.gatewayPaymentId} is not null`),
+    index('idx_platform_invoices_tenant').on(
+      t.tenantId,
+      t.invoiceDate.desc(),
+      t.createdAt.desc(),
+    ),
+    index('idx_platform_invoices_subscription').on(t.subscriptionId, t.createdAt.desc()),
+  ],
+)
+
+// ── platform refunds (migration 0054) ────────────────────────────────────────
+//
+// ARENA OS refunding a BUSINESS part or all of a subscription charge.
+//
+// NOT `refunds` above, which is a VENUE refunding its own customer and is
+// foreign-keyed to `payments` — a table a platform subscription charge never
+// appears in. And NOT a credit note: `platform_invoices_credit_note_unpaid`
+// (0052) CHECKs that a credit note carries no gateway payment, precisely so the
+// "credit against a future bill" case can never be confused with money that
+// actually left the account.
+//
+// Nothing sums these into a stored balance. "How much of this invoice has come
+// back?" is answered by summing the rows under the invoice's row lock at the
+// moment it matters — the same discipline lib/billing/refunds.ts follows.
+//
+// Owner-read-only (`auth_role_in(tenant_id) = 'owner'`); written only on the
+// owner connection by a platform admin, and settled only by the platform
+// webhook.
+export const platformRefunds = pgTable(
+  'platform_refunds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Copied from the LOCKED invoice row, never from a caller. */
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // restrict: the bill a refund reverses must not vanish under it.
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => platformInvoices.id, { onDelete: 'restrict' }),
+    gateway: text('gateway').notNull().default('razorpay'),
+    /** Copied from the invoice, so a refund can only target the payment it recorded. */
+    gatewayPaymentId: text('gateway_payment_id').notNull(),
+    /** Razorpay's own `rfnd_…`. Null while pending, or if it was refused. */
+    gatewayRefundId: text('gateway_refund_id'),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    currency: text('currency').notNull().default('INR'),
+    reason: text('reason').notNull(),
+    /**
+     * 'pending' | 'processed' | 'failed'. The GATEWAY is authoritative: only a
+     * signature-verified refund.processed / refund.failed webhook moves this
+     * out of 'pending', never the browser round-trip that started it.
+     */
+    status: text('status').notNull().default('pending'),
+    /**
+     * The PLATFORM ADMIN who did it — a global `users` identity, not a
+     * membership, which is why `audit_log.actor_membership_id` is null for
+     * these actions and the admin is named in the entry's `after` payload.
+     */
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    /** The retry token, same idiom as payments.idempotencyKey (0040). */
+    requestKey: text('request_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One refund per request — what stops a double-clicked button becoming two
+    // refunds within the invoice's cap.
+    uniqueIndex('idx_platform_refunds_request')
+      .on(t.tenantId, t.requestKey)
+      .where(sql`request_key is not null`),
+    // One row per gateway refund — what keeps a redelivered webhook from
+    // double-counting money that came back once.
+    uniqueIndex('idx_platform_refunds_gateway_ref')
+      .on(t.gateway, t.gatewayRefundId)
+      .where(sql`gateway_refund_id is not null`),
+    index('idx_platform_refunds_invoice').on(t.invoiceId, t.createdAt.desc()),
+    index('idx_platform_refunds_tenant').on(t.tenantId, t.createdAt.desc()),
+  ],
+)
+
+export const platformRefundsRelations = relations(platformRefunds, ({ one }) => ({
+  tenant: one(tenants, { fields: [platformRefunds.tenantId], references: [tenants.id] }),
+  invoice: one(platformInvoices, {
+    fields: [platformRefunds.invoiceId],
+    references: [platformInvoices.id],
+  }),
+}))
+
+export const platformInvoicesRelations = relations(platformInvoices, ({ one }) => ({
+  tenant: one(tenants, { fields: [platformInvoices.tenantId], references: [tenants.id] }),
+  subscription: one(tenantSubscriptions, {
+    fields: [platformInvoices.subscriptionId],
+    references: [tenantSubscriptions.id],
+  }),
+  plan: one(plans, { fields: [platformInvoices.planId], references: [plans.id] }),
+}))
+
+export const plansRelations = relations(plans, ({ many }) => ({
+  entitlements: many(planEntitlements),
+  subscriptions: many(tenantSubscriptions),
+}))
+
+export const planEntitlementsRelations = relations(planEntitlements, ({ one }) => ({
+  plan: one(plans, { fields: [planEntitlements.planId], references: [plans.id] }),
+}))
+
+export const tenantSubscriptionsRelations = relations(tenantSubscriptions, ({ one }) => ({
+  tenant: one(tenants, { fields: [tenantSubscriptions.tenantId], references: [tenants.id] }),
+  plan: one(plans, { fields: [tenantSubscriptions.planId], references: [plans.id] }),
+}))

@@ -319,3 +319,249 @@ Mostly non-schema (infra, security, ops). Schema touches:
   follows the plain RLS-scoped aggregate-query pattern `getEmployeeAnalytics()`
   (M6-C) already established, plus a new reusable client-side CSV export
   (`components/reports/ExportCsvButton.tsx`, no library, no server round trip).
+- 2026-08-26 — platform subscription billing (M16 #3) — migration 0051.
+  Arena OS now charges its tenants through **its own** Razorpay account, kept
+  rigorously apart from the per-venue gateway `payment_settings` describes:
+
+  * **`platform_payment_settings`** `[P]` — a SINGLETON (`id boolean pk check (id)`)
+    holding `razorpay_key_id` · `razorpay_key_secret_encrypted` ·
+    `razorpay_webhook_secret_encrypted` · timestamps. Same AES-256-GCM contract
+    and same `^v[0-9]+:` CHECK as `payment_settings`, but sealed with the fixed
+    AAD `'platform:razorpay'` rather than a tenant id, so the two accounts'
+    ciphertexts are not interchangeable. RLS enabled with **no policies and no
+    grants to `arena_app`** — the strictest table in the schema; the only reader
+    is `lib/platform/billing/credentials.ts` on the owner connection.
+  * **`plans`** gains `gateway` · `gateway_monthly_plan_id` ·
+    `gateway_annual_plan_id`. Two ids because monthly and annual are two
+    different prices and a Razorpay plan object carries its own amount; the
+    subscribe path reads the column matching the requested period with **no
+    fallback**, which is what makes "billed on the wrong cycle" unreachable.
+    Partial unique indexes per column; the cross-column case is checked in
+    `setPlanGateway()`.
+  * **`tenant_subscriptions`** gains `gateway_customer_id` ·
+    `cancel_at_period_end` · `gateway_last_payment_id`. `gateway` and
+    `gateway_subscription_id` (0050) are reused unchanged, and
+    `idx_tenant_subscriptions_gateway_ref` is what guarantees a webhook resolves
+    to at most one row. A pending cancellation is its own boolean rather than an
+    early `cancelled_at`, because the 0050 CHECK ties `cancelled_at` to
+    `status = 'cancelled'` exactly.
+  * **`webhook_events`** gains `subscription_id`. The table is reused rather than
+    duplicated; the platform stream is `gateway = 'platform_razorpay'`, so the
+    two accounts' deliveries are separable and their event ids cannot collide.
+    `order_id` is deliberately left alone — a subscription is not an order.
+  * **No new enum values.** The lifecycle is expressed across the two enums that
+    already exist: `tenant_subscription_status` (0050) carries `past_due`, and
+    `tenant_status` (0001) carries `suspended`/`cancelled`. "Suspended" is an
+    ACCOUNT state whose subscription is `expired`. The full Razorpay-state →
+    local-state table lives in `lib/platform/billing/lifecycle.ts`.
+  * **`tenants.status` is no longer writable by `arena_app`.** 0002 granted the
+    role a blanket UPDATE and gave tenant owners `tenants_owner_update`; that was
+    harmless while `status` was operator bookkeeping, and is not now that
+    suspension for non-payment writes it. Replaced with a column-level grant on
+    `(name, industry, currency, timezone)`, so an UPDATE mentioning `status` (or
+    `slug`) fails with 42501 before RLS is consulted. Platform admin writes are
+    unaffected — they go through the owner connection.
+- 2026-08-26 — recurring billing + GST tenant invoices (M16 #4) — migration 0052.
+  The document a subscription charge produces. Arena OS is the SUPPLIER here;
+  `invoices` (0018) is a venue billing its own customers and is untouched.
+
+  * **`platform_invoices`** `[P/T]` — `tenant_id` · `subscription_id → tenant_subscriptions`
+    (RESTRICT) · `plan_id → plans` (RESTRICT) · `kind platform_invoice_kind(subscription|credit_note)`
+    · `invoice_number unique` · `invoice_date` · `period` (financial year) ·
+    `billing_period_start/end` · `billing_period_type billing_period` · then the
+    SNAPSHOTS (`plan_name`, `plan_price`, `seller_*`, `buyer_*`, `place_of_supply`)
+    and the money (`subtotal`, `adjustment`, `taxable_value`, `gst_rate`, `cgst`,
+    `sgst`, `igst`, `tax_total`, `total`, `currency`) · `status invoice_status`
+    (the 0018 enum, reused) · gateway refs (`gateway`, `gateway_payment_id`,
+    `gateway_subscription_id`, `gateway_invoice_id`, `gateway_event_id`) ·
+    `document_url` · `notes` · `created_at`.
+
+    The arithmetic is enforced by CHECK, not by trust:
+    `taxable_value = subtotal − adjustment − tax_total`,
+    `tax_total = cgst + sgst + igst`, `total = taxable_value + tax_total`,
+    `adjustment <= subtotal`, every money column `>= 0`, and
+    `igst = 0 or (cgst = 0 and sgst = 0)` — CGST+SGST **or** IGST, never both.
+    So a rounding bug is a failed INSERT rather than a wrong bill, and a negative
+    invoice is unrepresentable.
+
+    **Money-level idempotency** is `idx_platform_invoices_gateway_payment`, a
+    partial unique index on `(gateway, gateway_payment_id)` — the same device
+    0034 used for deposits. The `webhook_events` event-id claim stops a repeat
+    DELIVERY; this stops one PAYMENT arriving under several event ids from
+    becoming two invoices, two numbers and two lots of GST.
+
+    RLS: **owner-only** SELECT (`auth_role_in(tenant_id) = 'owner'`, the helper
+    0020 uses for `business_profiles`) — narrower than `invoices`, because what a
+    business pays Arena OS is the proprietor's own commercial information.
+    `arena_app` is granted SELECT and nothing else; invoices are written only by
+    the platform webhook on the owner connection.
+
+  * **`platform_billing_settings`** `[P]` — singleton letterhead:
+    `seller_legal_name` · `seller_gstin` · `seller_address` · `seller_state_code`
+    · `gst_rate numeric(5,2) default 18` · `invoice_prefix` · `credit_note_prefix`.
+    No policies, no grants — every value is snapshotted onto each invoice, so no
+    tenant ever needs to read the live row.
+
+  * **`platform_sequences`** `[P]` — `(kind, period) → value`, the same
+    insert-on-conflict-bump idiom as `sequences` (0018) minus `tenant_id`,
+    because GST numbering belongs to the SUPPLIER. Numbers are formatted by the
+    same `formatInvoiceNumber()` and restart on 1 April. No grants.
+
+  * **GST is TAX-INCLUSIVE**, and that is forced rather than chosen: M16 #3's
+    subscribe path refuses a subscription unless the Razorpay plan amount equals
+    the catalogue price exactly, so the captured rupees *are* the price. Tax is
+    extracted (`taxable = total ÷ (1 + rate/100)`; `tax = total − taxable`, by
+    subtraction so the two sum exactly), and the CGST/SGST halves are
+    `cgst = round2(tax/2)`, `sgst = round2(tax − cgst)` so they sum to the paisa.
+    `round2()` from `lib/billing/pricing.ts` is reused throughout; `priceBill()`
+    is deliberately untouched.
+
+  * **Proration**: a mid-cycle plan change raises a positive-valued CREDIT NOTE
+    for the unused remainder of the paid period
+    (`lastPaidInvoiceTotal × unusedDays ÷ periodDays`, whole days, capped at the
+    amount paid), which is then applied as `adjustment` on the next charge.
+    Upgrade and downgrade use the identical rule. See `lib/platform/billing/proration.ts`.
+
+- 2026-08-28 — dunning & suspension on failed payment (AROS-113) — migration 0053.
+  The last item 0050 deferred. **No new enum value, no new status column, no
+  second lifecycle**: `active → past_due → suspended → cancelled` is already
+  expressible across the two enums, and 0051 wrote the mapping down. What 0053
+  adds is the CLOCKS that let the lifecycle run on a schedule rather than only
+  on a webhook.
+
+  * **`tenant_subscriptions`** gains `past_due_since` · `suspended_at` ·
+    `last_payment_failure_at` · `last_payment_failure_reason`
+    (non-blank, ≤ 300 chars by CHECK, because it is gateway-authored text that
+    reaches a page). A CHECK forbids `suspended_at < past_due_since`, and the
+    partial index `idx_tenant_subscriptions_dunning (past_due_since) where
+    past_due_since is not null` is the scheduled processor's only scan.
+
+    `past_due_since` is the anchor for grace, **not** `current_period_end`: a
+    failed renewal leaves `current_period_end` in the PAST, because Razorpay
+    does not extend a period it could not charge for. Measuring grace from the
+    period end would give every business a grace period of zero. Both clocks are
+    set once per arrears episode (`?? now`, never overwritten, so a redelivered
+    webhook cannot restart a half-spent grace period) and cleared on a
+    successful charge, which is the whole of `suspended → active`.
+
+    **Backfill**: rows already in `past_due` get `past_due_since = now()` — a
+    full fresh grace window from deploy, deliberately generous, because the
+    historical failure date was never recorded and suspending an existing
+    arrears account on the job's first run would be a surprise, not a policy.
+
+  * **`platform_dunning_notices`** `[P/T]` — `tenant_id` (CASCADE) ·
+    `subscription_id → tenant_subscriptions` (RESTRICT) · `dunning_cycle` ·
+    `stage` (CHECK: `payment_failed | grace_reminder | final_warning |
+    suspended | cancelled`) · `channel` · `sent_at`.
+
+    **Not a notification framework** — this project has no email or SMS
+    provider, and the table does not pretend otherwise. It is a delivery LOG,
+    modelled on `webhook_events`, and its whole job is
+    `idx_platform_dunning_notices_once (subscription_id, dunning_cycle, stage)`:
+    the unique index that stops an hourly job sending the same warning
+    twenty-four times a day. Delivery is one injectable function in
+    `lib/platform/billing/dunning-notify.ts`.
+
+    `dunning_cycle` is the EPISODE key — the `past_due_since` that anchored the
+    run. So each stage is sent once per episode, and a business that recovers
+    and fails again months later is warned afresh rather than silenced forever
+    by a notice it received in the spring.
+
+    RLS: **owner-only** SELECT (`auth_role_in(tenant_id) = 'owner'`, as
+    `platform_invoices`), SELECT the only grant. A business therefore cannot
+    forge a notice to dodge a reminder, nor delete the record that it was
+    warned.
+
+  * **Audit** reuses `audit_log` (0018) — no second history table. Entries are
+    `action = 'subscription.<new status>'`, `entity_type = 'tenant_subscription'`,
+    `actor_membership_id = NULL` (nobody in the business did this), and an
+    `after` payload naming the source (`webhook` | `dunning_job`). Written only
+    on a genuine status transition, in the same transaction, so a replayed
+    webhook cannot pad the trail.
+
+- 2026-08-28 — platform billing dashboard (AROS-114) — migration 0054.
+  **One table.** MRR, ARR, subscription mix, churn and revenue-over-time are all
+  DERIVED by aggregation over `plans`, `tenant_subscriptions`, `tenants` and
+  `platform_invoices` — there is no metrics table, no rollup and no cache,
+  because a stored metric is a second source of truth about money and it drifts.
+  Four of the five manual overrides needed no schema either: change-plan is
+  `assignPlan()`, extend-trial moves `current_period_end`, comp/discount is a
+  **credit note** (0052 already models exactly this, and
+  `consumeProrationCredit()` already spends it), and force-cancel is the existing
+  cancellation flow.
+
+  * **`platform_refunds`** `[P/T]` — `tenant_id` (CASCADE) ·
+    `invoice_id → platform_invoices` (RESTRICT) · `gateway` ·
+    `gateway_payment_id` · `gateway_refund_id` · `amount numeric(10,2) > 0` ·
+    `currency` · `reason` (≤ 500) ·
+    `status text check in ('pending','processed','failed')` ·
+    `created_by_user_id → users` (SET NULL) · `request_key` · timestamps.
+
+    The one thing that genuinely needed a table: a refund is money LEAVING Arena
+    OS's account, and nothing could record one. `public.refunds` (0018) is the
+    TENANT's till and is foreign-keyed to `payments`, a table a platform charge
+    never appears in; `platform_invoices.status` is `draft|issued|paid|void` with
+    no room for an AMOUNT, so a partial refund is not expressible as a status;
+    and a credit note is the opposite operation —
+    `platform_invoices_credit_note_unpaid` CHECKs that it carries no gateway
+    payment precisely so it can never be mistaken for money that moved.
+
+    `created_by_user_id` is a **users** reference, not a membership: a platform
+    admin is a global identity and normally holds no seat in the tenant it acts
+    on. That is also why `audit_log.actor_membership_id` is NULL for these
+    entries and the admin is named in the `after` payload — see
+    `lib/platform/billing/audit.ts`.
+
+    **Two idempotency guarantees**, both indexes rather than application checks:
+    `idx_platform_refunds_request` on `(tenant_id, request_key)` — the same
+    retry-token idiom as `payments.idempotency_key` (0040), which is what stops a
+    double-clicked button becoming two refunds *within* the invoice's cap; and
+    `idx_platform_refunds_gateway_ref` on `(gateway, gateway_refund_id)`, so a
+    redelivered `refund.processed` cannot double-count money that came back once.
+
+    Nothing sums these into a stored balance. "How much of this invoice has come
+    back?" is answered by summing the rows under the invoice's row lock at the
+    moment it matters — the same discipline `lib/billing/refunds.ts` follows.
+    Only `processed` counts as refunded revenue; `pending` still RESERVES against
+    the cap (so concurrent refunds cannot exceed it) and `failed` releases it.
+
+    RLS: **owner-only** SELECT (`auth_role_in(tenant_id) = 'owner'`, as
+    `platform_invoices` and `platform_dunning_notices`), SELECT the only grant.
+    A business cannot mint itself a refund, mark one processed, or delete the
+    record of one.
+
+- 2026-09-01 — where a subscription's billing period came from — migration 0055.
+  **One boolean, a correctness fix rather than a feature.**
+
+  * **`tenant_subscriptions.period_from_gateway`** `[P/T]` — `boolean not null
+    default false`. False while `current_period_start/end` are the placeholder
+    `subscribeTenantToPlan()` seeds from the tenant's remaining runway (the
+    inherited window, or `PENDING_AUTHORISATION_DAYS`); true once a verified
+    webhook has set them from Razorpay's own `current_start`/`current_end`.
+
+    It exists because the two were previously indistinguishable, and
+    `lib/platform/billing/lifecycle.ts` guarded the period with a
+    never-move-backwards rule expressed on the END. Correct between two provider
+    periods; wrong for the first one whenever the inherited runway outlasted the
+    cycle being bought (an annual → monthly downgrade, or an admin-assigned
+    multi-month plan followed by a monthly checkout). The provider's real 30-day
+    window ended *before* the placeholder, so it was discarded — and the GST
+    invoice raised in the same transaction then documented a ~300-day
+    `billing_period_*` for a charge labelled `monthly`, entitlements ran to the
+    placeholder's end, and `computeProrationCredit()` — which reads its base
+    period from that invoice — credited a later plan change for hundreds of days
+    the business had actually consumed (a ₹19,999 charge produced a ₹17,999.10
+    credit note).
+
+    With the flag the rule needs no clock reasoning: a placeholder is replaced
+    **wholesale, in either direction**; a provider period is only ever extended,
+    so replay protection is unchanged for every row that has ever had one.
+    Ordering on the timestamps instead does not work — Razorpay backdates
+    `current_start` to the real cycle start, routinely *earlier* than the moment
+    the row was created, and truncates it to whole seconds.
+
+    Backfilled `true` where `gateway_last_payment_id is not null` (only a
+    verified `subscription.charged` writes it, and that event always carries the
+    cycle). Everything else stays false so its next provider event corrects it.
+    No index — never a search predicate. No grant change: SELECT only to
+    `arena_app`, as the rest of the table.

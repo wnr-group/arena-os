@@ -1,7 +1,8 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { getPayslipById } from '@/lib/payroll/payslips'
 import { getBusinessProfile } from '@/lib/settings/business'
 import { formatMoney, formatPayrollPeriod } from '@/lib/format'
@@ -14,6 +15,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export default async function PayslipPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getActiveContext()
   if (!ctx) return null
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.payroll'))) redirect('/dashboard')
 
   const { id } = await params
   if (!UUID.test(id)) notFound()
