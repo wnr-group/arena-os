@@ -3,13 +3,14 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeftRight, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Ban, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
 import { TransferTableDialog } from './TransferTableDialog'
 import { MergeTablesDialog } from './MergeTablesDialog'
 import { SplitTableDialog } from './SplitTableDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
+import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, cancelBooking, requestBill } from '@/lib/actions/bookings'
 import { formatMoney } from '@/lib/format'
@@ -98,6 +99,7 @@ export function FloorView({
   happyHours,
   popularItemIds,
   ordersByBooking,
+  canRequestVoidComp,
 }: {
   branchId: string
   currency: string
@@ -108,6 +110,11 @@ export function FloorView({
   happyHours: HappyHourRule[]
   popularItemIds?: string[]
   ordersByBooking: Record<string, OrderSummary[]>
+  /** Gates the void/comp button — a UI nicety only; requestVoidOrderItem
+   *  re-checks the role server-side regardless (M17 #6). A manager/owner's
+   *  request is applied immediately; anyone else's goes to the approval
+   *  queue at /orders/void-requests. */
+  canRequestVoidComp: boolean
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -118,6 +125,7 @@ export function FloorView({
   const [transferTarget, setTransferTarget] = useState<TableRow | null>(null)
   const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null)
   const [splitTarget, setSplitTarget] = useState<TableRow | null>(null)
+  const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [pending, start] = useTransition()
   const [actingAction, setActingAction] = useState<string | null>(null)
 
@@ -416,11 +424,50 @@ export function FloorView({
                       </div>
                       <ul className="mt-1 space-y-0.5">
                         {o.items.map((it) => (
-                          <li key={it.itemId} className="flex justify-between gap-2 text-muted-foreground">
+                          <li
+                            key={it.itemId}
+                            className={`flex justify-between gap-2 text-muted-foreground ${it.voidStatus !== 'active' ? 'opacity-50' : ''}`}
+                          >
                             <span className="truncate">
-                              {it.qty}× {it.itemName}
+                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
+                                {it.qty}× {it.itemName}
+                              </span>
+                              {it.voidStatus !== 'active' && (
+                                <span
+                                  className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                    it.voidStatus === 'comped'
+                                      ? 'bg-violet-500/10 text-violet-600'
+                                      : 'bg-destructive/10 text-destructive'
+                                  }`}
+                                  title={it.voidReason ?? undefined}
+                                >
+                                  {it.voidStatus === 'comped' ? 'Comped' : 'Voided'}
+                                </span>
+                              )}
+                              {it.voidStatus === 'active' && it.pendingVoidMode && (
+                                <span
+                                  className="ml-1.5 inline-flex items-center rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600"
+                                  title="Awaiting manager approval"
+                                >
+                                  {it.pendingVoidMode === 'comp' ? 'Comp requested' : 'Void requested'}
+                                </span>
+                              )}
                             </span>
-                            <span className="shrink-0 text-right">{formatMoney(Number(it.unitPrice) * it.qty, currency)}</span>
+                            <span className="flex shrink-0 items-center gap-1.5 text-right">
+                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
+                                {formatMoney(Number(it.unitPrice) * it.qty, currency)}
+                              </span>
+                              {canRequestVoidComp && it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setVoidTarget({ itemId: it.itemId, itemName: it.itemName, qty: it.qty })}
+                                  title="Void or comp this item"
+                                  className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  <Ban size={13} />
+                                </button>
+                              )}
+                            </span>
                           </li>
                         ))}
                       </ul>
@@ -499,6 +546,22 @@ export function FloorView({
             setOrderDialog(null)
             router.refresh()
             toast.success('Order sent to the kitchen.')
+          }}
+        />
+      )}
+
+      {voidTarget && (
+        <VoidCompDialog
+          item={voidTarget}
+          onClose={() => setVoidTarget(null)}
+          onDone={(mode, status) => {
+            setVoidTarget(null)
+            router.refresh()
+            if (status === 'pending') {
+              toast.success('Sent for manager approval.')
+            } else {
+              toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
+            }
           }}
         />
       )}

@@ -184,6 +184,12 @@ export async function loadBookingLines(
  * unit_price and tax_rate are read straight off order_items, unchanged: they
  * were already snapshotted at order time (including any happy-hour discount),
  * so this never re-prices a menu item against today's rate.
+ *
+ * `void_status = 'active'` (migration 0066): a voided or comped line is
+ * excluded here exactly the way a `billed`/`pending` order already is — this
+ * is what actually takes the amount off the tab. voidOrderItemCore
+ * (lib/orders/service.ts) never deletes the row, so it still exists for the
+ * void/comp report (M20); it just never reaches a bill again.
  */
 export async function loadFoodLines(
   tx: Db,
@@ -206,6 +212,7 @@ export async function loadFoodLines(
         eq(orders.bookingId, bookingId),
         eq(orders.status, 'open'),
         eq(orders.acceptanceStatus, 'accepted'),
+        eq(orderItems.voidStatus, 'active'),
       ),
     )
     .orderBy(orderItems.id)
@@ -231,6 +238,10 @@ export async function loadFoodLines(
  *
  * unit_price and tax_rate are read straight off order_items, unchanged — the
  * same snapshot discipline loadFoodLines follows.
+ *
+ * `void_status = 'active'` (migration 0066) — same exclusion loadFoodLines
+ * applies, so a voided/comped line on a standalone pay-now order is never
+ * charged either.
  */
 export async function loadOrderFoodLines(
   tx: Db,
@@ -251,7 +262,13 @@ export async function loadOrderFoodLines(
       qty: orderItems.qty,
     })
     .from(orderItems)
-    .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)))
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.orderId, orderId),
+        eq(orderItems.voidStatus, 'active'),
+      ),
+    )
     .orderBy(orderItems.id)
 
   return rows.map((r) => ({

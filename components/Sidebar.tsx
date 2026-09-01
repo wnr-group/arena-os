@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   BadgeCheck,
+  Ban,
   Building2,
   CreditCard,
   Wallet,
@@ -120,6 +121,10 @@ const NAV: NavItem[] = [
   // Accept/reject queue for online orders (AROS M14 #4) — front-of-house
   // roles, not kitchen staff; see lib/auth/roles.ts's canManageIncomingOrders.
   { href: '/orders/incoming', label: 'Incoming Orders', icon: Bell, can: canManageIncomingOrders },
+  // Void/comp approval queue (M17 #6) — manager/owner only: the request
+  // itself is raised by front-of-house staff from the item's own void/comp
+  // button, but approving it is money leaving the tab.
+  { href: '/orders/void-requests', label: 'Void/Comp Requests', icon: Ban, can: isManager },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.

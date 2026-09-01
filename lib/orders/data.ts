@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { orders, orderItems, resources } from '@/db/schema'
+import { orders, orderItems, orderItemVoidRequests, bookings, resources, memberships } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 
 /** Flat order+item rows for the given bookings — used to show food orders on a booking's detail view. */
@@ -25,11 +25,60 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
         originalUnitPrice: orderItems.originalUnitPrice,
         happyHourDiscountType: orderItems.happyHourDiscountType,
         happyHourDiscountValue: orderItems.happyHourDiscountValue,
+        voidStatus: orderItems.voidStatus,
+        voidReason: orderItems.voidReason,
+        // Set only while a void/comp request on this line is awaiting
+        // manager approval — at most one per item (idx_order_item_void_
+        // requests_one_pending, migration 0067), so this left join never
+        // duplicates a row.
+        pendingVoidMode: orderItemVoidRequests.mode,
       })
       .from(orders)
       .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .leftJoin(
+        orderItemVoidRequests,
+        and(eq(orderItemVoidRequests.orderItemId, orderItems.id), eq(orderItemVoidRequests.status, 'pending')),
+      )
       .where(and(eq(orders.tenantId, ctx.tenant.id), inArray(orders.bookingId, bookingIds)))
       .orderBy(asc(orders.createdAt), asc(orderItems.id)),
+  )
+}
+
+/**
+ * The manager approval queue: every void/comp request still awaiting a
+ * decision for the branch, oldest first — table, item, amount, who asked,
+ * why (components/orders/VoidRequestsQueue.tsx).
+ */
+export function listPendingVoidRequests(ctx: ActiveContext, branchId: string) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        requestId: orderItemVoidRequests.id,
+        mode: orderItemVoidRequests.mode,
+        reason: orderItemVoidRequests.reason,
+        requestedAt: orderItemVoidRequests.requestedAt,
+        requestedByName: memberships.fullName,
+        itemName: orderItems.itemName,
+        qty: orderItems.qty,
+        lineTotal: orderItems.lineTotal,
+        orderNumber: orders.orderNumber,
+        bookingNumber: bookings.bookingNumber,
+        tableName: resources.name,
+      })
+      .from(orderItemVoidRequests)
+      .innerJoin(orderItems, eq(orderItems.id, orderItemVoidRequests.orderItemId))
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .leftJoin(bookings, eq(bookings.id, orders.bookingId))
+      .leftJoin(resources, eq(resources.id, bookings.resourceId))
+      .leftJoin(memberships, eq(memberships.id, orderItemVoidRequests.requestedBy))
+      .where(
+        and(
+          eq(orderItemVoidRequests.tenantId, ctx.tenant.id),
+          eq(orderItemVoidRequests.status, 'pending'),
+          eq(orders.branchId, branchId),
+        ),
+      )
+      .orderBy(asc(orderItemVoidRequests.requestedAt)),
   )
 }
 

@@ -12,10 +12,21 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { orders, orderItems, menuItems, taxRates, bookings, happyHours, kots } from '@/db/schema'
+import {
+  orders,
+  orderItems,
+  orderItemVoidRequests,
+  menuItems,
+  taxRates,
+  bookings,
+  happyHours,
+  kots,
+  auditLog,
+} from '@/db/schema'
 import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
+import { isManager, type MemberRole } from '@/lib/auth/roles'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -471,4 +482,389 @@ export async function cancelPendingOrdersForBilledBooking(
     .where(and(inArray(orders.id, orderIds), eq(orders.tenantId, ctx.tenantId)))
 
   await cancelKotsForOrders(tx, ctx.tenantId, orderIds)
+}
+
+/**
+ * Void/comp actor — same shape as lib/billing/refunds.ts's AuditActor. No
+ * shared audit module exists (see lib/booking/service.ts's writeAudit for the
+ * same note); each domain keeps its own private copy.
+ */
+export type AuditActor = { tenantId: string; membershipId: string }
+
+/** Append one audit row. See lib/billing/refunds.ts's writeAudit — identical shape. */
+async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: {
+    action: string
+    entityType: string
+    entityId: string
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
+
+/**
+ * Lock one order_items line together with its parent order and check it is
+ * still eligible to be voided/comped. Shared by requestVoidOrderItemCore
+ * (the initial check) and applyVoidDecision (the re-check at approval time —
+ * time has passed since the request was raised, so the order may have been
+ * billed or cancelled in between).
+ *
+ * FOR UPDATE on both reads: a concurrent bill being raised on the same
+ * booking blocks against this exact row instead of racing it.
+ */
+async function lockActiveOrderItem(tx: Db, tenantId: string, orderItemId: string) {
+  const [row] = await tx
+    .select({
+      itemId: orderItems.id,
+      itemName: orderItems.itemName,
+      qty: orderItems.qty,
+      unitPrice: orderItems.unitPrice,
+      lineTotal: orderItems.lineTotal,
+      voidStatus: orderItems.voidStatus,
+      orderId: orders.id,
+      orderStatus: orders.status,
+      bookingId: orders.bookingId,
+    })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(and(eq(orderItems.id, orderItemId), eq(orderItems.tenantId, tenantId)))
+    .for('update')
+    .limit(1)
+
+  if (!row) throw new OrderError('Order item not found.')
+  if (row.voidStatus !== 'active') {
+    throw new OrderError(`This item has already been ${row.voidStatus}.`)
+  }
+  if (row.orderStatus === 'billed') {
+    throw new OrderError(
+      'This item has already been billed — void or refund the invoice instead of the item.',
+    )
+  }
+  if (row.orderStatus === 'cancelled') {
+    throw new OrderError('This order is already cancelled.')
+  }
+  return row
+}
+
+/**
+ * The actual money-moving step, shared by requestVoidOrderItemCore's
+ * auto-approve path (a manager/owner requesting their own) and
+ * decideVoidRequestCore's approve path (a manager approving someone else's
+ * request). Re-locks and re-validates the item itself (see
+ * lockActiveOrderItem) rather than trusting a row fetched moments — or a
+ * request-queue's worth of time — earlier.
+ *
+ * The row is never deleted, only flagged (migration 0066): loadFoodLines/
+ * loadOrderFoodLines (lib/billing/invoice.ts) exclude anything not
+ * `void_status = 'active'`, which is what takes the amount off the tab —
+ * everything else (the order, the KOT, the row itself) stays exactly as it
+ * was, so the void/comp report (M20) still has the original line to read.
+ */
+async function applyVoidDecision(
+  tx: Db,
+  actor: AuditActor,
+  input: {
+    orderItemId: string
+    mode: 'void' | 'comp'
+    reason: string
+    requestId: string
+    requestedBy: string | null
+  },
+): Promise<{ orderId: string; bookingId: string | null }> {
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  const newStatus = input.mode === 'void' ? 'voided' : 'comped'
+
+  await tx
+    .update(orderItems)
+    .set({
+      voidStatus: newStatus,
+      voidReason: input.reason,
+      voidedBy: actor.membershipId,
+      voidedAt: new Date(),
+    })
+    .where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+
+  // A VOID is a kitchen mistake that must stop being cooked; a COMP is a
+  // billing decision made after the fact (the food was already made, usually
+  // already served), so it never touches the ticket.
+  //
+  // KOTs are one per ORDER, not one per item (see createOrderCore's
+  // GRANULARITY note) — there is no kot_items table to cross a single line
+  // off of. So this only cancels the ticket once EVERY item on the order has
+  // come off the tab (this was the last active one); if other items on the
+  // order are still active, the ticket is still genuinely needed and is left
+  // alone — the audit row is the record for that item either way. Same
+  // "never touch an already-served ticket" rule as cancelKotsForOrders.
+  if (input.mode === 'void') {
+    const [stillActive] = await tx
+      .select({ id: orderItems.id })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.tenantId, actor.tenantId),
+          eq(orderItems.orderId, row.orderId),
+          eq(orderItems.voidStatus, 'active'),
+        ),
+      )
+      .limit(1)
+    if (!stillActive) {
+      await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+    }
+  }
+
+  await writeAudit(tx, actor, {
+    action: input.mode === 'void' ? 'order_item.void' : 'order_item.comp',
+    entityType: 'order_item',
+    entityId: row.itemId,
+    before: {
+      void_status: row.voidStatus,
+      item_name: row.itemName,
+      qty: row.qty,
+      unit_price: row.unitPrice,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+    },
+    after: {
+      void_status: newStatus,
+      item_name: row.itemName,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+      reason: input.reason,
+      request_id: input.requestId,
+      requested_by: input.requestedBy,
+    },
+  })
+
+  return { orderId: row.orderId, bookingId: row.bookingId }
+}
+
+export type RequestVoidOrderItemInput = {
+  orderItemId: string
+  /** 'void' = removed, ordered by mistake. 'comp' = given free. */
+  mode: 'void' | 'comp'
+  reason: string
+}
+
+export type VoidRequestResult = {
+  requestId: string
+  orderItemId: string
+  orderId: string
+  bookingId: string | null
+  mode: 'void' | 'comp'
+  /** 'approved' when the requester was a manager/owner and this was applied
+   *  immediately, in the same transaction as the request. 'pending' when it
+   *  is now sitting in the manager approval queue. */
+  status: 'pending' | 'approved'
+}
+
+/**
+ * Raise a void/comp request on one order_items line — reasoned, and always
+ * recorded, whoever raises it.
+ *
+ * If the requester is a manager/owner (checked against `actor.role`, which
+ * the caller — lib/actions/orders.ts's requestVoidOrderItem — derives from
+ * requireContext(), never trusted from the client), this applies it
+ * immediately in the SAME transaction: they don't need to ask themselves for
+ * permission, and the pending approval queue (decideVoidRequestCore) exists
+ * for everyone else's requests. Either way there is exactly one request row
+ * and one code path, so the audit trail reads the same regardless of who
+ * pulled the trigger.
+ */
+export async function requestVoidOrderItemCore(
+  tx: Db,
+  actor: AuditActor & { role: MemberRole },
+  input: RequestVoidOrderItemInput,
+): Promise<VoidRequestResult> {
+  const reason = input.reason.trim()
+  if (!reason) throw new OrderError('A reason is required to request a void or comp.')
+
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+
+  // At most one open request per item (also enforced by the DB — see
+  // idx_order_item_void_requests_one_pending, migration 0067) — locking the
+  // order_item above already serialises two concurrent requesters on the
+  // same line, so this read is race-free.
+  const [existingPending] = await tx
+    .select({ id: orderItemVoidRequests.id })
+    .from(orderItemVoidRequests)
+    .where(
+      and(eq(orderItemVoidRequests.orderItemId, row.itemId), eq(orderItemVoidRequests.status, 'pending')),
+    )
+    .limit(1)
+  if (existingPending) {
+    throw new OrderError('A void/comp request is already pending for this item.')
+  }
+
+  const [request] = await tx
+    .insert(orderItemVoidRequests)
+    .values({
+      tenantId: actor.tenantId,
+      orderItemId: row.itemId,
+      mode: input.mode,
+      reason,
+      requestedBy: actor.membershipId,
+    })
+    .returning({ id: orderItemVoidRequests.id })
+
+  await writeAudit(tx, actor, {
+    action: input.mode === 'void' ? 'order_item.void_requested' : 'order_item.comp_requested',
+    entityType: 'order_item_void_request',
+    entityId: request.id,
+    before: {},
+    after: {
+      order_item_id: row.itemId,
+      item_name: row.itemName,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+      reason,
+    },
+  })
+
+  if (isManager(actor.role)) {
+    const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+      orderItemId: row.itemId,
+      mode: input.mode,
+      reason,
+      requestId: request.id,
+      requestedBy: actor.membershipId,
+    })
+    await tx
+      .update(orderItemVoidRequests)
+      .set({ status: 'approved', decidedBy: actor.membershipId, decidedAt: new Date() })
+      .where(eq(orderItemVoidRequests.id, request.id))
+    return { requestId: request.id, orderItemId: row.itemId, orderId, bookingId, mode: input.mode, status: 'approved' }
+  }
+
+  return {
+    requestId: request.id,
+    orderItemId: row.itemId,
+    orderId: row.orderId,
+    bookingId: row.bookingId,
+    mode: input.mode,
+    status: 'pending',
+  }
+}
+
+export type DecideVoidRequestInput = {
+  requestId: string
+  decision: 'approve' | 'reject'
+  /** Optional manager note — mainly useful on a reject ("kitchen already remade it"). */
+  note?: string
+}
+
+export type DecidedVoidRequest = {
+  requestId: string
+  orderItemId: string
+  orderId: string
+  bookingId: string | null
+  mode: 'void' | 'comp'
+  decision: 'approve' | 'reject'
+}
+
+/**
+ * Approve or reject a pending void/comp request — manager-authorised (the
+ * caller, lib/actions/orders.ts's decideVoidRequest, gates on
+ * requireManager() before this ever runs).
+ *
+ * Approving re-validates the item from scratch (applyVoidDecision →
+ * lockActiveOrderItem): time has passed since the waiter raised the request,
+ * so the order may since have been billed or cancelled — in which case this
+ * throws and the request is left `pending` for the manager to reject
+ * explicitly, rather than silently mutating anything.
+ */
+export async function decideVoidRequestCore(
+  tx: Db,
+  actor: AuditActor,
+  input: DecideVoidRequestInput,
+): Promise<DecidedVoidRequest> {
+  const [request] = await tx
+    .select({
+      id: orderItemVoidRequests.id,
+      orderItemId: orderItemVoidRequests.orderItemId,
+      mode: orderItemVoidRequests.mode,
+      reason: orderItemVoidRequests.reason,
+      status: orderItemVoidRequests.status,
+      requestedBy: orderItemVoidRequests.requestedBy,
+    })
+    .from(orderItemVoidRequests)
+    .where(and(eq(orderItemVoidRequests.id, input.requestId), eq(orderItemVoidRequests.tenantId, actor.tenantId)))
+    .for('update')
+    .limit(1)
+
+  if (!request) throw new OrderError('Request not found.')
+  if (request.status !== 'pending') {
+    throw new OrderError(`This request has already been ${request.status}.`)
+  }
+
+  const note = input.note?.trim() || null
+
+  if (input.decision === 'reject') {
+    await tx
+      .update(orderItemVoidRequests)
+      .set({ status: 'rejected', decidedBy: actor.membershipId, decidedAt: new Date(), decisionNote: note })
+      .where(eq(orderItemVoidRequests.id, request.id))
+
+    await writeAudit(tx, actor, {
+      action: request.mode === 'void' ? 'order_item.void_rejected' : 'order_item.comp_rejected',
+      entityType: 'order_item_void_request',
+      entityId: request.id,
+      before: { status: 'pending' },
+      after: { status: 'rejected', order_item_id: request.orderItemId, reason: request.reason, note },
+    })
+
+    // The item itself never moved — just enough to let the caller revalidate
+    // the right pages.
+    const [item] = await tx
+      .select({ orderId: orderItems.orderId, bookingId: orders.bookingId })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(eq(orderItems.id, request.orderItemId))
+      .limit(1)
+
+    return {
+      requestId: request.id,
+      orderItemId: request.orderItemId,
+      orderId: item?.orderId ?? '',
+      bookingId: item?.bookingId ?? null,
+      mode: request.mode,
+      decision: 'reject',
+    }
+  }
+
+  const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+    orderItemId: request.orderItemId,
+    mode: request.mode,
+    reason: request.reason,
+    requestId: request.id,
+    requestedBy: request.requestedBy,
+  })
+
+  await tx
+    .update(orderItemVoidRequests)
+    .set({ status: 'approved', decidedBy: actor.membershipId, decidedAt: new Date(), decisionNote: note })
+    .where(eq(orderItemVoidRequests.id, request.id))
+
+  return {
+    requestId: request.id,
+    orderItemId: request.orderItemId,
+    orderId,
+    bookingId,
+    mode: request.mode,
+    decision: 'approve',
+  }
 }

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
+import { canManageIncomingOrders } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
@@ -69,6 +70,9 @@ export default async function FloorPage() {
         originalUnitPrice: row.originalUnitPrice,
         happyHourDiscountType: row.happyHourDiscountType,
         happyHourDiscountValue: row.happyHourDiscountValue,
+        voidStatus: row.voidStatus!,
+        voidReason: row.voidReason,
+        pendingVoidMode: row.pendingVoidMode,
       })
     }
     if (row.status === 'open') {
@@ -148,6 +152,7 @@ export default async function FloorPage() {
       happyHours={happyHours}
       popularItemIds={popularItemIds}
       ordersByBooking={ordersByBooking}
+      canRequestVoidComp={canManageIncomingOrders(ctx.role)}
     />
   )
 }
