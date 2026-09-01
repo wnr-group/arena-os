@@ -11,6 +11,7 @@ import {
   X,
   UtensilsCrossed,
   CheckCircle2,
+  PackageCheck,
   PackageX,
   EyeOff,
   LayoutGrid,
@@ -23,7 +24,7 @@ import {
   UploadCloud,
   FileImage,
 } from 'lucide-react'
-import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage } from '@/lib/actions/menu'
+import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage, setMenuItemAvailability } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -93,6 +94,7 @@ export function MenuItemsManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
   const [view, setView] = useState<View>('grid')
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
@@ -140,6 +142,19 @@ export function MenuItemsManager({
     setSearch('')
     setCategoryFilter('all')
     setStatusFilter('all')
+  }
+
+  /** "86" / un-86 — a fast flip between available and out_of_stock, never
+   *  touching 'hidden' (setMenuItemAvailability refuses that server-side
+   *  regardless). No confirm dialog: the whole point is one tap. */
+  function handleToggle(row: ItemRow) {
+    const next = row.status === 'available' ? 'out_of_stock' : 'available'
+    setTogglingId(row.id)
+    run(
+      () => setMenuItemAvailability({ id: row.id, status: next }),
+      () => toast.success(next === 'out_of_stock' ? `"${row.name}" 86'd.` : `"${row.name}" is available again.`),
+      () => setTogglingId(null),
+    )
   }
 
   async function handleDelete(row: ItemRow) {
@@ -288,8 +303,10 @@ export function MenuItemsManager({
               currency={currency}
               pending={pending}
               deleting={deletingId === row.id}
+              toggling={togglingId === row.id}
               onEdit={() => setModal({ mode: 'edit', row })}
               onDelete={() => handleDelete(row)}
+              onToggle={() => handleToggle(row)}
             />
           ))}
         </div>
@@ -331,6 +348,23 @@ export function MenuItemsManager({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
+                        {row.status !== 'hidden' && (
+                          <button
+                            className={`${btn} ${row.status === 'out_of_stock' ? 'text-emerald-600' : 'text-amber-600'}`}
+                            disabled={pending}
+                            onClick={() => handleToggle(row)}
+                            aria-label={row.status === 'out_of_stock' ? 'Un-86 (mark available)' : "86 (mark out of stock)"}
+                            title={row.status === 'out_of_stock' ? 'Un-86 (mark available)' : "86 (mark out of stock)"}
+                          >
+                            {togglingId === row.id ? (
+                              <Loader2 size={16} className="animate-spin" />
+                            ) : row.status === 'out_of_stock' ? (
+                              <PackageCheck size={16} />
+                            ) : (
+                              <PackageX size={16} />
+                            )}
+                          </button>
+                        )}
                         <button
                           className={btn}
                           disabled={pending}
@@ -483,24 +517,48 @@ function ItemCard({
   currency,
   pending,
   deleting,
+  toggling,
   onEdit,
   onDelete,
+  onToggle,
 }: {
   row: ItemRow
   currency: string
   pending: boolean
   deleting: boolean
+  toggling: boolean
   onEdit: () => void
   onDelete: () => void
+  onToggle: () => void
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg">
       <ItemVisual imageUrl={row.imageUrl} status={row.status} />
       <div
         className={`absolute right-2 top-2 flex gap-1 transition ${
-          deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          deleting || toggling ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
         }`}
       >
+        {row.status !== 'hidden' && (
+          <button
+            type="button"
+            className={`rounded-md border border-border/60 bg-background/90 p-1.5 shadow-sm backdrop-blur-sm disabled:cursor-not-allowed disabled:opacity-50 ${
+              row.status === 'out_of_stock' ? 'text-emerald-600 hover:bg-emerald-500/10' : 'text-amber-600 hover:bg-amber-500/10'
+            }`}
+            disabled={pending}
+            onClick={onToggle}
+            aria-label={row.status === 'out_of_stock' ? 'Un-86 (mark available)' : "86 (mark out of stock)"}
+            title={row.status === 'out_of_stock' ? 'Un-86 (mark available)' : "86 (mark out of stock)"}
+          >
+            {toggling ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : row.status === 'out_of_stock' ? (
+              <PackageCheck size={13} />
+            ) : (
+              <PackageX size={13} />
+            )}
+          </button>
+        )}
         <button
           type="button"
           className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"

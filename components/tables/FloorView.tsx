@@ -100,6 +100,7 @@ export function FloorView({
   popularItemIds,
   ordersByBooking,
   canRequestVoidComp,
+  canToggle86,
 }: {
   branchId: string
   currency: string
@@ -115,6 +116,10 @@ export function FloorView({
    *  request is applied immediately; anyone else's goes to the approval
    *  queue at /orders/void-requests. */
   canRequestVoidComp: boolean
+  /** Gates the inline 86/un-86 toggle in TakeOrderDialog — a UI nicety only;
+   *  setMenuItemAvailability re-checks canManageKitchen() server-side
+   *  regardless (M17 #7). */
+  canToggle86: boolean
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -540,6 +545,7 @@ export function FloorView({
           menuItems={menuItems}
           happyHours={happyHours}
           popularItemIds={popularItemIds}
+          canToggle86={canToggle86}
           timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={() => {

@@ -1,8 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
-import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, Flame } from 'lucide-react'
+import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, Flame, PackageCheck, PackageX } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
+import { setMenuItemAvailability } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
 import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
@@ -43,6 +44,7 @@ export function TakeOrderDialog({
   happyHours,
   timeZone,
   popularItemIds,
+  canToggle86,
   onClose,
   onCreated,
 }: {
@@ -58,6 +60,10 @@ export function TakeOrderDialog({
    *  — rendered as a quick-tap "Popular" row so a waiter can fire the usual
    *  round without searching. Optional: omit for callers with no order history yet. */
   popularItemIds?: string[]
+  /** Shows the inline 86/un-86 toggle on each item — a UI nicety only;
+   *  setMenuItemAvailability re-checks canManageKitchen() server-side
+   *  regardless (M17 #7). */
+  canToggle86?: boolean
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -66,6 +72,27 @@ export function TakeOrderDialog({
   const [cart, setCart] = useState<CartLine[]>([])
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  // Local copy so an 86/un-86 toggle updates this dialog immediately without
+  // losing the cart the way a full page refresh would — see toggle86 below.
+  const [items, setItems] = useState(menuItems)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+
+  // Deliberately NOT wrapped in the shared `start`/`pending` transition above
+  // — that pair also drives the "Place order" button's disabled/"Placing…"
+  // state, and toggling an item's stock has nothing to do with submitting
+  // the order. togglingId already tracks this row's own pending state.
+  async function toggle86(item: MenuItemOption) {
+    const next = item.status === 'out_of_stock' ? 'available' : 'out_of_stock'
+    setTogglingId(item.id)
+    setItems((prev) => prev.map((m) => (m.id === item.id ? { ...m, status: next } : m)))
+    const r = await setMenuItemAvailability({ id: item.id, status: next })
+    if (r.error) {
+      // Revert — the server refused, so the optimistic flip was wrong.
+      setItems((prev) => prev.map((m) => (m.id === item.id ? { ...m, status: item.status } : m)))
+      setError(r.error)
+    }
+    setTogglingId(null)
+  }
 
   // Idempotency (migration 0065) — stable for as long as this dialog stays
   // open, so a network retry or an impatient double-tap on "Place order"
@@ -93,21 +120,21 @@ export function TakeOrderDialog({
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return menuItems.filter((m) => {
+    return items.filter((m) => {
       if (categoryFilter !== 'all' && m.categoryId !== categoryFilter) return false
       if (q && !m.name.toLowerCase().includes(q)) return false
       return true
     })
-  }, [menuItems, search, categoryFilter])
+  }, [items, search, categoryFilter])
 
   // Only shown on the unfiltered default view — once a waiter is searching
   // or has picked a category, the popular row would just be noise above the
   // list they already narrowed down.
   const popularItems = useMemo(() => {
     if (!popularItemIds || search.trim() || categoryFilter !== 'all') return []
-    const byId = new Map(menuItems.map((m) => [m.id, m]))
+    const byId = new Map(items.map((m) => [m.id, m]))
     return popularItemIds.map((id) => byId.get(id)).filter((m): m is MenuItemOption => Boolean(m))
-  }, [popularItemIds, menuItems, search, categoryFilter])
+  }, [popularItemIds, items, search, categoryFilter])
 
   const totals = useMemo(() => {
     let subtotal = 0
@@ -255,43 +282,65 @@ export function TakeOrderDialog({
               filteredItems.map((item) => {
                 const applied = priced(item.price)
                 const outOfStock = item.status === 'out_of_stock'
+                const isToggling = togglingId === item.id
                 return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => addToCart(item)}
-                  disabled={outOfStock}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-medium">
-                      {item.name}
-                      {outOfStock && (
-                        <span className="ml-2 inline-flex items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
-                          86&apos;d
-                        </span>
-                      )}
-                    </p>
-                    <p className="truncate text-sm text-muted-foreground">{item.categoryName}</p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <div className="flex flex-col items-end">
-                      {applied && (
-                        <span className="text-xs text-muted-foreground line-through">
-                          {formatMoney(item.price, currency)}
-                        </span>
-                      )}
-                      <span className={`text-base font-semibold ${applied ? 'text-amber-600 dark:text-amber-400' : ''}`}>
-                        {formatMoney(applied ? applied.unitPrice : item.price, currency)}
-                      </span>
+                <div key={item.id} className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => addToCart(item)}
+                    disabled={outOfStock}
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-medium">
+                        {item.name}
+                        {outOfStock && (
+                          <span className="ml-2 inline-flex items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
+                            86&apos;d
+                          </span>
+                        )}
+                      </p>
+                      <p className="truncate text-sm text-muted-foreground">{item.categoryName}</p>
                     </div>
-                    {!outOfStock && (
-                      <span className="rounded-md bg-primary/10 p-1.5 text-primary">
-                        <Plus size={14} />
-                      </span>
-                    )}
-                  </div>
-                </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <div className="flex flex-col items-end">
+                        {applied && (
+                          <span className="text-xs text-muted-foreground line-through">
+                            {formatMoney(item.price, currency)}
+                          </span>
+                        )}
+                        <span className={`text-base font-semibold ${applied ? 'text-amber-600 dark:text-amber-400' : ''}`}>
+                          {formatMoney(applied ? applied.unitPrice : item.price, currency)}
+                        </span>
+                      </div>
+                      {!outOfStock && (
+                        <span className="rounded-md bg-primary/10 p-1.5 text-primary">
+                          <Plus size={14} />
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  {canToggle86 && (
+                    <button
+                      type="button"
+                      onClick={() => toggle86(item)}
+                      disabled={isToggling}
+                      title={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
+                      aria-label={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
+                      className={`shrink-0 rounded-lg border border-border p-2.5 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        outOfStock ? 'text-emerald-600 hover:bg-emerald-500/10' : 'text-amber-600 hover:bg-amber-500/10'
+                      }`}
+                    >
+                      {isToggling ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : outOfStock ? (
+                        <PackageCheck size={15} />
+                      ) : (
+                        <PackageX size={15} />
+                      )}
+                    </button>
+                  )}
+                </div>
                 )
               })
             )}
