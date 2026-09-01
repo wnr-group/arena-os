@@ -88,6 +88,9 @@ export default async function KotPrintPage({
                     <span>{item.itemName}</span>
                     <span className="shrink-0">×{item.qty}</span>
                   </div>
+                  {item.modifiers.length > 0 && (
+                    <p className="mt-0.5 text-base font-semibold">— {item.modifiers.join(', ')}</p>
+                  )}
                   {item.specialInstructions && (
                     <p className="mt-0.5 text-base font-medium text-muted-foreground">
                       — {item.specialInstructions}

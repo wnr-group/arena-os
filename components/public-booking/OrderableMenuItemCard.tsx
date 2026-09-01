@@ -15,15 +15,27 @@ export function OrderableMenuItemCard({
   qty,
   onIncrement,
   onDecrement,
+  onCustomize,
   fallbackIcon: FallbackIcon = UtensilsCrossed,
 }: {
   item: OrderableMenuItem
   currency: string
+  /** Total quantity across every cart line for this menu item — an item
+   *  with modifier groups can have several distinct lines (different
+   *  choices), so this is a sum, not one line's qty. Display only; the
+   *  stepper below never shows for a customizable item (see onCustomize). */
   qty: number
   onIncrement: () => void
   onDecrement: () => void
+  /** Present only for an item with modifier groups (M17 #8) — replaces the
+   *  qty stepper with a single "Customize" button that always opens the
+   *  picker, since which of possibly several existing lines to adjust is
+   *  ambiguous from the card alone. Managing an already-added line's qty
+   *  happens on the cart/checkout page instead. */
+  onCustomize?: () => void
   fallbackIcon?: LucideIcon
 }) {
+  const hasModifiers = Boolean(onCustomize)
   const hasDiscount = item.discountedPrice !== null && item.available
   const displayPrice = hasDiscount ? item.discountedPrice! : item.price
 
@@ -86,6 +98,14 @@ export function OrderableMenuItemCard({
 
           {!item.available ? (
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Unavailable</span>
+          ) : hasModifiers ? (
+            <button
+              type="button"
+              onClick={onCustomize}
+              className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground transition hover:opacity-90 active:scale-95"
+            >
+              <Plus size={13} /> {qty > 0 ? `Add (${qty} in cart)` : 'Customize'}
+            </button>
           ) : qty === 0 ? (
             <button
               type="button"

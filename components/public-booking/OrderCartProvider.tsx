@@ -4,7 +4,15 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { OrderableMenuItem } from './OrderMenuClient'
 import { MAX_ORDER_ITEM_QTY } from '@/lib/orders/limits'
 
+export type CartModifier = { groupName: string; optionId: string; optionName: string; priceDelta: number }
 export type CartLine = {
+  /** Cart identity — menuItemId alone for an unmodified line, or menuItemId
+   *  plus the sorted chosen option ids for a modified one (see cartLineKey),
+   *  so "burger, no onions" and "burger, extra cheese" stay separate lines
+   *  instead of merging into one qty. The Record below is keyed by this,
+   *  NOT by menuItemId — a menu item with modifier groups can have several
+   *  lines. */
+  key: string
   menuItemId: string
   name: string
   imageUrl: string | null
@@ -12,6 +20,11 @@ export type CartLine = {
   qty: number
   specialInstructions: string
   hasDiscount: boolean
+  modifiers: CartModifier[]
+}
+
+function cartLineKey(menuItemId: string, optionIds: string[]): string {
+  return [menuItemId, ...[...optionIds].sort()].join('::')
 }
 
 /** Which table/station (if any) the cart is for — set once, at the QR-scan
@@ -91,10 +104,16 @@ type OrderCartContextValue = {
    *  discipline as `station` — placeOnlineOrder re-resolves it from the token. */
   booking: CartBooking | null
   addOrIncrement: (item: OrderableMenuItem) => void
-  incrementById: (menuItemId: string) => void
-  decrementById: (menuItemId: string) => void
-  removeLine: (menuItemId: string) => void
-  updateNote: (menuItemId: string, text: string) => void
+  /** Adds a new line for an item WITH chosen modifiers, or increments the
+   *  existing line if this exact combination is already in the cart — see
+   *  cartLineKey. For an item with no modifier groups, use addOrIncrement. */
+  addWithModifiers: (item: OrderableMenuItem, modifiers: CartModifier[]) => void
+  /** All four of these take a cart LINE's `key` (not menuItemId — a menu
+   *  item with modifier groups can have several distinct lines). */
+  incrementById: (key: string) => void
+  decrementById: (key: string) => void
+  removeLine: (key: string) => void
+  updateNote: (key: string, text: string) => void
   clearCart: () => void
   /** Drops a booking attachment that turned out to be stale (the booking was
    *  completed/cancelled since the nudge link was first opened) — called by
@@ -216,15 +235,17 @@ export function OrderCartProvider({
 
   function addOrIncrement(item: OrderableMenuItem) {
     if (!item.available) return
+    const key = cartLineKey(item.id, [])
     setCart((prev) => {
-      const existing = prev[item.id]
+      const existing = prev[key]
       if (existing && existing.qty >= MAX_ORDER_ITEM_QTY) return prev
       const unitPrice = Number(item.discountedPrice ?? item.price)
       return {
         ...prev,
-        [item.id]: existing
+        [key]: existing
           ? { ...existing, qty: existing.qty + 1 }
           : {
+              key,
               menuItemId: item.id,
               name: item.name,
               imageUrl: item.imageUrl,
@@ -232,6 +253,39 @@ export function OrderCartProvider({
               qty: 1,
               specialInstructions: '',
               hasDiscount: item.discountedPrice !== null,
+              modifiers: [],
+            },
+      }
+    })
+  }
+
+  // A modifier delta is never discounted by happy hour — only the base item
+  // is (see item.discountedPrice), same rule createOrderCore enforces
+  // server-side. Folded into unitPrice once, at add time, rather than
+  // recomputed on every render — same discipline addOrIncrement already
+  // follows for the happy-hour price itself.
+  function addWithModifiers(item: OrderableMenuItem, modifiers: CartModifier[]) {
+    if (!item.available) return
+    const key = cartLineKey(item.id, modifiers.map((m) => m.optionId))
+    setCart((prev) => {
+      const existing = prev[key]
+      if (existing && existing.qty >= MAX_ORDER_ITEM_QTY) return prev
+      const deltaSum = modifiers.reduce((sum, m) => sum + m.priceDelta, 0)
+      const unitPrice = Number(item.discountedPrice ?? item.price) + deltaSum
+      return {
+        ...prev,
+        [key]: existing
+          ? { ...existing, qty: existing.qty + 1 }
+          : {
+              key,
+              menuItemId: item.id,
+              name: item.name,
+              imageUrl: item.imageUrl,
+              unitPrice,
+              qty: 1,
+              specialInstructions: '',
+              hasDiscount: item.discountedPrice !== null,
+              modifiers,
             },
       }
     })
@@ -240,40 +294,40 @@ export function OrderCartProvider({
   // Clamped at MAX_ORDER_ITEM_QTY — the same limit lib/actions/public-orders.ts's
   // zod schema enforces server-side, so the '+' button can never build a line
   // placeOnlineOrder will then reject wholesale at checkout.
-  function incrementById(menuItemId: string) {
+  function incrementById(key: string) {
     setCart((prev) => {
-      const existing = prev[menuItemId]
+      const existing = prev[key]
       if (!existing || existing.qty >= MAX_ORDER_ITEM_QTY) return prev
-      return { ...prev, [menuItemId]: { ...existing, qty: existing.qty + 1 } }
+      return { ...prev, [key]: { ...existing, qty: existing.qty + 1 } }
     })
   }
 
-  function decrementById(menuItemId: string) {
+  function decrementById(key: string) {
     setCart((prev) => {
-      const existing = prev[menuItemId]
+      const existing = prev[key]
       if (!existing) return prev
       if (existing.qty <= 1) {
         const next = { ...prev }
-        delete next[menuItemId]
+        delete next[key]
         return next
       }
-      return { ...prev, [menuItemId]: { ...existing, qty: existing.qty - 1 } }
+      return { ...prev, [key]: { ...existing, qty: existing.qty - 1 } }
     })
   }
 
-  function removeLine(menuItemId: string) {
+  function removeLine(key: string) {
     setCart((prev) => {
       const next = { ...prev }
-      delete next[menuItemId]
+      delete next[key]
       return next
     })
   }
 
-  function updateNote(menuItemId: string, text: string) {
+  function updateNote(key: string, text: string) {
     setCart((prev) => {
-      const existing = prev[menuItemId]
+      const existing = prev[key]
       if (!existing) return prev
-      return { ...prev, [menuItemId]: { ...existing, specialInstructions: text } }
+      return { ...prev, [key]: { ...existing, specialInstructions: text } }
     })
   }
 
@@ -285,6 +339,7 @@ export function OrderCartProvider({
     station,
     booking,
     addOrIncrement,
+    addWithModifiers,
     incrementById,
     decrementById,
     removeLine,

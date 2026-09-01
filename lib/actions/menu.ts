@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq, ne, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems, taxRates } from '@/db/schema'
+import { menuCategories, menuItems, taxRates, menuItemModifierGroups } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageKitchen } from '@/lib/auth/roles'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
@@ -99,13 +99,19 @@ const menuItemInput = z.object({
   status: z.enum(['available', 'out_of_stock', 'hidden']).default('available'),
   imageUrl: z.string().trim().optional(),
   sortOrder: z.coerce.number().int().default(0),
+  // Modifier groups this item offers (M17 #8) — a size, add-ons, etc.
+  // Optional: omit to leave existing links untouched (the modal always
+  // sends the full current set, so in practice this is always present when
+  // the caller is MenuItemsManager, but a script/test creating a plain item
+  // shouldn't be forced to know about modifiers at all).
+  modifierGroupIds: z.array(z.string().uuid()).optional(),
 })
 
-export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Promise<Result> {
+export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Promise<Result & { id?: string }> {
   try {
     const ctx = await requireManager()
     const v = menuItemInput.parse(input)
-    await withUser(ctx.user.id, async (tx) => {
+    const itemId = await withUser(ctx.user.id, async (tx) => {
       // categoryId/taxRateId are foreign keys, but neither is scoped to
       // tenant_id at the DB level (menu_items.category_id is a plain FK to
       // menu_categories(id), not a composite (tenant_id, id) one) — any
@@ -141,17 +147,44 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
         imageUrl: v.imageUrl || null,
         sortOrder: v.sortOrder,
       }
+      let id = v.id
       if (v.id) {
         await tx
           .update(menuItems)
           .set(values)
           .where(and(eq(menuItems.id, v.id), eq(menuItems.tenantId, ctx.tenant.id)))
       } else {
-        await tx.insert(menuItems).values(values)
+        const [created] = await tx.insert(menuItems).values(values).returning({ id: menuItems.id })
+        id = created.id
       }
+
+      // Full-replace the attached modifier groups, same as
+      // lib/actions/modifiers.ts's own item-linking logic — the modal
+      // always sends the complete current set, so delete-then-insert is
+      // simpler and just as correct as diffing which links changed.
+      // Modifiers are restaurant-only (M17 #8) — MenuItemsManager never
+      // sends this field for another industry, but ignore it here too
+      // rather than trusting the client.
+      if (v.modifierGroupIds && ctx.tenant.industry === 'restaurant') {
+        await tx
+          .delete(menuItemModifierGroups)
+          .where(and(eq(menuItemModifierGroups.menuItemId, id!), eq(menuItemModifierGroups.tenantId, ctx.tenant.id)))
+        if (v.modifierGroupIds.length > 0) {
+          await tx.insert(menuItemModifierGroups).values(
+            v.modifierGroupIds.map((groupId, i) => ({
+              tenantId: ctx.tenant.id,
+              menuItemId: id!,
+              groupId,
+              sortOrder: i,
+            })),
+          )
+        }
+      }
+
+      return id
     })
     revalidatePath('/menu/items')
-    return {}
+    return { id: itemId }
   } catch (e) {
     return fail(e)
   }

@@ -68,6 +68,8 @@ export type OrderItemLine = {
   voidReason: string | null
   /** Set while a void/comp request on this line awaits manager approval. */
   pendingVoidMode: 'void' | 'comp' | null
+  /** Chosen modifier option names (M17 #8) — e.g. ["Large", "Extra cheese"]. */
+  modifiers: string[]
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
@@ -697,6 +699,9 @@ export function BookingsView({
                               <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
                                 {it.qty}× {it.itemName}
                               </span>
+                              {it.modifiers.length > 0 && (
+                                <span className="ml-1 text-xs text-primary">— {it.modifiers.join(', ')}</span>
+                              )}
                               {it.specialInstructions ? ` — ${it.specialInstructions}` : ''}
                               {it.happyHourName && (
                                 <span className="ml-1.5 inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">

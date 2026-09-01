@@ -56,6 +56,10 @@ const orderInput = z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1).max(MAX_ORDER_ITEM_QTY),
         specialInstructions: z.string().trim().max(300).optional(),
+        // Structured choices (M17 #8) — see CreateOrderItemInput's doc
+        // comment (lib/orders/service.ts) for what createOrderCore does
+        // with these.
+        modifierOptionIds: z.array(z.string().uuid()).optional(),
       }),
     )
     .min(1, 'Add at least one item')

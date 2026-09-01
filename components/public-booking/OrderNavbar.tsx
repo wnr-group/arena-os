@@ -21,11 +21,14 @@ export function OrderNavbar({
   icon,
   logoUrl,
   topOffset,
+  showMenuLink,
 }: {
   tenantName: string
   icon: ReactNode
   logoUrl?: string | null
   topOffset?: number
+  /** See PublicNavbar's doc comment — passed through unchanged. */
+  showMenuLink?: boolean
 }) {
   const { cartCount } = useOrderCart()
   const router = useRouter()
@@ -38,6 +41,7 @@ export function OrderNavbar({
       cartCount={cartCount}
       onCartClick={() => router.push('/checkout')}
       myBookingHref="/track"
+      showMenuLink={showMenuLink}
     />
   )
 }

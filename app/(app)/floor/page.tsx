@@ -5,8 +5,8 @@ import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
-import { listMenuItems, listMostOrderedItemIds } from '@/lib/menu/data'
-import { listOrdersForBookings } from '@/lib/orders/data'
+import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
+import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
 import { listKotStatusesForBookings } from '@/lib/kots/data'
 import { listBookingBillingStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
@@ -33,12 +33,14 @@ export default async function FloorPage() {
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [tables, menuItemRows, happyHourRows, popularItemRows] = await Promise.all([
+  const [tables, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] = await Promise.all([
     listTables(ctx, branch.id),
     listMenuItems(ctx),
     listHappyHours(ctx),
     listMostOrderedItemIds(ctx, branch.id),
+    listMenuItemModifierGroups(ctx),
   ])
+  const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
   const bookingIds = [...new Set(tables.map((t) => t.bookingId).filter((id): id is string => Boolean(id)))]
   const [orderRows, kotRows, billingStates] = await Promise.all([
@@ -46,6 +48,12 @@ export default async function FloorPage() {
     listKotStatusesForBookings(ctx, bookingIds),
     listBookingBillingStates(ctx, bookingIds),
   ])
+  // /floor is restaurant-only already (the redirect above), so no industry
+  // check needed here — unlike /bookings, which is cross-industry.
+  const modifiersByOrderItem = await listOrderItemModifierNames(
+    ctx,
+    orderRows.map((r) => r.itemId).filter((id): id is string => id !== null),
+  )
 
   const ordersByBooking: Record<string, OrderSummary[]> = {}
   // Distinct open orders per booking (a left-joined item row would otherwise
@@ -73,6 +81,7 @@ export default async function FloorPage() {
         voidStatus: row.voidStatus!,
         voidReason: row.voidReason,
         pendingVoidMode: row.pendingVoidMode,
+        modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
       })
     }
     if (row.status === 'open') {
@@ -102,6 +111,7 @@ export default async function FloorPage() {
     categoryName: i.categoryName,
     taxPercent: i.taxPercent,
     status: i.status,
+    modifierGroups: modifierGroupsByItem.get(i.id) ?? [],
   }))
   // menuItemId is null for a row whose menu item has since been deleted
   // (order_items.menu_item_id is ON DELETE SET NULL) — nothing to quick-add.

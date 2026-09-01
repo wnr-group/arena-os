@@ -47,6 +47,11 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
+  // Restaurant tenants order dine-in via the table QR flow, not a
+  // "browse the menu" entry point off the public homepage — the homepage
+  // itself is enough for them, so neither the navbar's Menu link nor a
+  // Menu Highlights section belongs here. Every other industry keeps both.
+  const isRestaurant = tenant.industry === 'restaurant'
 
   // A business that has published its own homepage (M13) gets that instead of
   // the default below. Every tenant that hasn't touched the builder yet — i.e.
@@ -63,6 +68,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
         branch={branch}
         currency={tenant.currency}
         timezone={tenant.timezone}
+        isRestaurant={isRestaurant}
         footer={
           <PublicFooter
             tenantName={tenant.name}
@@ -87,15 +93,15 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
       const applied = item.available ? applyHappyHour(Number(item.price), happyHourRules, now, tenant.timezone) : null
       return { ...item, discountedPrice: applied ? applied.unitPrice.toFixed(2) : null }
     })
-  const hasMenu = menuHighlights.length > 0
+  const hasMenu = menuHighlights.length > 0 && !isRestaurant
 
   return (
     <div className={`flex min-h-screen flex-col ${publicSiteFont.className}`} style={accentColorStyle(branding.accentColor)}>
       <OrderCartProvider>
         {hasMenu ? (
-          <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
+          <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} showMenuLink={!isRestaurant} />
         ) : (
-          <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
+          <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} showMenuLink={!isRestaurant} />
         )}
 
         <main className="flex-1">
