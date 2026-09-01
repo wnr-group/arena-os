@@ -45,6 +45,7 @@ export default async function KitchenPage() {
         itemName: row.itemName!,
         qty: row.qty!,
         specialInstructions: row.specialInstructions,
+        modifiers: row.modifiers,
       })
     }
   }

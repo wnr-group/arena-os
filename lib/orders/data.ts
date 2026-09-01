@@ -1,8 +1,33 @@
 import 'server-only'
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { orders, orderItems, orderItemVoidRequests, bookings, resources, memberships } from '@/db/schema'
+import { orders, orderItems, orderItemModifiers, orderItemVoidRequests, bookings, resources, memberships } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+
+/**
+ * Chosen-modifier names for a set of order_items ids, grouped by item id —
+ * "no onions, extra cheese" under a booking/floor detail line. Same
+ * follow-up-query shape as lib/kots/data.ts's loadModifierNamesByItem.
+ */
+export async function listOrderItemModifierNames(
+  ctx: ActiveContext,
+  orderItemIds: string[],
+): Promise<Map<string, string[]>> {
+  const byItem = new Map<string, string[]>()
+  if (orderItemIds.length === 0) return byItem
+  const rows = await withUser(ctx.user.id, (tx) =>
+    tx
+      .select({ orderItemId: orderItemModifiers.orderItemId, optionName: orderItemModifiers.optionName })
+      .from(orderItemModifiers)
+      .where(and(eq(orderItemModifiers.tenantId, ctx.tenant.id), inArray(orderItemModifiers.orderItemId, orderItemIds))),
+  )
+  for (const row of rows) {
+    const list = byItem.get(row.orderItemId) ?? []
+    if (list.length === 0) byItem.set(row.orderItemId, list)
+    list.push(row.optionName)
+  }
+  return byItem
+}
 
 /** Flat order+item rows for the given bookings — used to show food orders on a booking's detail view. */
 export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) {

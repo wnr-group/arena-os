@@ -15,6 +15,8 @@ export type KotTicketItem = {
   itemName: string
   qty: number
   specialInstructions: string | null
+  /** Chosen modifier option names (M17 #8) — e.g. ["Large", "Extra cheese"]. */
+  modifiers: string[]
 }
 export type KotTicket = {
   kotId: string
@@ -155,6 +157,9 @@ export function KitchenQueue({ tickets, menuItems }: { tickets: KotTicket[]; men
                     <span className="font-medium">
                       {item.qty}× {item.itemName}
                     </span>
+                    {item.modifiers.length > 0 && (
+                      <span className="block text-xs font-medium text-primary">— {item.modifiers.join(', ')}</span>
+                    )}
                     {item.specialInstructions && (
                       <span className="block text-xs text-muted-foreground">— {item.specialInstructions}</span>
                     )}

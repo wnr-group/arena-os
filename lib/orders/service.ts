@@ -9,14 +9,19 @@
  * be charged for food the kitchen was never told about, and the kitchen can
  * never be shown a ticket for an order that failed to save.
  */
+import { randomUUID } from 'node:crypto'
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import {
   orders,
   orderItems,
+  orderItemModifiers,
   orderItemVoidRequests,
   menuItems,
+  modifierGroups,
+  modifierOptions,
+  menuItemModifierGroups,
   taxRates,
   bookings,
   happyHours,
@@ -37,6 +42,13 @@ export type CreateOrderItemInput = {
   menuItemId: string
   qty: number
   specialInstructions?: string
+  // Structured choices (M17 #8) — a size, an add-on, "no onions" — as
+  // opposed to specialInstructions' free text. Each id must be a
+  // modifier_options row belonging to a group actually attached to this
+  // menu item (see menuItemModifierGroups below); createOrderCore validates
+  // both that and every attached group's min/max, and snapshots the chosen
+  // options' name + price delta onto order_item_modifiers.
+  modifierOptionIds?: string[]
 }
 
 export type CreateOrderInput = {
@@ -164,6 +176,87 @@ export async function createOrderCore(
     }
   }
 
+  // Modifier groups attached to any of the ordered items (M17 #8), keyed by
+  // menu item — what a client is even allowed to choose from for that item,
+  // and the min/max it must respect. Read once per order, same "trust
+  // nothing from the browser but the ids" discipline as menuItems above.
+  const groupLinkRows = await tx
+    .select({
+      menuItemId: menuItemModifierGroups.menuItemId,
+      groupId: modifierGroups.id,
+      groupName: modifierGroups.name,
+      minSelect: modifierGroups.minSelect,
+      maxSelect: modifierGroups.maxSelect,
+    })
+    .from(menuItemModifierGroups)
+    .innerJoin(modifierGroups, eq(modifierGroups.id, menuItemModifierGroups.groupId))
+    .where(and(eq(menuItemModifierGroups.tenantId, ctx.tenantId), inArray(menuItemModifierGroups.menuItemId, ids)))
+
+  const groupsByMenuItem = new Map<string, typeof groupLinkRows>()
+  for (const link of groupLinkRows) {
+    const list = groupsByMenuItem.get(link.menuItemId) ?? []
+    list.push(link)
+    groupsByMenuItem.set(link.menuItemId, list)
+  }
+
+  // Every option any line asked for, resolved and tenant-checked in one
+  // query — cheaper than one query per line, and the existence check below
+  // catches a deleted/foreign option id the same way byId.size does for
+  // menu items above.
+  const requestedOptionIds = [...new Set(input.items.flatMap((i) => i.modifierOptionIds ?? []))]
+  const optionRows =
+    requestedOptionIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: modifierOptions.id,
+            name: modifierOptions.name,
+            priceDelta: modifierOptions.priceDelta,
+            groupId: modifierOptions.groupId,
+            groupName: modifierGroups.name,
+          })
+          .from(modifierOptions)
+          .innerJoin(modifierGroups, eq(modifierGroups.id, modifierOptions.groupId))
+          .where(and(eq(modifierOptions.tenantId, ctx.tenantId), inArray(modifierOptions.id, requestedOptionIds)))
+  const optionById = new Map(optionRows.map((o) => [o.id, o]))
+  if (optionById.size !== requestedOptionIds.length) {
+    throw new OrderError('One or more modifier options were not found.')
+  }
+
+  /**
+   * Validate one line's chosen options against the menu item's attached
+   * groups (min/max, and — the part a UI bug or a tampered request could
+   * otherwise smuggle past — that every chosen option actually belongs to a
+   * group THIS item offers, not just any group in the tenant) and return the
+   * priced total to add to the base unit price.
+   */
+  function resolveLineModifiers(menuItemId: string, optionIds: string[]) {
+    const attachedGroups = groupsByMenuItem.get(menuItemId) ?? []
+    const selected = optionIds.map((id) => optionById.get(id)!)
+
+    const countByGroup = new Map<string, number>()
+    for (const opt of selected) {
+      if (!attachedGroups.some((g) => g.groupId === opt.groupId)) {
+        throw new OrderError(`"${opt.name}" is not a valid option for this item.`)
+      }
+      countByGroup.set(opt.groupId, (countByGroup.get(opt.groupId) ?? 0) + 1)
+    }
+
+    for (const g of attachedGroups) {
+      const count = countByGroup.get(g.groupId) ?? 0
+      if (count < g.minSelect) {
+        const phrase = g.minSelect === g.maxSelect ? 'exactly' : 'at least'
+        throw new OrderError(`Choose ${phrase} ${g.minSelect} option${g.minSelect === 1 ? '' : 's'} for "${g.groupName}".`)
+      }
+      if (count > g.maxSelect) {
+        throw new OrderError(`Choose at most ${g.maxSelect} option${g.maxSelect === 1 ? '' : 's'} for "${g.groupName}".`)
+      }
+    }
+
+    const deltaSum = selected.reduce((sum, o) => sum + Number(o.priceDelta), 0)
+    return { selected, deltaSum }
+  }
+
   // Rules to weigh against every line. Read once per order, then matched in
   // memory — the "is it happy hour right now" decision is made here, on the
   // server, never trusted from the browser.
@@ -242,15 +335,27 @@ export async function createOrderCore(
     })
     .returning({ id: orders.id })
 
-  await tx.insert(orderItems).values(
-    input.items.map((i) => {
-      const m = byId.get(i.menuItemId)!
-      const basePrice = Number(m.price)
-      // Every item is in scope: a live rule discounts whatever is ordered
-      // inside its time window, with no per-item opt-in required.
-      const applied = applyHappyHour(basePrice, rules, now, ctx.timezone)
-      const unitPrice = applied ? applied.unitPrice : basePrice
-      return {
+  // Ids generated here, not left to the table's default, so this same
+  // transaction can attach order_item_modifiers rows to the right parent
+  // without a second round trip (RETURNING doesn't promise to preserve
+  // input order for a multi-row INSERT ... VALUES).
+  const preparedItems = input.items.map((i) => {
+    const m = byId.get(i.menuItemId)!
+    const basePrice = Number(m.price)
+    // Every item is in scope: a live rule discounts whatever is ordered
+    // inside its time window, with no per-item opt-in required. Only the
+    // BASE price is discounted — modifier deltas (extra cheese, a larger
+    // size) are added after, at full price, same as a real till would never
+    // apply a food discount to an add-on.
+    const applied = applyHappyHour(basePrice, rules, now, ctx.timezone)
+    const baseUnitPrice = applied ? applied.unitPrice : basePrice
+    const { selected, deltaSum } = resolveLineModifiers(i.menuItemId, i.modifierOptionIds ?? [])
+    const unitPrice = baseUnitPrice + deltaSum
+    const id = randomUUID()
+    return {
+      id,
+      values: {
+        id,
         tenantId: ctx.tenantId,
         orderId: order.id,
         menuItemId: i.menuItemId,
@@ -261,15 +366,32 @@ export async function createOrderCore(
         lineTotal: (unitPrice * i.qty).toFixed(2),
         specialInstructions: i.specialInstructions || null,
         // Snapshot so an edited/deleted happy-hour rule never changes what
-        // this line already charged.
+        // this line already charged. originalUnitPrice is the BASE item's
+        // pre-discount price only — never includes modifier deltas, which
+        // were never eligible for the discount in the first place.
         happyHourId: applied?.rule.id ?? null,
         happyHourName: applied?.rule.name ?? null,
         originalUnitPrice: applied ? basePrice.toFixed(2) : null,
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
-      }
-    }),
-  )
+      },
+      modifiers: selected.map((o) => ({
+        tenantId: ctx.tenantId,
+        orderItemId: id,
+        modifierOptionId: o.id,
+        groupName: o.groupName,
+        optionName: o.name,
+        priceDelta: Number(o.priceDelta).toFixed(2),
+      })),
+    }
+  })
+
+  await tx.insert(orderItems).values(preparedItems.map((p) => p.values))
+
+  const modifierRows = preparedItems.flatMap((p) => p.modifiers)
+  if (modifierRows.length > 0) {
+    await tx.insert(orderItemModifiers).values(modifierRows)
+  }
 
   // A kitchen ticket is born the instant the order is — same transaction, so
   // the order and its KOT save together or not at all. The kitchen can never

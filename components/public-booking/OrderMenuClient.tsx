@@ -21,6 +21,7 @@ import type { PublicMenuItem } from '@/lib/menu/public'
 import type { PublicTenant } from '@/lib/tenant/public'
 import { useOrderCart } from './OrderCartProvider'
 import { OrderableMenuItemCard } from './OrderableMenuItemCard'
+import { ModifierPickerSheet } from './ModifierPickerSheet'
 
 export type OrderableMenuItem = PublicMenuItem & { discountedPrice: string | null }
 export type OrderableMenuCategory = { id: string; name: string; items: OrderableMenuItem[] }
@@ -90,7 +91,25 @@ export function OrderMenuClient({
 }) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const { cart, addOrIncrement, decrementById } = useOrderCart()
+  const { cartLines, addOrIncrement, addWithModifiers, decrementById } = useOrderCart()
+  const [pickerItem, setPickerItem] = useState<OrderableMenuItem | null>(null)
+
+  // Total qty for one menu item across every cart line — an item with
+  // modifier groups can have several (different choices), so this is a sum,
+  // not one line's qty. See OrderableMenuItemCard's onCustomize doc comment.
+  const qtyByMenuItem = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const line of cartLines) map.set(line.menuItemId, (map.get(line.menuItemId) ?? 0) + line.qty)
+    return map
+  }, [cartLines])
+
+  function handleTap(item: OrderableMenuItem) {
+    if (item.modifierGroups.length > 0) {
+      setPickerItem(item)
+    } else {
+      addOrIncrement(item)
+    }
+  }
 
   const totalItemsCount = useMemo(() => categories.reduce((sum, cat) => sum + cat.items.length, 0), [categories])
 
@@ -204,9 +223,10 @@ export function OrderMenuClient({
                     key={item.id}
                     item={item}
                     currency={tenant.currency}
-                    qty={cart[item.id]?.qty ?? 0}
+                    qty={qtyByMenuItem.get(item.id) ?? 0}
                     onIncrement={() => addOrIncrement(item)}
                     onDecrement={() => decrementById(item.id)}
+                    onCustomize={item.modifierGroups.length > 0 ? () => handleTap(item) : undefined}
                     fallbackIcon={getCategoryIcon(category.name)}
                   />
                 ))}
@@ -215,6 +235,18 @@ export function OrderMenuClient({
           ))
         )}
       </div>
+
+      {pickerItem && (
+        <ModifierPickerSheet
+          item={pickerItem}
+          currency={tenant.currency}
+          onClose={() => setPickerItem(null)}
+          onConfirm={(modifiers) => {
+            addWithModifiers(pickerItem, modifiers)
+            setPickerItem(null)
+          }}
+        />
+      )}
     </div>
   )
 }

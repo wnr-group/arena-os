@@ -41,6 +41,7 @@ import {
   Globe,
   Bell,
   Armchair,
+  Layers,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -60,6 +61,8 @@ type NavChild = {
   label: string
   icon?: LucideIcon
   can?: (role: MemberRole) => boolean
+  /** Same meaning as NavItem's industries below — omit for every industry. */
+  industries?: string[]
 }
 type NavItem = {
   href: string
@@ -101,6 +104,9 @@ const NAV: NavItem[] = [
     children: [
       { href: '/menu/categories', label: 'Categories', icon: Tags },
       { href: '/menu/items', label: 'Items', icon: ClipboardList },
+      // Modifier groups (M17 #8) — restaurant tenants only, same scoping as
+      // Tables/Void-Comp Requests below.
+      { href: '/menu/modifiers', label: 'Modifiers', icon: Layers, industries: ['restaurant'] },
     ],
   },
   {
@@ -124,7 +130,8 @@ const NAV: NavItem[] = [
   // Void/comp approval queue (M17 #6) — manager/owner only: the request
   // itself is raised by front-of-house staff from the item's own void/comp
   // button, but approving it is money leaving the tab.
-  { href: '/orders/void-requests', label: 'Void/Comp Requests', icon: Ban, can: isManager },
+  // Void/comp (M17 #6) — restaurant tenants only, same scoping as Tables.
+  { href: '/orders/void-requests', label: 'Void/Comp Requests', icon: Ban, can: isManager, industries: ['restaurant'] },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.
@@ -211,7 +218,9 @@ export function Sidebar({
         const Icon = item.icon
 
         if (item.children) {
-          const visibleChildren = item.children.filter((c) => !c.can || c.can(role))
+          const visibleChildren = item.children.filter(
+            (c) => (!c.can || c.can(role)) && (!c.industries || c.industries.includes(industry)),
+          )
           if (visibleChildren.length === 0) return null
           const childActive = isChildActive(pathname, visibleChildren)
           if (collapsed) {

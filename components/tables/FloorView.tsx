@@ -437,6 +437,9 @@ export function FloorView({
                               <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
                                 {it.qty}× {it.itemName}
                               </span>
+                              {it.modifiers.length > 0 && (
+                                <span className="ml-1 text-xs text-primary">— {it.modifiers.join(', ')}</span>
+                              )}
                               {it.voidStatus !== 'active' && (
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${

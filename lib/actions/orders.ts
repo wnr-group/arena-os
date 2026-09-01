@@ -43,6 +43,10 @@ const createInput = z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1),
         specialInstructions: z.string().trim().optional(),
+        // Structured choices (M17 #8) — see CreateOrderItemInput's doc
+        // comment (lib/orders/service.ts) for what createOrderCore does
+        // with these.
+        modifierOptionIds: z.array(z.string().uuid()).optional(),
       }),
     )
     .min(1, 'Add at least one item'),
@@ -171,6 +175,9 @@ export async function requestVoidOrderItem(
 ): Promise<VoidRequestResultDTO> {
   try {
     const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Void/comp is only available for restaurant tenants.')
+    }
     if (!canManageIncomingOrders(ctx.role)) {
       throw new AuthError('Only front-of-house staff, managers and owners can request a void or comp.')
     }
@@ -205,6 +212,9 @@ const decideVoidRequestInput = z.object({
 export async function decideVoidRequest(input: z.input<typeof decideVoidRequestInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Void/comp is only available for restaurant tenants.')
+    }
     const v = decideVoidRequestInput.parse(input)
     await withUser(ctx.user.id, (tx) =>
       decideVoidRequestCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),

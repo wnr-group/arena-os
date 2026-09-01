@@ -5,8 +5,8 @@ import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
-import { listMenuItems, listMostOrderedItemIds } from '@/lib/menu/data'
-import { listOrdersForBookings } from '@/lib/orders/data'
+import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
+import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
 import { listDepositStates } from '@/lib/payments/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
@@ -36,17 +36,28 @@ export default async function BookingsPage({
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows] = await Promise.all([
+  // Void/comp (M17 #6) and modifiers (M17 #8) are restaurant-only — every
+  // other industry gets neither the request button nor a modifier picker on
+  // this cross-industry order screen, same scoping as /floor's own gate.
+  const isRestaurant = ctx.tenant.industry === 'restaurant'
+
+  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] = await Promise.all([
     listResources(ctx, branch.id),
     getWorkingHours(ctx, branch.id),
     listDayBookings(ctx, branch.id, date, tz),
     listMenuItems(ctx),
     listHappyHours(ctx),
     listMostOrderedItemIds(ctx, branch.id),
+    isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
   ])
+  const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
   const orderRows = await listOrdersForBookings(ctx, bookingIds)
+  const orderItemIds = orderRows.map((r) => r.itemId).filter((id): id is string => id !== null)
+  const modifiersByOrderItem = isRestaurant
+    ? await listOrderItemModifierNames(ctx, orderItemIds)
+    : new Map<string, string[]>()
   // Which bookings already have a deposit order open or settled (AROS-49).
   const depositRows = await listDepositStates(ctx, bookingIds)
   const depositStates: Record<string, 'pending' | 'paid'> = {}
@@ -77,6 +88,7 @@ export default async function BookingsPage({
         voidStatus: row.voidStatus!,
         voidReason: row.voidReason,
         pendingVoidMode: row.pendingVoidMode,
+        modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
       })
     }
   }
@@ -95,6 +107,7 @@ export default async function BookingsPage({
     categoryName: i.categoryName,
     taxPercent: i.taxPercent,
     status: i.status,
+    modifierGroups: modifierGroupsByItem.get(i.id) ?? [],
   }))
   // menuItemId is null for a row whose menu item has since been deleted
   // (order_items.menu_item_id is ON DELETE SET NULL) — nothing to quick-add.
@@ -165,7 +178,7 @@ export default async function BookingsPage({
       ordersByBooking={ordersByBooking}
       venueName={ctx.tenant.name}
       depositStates={depositStates}
-      canRequestVoidComp={canManageIncomingOrders(ctx.role)}
+      canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
     />
   )

@@ -166,6 +166,7 @@ export function CheckoutClient({
           menuItemId: l.menuItemId,
           qty: l.qty,
           specialInstructions: l.specialInstructions.trim() || undefined,
+          modifierOptionIds: l.modifiers.map((m) => m.optionId),
         })),
         customerName: name,
         customerPhone: phone,
@@ -363,7 +364,7 @@ export function CheckoutClient({
           )}
           {cartLines.map((line) => (
             <div
-              key={line.menuItemId}
+              key={line.key}
               className="group flex gap-4 rounded-2xl border border-border/60 bg-card p-4 shadow-sm transition-colors hover:border-primary/25 sm:p-5"
             >
               {line.imageUrl ? (
@@ -382,11 +383,16 @@ export function CheckoutClient({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-base font-bold leading-tight text-foreground">{line.name}</p>
+                    {line.modifiers.length > 0 && (
+                      <p className="truncate text-sm text-muted-foreground">
+                        {line.modifiers.map((m) => m.optionName).join(', ')}
+                      </p>
+                    )}
                     <p className="mt-0.5 text-sm text-muted-foreground">{formatMoney(line.unitPrice, currency)} each</p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => removeLine(line.menuItemId)}
+                    onClick={() => removeLine(line.key)}
                     className="shrink-0 rounded-lg p-1.5 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
                     aria-label={`Remove ${line.name}`}
                   >
@@ -400,7 +406,7 @@ export function CheckoutClient({
                     type="text"
                     placeholder="Add a note (optional)"
                     value={line.specialInstructions}
-                    onChange={(e) => updateNote(line.menuItemId, e.target.value)}
+                    onChange={(e) => updateNote(line.key, e.target.value)}
                     className="w-full bg-transparent outline-none placeholder:text-muted-foreground/60"
                   />
                 </label>
@@ -409,7 +415,7 @@ export function CheckoutClient({
                   <div className="flex items-center gap-2.5 rounded-full border border-primary/30 bg-primary/5 px-2 py-1.5">
                     <button
                       type="button"
-                      onClick={() => decrementById(line.menuItemId)}
+                      onClick={() => decrementById(line.key)}
                       aria-label="Remove one"
                       className="flex size-7 items-center justify-center rounded-full bg-background text-foreground shadow-sm active:scale-90"
                     >
@@ -418,7 +424,7 @@ export function CheckoutClient({
                     <span className="min-w-5 text-center text-sm font-bold">{line.qty}</span>
                     <button
                       type="button"
-                      onClick={() => incrementById(line.menuItemId)}
+                      onClick={() => incrementById(line.key)}
                       disabled={line.qty >= MAX_ORDER_ITEM_QTY}
                       aria-label={line.qty >= MAX_ORDER_ITEM_QTY ? `Maximum ${MAX_ORDER_ITEM_QTY} per item` : 'Add one more'}
                       className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm active:scale-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
@@ -546,9 +552,14 @@ export function CheckoutClient({
 
             <div className="space-y-3 px-5 py-4">
               {cartLines.map((line) => (
-                <div key={line.menuItemId} className="flex items-center justify-between gap-3 text-sm">
+                <div key={line.key} className="flex items-center justify-between gap-3 text-sm">
                   <span className="min-w-0 truncate text-muted-foreground">
                     {line.qty} × {line.name}
+                    {line.modifiers.length > 0 && (
+                      <span className="block truncate text-xs text-muted-foreground/70">
+                        {line.modifiers.map((m) => m.optionName).join(', ')}
+                      </span>
+                    )}
                   </span>
                   <span className="shrink-0 font-semibold text-foreground">
                     {formatMoney(line.unitPrice * line.qty, currency)}

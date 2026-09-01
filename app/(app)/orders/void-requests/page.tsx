@@ -10,6 +10,10 @@ import { VoidRequestsQueue, type VoidRequest } from '@/components/orders/VoidReq
 export default async function VoidRequestsPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
+  // Restaurant-only surface (M17 #6): gated here, not just by hiding the nav
+  // entry, so a non-restaurant tenant can never reach it by URL either — same
+  // discipline app/(app)/floor/page.tsx uses.
+  if (ctx.tenant.industry !== 'restaurant') redirect('/dashboard')
   // Presentation only — decideVoidRequest re-checks requireManager() itself
   // (lib/actions/orders.ts).
   if (!isManager(ctx.role)) redirect('/dashboard')
