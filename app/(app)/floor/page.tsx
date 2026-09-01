@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canManageIncomingOrders } from '@/lib/auth/roles'
+import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
@@ -153,6 +153,7 @@ export default async function FloorPage() {
       popularItemIds={popularItemIds}
       ordersByBooking={ordersByBooking}
       canRequestVoidComp={canManageIncomingOrders(ctx.role)}
+      canToggle86={canManageKitchen(ctx.role)}
     />
   )
 }

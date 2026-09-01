@@ -1,11 +1,12 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { menuCategories, menuItems, taxRates } from '@/db/schema'
-import { requireManager, AuthError } from '@/lib/auth/guard'
+import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
+import { canManageKitchen } from '@/lib/auth/roles'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -150,6 +151,49 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
       }
     })
     revalidatePath('/menu/items')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const availabilityInput = z.object({
+  id: z.string().uuid(),
+  status: z.enum(['available', 'out_of_stock']),
+})
+
+/**
+ * "86" / un-86 an item — a fast toggle between available and out_of_stock
+ * (M17 #7). Deliberately NOT requireManager(): the ticket wants "any
+ * authorised staff" to flip this mid-service, which in practice means
+ * kitchen staff and up — the same gate updateKotStatus uses
+ * (lib/actions/kots.ts) — not the manager-only bar upsertMenuItem sets for
+ * editing an item's price/name/etc.
+ *
+ * Never touches 'hidden': that's a stronger, deliberate manager decision
+ * (menu settings), and this toggle has no business un-hiding an item or
+ * hiding one just because it ran out — the WHERE clause below makes that
+ * structurally impossible rather than trusting the caller not to ask.
+ */
+export async function setMenuItemAvailability(input: z.input<typeof availabilityInput>): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (!canManageKitchen(ctx.role)) {
+      throw new AuthError('Only kitchen staff, managers and owners can 86 an item.')
+    }
+    const v = availabilityInput.parse(input)
+    const updated = await withUser(ctx.user.id, (tx) =>
+      tx
+        .update(menuItems)
+        .set({ status: v.status, updatedAt: new Date() })
+        .where(and(eq(menuItems.id, v.id), eq(menuItems.tenantId, ctx.tenant.id), ne(menuItems.status, 'hidden')))
+        .returning({ id: menuItems.id }),
+    )
+    if (updated.length === 0) return { error: 'Item not found, or it is hidden from the menu.' }
+    revalidatePath('/menu/items')
+    revalidatePath('/kitchen')
+    revalidatePath('/floor')
+    revalidatePath('/bookings')
     return {}
   } catch (e) {
     return fail(e)
