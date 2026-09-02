@@ -96,7 +96,7 @@ type PayableOrderRow = {
  * Deliberately NOT `FOR UPDATE`: this runs on the PUBLIC connection
  * (arena_app under withPublicTenant), which has no UPDATE policy on
  * `orders` — only `orders_public_select`/`orders_public_insert` (migration
- * 0049). Postgres requires a row to also pass the UPDATE policy's USING
+ * 0056). Postgres requires a row to also pass the UPDATE policy's USING
  * clause to be locked by SELECT ... FOR UPDATE, so a locking read here would
  * silently see ZERO rows for every order, not an error — exactly the "Order
  * not found" a customer hit in production before this comment existed. No
@@ -114,7 +114,7 @@ type PayableOrderRow = {
  * moves.
  */
 async function loadPayableOrder(tx: Db, tenantId: string, orderId: string): Promise<PayableOrderRow> {
-  // Pins orders_public_select (migration 0060) to this one order — every
+  // Pins orders_public_select (migration 0067) to this one order — every
   // caller of this function already knows a specific orderId going in (see
   // createOrderPaymentIntent below), now enforced by the database too.
   await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)

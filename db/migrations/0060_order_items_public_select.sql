@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0053: order_items needs a PUBLIC SELECT policy, not just INSERT.
+-- Arena OS — 0060: order_items needs a PUBLIC SELECT policy, not just INSERT.
 --
 -- 0049_public_order_create.sql gave the public role INSERT on order_items
 -- (for placing an order) but never SELECT — placeOnlineOrder never needed to
@@ -11,7 +11,7 @@
 -- rather than an error, which surfaced in production as "This order has
 -- nothing to pay for" for a real, non-empty order.
 --
--- Scoped identically to orders_public_select (0049): tenant-only, no
+-- Scoped identically to orders_public_select (0056): tenant-only, no
 -- per-order ownership check, because there is no session/token proving
 -- "this is MY order" for an anonymous checkout. This adds no new category of
 -- exposure beyond what orders_public_select already grants — a public

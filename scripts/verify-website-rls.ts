@@ -1,6 +1,6 @@
 /**
  * Proves the website builder tables' isolation and authorization guarantees
- * against a real database (M13 — migration 0044).
+ * against a real database (M13 — migration 0051).
  *
  *   npx tsx scripts/verify-website-rls.ts
  *

@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0055 public booking payment (RLS): let the PUBLIC booking flow
+-- Arena OS — 0062 public booking payment (RLS): let the PUBLIC booking flow
 -- create a payment_intents row for the "pay online now" booking it just
 -- placed (lib/payments/booking-payment.ts).
 --
@@ -12,7 +12,7 @@
 -- could never be persisted (surfaced to the customer as "online payment
 -- could not be started").
 --
--- payment_intents_public_select (0052) already covers reading this row back
+-- payment_intents_public_select (0059) already covers reading this row back
 -- — its USING clause only scopes by tenant, not purpose — so only INSERT
 -- needs a new, ADDITIONAL permissive policy here; Postgres ORs multiple
 -- permissive policies together for the same command, so

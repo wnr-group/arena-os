@@ -1,7 +1,7 @@
 -- ============================================================================
--- Arena OS — 0059: column-scope customers_public_update at the database layer
+-- Arena OS — 0066: column-scope customers_public_update at the database layer
 --
--- customers_public_update (0054) scopes an UPDATE to the right TENANT, but
+-- customers_public_update (0061) scopes an UPDATE to the right TENANT, but
 -- RLS is inherently row-scoped, not column-scoped — it cannot express "may
 -- change notify_order_ready, nothing else". That narrower rule has only ever
 -- lived in application code (lib/customers/service.ts's setNotifyOrderReady,

@@ -13,13 +13,13 @@
  *      UPDATE` on `orders` from the PUBLIC connection. Postgres requires a
  *      row to also pass the table's UPDATE RLS policy to be lockable that
  *      way — and orders has no public UPDATE policy (by design; see
- *      migration 0049) — so the query silently returned ZERO rows. Fixed by
+ *      migration 0056) — so the query silently returned ZERO rows. Fixed by
  *      dropping the lock (not needed: an order's total is immutable after
  *      creation).
- *   2. order_items had a public INSERT policy (0049) but no public SELECT
+ *   2. order_items had a public INSERT policy (0056) but no public SELECT
  *      one, so loadOrderFoodLines — reading items back to price the
  *      Razorpay order — also silently saw zero rows. Fixed by migration
- *      0053.
+ *      0060.
  *
  * Both failed the exact same way: no error at the SQL level, just an empty
  * result set, which is precisely what RLS is designed to produce and
@@ -114,7 +114,7 @@ async function main() {
   // ── 2. loadOrderFoodLines under the SAME public connection — this is
   //      exactly where bug #2 (no order_items_public_select) hid. ─────────
   const lines = await withPublicTenant(tenantId, (tx) => loadOrderFoodLines(tx, tenantId, created.id))
-  check('order_items are readable under the PUBLIC connection (0053)', lines.length === 1)
+  check('order_items are readable under the PUBLIC connection (0060)', lines.length === 1)
   check('…with the right quantity and price', lines[0]?.qty === 2 && lines[0]?.unitPrice === 249)
 
   // Belt and braces: prove this is genuinely RLS, not a fluke — the owner

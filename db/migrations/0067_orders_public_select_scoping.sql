@@ -1,9 +1,9 @@
 -- ============================================================================
--- Arena OS — 0060: scope orders/order_items/kots public SELECT to a specific
+-- Arena OS — 0067: scope orders/order_items/kots public SELECT to a specific
 -- order, customer, or idempotency key — not just the tenant
 --
--- orders_public_select (0049), order_items_public_select (0053) and
--- kots_public_select (0049) all scoped a public (no-login) read to the right
+-- orders_public_select (0056), order_items_public_select (0060) and
+-- kots_public_select (0056) all scoped a public (no-login) read to the right
 -- TENANT only, explicitly documented in both migrations as an accepted
 -- trade-off: there was no session/token proving "this is MY order" beyond
 -- knowing its (non-guessable) id or phone number, so app code alone enforced

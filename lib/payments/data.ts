@@ -44,7 +44,7 @@ export async function listDepositStates(
 
   const byBooking: Record<string, DepositState> = {}
   for (const row of rows) {
-    // bookingId is only null on an order_payment intent (migration 0051),
+    // bookingId is only null on an order_payment intent (migration 0058),
     // which the purpose='booking_deposit' filter above already excludes —
     // this is belt-and-braces so the TS type (widened by that same
     // migration) doesn't need an unsound assertion.

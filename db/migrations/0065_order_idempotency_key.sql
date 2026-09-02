@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0058: idempotency key on orders
+-- Arena OS — 0065: idempotency key on orders
 --
 -- Neither placeOnlineOrder (public checkout) nor createOrder (staff POS "Take
 -- order") had any way to tell "the network retried my last request" or "the
@@ -22,5 +22,7 @@
 alter table public.orders
   add column if not exists idempotency_key uuid;
 
+alter table public.orders
+  drop constraint if exists orders_tenant_idempotency_key;
 alter table public.orders
   add constraint orders_tenant_idempotency_key unique (tenant_id, idempotency_key);

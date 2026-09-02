@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0046 website hero text: lets a manager/owner set a headline,
+-- Arena OS — 0053 website hero text: lets a manager/owner set a headline,
 -- subheading, and an optional call-to-action button on the website builder's
 -- hero image, alongside the existing hero_image_url. Same table, no RLS
 -- changes needed (0044_website_sections.sql's website_settings policies

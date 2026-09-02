@@ -58,7 +58,7 @@ export function TakeOrderDialog({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
-  // Idempotency (migration 0058) — stable for as long as this dialog stays
+  // Idempotency (migration 0065) — stable for as long as this dialog stays
   // open, so a network retry or an impatient double-tap on "Place order"
   // never cooks the food twice. The dialog unmounts on success (onCreated
   // closes it), so a fresh key for the next order comes for free on remount.

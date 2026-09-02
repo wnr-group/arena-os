@@ -78,7 +78,7 @@ export type PublicOrderStatus = {
  * Look an order up by id for the public status page (app/(public)/o/[orderId])
  * — the same trust model as lib/booking/public-confirmation.ts's
  * getPublicBookingByToken: RLS (orders_public_select/kots_public_select/
- * order_items_public_select, migrations 0049/0053) only scopes reads to the
+ * order_items_public_select, migrations 0056/0060) only scopes reads to the
  * pinned tenant; filtering by this SPECIFIC (non-guessable, random) order id
  * is what actually stops enumeration. orders.id is used directly rather than
  * a dedicated confirmation-token column — it's already the same entropy
@@ -88,7 +88,7 @@ export type PublicOrderStatus = {
 export async function getPublicOrderStatus(tenantId: string, orderId: string): Promise<PublicOrderStatus | null> {
   return withPublicTenant(tenantId, async (tx) => {
     // Pins orders_public_select/order_items_public_select/kots_public_select
-    // (migration 0060) to this one order — the id is already this function's
+    // (migration 0067) to this one order — the id is already this function's
     // whole trust boundary (see the doc comment above), now enforced by the
     // database too, not just by every reader here remembering to filter by it.
     await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)
@@ -167,7 +167,7 @@ export async function getRecentPublicOrdersByPhone(tenantId: string, rawPhone: s
       .limit(1)
     if (!customer) return []
 
-    // Pins orders_public_select/kots_public_select (migration 0060) to this
+    // Pins orders_public_select/kots_public_select (migration 0067) to this
     // one customer — the customer row just resolved by phone above is
     // already this function's whole trust boundary (see the doc comment
     // above), now enforced by the database too.

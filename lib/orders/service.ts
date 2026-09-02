@@ -31,22 +31,22 @@ export type CreateOrderItemInput = {
 export type CreateOrderInput = {
   branchId: string
   bookingId?: string
-  // Attribution (migration 0047). channel defaults to 'staff' so every
+  // Attribution (migration 0054). channel defaults to 'staff' so every
   // existing caller (the POS flow) is unaffected. customerId/resourceId are
   // for the online-ordering path: when resourceId is given and bookingId
   // wasn't, the order auto-attaches to that station's active booking (see
   // getActiveBookingForResource) — otherwise it stays standalone.
   channel?: 'staff' | 'online'
-  // Accept/reject gate (migration 0050). Defaults to 'accepted' — only
+  // Accept/reject gate (migration 0057). Defaults to 'accepted' — only
   // placeOnlineOrder (lib/actions/public-orders.ts) ever passes 'pending' or
   // 'awaiting_payment'. 'pending' is the auto-accept-off staff review queue;
-  // 'awaiting_payment' (migration 0051) is a standalone order that chose
+  // 'awaiting_payment' (migration 0058) is a standalone order that chose
   // pay-now — invisible to that queue AND to /kitchen until
   // lib/payments/webhook.ts flips it to 'accepted' on confirmed payment.
   acceptanceStatus?: 'pending' | 'accepted' | 'awaiting_payment'
   customerId?: string
   resourceId?: string
-  // Idempotency (migration 0058) — a client-generated key that stays the
+  // Idempotency (migration 0065) — a client-generated key that stays the
   // same across retries of ONE checkout/take-order attempt (a network retry,
   // or an impatient double-tap on "Place order"), but changes for every new
   // attempt. See the early return below.
@@ -93,7 +93,7 @@ export async function findOrderByIdempotencyKey(
   tenantId: string,
   idempotencyKey: string,
 ): Promise<CreatedOrder | null> {
-  // Pins orders_public_select/kots_public_select (migration 0060) to this
+  // Pins orders_public_select/kots_public_select (migration 0067) to this
   // one key for a public (withPublicTenant) caller — a no-op for a staff
   // (withUser) caller, which reads via the separate, unaffected
   // orders_rw/kots_select policies instead.

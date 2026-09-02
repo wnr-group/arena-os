@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0045 website dynamic sections: fast-follow section types that
+-- Arena OS — 0052 website dynamic sections: fast-follow section types that
 -- render live tenant data instead of free-text/media content — featured
 -- resources, menu highlights, opening hours, and a contact map. No new
 -- tables: these reuse website_sections.content (jsonb) and the existing
