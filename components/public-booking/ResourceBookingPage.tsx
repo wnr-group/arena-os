@@ -428,7 +428,7 @@ export function ResourceBookingPage({
                   </p>
                 ) : phoneLookup.checked && phoneLookup.found ? (
                   <p className="mt-3 text-sm text-foreground">
-                    <span className="font-semibold">Welcome back!</span> We found a profile for this number — you're all set to book.
+                    <span className="font-semibold">Welcome back!</span> We found a profile for this number — you&rsquo;re all set to book.
                   </p>
                 ) : phoneLookup.checked ? (
                   <>

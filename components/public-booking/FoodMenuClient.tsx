@@ -11,7 +11,6 @@ import {
   Cake,
   Cookie,
   Soup,
-  Flame,
   Wine,
   Beer,
   Salad,
@@ -19,7 +18,7 @@ import {
   ShoppingCart,
   X,
 } from 'lucide-react'
-import type { PublicMenuCategory, PublicMenuItem } from '@/lib/menu/public'
+import type { PublicMenuCategory } from '@/lib/menu/public'
 import type { PublicTenant } from '@/lib/tenant/public'
 import { formatMoney } from '@/lib/format'
 

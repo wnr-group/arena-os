@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { asc, desc, eq } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { memberships, salaryStructures, type SalaryComponent } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'

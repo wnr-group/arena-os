@@ -11,7 +11,7 @@
  * optional discount; every price, quantity, tax rate and total is re-read from
  * the database and recomputed through priceBill().
  */
-import { and, eq, ne } from 'drizzle-orm'
+import { and, eq, inArray, ne } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
@@ -179,7 +179,22 @@ export async function loadFoodLines(
   tx: Db,
   tenantId: string,
   bookingId: string,
+  /**
+   * Restrict to exactly these orders — the set lockOpenFoodOrders() captured.
+   *
+   * Omit it to read "whatever is open right now", which is what the DISPLAY
+   * path wants (lib/billing/data.ts). The INVOICE path must pass the locked
+   * set: see the note on lockOpenFoodOrders() for why reading and flipping
+   * different sets loses money.
+   *
+   * An EMPTY array means "no orders", not "no filter" — the distinction
+   * matters, because a booking with nothing open must produce no food lines
+   * rather than all of them.
+   */
+  orderIds?: readonly string[],
 ): Promise<BillLine[]> {
+  if (orderIds && orderIds.length === 0) return []
+
   const rows = await tx
     .select({
       id: orderItems.id,
@@ -195,6 +210,7 @@ export async function loadFoodLines(
         eq(orders.tenantId, tenantId),
         eq(orders.bookingId, bookingId),
         eq(orders.status, 'open'),
+        orderIds ? inArray(orders.id, [...orderIds]) : undefined,
       ),
     )
     .orderBy(orderItems.id)
@@ -221,12 +237,63 @@ export async function loadBillLines(
   tenantId: string,
   bookingId: string,
   timeZone: string,
+  /** Passed straight through to loadFoodLines — see its `orderIds` note. */
+  orderIds?: readonly string[],
 ): Promise<BillLine[]> {
   // Sequential, not Promise.all: both share ONE transaction client, and a
   // Postgres connection cannot run two queries at once (see lib/billing/receipt.ts).
   const bookingLines = await loadBookingLines(tx, tenantId, bookingId, timeZone)
-  const foodLines = await loadFoodLines(tx, tenantId, bookingId)
+  const foodLines = await loadFoodLines(tx, tenantId, bookingId, orderIds)
   return [...bookingLines, ...foodLines]
+}
+
+/**
+ * Take the open food orders for a booking and hold them for the rest of the
+ * transaction, returning exactly which ones were taken.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * Step 1 of issueInvoiceForBooking locks the BOOKING row, which serialises two
+ * concurrent billings of the same booking — that is what makes double-billing
+ * impossible. It does nothing about food orders arriving mid-flight, because a
+ * row lock cannot prevent an INSERT.
+ *
+ * That left a gap in the opposite direction. `loadFoodLines` read the open
+ * orders, and step 7 then flipped `status='open' → 'billed'` with an UNSCOPED
+ * predicate. An order created between those two statements was invisible to the
+ * read but caught by the flip: marked billed, never charged, and gone from
+ * every future bill. Money silently lost — the mirror image of double-billing,
+ * and easier to miss because nobody complains about not being charged.
+ *
+ * Capturing the ids once and using that SAME set for both the read and the
+ * flip closes it. An order that arrives after this call is in neither, so it
+ * simply stays open and lands on the next invoice, which is correct.
+ *
+ * FOR UPDATE on top of that stops a concurrent cancel from changing an order's
+ * status between the read and the flip.
+ *
+ * Rare today — staff bill from the same terminal they order at — but customer
+ * self-service ordering makes "customer taps Order as the cashier taps Bill" an
+ * ordinary Friday night.
+ */
+export async function lockOpenFoodOrders(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<string[]> {
+  const rows = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.bookingId, bookingId),
+        eq(orders.status, 'open'),
+      ),
+    )
+    .for('update')
+
+  return rows.map((r) => r.id)
 }
 
 /**
@@ -394,7 +461,19 @@ export async function issueInvoiceForBooking(
   }
 
   // ── 3. lines, entirely from server-side data ──────────────────────────────
-  const lines = await loadBillLines(tx, tenant.id, booking.id, tenant.timezone)
+  // The open food orders are captured and held FIRST, and that exact set is
+  // what both the lines below and the status flip in step 7 use. Reading
+  // "whatever is open" and later flipping "whatever is open" are two different
+  // sets under concurrency — see lockOpenFoodOrders() for what that cost.
+  const billedOrderIds = await lockOpenFoodOrders(tx, tenant.id, booking.id)
+
+  const lines = await loadBillLines(
+    tx,
+    tenant.id,
+    booking.id,
+    tenant.timezone,
+    billedOrderIds,
+  )
   if (lines.length === 0) {
     throw new BillingError('This booking has nothing to bill.')
   }
@@ -586,16 +665,25 @@ export async function issueInvoiceForBooking(
   // status='open' orders, so flipping these to 'billed' here — in the same
   // transaction as the invoice itself — means the same fries can never end up
   // on a second bill, and a failure anywhere above rolls this back too.
-  await tx
-    .update(orders)
-    .set({ status: 'billed' })
-    .where(
-      and(
-        eq(orders.tenantId, tenant.id),
-        eq(orders.bookingId, booking.id),
-        eq(orders.status, 'open'),
-      ),
-    )
+  //
+  // Scoped to billedOrderIds, NOT to "every open order", and that is the whole
+  // point: those are precisely the orders whose items are on the invoice above.
+  // An unscoped flip would also catch an order created since step 3 — marking
+  // it billed without ever charging for it. Read one set, charge that set, flip
+  // that set.
+  if (billedOrderIds.length > 0) {
+    await tx
+      .update(orders)
+      .set({ status: 'billed' })
+      .where(
+        and(
+          eq(orders.tenantId, tenant.id),
+          eq(orders.bookingId, booking.id),
+          eq(orders.status, 'open'),
+          inArray(orders.id, billedOrderIds),
+        ),
+      )
+  }
 
 
   // ── 7. carry over any deposit already paid online ─────────────────────────

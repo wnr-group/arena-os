@@ -14,7 +14,8 @@ let passed = 0
 let failed = 0
 function check(label: string, cond: boolean) {
   console.log(`${cond ? '✓' : '✗ FAIL'}  ${label}`)
-  cond ? passed++ : failed++
+  if (cond) passed++
+  else failed++
 }
 
 async function main() {

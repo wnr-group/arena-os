@@ -3,6 +3,8 @@ import { and, asc, eq, gte, lt, lte, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { attendance, bookings, memberships, payments } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { isManager } from '@/lib/auth/roles'
+import { ReportAccessError } from './daily-revenue'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import { addDays } from '@/lib/booking/data'
 
@@ -28,6 +30,10 @@ export type EmployeeAnalyticsRow = {
  * `work_date`, already a plain date, like the performance dashboard.
  */
 export function getEmployeeAnalytics(ctx: ActiveContext, from: string, to: string) {
+  // Defence in depth, matching the rest of lib/reports — the page redirects a
+  // non-manager, but this reader refuses on its own account too.
+  requireReportAccess(ctx)
+
   const tz = ctx.tenant.timezone
   const rangeStart = zonedTimeToUtc(from, '00:00', tz)
   const rangeEnd = zonedTimeToUtc(addDays(to, 1), '00:00', tz)
@@ -106,4 +112,10 @@ export function getEmployeeAnalytics(ctx: ActiveContext, from: string, to: strin
 
     return rows as EmployeeAnalyticsRow[]
   })
+}
+
+function requireReportAccess(ctx: ActiveContext): void {
+  if (!isManager(ctx.role)) {
+    throw new ReportAccessError('Only owners and managers can view reports.')
+  }
 }

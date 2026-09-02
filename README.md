@@ -45,6 +45,8 @@ cp .env.example .env.local
 #   For local Docker the default values in .env.example already match the
 #   passwords in db/bootstrap.sql — just set a SESSION_SECRET:
 #     openssl rand -hex 32   → paste into SESSION_SECRET in .env.local
+#   For the CUSTOMER portal login, also uncomment OTP_DEV_BYPASS (local only —
+#   it accepts the code 123456 for any phone number).
 
 # 5. Apply migrations, then seed demo data
 npm run db:migrate

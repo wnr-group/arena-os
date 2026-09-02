@@ -9,13 +9,10 @@ import {
   bookingSlots,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { zonedTimeToUtc } from './time'
+import { addDays, zonedTimeToUtc } from './time'
 
-export function addDays(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const dt = new Date(Date.UTC(y, m - 1, d + days))
-  return dt.toISOString().slice(0, 10)
-}
+// Re-exported so every existing `@/lib/booking/data` import site is unchanged.
+export { addDays }
 
 export function listResourceTypes(ctx: ActiveContext) {
   return withUser(ctx.user.id, (tx) =>
