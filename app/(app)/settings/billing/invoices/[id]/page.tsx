@@ -18,7 +18,7 @@ import { getPlatformInvoice } from '@/lib/platform/billing/data'
  *
  * So an invoice from two years ago renders today exactly as it did then, even
  * though the business has since moved office and Arena OS has since reprised
- * its plans. That is the whole point of the snapshot columns in migration 0052.
+ * its plans. That is the whole point of the snapshot columns in migration 0072.
  *
  * ── Why this is the "PDF" ───────────────────────────────────────────────────
  *

@@ -22,7 +22,7 @@ export type AdminPlan = {
   currency: string
   active: boolean
   /**
-   * The Razorpay Subscription plan backing each billing period (M16 #3, 0051).
+   * The Razorpay Subscription plan backing each billing period (M16 #3, 0071).
    * NOT credentials — a `plan_…` reference is public and appears in the
    * checkout page Razorpay serves the payer. Every secret lives in
    * platform_payment_settings, which nothing outside
@@ -100,7 +100,7 @@ export async function getPlan(id: string): Promise<AdminPlan | null> {
  * The tenant's LIVE subscription row, for the company detail page.
  *
  * Filtered to the same three statuses as idx_tenant_subscriptions_one_live in
- * 0050, so this returns the row that is actually in force rather than the first
+ * 0070, so this returns the row that is actually in force rather than the first
  * one in the tenant's history. Unlike readEntitlements() it does NOT apply the
  * clock test: an operator looking at an account needs to SEE a lapsed
  * subscription, which is precisely the thing they would be there to fix.

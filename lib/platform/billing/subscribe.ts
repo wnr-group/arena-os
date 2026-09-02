@@ -79,7 +79,7 @@ const TOTAL_COUNT: Record<BillingPeriod, number> = { monthly: 120, annual: 10 }
  * A Razorpay subscription starts life unauthenticated: the payer still has to
  * approve the mandate on Razorpay's hosted page, which can take minutes or
  * days. The local row exists from creation (it is what the webhook will find),
- * and it has to carry SOME current_period_end because 0050 requires one.
+ * and it has to carry SOME current_period_end because 0070 requires one.
  *
  * The rule, and why it is not simply "now + 3 days":
  *
@@ -205,7 +205,7 @@ export async function subscribeTenantToPlan(
   if (!plan) throw new SubscriptionError('That plan no longer exists.')
   if (!plan.active) {
     // Retired plans keep their existing subscribers (that is what
-    // plans_select_subscribed in 0050 is for) but must never take a new one.
+    // plans_select_subscribed in 0070 is for) but must never take a new one.
     throw new SubscriptionError('That plan is no longer available.')
   }
 
@@ -372,7 +372,7 @@ export async function subscribeTenantToPlan(
         billingPeriod,
         // NOT 'active'. No money has moved yet — the payer has not even opened
         // Razorpay's authorisation page. `trialing` is the live-but-unpaid
-        // state 0050 already defines; the webhook is what promotes it.
+        // state 0070 already defines; the webhook is what promotes it.
         status: 'trialing',
         currentPeriodStart: now,
         currentPeriodEnd: periodEnd,

@@ -366,7 +366,7 @@ async function main() {
   // ══════════════════════════════════════════════════════════════════════════
   {
     await ownerPool.query(
-      // BOTH ends move: tenant_subscriptions_period (0050) requires
+      // BOTH ends move: tenant_subscriptions_period (0070) requires
       // current_period_end > current_period_start, so a lapsed period has to be
       // a real past window rather than an end date dragged behind its start.
       `update tenant_subscriptions set current_period_start = now() - interval '31 days',

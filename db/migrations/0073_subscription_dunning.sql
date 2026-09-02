@@ -1,8 +1,8 @@
 -- ============================================================================
--- Arena OS — 0053 dunning & suspension on failed payment (AROS-113)
+-- Arena OS — 0073 dunning & suspension on failed payment (AROS-113)
 --
--- 0050 built the subscription MODEL and said it "does NOT add: checkout,
--- gateway subscription creation, renewals, dunning". 0051 built checkout and
+-- 0070 built the subscription MODEL and said it "does NOT add: checkout,
+-- gateway subscription creation, renewals, dunning". 0071 built checkout and
 -- renewals. This migration builds the last of that list: DUNNING — what happens
 -- between a renewal charge bouncing and an account being closed.
 --
@@ -12,10 +12,10 @@
 --
 --     active → past_due → suspended → cancelled
 --
--- — is already fully expressible with the two enums this schema has, and 0051
+-- — is already fully expressible with the two enums this schema has, and 0071
 -- already wrote the mapping down:
 --
---   tenant_subscription_status  trialing|active|past_due|cancelled|expired (0050)
+--   tenant_subscription_status  trialing|active|past_due|cancelled|expired (0070)
 --   tenant_status               trial|active|suspended|cancelled          (0001)
 --
 --   ticket state │ tenant_subscriptions.status │ tenants.status
@@ -25,7 +25,7 @@
 --   suspended    │ expired                    │ suspended
 --   cancelled    │ cancelled                  │ cancelled
 --
--- "suspended" is an ACCOUNT state, not a subscription state — 0051 states the
+-- "suspended" is an ACCOUNT state, not a subscription state — 0071 states the
 -- reasoning and it has not changed: inventing a fifth subscription status would
 -- split one fact across two columns that could then disagree. So this migration
 -- adds NO enum value, NO status column, and NO second lifecycle. It adds only
@@ -161,7 +161,7 @@ update public.tenant_subscriptions
 -- billing portal already renders); when this project gains a real email
 -- provider, that one function is the only thing that changes.
 --
--- Modelled on webhook_events (0034/0051), the delivery log this codebase
+-- Modelled on webhook_events (0034/0071), the delivery log this codebase
 -- already has: a row per delivery, a unique claim that makes a repeat a no-op,
 -- and an outcome. Same idea, different stream.
 create table if not exists public.platform_dunning_notices (
@@ -169,7 +169,7 @@ create table if not exists public.platform_dunning_notices (
 
   tenant_id uuid not null references public.tenants(id) on delete cascade,
 
-  -- restrict, like platform_invoices.subscription_id (0052): the record of what
+  -- restrict, like platform_invoices.subscription_id (0072): the record of what
   -- a business was warned about must not vanish under it. Historical billing
   -- data is never deleted — see the AROS-113 rule about exactly that.
   subscription_id uuid not null
@@ -227,11 +227,11 @@ create index if not exists idx_platform_dunning_notices_tenant
 
 -- ── RLS + grants ────────────────────────────────────────────────────────────
 --
--- Exactly the treatment platform_invoices got in 0052, for exactly the same
+-- Exactly the treatment platform_invoices got in 0072, for exactly the same
 -- reason: what a business owes Arena OS, and what it has been warned about, is
 -- the PROPRIETOR's commercial information. A cashier does not need it and a
 -- manager does not either. So the policy is auth_role_in() = 'owner', the same
--- helper 0020's business_profiles and 0052's platform_invoices use.
+-- helper 0020's business_profiles and 0072's platform_invoices use.
 --
 -- SELECT is the only grant. Notices are written by the scheduled processor and
 -- by the webhook, both of which run on the OWNER connection with no session —
@@ -248,10 +248,10 @@ create policy platform_dunning_notices_owner_select on public.platform_dunning_n
 
 grant select on public.platform_dunning_notices to arena_app;
 
--- tenant_subscriptions keeps the grants 0050 gave it — SELECT only to
+-- tenant_subscriptions keeps the grants 0070 gave it — SELECT only to
 -- arena_app, writes only through the owner connection. The four new columns
 -- inherit exactly that, so a suspended business cannot clear its own
--- suspended_at any more than it could clear its own status. And 0051 already
+-- suspended_at any more than it could clear its own status. And 0071 already
 -- revoked the blanket UPDATE on public.tenants, so it cannot un-suspend itself
 -- from the other side either.
 

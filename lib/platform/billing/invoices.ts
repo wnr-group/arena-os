@@ -76,7 +76,7 @@ const DEFAULT_LETTERHEAD: PlatformLetterhead = {
  *
  * Read on whatever connection the caller hands in. In practice that is always
  * the owner connection — `arena_app` has no grant on this table at all
- * (migration 0052) — because the only caller is the webhook, which has no
+ * (migration 0072) — because the only caller is the webhook, which has no
  * session. Tenants never read it: they read the snapshot on their own invoice.
  */
 export async function loadPlatformLetterhead(tx: DB): Promise<PlatformLetterhead> {
@@ -105,7 +105,7 @@ export async function loadPlatformLetterhead(tx: DB): Promise<PlatformLetterhead
  * The same statement `nextInvoiceNumber()` in lib/billing/invoice.ts uses, and
  * the same formatter — only the counter table differs, because GST numbering
  * belongs to the SUPPLIER and Arena OS is the supplier for every one of these
- * (see migration 0052's header for why `sequences` cannot be reused).
+ * (see migration 0072's header for why `sequences` cannot be reused).
  *
  * `insert … on conflict do update set value = value + 1 returning value` is
  * atomic: a concurrent bumper blocks on the row lock and then reads the
@@ -346,7 +346,7 @@ export async function issueSubscriptionInvoice(
       buyerStateCode: supply.stateCode,
       placeOfSupply: supply.placeOfSupply,
       subtotal: money(gross),
-      // Always zero now. The column stays because migration 0052 defines it and
+      // Always zero now. The column stays because migration 0072 defines it and
       // `adjustment <= subtotal` still guards it, and because a future
       // gateway-side discount (a Razorpay offer, which WOULD reduce the capture)
       // is exactly what it is for.
@@ -409,7 +409,7 @@ export type IssueCreditNoteParams = {
  * Raise a credit note for the unused remainder of a period.
  *
  * A credit note carries POSITIVE amounts and its own number series. That is
- * both what GST expects and what keeps migration 0052's `total >= 0` check
+ * both what GST expects and what keeps migration 0072's `total >= 0` check
  * meaningful: a negative invoice is unrepresentable in this schema, so
  * proration cannot accidentally produce one.
  *

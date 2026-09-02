@@ -11,7 +11,7 @@ export function formatMoney(amount: number | string, currency = 'INR'): string {
     }).format(n)
   } catch {
     // Intl throws RangeError on a MALFORMED currency code ("A1B", "12$"), which
-    // `check (length(currency) = 3)` in migration 0050 does not exclude. Every
+    // `check (length(currency) = 3)` in migration 0070 does not exclude. Every
     // billing screen formats a currency that came from that column, so without
     // this catch one bad row is a hard render crash for the whole page.
     return `${currency} ${n.toFixed(2)}`

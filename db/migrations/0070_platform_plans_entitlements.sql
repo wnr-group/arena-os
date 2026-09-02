@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0050 platform plans, entitlements & tenant subscriptions (M16)
+-- Arena OS — 0070 platform plans, entitlements & tenant subscriptions (M16)
 --
 -- The FIRST tables that belong to the PLATFORM rather than to a tenant. Every
 -- other table in this schema carries a tenant_id and is scoped by RLS to the

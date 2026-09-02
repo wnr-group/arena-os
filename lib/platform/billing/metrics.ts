@@ -14,7 +14,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  * There is no `mrr` column, no metrics table, no nightly rollup and no cache.
  * Every figure on the dashboard is an aggregate over the four tables that
  * already hold the facts — `plans`, `tenant_subscriptions`, `tenants` and
- * `platform_invoices` (plus `platform_refunds`, 0054). A stored metric is a
+ * `platform_invoices` (plus `platform_refunds`, 0074). A stored metric is a
  * second source of truth about money, and the first thing it does is drift
  * from the rows it was computed from.
  *
@@ -36,7 +36,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  *
  * NOTHING here reads `platform_payment_settings`. No key id, no ciphertext, no
  * webhook secret — those columns are not selected anywhere in this file, and
- * `arena_app` has no grant on that table at all (0051).
+ * `arena_app` has no grant on that table at all (0071).
  *
  * ═══ MRR — THE DEFINITION ═══════════════════════════════════════════════════
  *
@@ -168,7 +168,7 @@ async function readMrr(db: DB): Promise<MrrByCurrency[]> {
  * `tenant_subscriptions` keeps history — a tenant that has changed plans three
  * times has four rows — so counting rows would report one business several
  * times. The `distinct on (tenant_id)` below collapses each tenant to its ONE
- * live subscription, which `idx_tenant_subscriptions_one_live` (0050) already
+ * live subscription, which `idx_tenant_subscriptions_one_live` (0070) already
  * guarantees is at most one; the `distinct on` is what makes the query correct
  * even if that index were ever dropped or built NOT VALID.
  *
@@ -411,13 +411,13 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  * `kind = 'subscription' and status = 'paid'`. That is not a guess about the
  * existing rules — it is the only combination issueSubscriptionInvoice() can
  * write, because an invoice is raised exactly when a `subscription.charged`
- * webhook proves Razorpay captured the money (0052, AROS-4). A `void` invoice
+ * webhook proves Razorpay captured the money (0072, AROS-4). A `void` invoice
  * and a `draft` never represented cash.
  *
  * ── WHY CREDIT NOTES ARE NOT SUBTRACTED ─────────────────────────────────────
  *
  * A credit note in this schema is NOT money going out —
- * `platform_invoices_credit_note_unpaid` (0052) CHECKs that it carries no
+ * `platform_invoices_credit_note_unpaid` (0072) CHECKs that it carries no
  * gateway payment, precisely because none moved. It is an OBLIGATION: an amount
  * Arena OS owes the tenant, discharged only by a refund (./refunds.ts, which
  * does move money and is counted below) or by an operator's explicit act.
@@ -429,7 +429,7 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  *
  * ── WHY REFUNDS ARE ────────────────────────────────────────────────────────
  *
- * A refund IS money leaving the account (0054). Only `status = 'processed'`
+ * A refund IS money leaving the account (0074). Only `status = 'processed'`
  * counts: a `pending` refund has not left yet and a `failed` one never will,
  * and both are decided by a signature-verified webhook rather than by the
  * request that started them.

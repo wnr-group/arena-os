@@ -16,7 +16,7 @@ import { zodErrorMessage, pgError } from '@/lib/utils/errors'
  * every export begins with requirePlatformAdmin() and then writes through
  * `ownerDb`. That is the ONLY write path to these tables — `arena_app`, the
  * role every tenant request runs as, holds SELECT and nothing else on all
- * three (see the grants in migration 0050), so a tenant user cannot reach a
+ * three (see the grants in migration 0070), so a tenant user cannot reach a
  * write here even if an action were somehow invoked without its guard.
  *
  * Deliberately NOT in lib/actions/platform.ts: that file is company
@@ -36,8 +36,8 @@ function fail(e: unknown): Result {
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
   if (code === '23505') {
-    // Two different unique rules reach here now: the catalogue name (0050) and
-    // the gateway plan mapping (0051). Naming the wrong one sends an operator
+    // Two different unique rules reach here now: the catalogue name (0070) and
+    // the gateway plan mapping (0071). Naming the wrong one sends an operator
     // hunting for a duplicate plan name that does not exist.
     if (constraint?.startsWith('idx_plans_gateway')) {
       return {
@@ -47,7 +47,7 @@ function fail(e: unknown): Result {
     return { error: 'A plan with that name already exists.' }
   }
   if (code === '23503') return { error: 'That plan or tenant no longer exists.' }
-  // The check constraints in 0050: a malformed entitlement key, a non-scalar
+  // The check constraints in 0070: a malformed entitlement key, a non-scalar
   // value, or a period that ends before it starts.
   if (code === '23514') return { error: 'That value is not allowed for this field.' }
   console.error('[plans] action failed:', e)
@@ -56,7 +56,7 @@ function fail(e: unknown): Result {
 
 // ── plans ────────────────────────────────────────────────────────────────────
 
-/** Rupees at two decimals, matching numeric(10,2) and the >= 0 check in 0050. */
+/** Rupees at two decimals, matching numeric(10,2) and the >= 0 check in 0070. */
 const money = z
   .string()
   .trim()
@@ -67,7 +67,7 @@ const planInput = z.object({
   monthlyPrice: money,
   annualPrice: money,
   // LETTERS, not just three characters. `length(3)` alone accepted "A1B" and
-  // "12$", which the 0050 check (`length(currency) = 3`) also lets through —
+  // "12$", which the 0070 check (`length(currency) = 3`) also lets through —
   // and Intl.NumberFormat throws RangeError on a malformed code, so one such
   // row rendered every billing screen unusable. ISO 4217 codes are alphabetic.
   currency: z
@@ -109,7 +109,7 @@ export async function updatePlan(id: string, input: z.input<typeof planInput>): 
  * taken on it, the FK is ON DELETE RESTRICT, and a deleted plan would make a
  * past invoice unexplainable. Retiring hides it from the catalogue while
  * existing subscribers keep everything it grants — which is exactly what policy
- * `plans_select_subscribed` in 0050 is there to allow.
+ * `plans_select_subscribed` in 0070 is there to allow.
  */
 export async function setPlanActive(id: string, active: boolean): Promise<Result> {
   try {
@@ -122,7 +122,7 @@ export async function setPlanActive(id: string, active: boolean): Promise<Result
   }
 }
 
-// ── gateway mapping (M16 #3, migration 0051) ─────────────────────────────────
+// ── gateway mapping (M16 #3, migration 0071) ─────────────────────────────────
 
 /**
  * A Razorpay plan reference (`plan_…`). Shape-checked only — the alphabet after
@@ -157,8 +157,8 @@ const PLATFORM_GATEWAY = 'razorpay'
  *
  * ── The three collision checks, and which one lives where ───────────────────
  *
- *   monthly ≠ annual ON THIS PLAN        → CHECK plans_gateway_ids_distinct (0051)
- *   no duplicate WITHIN a column         → unique indexes (0051)
+ *   monthly ≠ annual ON THIS PLAN        → CHECK plans_gateway_ids_distinct (0071)
+ *   no duplicate WITHIN a column         → unique indexes (0071)
  *   no duplicate ACROSS the two columns  → HERE
  *
  * The third cannot be a plain unique index — it spans two columns of the same
@@ -212,7 +212,7 @@ export async function setPlanGateway(
       .update(plans)
       .set({
         // The gateway is cleared alongside the ids: an id with no gateway is
-        // unusable, and 0051's plans_gateway_ids_need_gateway would reject it.
+        // unusable, and 0071's plans_gateway_ids_need_gateway would reject it.
         gateway: requested.length > 0 ? PLATFORM_GATEWAY : null,
         gatewayMonthlyPlanId: v.gatewayMonthlyPlanId,
         gatewayAnnualPlanId: v.gatewayAnnualPlanId,
@@ -231,7 +231,7 @@ export async function setPlanGateway(
 /**
  * The value half of an entitlement, parsed from what the admin form typed.
  *
- * Accepts exactly the four JSON scalars the check constraint in 0050 permits,
+ * Accepts exactly the four JSON scalars the check constraint in 0070 permits,
  * and nothing else. 'unlimited' maps to null deliberately: a limit of null is
  * "no ceiling", which must stay distinguishable from 0 ("none allowed").
  */

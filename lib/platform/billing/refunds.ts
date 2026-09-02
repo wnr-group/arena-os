@@ -19,7 +19,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  * Arena OS giving a business back part or all of what it paid for its
  * subscription. NOT lib/billing/refunds.ts, which is a VENUE refunding its own
  * customer out of its own till — different money, different direction,
- * different Razorpay account (0051), different parent table.
+ * different Razorpay account (0071), different parent table.
  *
  * ═══ THE ORDERING, AND WHY IT IS THIS WAY ═══════════════════════════════════
  *
@@ -64,7 +64,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  *
  * ═══ IDEMPOTENCY, AT THREE LEVELS ═══════════════════════════════════════════
  *
- *   1. `request_key` — the caller's retry token, unique per tenant (0054),
+ *   1. `request_key` — the caller's retry token, unique per tenant (0074),
  *      the same idiom payments.idempotency_key (0040) uses. A double-clicked
  *      button sends the same key, the second insert is refused, and the FIRST
  *      refund is returned. This is what the invoice cap alone cannot do: two
@@ -232,7 +232,7 @@ export async function refundPlatformInvoice(
     if (!invoice) throw new PlatformRefundError('Invoice not found.')
 
     // A credit note is not money that moved — `platform_invoices_credit_note_
-    // unpaid` (0052) guarantees it carries no payment — so there is nothing to
+    // unpaid` (0072) guarantees it carries no payment — so there is nothing to
     // give back.
     if (invoice.kind !== 'subscription') {
       throw new PlatformRefundError('Only a subscription invoice can be refunded.')
@@ -445,7 +445,7 @@ export async function refundPlatformInvoice(
 /**
  * Razorpay's refund status → ours.
  *
- * The three words are identical on purpose (0054), so this is a VALIDATION not
+ * The three words are identical on purpose (0074), so this is a VALIDATION not
  * a translation: anything unrecognised falls back to 'pending', never to
  * 'processed'. Treating an unknown provider status as "the money has left"
  * would be a guess in the one direction that cannot be taken back.

@@ -8,7 +8,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database, migrations 0050–0054, every RLS policy and grant, the
+ * REAL: the database, migrations 0070–0074, every RLS policy and grant, the
  * actual SQL aggregates behind MRR / mix / churn / revenue, the actual server
  * actions WITH their requirePlatformAdmin() guards driven through real session
  * rows, the actual override and refund domain code, the actual platform webhook
@@ -315,7 +315,7 @@ async function main() {
     // that would produce four rows in a naive count.
     const T_HISTORY = await makeTenant('hist')
     // Each closed period sits entirely in the past and before the next —
-    // tenant_subscriptions_period (0050) CHECKs end > start.
+    // tenant_subscriptions_period (0070) CHECKs end > start.
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -90, endOffsetDays: -60, cancelledOffsetDays: -60, createdOffsetDays: -90 })
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -60, endOffsetDays: -30, cancelledOffsetDays: -30, createdOffsetDays: -60 })
     await makeSub(T_HISTORY, PLAN_A, { status: 'expired', startOffsetDays: -30, endOffsetDays: -20, createdOffsetDays: -30 })
@@ -649,7 +649,7 @@ async function main() {
 
     const row = (await ownerPool.query('select * from tenant_subscriptions where id=$1', [sub])).rows[0]
     check('an admin-assigned subscription is closed immediately', row.status === 'cancelled')
-    check('cancelled_at is set (the 0050 CHECK requires it)', row.cancelled_at !== null)
+    check('cancelled_at is set (the 0070 CHECK requires it)', row.cancelled_at !== null)
     check('the row is kept, not deleted', row.id === sub)
     check(
       'the company account is NOT closed — that is a separate decision',

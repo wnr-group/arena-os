@@ -10,7 +10,7 @@ import { money } from '@/lib/format'
  *
  * Purely presentational. Every figure shown is a stored snapshot handed down
  * from the server — nothing here recomputes a total or a tax — and nothing here
- * decides who may see it: `platform_invoices_owner_select` (migration 0052)
+ * decides who may see it: `platform_invoices_owner_select` (migration 0072)
  * already limited the rows to invoices this owner's own tenant was billed.
  */
 

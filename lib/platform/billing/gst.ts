@@ -34,7 +34,7 @@ import { round2 } from '@/lib/billing/pricing'
  * Computing the tax by subtraction rather than by multiplying the rounded
  * taxable value is what guarantees `taxable + tax === total` to the paisa. The
  * multiplication route can miss by a paisa on values like ₹7999, and the CHECK
- * constraints in migration 0052 would (correctly) reject the insert.
+ * constraints in migration 0072 would (correctly) reject the insert.
  *
  * ── WHY THE CGST/SGST SPLIT IS NOT `tax/2` TWICE ────────────────────────────
  *
@@ -257,7 +257,7 @@ export type GstSplit = {
  *     taxableValue + taxTotal === total
  *     cgst + sgst + igst      === taxTotal
  *
- * hold exactly — which is what migration 0052's CHECK constraints require, and
+ * hold exactly — which is what migration 0072's CHECK constraints require, and
  * why the tax is derived by subtraction and the second half of the split by
  * subtraction again.
  *

@@ -1156,7 +1156,7 @@ export const webhookEvents = pgTable(
     /** 'processed' | 'duplicate' | 'ignored' | 'rejected' */
     outcome: text('outcome').notNull(),
     /**
-     * The Razorpay SUBSCRIPTION this delivery concerned (migration 0051), for
+     * The Razorpay SUBSCRIPTION this delivery concerned (migration 0071), for
      * the platform billing stream (`gateway = 'platform_razorpay'`). Null for
      * the tenant deposit stream, which has orders instead — `order_id` is
      * deliberately not overloaded to carry a subscription id.
@@ -2103,7 +2103,7 @@ export const websitePages = pgTable('website_pages', {
   publishedAt: timestamp('published_at', { withTimezone: true }),
 })
 
-// ── platform plans, entitlements & tenant subscriptions (M16, 0050) ──────────
+// ── platform plans, entitlements & tenant subscriptions (M16, 0070) ──────────
 // The only tables in this file with NO tenant_id: one catalogue for the whole
 // platform, authored by the operator. `plans` here is what a BUSINESS pays
 // Arena OS — not to be confused with `membershipPlans` above, which is a
@@ -2128,7 +2128,7 @@ export const plans = pgTable(
     currency: text('currency').notNull().default('INR'),
     active: boolean('active').notNull().default(true),
     /**
-     * The gateway these plan references belong to (migration 0051) — the
+     * The gateway these plan references belong to (migration 0071) — the
      * PLATFORM's own account, never a tenant's. 'razorpay' today.
      */
     gateway: text('gateway'),
@@ -2172,7 +2172,7 @@ export const planEntitlements = pgTable(
     key: text('key').notNull(),
     /**
      * A JSON SCALAR — number, boolean, string or null — enforced by a check in
-     * 0050 so every reader's contract stays flat.
+     * 0070 so every reader's contract stays flat.
      */
     value: jsonb('value').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -2201,7 +2201,7 @@ export const tenantSubscriptions = pgTable(
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     /**
      * Null for an admin-assigned plan. Filled in by the Razorpay Subscriptions
-     * flow (migration 0051): gateway = 'razorpay' on the PLATFORM's account.
+     * flow (migration 0071): gateway = 'razorpay' on the PLATFORM's account.
      */
     gateway: text('gateway'),
     gatewaySubscriptionId: text('gateway_subscription_id'),
@@ -2209,7 +2209,7 @@ export const tenantSubscriptions = pgTable(
     gatewayCustomerId: text('gateway_customer_id'),
     /**
      * A cancellation requested but not yet effective (Razorpay
-     * cancel_at_cycle_end). NOT `cancelled_at`, which the 0050 CHECK ties to
+     * cancel_at_cycle_end). NOT `cancelled_at`, which the 0070 CHECK ties to
      * status = 'cancelled'; the webhook remains the source of truth for the
      * final provider state.
      */
@@ -2217,7 +2217,7 @@ export const tenantSubscriptions = pgTable(
     /** Last Razorpay payment applied. Reconciliation only — never a ledger. */
     gatewayLastPaymentId: text('gateway_last_payment_id'),
     /**
-     * Whether `currentPeriodStart/End` came from the PROVIDER (migration 0055).
+     * Whether `currentPeriodStart/End` came from the PROVIDER (migration 0075).
      *
      * False while they are the placeholder subscribeTenantToPlan() seeds from
      * the tenant's remaining runway; true once a verified webhook has set them
@@ -2229,7 +2229,7 @@ export const tenantSubscriptions = pgTable(
      */
     periodFromGateway: boolean('period_from_gateway').notNull().default(false),
     /**
-     * ── the dunning clocks (migration 0053) ─────────────────────────────────
+     * ── the dunning clocks (migration 0073) ─────────────────────────────────
      *
      * `pastDueSince` is when this subscription entered past_due, and the grace
      * deadline is measured from it — NOT from `currentPeriodEnd`, which a
@@ -2272,7 +2272,7 @@ export const tenantSubscriptions = pgTable(
   ],
 )
 
-// ── dunning notices (migration 0053) ─────────────────────────────────────────
+// ── dunning notices (migration 0073) ─────────────────────────────────────────
 //
 // One row per reminder ACTUALLY SENT during an arrears episode. NOT a
 // notification framework — this project has no email or SMS provider, and this
@@ -2320,7 +2320,7 @@ export const platformDunningNotices = pgTable(
   ],
 )
 
-// ── the PLATFORM's own Razorpay account (migration 0051) ─────────────────────
+// ── the PLATFORM's own Razorpay account (migration 0071) ─────────────────────
 //
 // A SINGLETON, and not to be confused with `paymentSettings` above:
 //
@@ -2344,7 +2344,7 @@ export const platformPaymentSettings = pgTable('platform_payment_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
-// ── platform invoices: Arena OS → the business (migration 0052) ──────────────
+// ── platform invoices: Arena OS → the business (migration 0072) ──────────────
 //
 // NOT `invoices` above, which is a VENUE billing ITS CUSTOMER under the venue's
 // own GSTIN and its own `sequences` counter. This is ARENA OS billing THE VENUE
@@ -2352,7 +2352,7 @@ export const platformPaymentSettings = pgTable('platform_payment_settings', {
 // supplier, deliberately different table — a subscription fee must never land
 // in a tenant's own revenue reports.
 //
-// Money is numeric(10,2) rupees and GST-INCLUSIVE: 0051's subscribe path
+// Money is numeric(10,2) rupees and GST-INCLUSIVE: 0071's subscribe path
 // requires the Razorpay plan amount to equal the catalogue price exactly, so
 // the captured rupees ARE the price and the tax is back-computed out of them.
 // See lib/platform/billing/gst.ts.
@@ -2438,7 +2438,7 @@ export const platformInvoices = pgTable(
 
     // ── money (GST-inclusive) ─────────────────────────────────────────────
     // total = taxable_value + tax_total = subtotal - adjustment, all enforced
-    // by CHECK constraints in 0052 so a rounding bug fails the INSERT.
+    // by CHECK constraints in 0072 so a rounding bug fails the INSERT.
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull(),
     /** A gross proration credit applied to this bill. Never exceeds subtotal. */
     adjustment: numeric('adjustment', { precision: 10, scale: 2 }).notNull().default('0'),
@@ -2460,7 +2460,7 @@ export const platformInvoices = pgTable(
     gatewaySubscriptionId: text('gateway_subscription_id'),
     gatewayInvoiceId: text('gateway_invoice_id'),
     gatewayEventId: text('gateway_event_id'),
-    /** A stored document, when one exists. Null today — see 0052 for why. */
+    /** A stored document, when one exists. Null today — see 0072 for why. */
     documentUrl: text('document_url'),
     notes: text('notes'),
 
@@ -2482,14 +2482,14 @@ export const platformInvoices = pgTable(
   ],
 )
 
-// ── platform refunds (migration 0054) ────────────────────────────────────────
+// ── platform refunds (migration 0074) ────────────────────────────────────────
 //
 // ARENA OS refunding a BUSINESS part or all of a subscription charge.
 //
 // NOT `refunds` above, which is a VENUE refunding its own customer and is
 // foreign-keyed to `payments` — a table a platform subscription charge never
 // appears in. And NOT a credit note: `platform_invoices_credit_note_unpaid`
-// (0052) CHECKs that a credit note carries no gateway payment, precisely so the
+// (0072) CHECKs that a credit note carries no gateway payment, precisely so the
 // "credit against a future bill" case can never be confused with money that
 // actually left the account.
 //

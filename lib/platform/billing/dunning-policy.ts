@@ -96,7 +96,7 @@
  * test can drive the clock without touching the shipped values.
  */
 
-/** Stages, in the order they occur. The same closed set migration 0053 CHECKs. */
+/** Stages, in the order they occur. The same closed set migration 0073 CHECKs. */
 export type DunningStage =
   | 'payment_failed'
   | 'grace_reminder'

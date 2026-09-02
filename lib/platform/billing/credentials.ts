@@ -34,7 +34,7 @@ import { decryptSecret, encryptSecret, DecryptionError } from '@/lib/security/en
  *   * Never log it, never put it in an error message, never serialise the
  *     object it lives in. Use getPlatformGatewayView() for anything UI-facing.
  *   * Reads run on the OWNER connection, because `arena_app` has no grant on
- *     platform_payment_settings at all (0051). Authorization is the CALLER's
+ *     platform_payment_settings at all (0071). Authorization is the CALLER's
  *     job — requirePlatformAdmin() for the admin surface; the webhook route has
  *     no session and authenticates by HMAC instead.
  */

@@ -41,7 +41,7 @@ import { requirePlatformAdmin } from '../guard'
  * ARE included and are not credentials — a `sub_…` appears in the URL Razorpay
  * serves the payer, and a `pay_…` is what a business quotes to support. Every
  * secret lives in a table this module does not touch and `arena_app` has no
- * grant on at all (0051).
+ * grant on at all (0071).
  */
 
 export type TenantBillingSubscription = {

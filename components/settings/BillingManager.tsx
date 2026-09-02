@@ -818,7 +818,7 @@ function StatusBanner({
       ` Your workspace keeps working normally until ${day(dunning.graceEndsAt)} —` +
       ' re-authorise your payment method before then to avoid suspension.'
   } else if (subscription.status === 'past_due') {
-    // past_due with no clock: a row from before migration 0053, or an arrears
+    // past_due with no clock: a row from before migration 0073, or an arrears
     // state this build cannot date. Warn without inventing a deadline.
     tone = 'warn'
     action = true
