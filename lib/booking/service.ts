@@ -6,7 +6,7 @@
  * caller decides how the tenant/identity was established.
  */
 import 'server-only'
-import { and, eq, inArray, like, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog } from '@/db/schema'
@@ -111,15 +111,26 @@ export async function priceBookingSlots(
  * Booking number: BK-YYYYMMDD-NNN, sequential per tenant per creation day.
  * Shared by createBookingCore (timed bookings) and seatTableSessionCore
  * (table sessions) so the two numbering schemes can never drift apart.
+ *
+ * ONE statement: the upsert takes a row lock on the (tenant, kind, period)
+ * key against `sequences` (0018/0056 already allow kind = 'booking'), same
+ * mechanism as lib/billing/invoice.ts:nextInvoiceNumber and
+ * lib/orders/service.ts:nextDailyNumber — a read-then-write `count(*)` here
+ * would hand two concurrent callers the same number and let
+ * bookings_tenant_number_key reject the loser, which a walk-in-heavy screen
+ * like seatTableSessionCore hits often enough at rush to matter.
  */
 async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: string }): Promise<string> {
   const compact = todayInZone(ctx.timezone).replace(/-/g, '')
-  const prefix = `BK-${compact}`
-  const [{ n }] = await tx
-    .select({ n: sql<number>`count(*)` })
-    .from(bookings)
-    .where(and(eq(bookings.tenantId, ctx.tenantId), like(bookings.bookingNumber, `${prefix}-%`)))
-  return `${prefix}-${String(Number(n) + 1).padStart(3, '0')}`
+  const bumped = await tx.execute<{ value: number }>(sql`
+    insert into sequences (tenant_id, kind, period, value)
+    values (${ctx.tenantId}, 'booking', ${compact}, 1)
+    on conflict (tenant_id, kind, period)
+      do update set value = sequences.value + 1
+    returning value
+  `)
+  const value = Number(bumped.rows[0].value)
+  return `BK-${compact}-${String(value).padStart(3, '0')}`
 }
 
 export async function createBookingCore(
@@ -208,13 +219,23 @@ export async function seatTableSessionCore(
   }
 
   const [resource] = await tx
-    .select({ id: resources.id, branchId: resources.branchId, status: resources.status })
+    .select({ id: resources.id, branchId: resources.branchId, status: resources.status, hourlyRate: resourceTypes.hourlyRate })
     .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, input.resourceId)))
     .limit(1)
   if (!resource) throw new BookingError('Table not found.')
   if (resource.branchId !== input.branchId) {
     throw new BookingError('Table belongs to a different branch.')
+  }
+  // The 0064 convention lib/booking/data.ts:listTables also follows: a
+  // "table" is a resource whose type carries no hourly rate. Without this, a
+  // resourceId belonging to a paid/timed resource type could open a table
+  // session that bypasses its hourly billing model entirely and — since
+  // listTables filters on this same condition — sits locked but invisible on
+  // both /floor and the normal booking calendar.
+  if (Number(resource.hourlyRate) !== 0) {
+    throw new BookingError('This resource isn’t set up as a table — use a resource type with no hourly rate.')
   }
   if (resource.status !== 'available') throw new BookingError('This table is not available.')
 
@@ -293,6 +314,9 @@ async function lockTableSession(
   tx: Db,
   tenantId: string,
   bookingId: string,
+  /** The past-tense verb for the "can't be X" message — 'moved' fits
+   *  transfer/merge/split; requestBillCore passes 'billed' instead. */
+  verb: string = 'moved',
 ): Promise<{
   id: string
   branchId: string
@@ -315,9 +339,25 @@ async function lockTableSession(
   if (!row) throw new BookingError('Table session not found.')
   if (!row.resourceId) throw new BookingError('That booking is not a table session.')
   if (row.status !== 'checked_in') {
-    throw new BookingError(`This table session is ${row.status.replace('_', ' ')} — it can't be moved.`)
+    throw new BookingError(`This table session is ${row.status.replace('_', ' ')} — it can't be ${verb}.`)
   }
   return row
+}
+
+/**
+ * Flag a table session's bill as requested (M17 #2) — validated the same way
+ * transferTableCore/mergeTablesCore/splitTableCore are: lockTableSession
+ * confirms this is actually an active (checked_in) table session before the
+ * write, instead of stamping bill_requested_at on a booking that isn't a
+ * table session at all, or one that's already completed/cancelled and has no
+ * floor-map meaning left for the flag.
+ */
+export async function requestBillCore(tx: Db, ctx: { tenantId: string }, bookingId: string): Promise<void> {
+  await lockTableSession(tx, ctx.tenantId, bookingId, 'billed')
+  await tx
+    .update(bookings)
+    .set({ billRequestedAt: new Date() })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
 }
 
 async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string): Promise<void> {
@@ -350,12 +390,23 @@ export async function transferTableCore(
     .limit(1)
 
   const [target] = await tx
-    .select({ id: resources.id, branchId: resources.branchId, status: resources.status, name: resources.name })
+    .select({
+      id: resources.id,
+      branchId: resources.branchId,
+      status: resources.status,
+      name: resources.name,
+      hourlyRate: resourceTypes.hourlyRate,
+    })
     .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, input.targetResourceId)))
     .limit(1)
   if (!target) throw new BookingError('Target table not found.')
   if (target.branchId !== session.branchId) throw new BookingError('Target table belongs to a different branch.')
+  // Same table-type convention as seatTableSessionCore — see its comment.
+  if (Number(target.hourlyRate) !== 0) {
+    throw new BookingError('Target isn’t set up as a table — use a resource type with no hourly rate.')
+  }
   if (target.status !== 'available') throw new BookingError('Target table is not available.')
 
   // idx_bookings_open_table_session rejects this (23505) if the target was
@@ -494,12 +545,17 @@ export async function splitTableCore(
     .limit(1)
 
   const [target] = await tx
-    .select({ id: resources.id, branchId: resources.branchId, status: resources.status })
+    .select({ id: resources.id, branchId: resources.branchId, status: resources.status, hourlyRate: resourceTypes.hourlyRate })
     .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(and(eq(resources.tenantId, ctx.tenantId), eq(resources.id, input.targetResourceId)))
     .limit(1)
   if (!target) throw new BookingError('Target table not found.')
   if (target.branchId !== source.branchId) throw new BookingError('Target table belongs to a different branch.')
+  // Same table-type convention as seatTableSessionCore — see its comment.
+  if (Number(target.hourlyRate) !== 0) {
+    throw new BookingError('Target isn’t set up as a table — use a resource type with no hourly rate.')
+  }
   if (target.status !== 'available') throw new BookingError('Target table is not available.')
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
