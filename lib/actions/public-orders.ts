@@ -213,7 +213,26 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
     // below naturally comes out false, so the normal (non-payNow) flow takes
     // over. `payNowDowngraded` tells the client this happened, so it can
     // adjust its post-submit messaging instead of assuming payNow went through.
-    const payNowDowngraded = Boolean(v.payNow) && !standalone
+    // payNow also needs a working gateway. A tenant with no Razorpay
+    // configured (never set up, or removed after the client loaded its cart)
+    // cannot take the payment, and an order parked at 'awaiting_payment' would
+    // be stuck with no way out: the kitchen only sees 'accepted' orders and the
+    // accept/reject queue only sees 'pending' ones, so staff could neither
+    // fulfil nor clear it. Treat "payNow but no usable gateway" exactly like
+    // the stale-booking degrade above — fall back to the normal flow and tell
+    // the client via payNowDowngraded. Loaded outside the tx, the same
+    // proactive-disable pattern the booking wizard uses (app/(public)/book-type).
+    const razorpayConfigured =
+      (await loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+        console.error(
+          '[public-orders] loadRazorpayCredentialsForTenant failed:',
+          e instanceof Error ? e.name : 'unknown',
+        )
+        return null
+      })) !== null
+
+    const canPayNow = Boolean(v.payNow) && standalone && razorpayConfigured
+    const payNowDowngraded = Boolean(v.payNow) && !canPayNow
 
     const result = await withPublicTenant(tenant.id, async (tx) => {
       // Re-check availability fresh, in this transaction — never trust the
@@ -251,7 +270,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
       // entirely (payment is the confirmation) and goes straight to
       // 'awaiting_payment' instead.
       const settings = await getOrderSettingsCore(tx, tenant.id)
-      const awaitingPayment = Boolean(v.payNow) && standalone
+      const awaitingPayment = canPayNow
 
       const created = await createOrderCore(
         tx,
