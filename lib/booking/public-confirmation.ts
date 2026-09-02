@@ -2,6 +2,7 @@ import 'server-only'
 import { and, eq } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
+import { ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 
 export type PublicBookingSlot = {
   resourceName: string
@@ -70,5 +71,31 @@ export async function getPublicBookingByToken(
         endsAt: s.endsAt.toISOString(),
       })),
     }
+  })
+}
+
+export type PublicBookingForOrder = { id: string; branchId: string; bookingNumber: string }
+
+/**
+ * Resolve a booking's confirmation_token for the "Add food to your visit"
+ * nudge (components/public-booking/BookingConfirmation.tsx) — same
+ * unguessable-token trust model as getPublicBookingByToken above, but
+ * returns the internal id/branchId placeOnlineOrder needs to attach the
+ * order to this booking (see lib/actions/public-orders.ts), and returns null
+ * for a cancelled/no-show/completed booking (ACTIVE_BOOKING_STATUSES) so a
+ * stale link degrades to a plain standalone order instead of erroring. This
+ * is only the early, out-of-transaction check for what the checkout page
+ * OFFERS — createOrderCore re-checks the same statuses, inside the
+ * transaction that actually creates the order, as the authoritative gate.
+ */
+export async function getPublicBookingForOrder(tenantId: string, token: string): Promise<PublicBookingForOrder | null> {
+  return withPublicTenant(tenantId, async (tx) => {
+    const [booking] = await tx
+      .select({ id: bookings.id, branchId: bookings.branchId, bookingNumber: bookings.bookingNumber, status: bookings.status })
+      .from(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
+      .limit(1)
+    if (!booking || !(ACTIVE_BOOKING_STATUSES as readonly string[]).includes(booking.status)) return null
+    return { id: booking.id, branchId: booking.branchId, bookingNumber: booking.bookingNumber }
   })
 }

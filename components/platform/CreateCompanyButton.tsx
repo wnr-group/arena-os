@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, X } from 'lucide-react'
+import { Loader2, Plus, X } from 'lucide-react'
 import { createCompany } from '@/lib/actions/platform'
 
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
@@ -147,8 +147,9 @@ export function CreateCompanyButton() {
               <button
                 onClick={submit}
                 disabled={pending || !name || !slug || !ownerEmail || !ownerName || ownerPassword.length < 8}
-                className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
               >
+                {pending && <Loader2 size={15} className="animate-spin" />}
                 {pending ? 'Creating…' : 'Create company'}
               </button>
             </div>

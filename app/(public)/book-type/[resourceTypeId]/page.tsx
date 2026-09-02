@@ -4,8 +4,12 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceType } from '@/lib/booking/public-availability'
 import { todayInZone } from '@/lib/booking/time'
+import { getPublicMenu } from '@/lib/menu/public'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
+import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
 import { ResourceTypeBookingPage } from '@/components/public-booking/ResourceTypeBookingPage'
-import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
+import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 
 /** Matches a UUID, so a junk id 404s instead of erroring in the query. */
@@ -75,30 +79,44 @@ export default async function ResourceTypeBookPage({
 
   const prefill = await searchParams
   const branch = await getPublicBranch(tenant.id)
+  const branding = await getPublishedBranding(tenant.id)
+  const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
+  // Same proactive-disable pattern as app/(public)/checkout/page.tsx and
+  // book/[resourceId]/page.tsx.
+  const razorpayCredentials = await loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+    console.error('[book-type] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
+    return null
+  })
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
-
-      <main className="flex-1 bg-background">
-        <ResourceTypeBookingPage
-          tenant={tenant}
-          resourceType={resourceType}
-          today={todayInZone(tenant.timezone)}
-          initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
-          initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}
-        />
-      </main>
-
-      <PublicFooter
+    <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
+      <SitePageShell
         tenantName={tenant.name}
-        industryLabel={industryLabel}
-        icon={Icon}
-        address={branch?.address ?? null}
-        phone={branch?.phone ?? null}
-      />
+        icon={<Icon size={18} />}
+        logoUrl={branding.logoUrl}
+        hasMenu={hasMenu}
+      >
+        <main className="flex-1 bg-background">
+          <ResourceTypeBookingPage
+            tenant={tenant}
+            resourceType={resourceType}
+            today={todayInZone(tenant.timezone)}
+            razorpayConfigured={razorpayCredentials !== null}
+            initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
+            initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}
+          />
+        </main>
+
+        <PublicFooter
+          tenantName={tenant.name}
+          industryLabel={industryLabel}
+          icon={Icon}
+          address={branch?.address ?? null}
+          phone={branch?.phone ?? null}
+        />
+      </SitePageShell>
     </div>
   )
 }

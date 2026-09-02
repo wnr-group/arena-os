@@ -1,9 +1,10 @@
 import 'server-only'
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
+import { getActiveBookingForResource } from './attribution'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -121,6 +122,31 @@ export async function getPublicResourceType(
 }
 
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
+
+export type PublicWorkingHours = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean }
+
+/**
+ * The branch's full weekly schedule, Sun(0)..Sat(6) — for the "Opening
+ * Hours" website section. Any day with no row (never configured) falls back
+ * to DEFAULT_HOURS, same as the slot-math readers below rather than being
+ * omitted, so the table always has exactly seven rows.
+ */
+export async function getPublicWorkingHours(tenantId: string, branchId: string): Promise<PublicWorkingHours[]> {
+  const rows = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        dayOfWeek: workingHours.dayOfWeek,
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.tenantId, tenantId), eq(workingHours.branchId, branchId)))
+      .orderBy(asc(workingHours.dayOfWeek)),
+  )
+  const byDay = new Map(rows.map((r) => [r.dayOfWeek, r]))
+  return Array.from({ length: 7 }, (_, dayOfWeek) => byDay.get(dayOfWeek) ?? { dayOfWeek, ...DEFAULT_HOURS })
+}
 
 export type PublicAvailabilityInput = {
   tenantId: string
@@ -263,6 +289,63 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
     resourceTypeId: row.resourceTypeId,
     resourceTypeName: row.resourceTypeName,
   }
+}
+
+export type PublicStation = { resource: PublicResource; branchId: string; bookingId: string | null }
+
+/**
+ * What a QR code resolves to — the station itself, plus the booking (if any)
+ * currently occupying it, resolved in the same transaction via
+ * getActiveBookingForResource. Tenant-safe by construction: scoped both by
+ * the (tenant_id, qr_token) unique constraint and by resources_public_select's
+ * own tenant_id = current_public_tenant_id() check, same discipline as the
+ * booking confirmation token lookup on app/(public)/b/[token].
+ */
+export async function getPublicStation(tenantId: string, qrToken: string): Promise<PublicStation | null> {
+  return withPublicTenant(tenantId, async (tx) => {
+    const [row] = await tx
+      .select({
+        id: resources.id,
+        branchId: resources.branchId,
+        name: resources.name,
+        description: resources.description,
+        imageUrl: resources.imageUrl,
+        hourlyRateOverride: resources.hourlyRateOverride,
+        resourceTypeId: resourceTypes.id,
+        resourceTypeName: resourceTypes.name,
+        typeHourlyRate: resourceTypes.hourlyRate,
+        typeImageUrl: resourceTypes.imageUrl,
+        capacity: resourceTypes.capacity,
+      })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resources.qrToken, qrToken),
+          eq(resources.tenantId, tenantId),
+          eq(resources.status, 'available'),
+          eq(resourceTypes.isActive, true),
+        ),
+      )
+      .limit(1)
+    if (!row) return null
+
+    const bookingId = await getActiveBookingForResource(tx, tenantId, row.id)
+    return {
+      branchId: row.branchId,
+      resource: {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        imageUrl: row.imageUrl ?? row.typeImageUrl,
+        hourlyRate: row.hourlyRateOverride ?? row.typeHourlyRate,
+        capacity: row.capacity,
+        resourceTypeId: row.resourceTypeId,
+        resourceTypeName: row.resourceTypeName,
+      },
+      bookingId,
+    }
+  })
 }
 
 export type PublicTypeAvailabilityInput = {

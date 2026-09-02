@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, X } from 'lucide-react'
+import { Loader2, Plus, X } from 'lucide-react'
 import { updateCustomerTags } from '@/lib/actions/customers'
 import { hasTag, normalizeTag, MAX_TAGS } from '@/lib/customers/tags'
 
@@ -23,6 +23,7 @@ export function CustomerTags({
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [removingTag, setRemovingTag] = useState<string | null>(null)
 
   // Adopt the server's list when the profile re-renders from outside this
   // component (a refresh, the back button), the same way CustomersView keeps its
@@ -35,18 +36,20 @@ export function CustomerTags({
     }
   }, [initialTags])
 
-  function save(next: string[], after?: () => void) {
+  function save(next: string[], after?: () => void, onSettled?: () => void) {
     setError(null)
     start(async () => {
       const r = await updateCustomerTags({ customerId, tags: next })
       if (r.error || !r.tags) {
         setError(r.error ?? 'Could not save the tags.')
+        onSettled?.()
         return
       }
       applied.current = r.tags
       setTags(r.tags)
       after?.()
       router.refresh()
+      onSettled?.()
     })
   }
 
@@ -65,7 +68,12 @@ export function CustomerTags({
   }
 
   function remove(tag: string) {
-    save(tags.filter((t) => t !== tag))
+    setRemovingTag(tag)
+    save(
+      tags.filter((t) => t !== tag),
+      undefined,
+      () => setRemovingTag(null),
+    )
   }
 
   if (!canManage) {
@@ -98,7 +106,7 @@ export function CustomerTags({
               aria-label={`Remove tag ${t}`}
               className="text-muted-foreground hover:text-destructive disabled:opacity-50"
             >
-              <X size={12} />
+              {removingTag === t ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
             </button>
           </span>
         ))}
@@ -128,9 +136,10 @@ export function CustomerTags({
               type="button"
               onClick={add}
               disabled={pending || !draft.trim()}
-              className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
-              {pending ? 'Saving…' : 'Add'}
+              {pending && !removingTag && <Loader2 size={11} className="animate-spin" />}
+              {pending && !removingTag ? 'Saving…' : 'Add'}
             </button>
             <button
               type="button"

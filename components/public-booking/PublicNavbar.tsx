@@ -2,9 +2,12 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { ArrowRight, Menu, X } from 'lucide-react'
+import { ArrowRight, Menu, ShoppingBag, X } from 'lucide-react'
 
-const NAV_LINKS = [
+/** "My Booking" is spliced in after "Resources" (only when myBookingHref is
+ *  passed) rather than living here, since it isn't a fixed link — see
+ *  buildNavLinks. */
+const BASE_NAV_LINKS = [
   { id: 'home', label: 'Home' },
   { id: 'menu', label: 'Menu' },
   { id: 'resources', label: 'Resources' },
@@ -18,6 +21,15 @@ const ROUTES: Record<string, string> = {
   resources: '/resources',
 }
 
+function buildNavLinks(myBookingHref?: string) {
+  if (!myBookingHref) return BASE_NAV_LINKS
+  return [
+    ...BASE_NAV_LINKS.slice(0, 3),
+    { id: 'my-booking', label: 'My Booking' },
+    ...BASE_NAV_LINKS.slice(3),
+  ]
+}
+
 function scrollToId(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -26,11 +38,32 @@ function scrollToId(id: string) {
  * brand mark, animated-underline links, and an always-visible gradient
  * "Book Now" CTA. Links collapse behind a hamburger below `md`; the CTA
  * never does. Gains a shadow once the page scrolls past the hero. */
-export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: ReactNode }) {
+export function PublicNavbar({
+  tenantName,
+  icon,
+  logoUrl,
+  topOffset = 0,
+  cartCount,
+  onCartClick,
+  myBookingHref,
+}: {
+  tenantName: string
+  icon: ReactNode
+  logoUrl?: string | null
+  /** Pixels to stick below instead of the viewport top — e.g. the staff preview banner above it. */
+  topOffset?: number
+  /** Item count shown as a badge on the cart button. Only meaningful together with onCartClick. */
+  cartCount?: number
+  /** When set, shows a cart button that opens the ordering cart — passed by OrderNavbar on any page with a cart (station order, /food-menu, homepage menu highlights). */
+  onCartClick?: () => void
+  /** When set, shows a "My Booking" button linking here — passed by OrderNavbar, to the phone-lookup hub where a customer finds their food orders and device bookings. */
+  myBookingHref?: string
+}) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
+  const navLinks = buildNavLinks(myBookingHref)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
@@ -39,10 +72,15 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
-  // "Menu" and "Resources" always live at their own route. Every other link
-  // is a same-page anchor on the homepage — scroll to it directly when we're
+  // "My Booking" goes straight to the phone-lookup hub. "Menu" and
+  // "Resources" always live at their own route. Every other link is a
+  // same-page anchor on the homepage — scroll to it directly when we're
   // already there, otherwise navigate back to the homepage anchor.
   const goTo = (id: string) => {
+    if (id === 'my-booking') {
+      if (myBookingHref) router.push(myBookingHref)
+      return
+    }
     if (ROUTES[id]) {
       router.push(ROUTES[id])
       return
@@ -56,47 +94,72 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
 
   return (
     <header
-      className={`sticky top-0 z-40 border-b transition-all duration-300 ${
+      style={{ top: topOffset }}
+      className={`sticky z-40 border-b transition-all duration-300 ${
         scrolled
           ? 'border-border/80 bg-background/85 backdrop-blur-md shadow-[0_2px_20px_-8px_rgba(124,58,237,0.08),0_8px_30px_-12px_rgba(0,0,0,0.05)]'
           : 'border-transparent bg-background/60 backdrop-blur-sm'
       }`}
     >
       <div
-        className={`mx-auto flex max-w-6xl items-center gap-3 px-4 transition-all duration-300 sm:px-6 ${
+        className={`mx-auto flex max-w-7xl items-center gap-4 px-5 transition-all duration-300 sm:px-8 ${
           scrolled ? 'py-2.5' : 'py-4'
         }`}
       >
         <div className="flex flex-1 justify-start min-w-0">
           <button type="button" onClick={() => goTo('home')} className="group flex min-w-0 items-center gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
-              {icon}
-            </span>
-            <span className="truncate text-lg font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={logoUrl}
+                alt={tenantName}
+                className="size-10 shrink-0 rounded-xl object-cover shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105"
+              />
+            ) : (
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
+                {icon}
+              </span>
+            )}
+            <span className="truncate text-xl font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
               {tenantName}
             </span>
           </button>
         </div>
 
-        <nav className="hidden md:flex justify-center items-center gap-1">
-          {NAV_LINKS.map((link) => (
+        <nav className="hidden md:flex justify-center items-center">
+          {navLinks.map((link) => (
             <button
               key={link.id}
               type="button"
               onClick={() => goTo(link.id)}
-              className="group relative px-4 py-2 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95"
+              className="group relative whitespace-nowrap px-2.5 py-2.5 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95 lg:px-3.5 lg:text-lg"
             >
               {link.label}
-              <span className="absolute bottom-1.5 left-4 right-4 h-[2px] origin-left scale-x-0 rounded-full bg-primary transition-transform duration-300 group-hover:scale-x-100" />
+              <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-primary transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
             </button>
           ))}
         </nav>
 
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
+          {onCartClick && (
+            <button
+              type="button"
+              onClick={onCartClick}
+              aria-label="View cart"
+              className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background/50 text-foreground transition-all duration-200 hover:border-primary/40 hover:bg-primary/5 hover:text-primary active:scale-95"
+            >
+              <ShoppingBag size={18} />
+              {!!cartCount && cartCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground shadow">
+                  {cartCount > 99 ? '99+' : cartCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => router.push('/resources')}
-            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-5 group"
+            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-base font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
           >
             {/* Shimmer overlay effect */}
             <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
@@ -123,7 +186,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
       {open && (
         <nav className="border-t border-border/80 bg-background/95 px-4 pb-5 pt-3 shadow-[0_15px_30px_-10px_rgba(0,0,0,0.1)] backdrop-blur-xl md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex flex-col gap-1.5">
-            {NAV_LINKS.map((link) => (
+            {navLinks.map((link) => (
               <button
                 key={link.id}
                 type="button"
@@ -131,7 +194,7 @@ export function PublicNavbar({ tenantName, icon }: { tenantName: string; icon: R
                   setOpen(false)
                   goTo(link.id)
                 }}
-                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
+                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-base font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
               >
                 <span>{link.label}</span>
                 <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary">

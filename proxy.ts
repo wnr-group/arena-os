@@ -41,11 +41,19 @@ export function proxy(request: NextRequest) {
   const isPublicRoute =
     pathname === '/' ||
     pathname === '/food-menu' ||
+    pathname === '/checkout' ||
     pathname === '/book' ||
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
     pathname.startsWith('/b/') ||
+    pathname.startsWith('/order/') ||
+    // Order status tracking (M14 #7, v2) — /o/[orderId] is the no-login
+    // status page a customer lands on right after checkout, /track is the
+    // phone-lookup fallback to find it again later. Same "no session at all"
+    // trust model as /b/[token] above.
+    pathname.startsWith('/o/') ||
+    pathname === '/track' ||
     // Customer OTP login (AROS-87). Public by definition: a customer signing in
     // has no session of EITHER kind yet.
     isCustomerLoginRoute

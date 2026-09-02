@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { Loader2 } from 'lucide-react'
 import { saveBusinessProfile } from '@/lib/actions/business-profile'
 import { DEFAULT_INVOICE_PREFIX, MAX_INVOICE_PREFIX_LENGTH } from '@/lib/settings/business-profile'
 
@@ -178,8 +179,9 @@ export function BusinessProfileForm({
         <button
           onClick={submit}
           disabled={pending || Boolean(prefixError)}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
+          {pending && <Loader2 size={14} className="animate-spin" />}
           {pending ? 'Saving…' : 'Save profile'}
         </button>
         {saved && !pending && <span className="text-sm text-muted-foreground">Saved.</span>}

@@ -21,6 +21,7 @@ import {
   Loader2,
   UploadCloud,
   FileImage,
+  QrCode,
 } from 'lucide-react'
 import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
@@ -48,6 +49,7 @@ type ResourceRow = {
   description: string | null
   typeImageUrl: string | null
   typeDescription: string | null
+  qrToken: string
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: ResourceRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
@@ -58,7 +60,8 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
 
 const STATUS_LABELS: Record<ResourceStatus, string> = {
   available: 'Available',
@@ -84,7 +87,6 @@ export function ResourcesManager({
 }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -94,11 +96,9 @@ export function ResourcesManager({
   const [statusFilter, setStatusFilter] = useState<'all' | ResourceStatus>('all')
 
   const run: Run = (fn, onSuccess, onSettled) => {
-    setError(null)
     start(async () => {
       const r = await fn()
       if (r.error) {
-        setError(r.error)
         toast.error(r.error)
       } else {
         router.refresh()
@@ -149,7 +149,6 @@ export function ResourcesManager({
         const r = await deleteResource(row.id)
         setDeletingId(null)
         if (r.error) {
-          setError(r.error)
           toast.error(r.error)
         } else {
           router.refresh()
@@ -173,12 +172,6 @@ export function ResourcesManager({
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={Boxes} label="Total resources" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Available" value={stats.available} accent="bg-emerald-500/10 text-emerald-600" />
@@ -194,30 +187,34 @@ export function ResourcesManager({
           <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('grid')}
               aria-pressed={view === 'grid'}
+              aria-label="Grid view"
+              title="Grid view"
             >
-              <LayoutGrid size={15} /> Grid
+              <LayoutGrid size={15} />
             </button>
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('table')}
               aria-pressed={view === 'table'}
+              aria-label="Table view"
+              title="Table view"
             >
-              <Table2 size={15} /> Table
+              <Table2 size={15} />
             </button>
           </div>
           <button
             className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
             onClick={() => setModal({ mode: 'add' })}
           >
-            <Plus size={16} /> Add resource
+            <Plus size={16} /> Add Resource
           </button>
         </div>
       </div>
@@ -251,15 +248,15 @@ export function ResourcesManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
-                Clear filters
+              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+                Clear Filters
               </button>
             )}
           </div>
 
           <div className="flex gap-1 overflow-x-auto border-t border-border px-2">
             <TypeTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
-              All types
+              All Types
             </TypeTab>
             {filterableTypes.map((t) => (
               <TypeTab key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)}>
@@ -277,8 +274,8 @@ export function ResourcesManager({
       ) : filteredResources.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No resources match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
-            Clear filters
+          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+            Clear Filters
           </button>
         </p>
       ) : view === 'grid' ? (
@@ -341,6 +338,13 @@ export function ResourcesManager({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
+                        <Link
+                          href={`/settings/resources/units/${row.id}/qr`}
+                          className={btn}
+                          aria-label="View / print QR"
+                        >
+                          <QrCode size={16} />
+                        </Link>
                         <button
                           className={btn}
                           disabled={pending}
@@ -418,7 +422,7 @@ function TypeTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -506,6 +510,13 @@ function ResourceCard({
           deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
         }`}
       >
+        <Link
+          href={`/settings/resources/units/${row.id}/qr`}
+          className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary"
+          aria-label="View / print QR"
+        >
+          <QrCode size={13} />
+        </Link>
         <button
           type="button"
           className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
@@ -640,7 +651,9 @@ function ResourceModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={label}>Name</label>
+                <label className={label}>
+                  Name <span className="text-destructive">*</span>
+                </label>
                 <input
                   className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
                   placeholder="e.g. PS5 #1"
@@ -651,7 +664,9 @@ function ResourceModal({
                 {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
               </div>
               <div>
-                <label className={label}>Resource type</label>
+                <label className={label}>
+                  Resource type <span className="text-destructive">*</span>
+                </label>
                 <select
                   className={`${input} ${submitted && errors.typeId ? inputInvalid : ''}`}
                   value={typeId}
@@ -743,13 +758,13 @@ function ResourceModal({
               {fileName && !uploading ? (
                 <button
                   type="button"
-                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
                   }}
                 >
-                  Remove — use the type&apos;s default photo
+                  Remove — Use the Type&apos;s Default Photo
                 </button>
               ) : (
                 !uploading &&
@@ -780,19 +795,19 @@ function ResourceModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >
               {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save changes' : 'Add resource'}
+              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource'}
             </button>
           </div>
         </div>

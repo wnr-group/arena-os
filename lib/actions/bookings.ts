@@ -8,6 +8,8 @@ import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { createBookingCore, BookingError } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
+import { isValidPhone } from '@/lib/customers/phone'
+import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
@@ -25,8 +27,12 @@ function fail(e: unknown): Result {
 
 const createInput = z.object({
   branchId: z.string().uuid(),
-  customerName: z.string().trim().optional(),
-  customerPhone: z.string().trim().optional(),
+  customerName: z.string().trim().min(1, 'Customer name is required.'),
+  customerPhone: z
+    .string()
+    .trim()
+    .min(1, 'Phone number is required.')
+    .refine((v) => isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   customerEmail: z.string().trim().email().optional().or(z.literal('')),
   notes: z.string().trim().optional(),
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
@@ -56,6 +62,26 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
     return fail(e)
+  }
+}
+
+type CustomerLookupResult = { found: boolean; name: string | null }
+
+/**
+ * Phone-first walk-in flow: staff enter the phone before the name, and if
+ * that number already has a customer profile we skip asking for the name at
+ * all. Safe to return the stored name here (unlike the public booking site's
+ * lookupPublicCustomerByPhone) — the caller is an authenticated staff member
+ * who can already see this in the customer directory.
+ */
+export async function lookupCustomerByPhone(phone: string): Promise<CustomerLookupResult> {
+  try {
+    const ctx = await requireContext()
+    if (!isValidPhone(phone)) return { found: false, name: null }
+    const customer = await withUser(ctx.user.id, (tx) => findCustomerByRawPhone(tx, ctx.tenant.id, phone))
+    return { found: Boolean(customer), name: customer?.name ?? null }
+  } catch {
+    return { found: false, name: null }
   }
 }
 

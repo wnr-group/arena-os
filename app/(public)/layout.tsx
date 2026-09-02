@@ -1,6 +1,9 @@
 import { notFound } from 'next/navigation'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
+import { publicSiteFont } from '@/lib/fonts'
+import { getLiveHappyHourBanner } from '@/lib/happy-hours/public'
+import { HappyHourFloatingWidget } from '@/components/public-booking/HappyHourFloatingWidget'
 
 /**
  * The public (no-login) surface, pinned to whichever tenant the subdomain
@@ -20,5 +23,12 @@ export default async function PublicLayout({ children }: { children: React.React
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
-  return <div className="min-h-screen bg-background text-foreground">{children}</div>
+  const happyHour = await getLiveHappyHourBanner(tenant.id, tenant.timezone)
+
+  return (
+    <div className={`min-h-screen bg-background text-foreground ${publicSiteFont.className}`}>
+      {children}
+      <HappyHourFloatingWidget happyHour={happyHour} currency={tenant.currency} />
+    </div>
+  )
 }

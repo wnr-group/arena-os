@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Pencil, Ban, RotateCcw, X, TicketPercent, CheckCircle2, XCircle, Infinity as InfinityIcon } from 'lucide-react'
+import { Plus, Pencil, Ban, RotateCcw, X, TicketPercent, CheckCircle2, XCircle, Infinity as InfinityIcon, Loader2 } from 'lucide-react'
 import { upsertPromoCode, setPromoCodeActive } from '@/lib/actions/promo-codes'
 import { formatMoney } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -19,7 +19,7 @@ export type PromoRow = {
   isActive: boolean
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: PromoRow }
-type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
+type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
 
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
 const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
@@ -64,8 +64,9 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
-  const run: Run = (fn, onSuccess) => {
+  const run: Run = (fn, onSuccess, onSettled) => {
     setError(null)
     start(async () => {
       const r = await fn()
@@ -74,6 +75,7 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
         router.refresh()
         onSuccess?.()
       }
+      onSettled?.()
     })
   }
 
@@ -96,14 +98,17 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
           'Customers will no longer be able to use this code. It stays on record, so invoices that already used it are unaffected.',
         confirmText: 'Expire code',
         onConfirm: async () => {
+          setTogglingId(row.id)
           const r = await setPromoCodeActive(row.id, false)
+          setTogglingId(null)
           if (r.error) setError(r.error)
           else router.refresh()
         },
       })
       return
     }
-    run(() => setPromoCodeActive(row.id, true))
+    setTogglingId(row.id)
+    run(() => setPromoCodeActive(row.id, true), undefined, () => setTogglingId(null))
   }
 
   return (
@@ -198,7 +203,13 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
                               : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                           }`}
                         >
-                          {p.isActive ? <Ban size={15} /> : <RotateCcw size={15} />}
+                          {togglingId === p.id ? (
+                            <Loader2 size={15} className="animate-spin" />
+                          ) : p.isActive ? (
+                            <Ban size={15} />
+                          ) : (
+                            <RotateCcw size={15} />
+                          )}
                         </button>
                       </div>
                     </td>
@@ -389,7 +400,12 @@ function PromoDialog({
           <button onClick={onClose} disabled={pending} className={`${btn} border`}>
             Cancel
           </button>
-          <button onClick={submit} disabled={pending || invalid} className={`${btn} bg-primary text-primary-foreground`}>
+          <button
+            onClick={submit}
+            disabled={pending || invalid}
+            className={`${btn} inline-flex items-center justify-center gap-1.5 bg-primary text-primary-foreground`}
+          >
+            {pending && <Loader2 size={14} className="animate-spin" />}
             {pending ? 'Saving…' : editing ? 'Save changes' : 'Create promo code'}
           </button>
         </div>

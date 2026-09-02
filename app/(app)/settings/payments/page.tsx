@@ -20,8 +20,8 @@ export default async function PaymentSettingsPage() {
     <div className="mx-auto max-w-2xl px-6 py-8">
       <h1 className="text-2xl font-semibold">Payment settings</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        Your own Razorpay account, used for online booking deposits. Only owners and managers
-        can change these.
+        Your own Razorpay account, used for online booking deposits and prepaid online orders.
+        Only owners and managers can change these.
       </p>
       <PaymentSettingsForm
         razorpayKeyId={settings.razorpayKeyId ?? ''}

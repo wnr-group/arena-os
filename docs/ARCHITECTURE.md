@@ -235,9 +235,11 @@ Benefits feed pricing (booking/food discounts) and wallet credits.
   pricing service computes booking + food + discounts + tax → invoice.
 - **GST:** tax rate per item/service; invoice stores CGST/SGST breakup, GSTIN,
   place of supply; sequential invoice numbers per tenant (legal requirement).
-- **Payments:** POS records tenders (split allowed). Online deposits create a
-  Razorpay order with the **tenant's own** keys; `/api/webhooks/razorpay`
-  verifies the signature and marks the deposit paid. Idempotent on payment id.
+- **Payments:** POS records tenders (split allowed). Online deposits, and
+  pay-now for a standalone/pickup order with no booking to add to, both
+  create a Razorpay order with the **tenant's own** keys through the SAME
+  `/api/webhooks/razorpay`, which verifies the signature and marks the
+  deposit — or the order's own invoice — paid. Idempotent on payment id.
 - **Per-tenant secrets:** Razorpay keys encrypted at rest (pgcrypto or app-level
   envelope encryption with a platform master key in env/KMS); decrypted only on
   the owner path when calling the gateway.

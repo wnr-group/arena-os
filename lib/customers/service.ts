@@ -117,6 +117,24 @@ export async function assertCustomerInTenant(
   if (!row) throw new CustomerError('That customer no longer exists.')
 }
 
+/**
+ * Persist a customer's latest "order ready" notification preference (M14 #7,
+ * v2) — called on every online order, since they may change their mind order
+ * to order; there's no separate settings surface for this yet (M9's customer
+ * portal is unbuilt).
+ */
+export async function setNotifyOrderReady(
+  tx: Db,
+  tenantId: string,
+  customerId: string,
+  value: boolean,
+): Promise<void> {
+  await tx
+    .update(customers)
+    .set({ notifyOrderReady: value })
+    .where(and(eq(customers.tenantId, tenantId), eq(customers.id, customerId)))
+}
+
 export async function setCustomerTags(
   tx: Db,
   tenantId: string,

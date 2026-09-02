@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
+import { Loader2, MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
 import {
   createCustomerNote,
   updateCustomerNote,
@@ -37,21 +37,26 @@ export function CustomerNotes({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
   const composer = useRef<HTMLTextAreaElement>(null)
 
   /** Shared submit path — mirrors ResourcesManager's run(). */
-  function run(fn: () => Promise<{ error?: string }>, done: string, after?: () => void) {
+  function run(fn: () => Promise<{ error?: string }>, done: string, after?: () => void, onSettled?: () => void) {
     setError(null)
     setNotice(null)
     start(async () => {
       const r = await fn()
       if (r.error) {
         setError(r.error)
+        onSettled?.()
         return
       }
       setNotice(done)
       after?.()
       router.refresh()
+      onSettled?.()
     })
   }
 
@@ -63,7 +68,9 @@ export function CustomerNotes({
       onConfirm: async () => {
         setError(null)
         setNotice(null)
+        setDeletingId(id)
         const r = await deleteCustomerNote(id)
+        setDeletingId(null)
         if (r.error) {
           setError(r.error)
           return
@@ -104,28 +111,46 @@ export function CustomerNotes({
       ) : (
         <ul className={`space-y-2 transition-opacity ${pending ? 'opacity-60' : ''}`}>
           {notes.map((n) => (
-            <NoteItem key={n.id} note={n} canManage={canManage} pending={pending} run={run} onDelete={removeNote} />
+            <NoteItem
+              key={n.id}
+              note={n}
+              canManage={canManage}
+              pending={pending}
+              saving={savingId === n.id}
+              setSavingId={setSavingId}
+              deleting={deletingId === n.id}
+              run={run}
+              onDelete={removeNote}
+            />
           ))}
         </ul>
       )}
 
-      {canManage && <NoteComposer ref={composer} customerId={customerId} pending={pending} run={run} />}
+      {canManage && (
+        <NoteComposer ref={composer} customerId={customerId} pending={pending} adding={adding} setAdding={setAdding} run={run} />
+      )}
     </div>
   )
 }
 
-type Run = (fn: () => Promise<{ error?: string }>, done: string, after?: () => void) => void
+type Run = (fn: () => Promise<{ error?: string }>, done: string, after?: () => void, onSettled?: () => void) => void
 
 function NoteItem({
   note,
   canManage,
   pending,
+  saving,
+  setSavingId,
+  deleting,
   run,
   onDelete,
 }: {
   note: NoteRow
   canManage: boolean
   pending: boolean
+  saving: boolean
+  setSavingId: (id: string | null) => void
+  deleting: boolean
   run: Run
   onDelete: (id: string) => void
 }) {
@@ -133,10 +158,12 @@ function NoteItem({
   const [body, setBody] = useState(note.body)
 
   function save() {
+    setSavingId(note.id)
     run(
       () => updateCustomerNote({ noteId: note.id, body }),
       'Note updated.',
       () => setEditing(false),
+      () => setSavingId(null),
     )
   }
 
@@ -166,11 +193,12 @@ function NoteItem({
             </button>
             <button
               type="button"
-              className={`${btn} bg-primary text-primary-foreground`}
+              className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground`}
               disabled={pending || !body.trim() || body.trim() === note.body}
               onClick={save}
             >
-              {pending ? 'Saving…' : 'Save note'}
+              {saving && <Loader2 size={14} className="animate-spin" />}
+              {saving ? 'Saving…' : 'Save note'}
             </button>
           </div>
         </>
@@ -196,7 +224,7 @@ function NoteItem({
                   onClick={() => onDelete(note.id)}
                   aria-label="Delete note"
                 >
-                  <Trash2 size={15} />
+                  {deleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                 </button>
               </div>
             )}
@@ -217,20 +245,26 @@ function NoteComposer({
   ref,
   customerId,
   pending,
+  adding,
+  setAdding,
   run,
 }: {
   ref: React.RefObject<HTMLTextAreaElement | null>
   customerId: string
   pending: boolean
+  adding: boolean
+  setAdding: (v: boolean) => void
   run: Run
 }) {
   const [body, setBody] = useState('')
 
   function submit() {
+    setAdding(true)
     run(
       () => createCustomerNote({ customerId, body }),
       'Note added.',
       () => setBody(''),
+      () => setAdding(false),
     )
   }
 
@@ -261,10 +295,11 @@ function NoteComposer({
         </span>
         <button
           type="submit"
-          className={`${btn} bg-primary text-primary-foreground`}
+          className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground`}
           disabled={pending || !body.trim()}
         >
-          {pending ? 'Saving…' : 'Add note'}
+          {adding && <Loader2 size={14} className="animate-spin" />}
+          {adding ? 'Saving…' : 'Add note'}
         </button>
       </div>
     </form>

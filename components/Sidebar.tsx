@@ -39,10 +39,12 @@ import {
   Receipt,
   Calculator,
   PiggyBank,
+  Globe,
+  Bell,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
-import { canViewCustomers, isManager, isOwner, type MemberRole } from '@/lib/auth/roles'
+import { canViewCustomers, canManageIncomingOrders, isManager, isOwner, type MemberRole } from '@/lib/auth/roles'
 
 /**
  * `can` gates an entry on the member's role. Omit it for surfaces every member
@@ -112,6 +114,11 @@ const NAV: NavItem[] = [
   },
   // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
   { href: '/settings/payments', label: 'Payments', icon: CreditCard, can: isManager },
+  // Website builder (M13/AROS-C) — manager and owner only, like the rest of settings.
+  { href: '/settings/website', label: 'Website', icon: Globe, can: isManager },
+  // Accept/reject queue for online orders (AROS M14 #4) — front-of-house
+  // roles, not kitchen staff; see lib/auth/roles.ts's canManageIncomingOrders.
+  { href: '/orders/incoming', label: 'Incoming Orders', icon: Bell, can: canManageIncomingOrders },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.

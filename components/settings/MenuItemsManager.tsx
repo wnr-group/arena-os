@@ -61,7 +61,10 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
+const DESCRIPTION_PATTERN = /^[\p{L}\p{N}\s&'".,()!?/-]+$/u
 
 const STATUS_LABELS: Record<ItemStatus, string> = {
   available: 'Available',
@@ -87,7 +90,6 @@ export function MenuItemsManager({
 }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -97,11 +99,9 @@ export function MenuItemsManager({
   const [statusFilter, setStatusFilter] = useState<'all' | ItemStatus>('all')
 
   const run: Run = (fn, onSuccess, onSettled) => {
-    setError(null)
     start(async () => {
       const r = await fn()
       if (r.error) {
-        setError(r.error)
         toast.error(r.error)
       } else {
         router.refresh()
@@ -152,7 +152,6 @@ export function MenuItemsManager({
         const r = await deleteMenuItem(row.id)
         setDeletingId(null)
         if (r.error) {
-          setError(r.error)
           toast.error(r.error)
         } else {
           router.refresh()
@@ -164,12 +163,6 @@ export function MenuItemsManager({
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={UtensilsCrossed} label="Total items" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Available" value={stats.available} accent="bg-emerald-500/10 text-emerald-600" />
@@ -185,23 +178,27 @@ export function MenuItemsManager({
           <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('grid')}
               aria-pressed={view === 'grid'}
+              aria-label="Grid view"
+              title="Grid view"
             >
-              <LayoutGrid size={15} /> Grid
+              <LayoutGrid size={15} />
             </button>
             <button
               type="button"
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`inline-flex items-center rounded-md p-1.5 transition ${
                 view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
               onClick={() => setView('table')}
               aria-pressed={view === 'table'}
+              aria-label="Table view"
+              title="Table view"
             >
-              <Table2 size={15} /> Table
+              <Table2 size={15} />
             </button>
           </div>
           {categories.length > 0 && (
@@ -209,7 +206,7 @@ export function MenuItemsManager({
               className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
               onClick={() => setModal({ mode: 'add' })}
             >
-              <Plus size={16} /> Add item
+              <Plus size={16} /> Add Item
             </button>
           )}
         </div>
@@ -244,15 +241,15 @@ export function MenuItemsManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
-                Clear filters
+              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+                Clear Filters
               </button>
             )}
           </div>
 
           <div className="flex gap-1 overflow-x-auto border-t border-border px-2">
             <CategoryTab active={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')}>
-              All categories
+              All Categories
             </CategoryTab>
             {filterableCategories.map((c) => (
               <CategoryTab key={c.id} active={categoryFilter === c.id} onClick={() => setCategoryFilter(c.id)}>
@@ -278,8 +275,8 @@ export function MenuItemsManager({
       ) : filteredItems.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No items match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
-            Clear filters
+          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+            Clear Filters
           </button>
         </p>
       ) : view === 'grid' ? (
@@ -411,7 +408,7 @@ function CategoryTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -574,8 +571,20 @@ function ItemModal({
   const selectableCategories = categories.filter((c) => c.isActive || c.id === categoryId)
 
   const errors = useMemo(() => {
-    const e: { name?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
-    if (!name.trim()) e.name = 'Name is required.'
+    const e: { name?: string; description?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
+    const trimmedName = name.trim()
+    if (!trimmedName) e.name = 'Name is required.'
+    else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
+    else if (!NAME_PATTERN.test(trimmedName))
+      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
+    const trimmedDescription = description.trim()
+    if (trimmedDescription) {
+      if (trimmedDescription.length < 5) e.description = 'Description must be at least 5 characters.'
+      else if (trimmedDescription.length > 500) e.description = 'Description must be at most 500 characters.'
+      else if (!DESCRIPTION_PATTERN.test(trimmedDescription))
+        e.description = "Description contains characters that aren't allowed."
+    }
     if (!categoryId) e.categoryId = 'Select a category.'
     if (price === '') e.price = 'Price is required.'
     else if (Number.isNaN(Number(price))) e.price = 'Enter a valid price.'
@@ -583,7 +592,7 @@ function ItemModal({
     if (sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
       e.sortOrder = 'Sort order must be a whole number.'
     return e
-  }, [name, categoryId, price, sortOrder])
+  }, [name, description, categoryId, price, sortOrder])
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
@@ -650,19 +659,24 @@ function ItemModal({
           <div className="mt-4 space-y-3">
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
             <div>
-              <label className={label}>Name</label>
+              <label className={label}>
+                Name <span className="text-destructive">*</span>
+              </label>
               <input
                 className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
                 placeholder="e.g. Margherita Pizza"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                maxLength={100}
                 autoFocus
               />
               {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={label}>Category</label>
+                <label className={label}>
+                  Category <span className="text-destructive">*</span>
+                </label>
                 <select
                   className={`${input} ${submitted && errors.categoryId ? inputInvalid : ''}`}
                   value={categoryId}
@@ -678,7 +692,9 @@ function ItemModal({
                 {submitted && errors.categoryId && <p className={errorText}>{errors.categoryId}</p>}
               </div>
               <div>
-                <label className={label}>Price</label>
+                <label className={label}>
+                  Price <span className="text-destructive">*</span>
+                </label>
                 <input
                   className={`${input} ${submitted && errors.price ? inputInvalid : ''}`}
                   placeholder="0.00"
@@ -725,11 +741,13 @@ function ItemModal({
             <div>
               <label className={label}>Description (optional)</label>
               <textarea
-                className={input}
+                className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
                 rows={2}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                maxLength={500}
               />
+              {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
             </div>
             <div>
               <label className={label}>Image</label>
@@ -769,13 +787,13 @@ function ItemModal({
               {fileName && !uploading && (
                 <button
                   type="button"
-                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
                   }}
                 >
-                  Remove image
+                  Remove Image
                 </button>
               )}
             </div>
@@ -802,19 +820,19 @@ function ItemModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >
               {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save changes' : 'Add item'}
+              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Item'}
             </button>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import 'server-only'
-import { sql } from 'drizzle-orm'
-import { withUser } from '@/db'
+import { eq, sql } from 'drizzle-orm'
+import { ownerDb, withUser } from '@/db'
+import { paymentSettings } from '@/db/schema'
 import { decryptSecret, DecryptionError } from '@/lib/security/encryption'
 import type { ActiveContext } from '@/lib/tenant/context'
 
@@ -103,4 +104,52 @@ export async function requireRazorpayCredentials(
   const creds = await getRazorpayCredentials(ctx)
   if (!creds) throw new PaymentNotConfiguredError()
   return creds
+}
+
+/**
+ * The tenant's Razorpay credentials, for the PUBLIC checkout flow.
+ *
+ * Sibling to loadWebhookSecretBySlug() in lib/settings/razorpay-webhook-secret.ts,
+ * for the same reason: the public checkout page has no user session, so it
+ * cannot go through auth_tenant_ids() the way getRazorpayCredentials() above
+ * does. This reads on the owner connection instead, scoped to ONE
+ * already-resolved tenant id (resolvePublicTenant() — never a client-supplied
+ * value), which is what keeps it from being a general-purpose "any tenant's
+ * secret" hole: it takes a tenant id the caller already trusts, and returns
+ * one row or null.
+ *
+ * Used by:
+ *   * the checkout page, to decide whether to show "Pay now" at all;
+ *   * createOrderPaymentIntent (lib/actions/public-orders.ts), to actually
+ *     call the gateway.
+ *
+ * Throws DecryptionError if a secret IS stored but will not decrypt — a real
+ * fault, not "not configured", so the caller must not swallow it into a
+ * silent "pay-now unavailable".
+ */
+export async function loadRazorpayCredentialsForTenant(
+  tenantId: string,
+): Promise<RazorpayCredentials | null> {
+  const [row] = await ownerDb
+    .select({
+      keyId: paymentSettings.razorpayKeyId,
+      ciphertext: paymentSettings.razorpayKeySecretEncrypted,
+    })
+    .from(paymentSettings)
+    .where(eq(paymentSettings.tenantId, tenantId))
+    .limit(1)
+
+  if (!row?.keyId || !row.ciphertext) return null
+
+  try {
+    const keySecret = decryptSecret(row.ciphertext, tenantId)
+    return { keyId: row.keyId, keySecret }
+  } catch (e) {
+    console.error(
+      `[razorpay-credentials] failed to decrypt public credentials for tenant ${tenantId}:`,
+      e instanceof Error ? e.name : 'unknown error',
+    )
+    if (e instanceof DecryptionError) throw e
+    throw new DecryptionError('Could not decrypt the stored Razorpay credentials.')
+  }
 }

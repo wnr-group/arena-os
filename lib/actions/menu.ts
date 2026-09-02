@@ -1,10 +1,10 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems } from '@/db/schema'
+import { menuCategories, menuItems, taxRates } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -43,14 +43,26 @@ export async function upsertMenuCategory(input: z.input<typeof categoryInput>): 
     const ctx = await requireManager()
     const v = categoryInput.parse(input)
     await withUser(ctx.user.id, async (tx) => {
-      const values = { tenantId: ctx.tenant.id, name: v.name, sortOrder: v.sortOrder, isActive: v.isActive }
       if (v.id) {
         await tx
           .update(menuCategories)
-          .set(values)
+          .set({ name: v.name, sortOrder: v.sortOrder, isActive: v.isActive })
           .where(and(eq(menuCategories.id, v.id), eq(menuCategories.tenantId, ctx.tenant.id)))
       } else {
-        await tx.insert(menuCategories).values(values)
+        // New categories always go to the end of the list — the client no
+        // longer sends a meaningful sortOrder for creates, so relying on it
+        // (or defaulting to 0) let every new row collide with whatever else
+        // was already sitting at 0.
+        const [{ next }] = await tx
+          .select({ next: sql<number>`coalesce(max(${menuCategories.sortOrder}), -1) + 1` })
+          .from(menuCategories)
+          .where(eq(menuCategories.tenantId, ctx.tenant.id))
+        await tx.insert(menuCategories).values({
+          tenantId: ctx.tenant.id,
+          name: v.name,
+          isActive: v.isActive,
+          sortOrder: next,
+        })
       }
     })
     revalidatePath('/menu/categories')
@@ -93,6 +105,30 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
     const ctx = await requireManager()
     const v = menuItemInput.parse(input)
     await withUser(ctx.user.id, async (tx) => {
+      // categoryId/taxRateId are foreign keys, but neither is scoped to
+      // tenant_id at the DB level (menu_items.category_id is a plain FK to
+      // menu_categories(id), not a composite (tenant_id, id) one) — any
+      // *existing* uuid satisfies it, from any tenant. Re-check ownership
+      // here, inside the same transaction, since getPublicMenu now publishes
+      // every tenant's category ids on its no-login /food-menu page, making
+      // a foreign category id trivial to obtain and plant on another
+      // tenant's menu item otherwise.
+      const [category] = await tx
+        .select({ id: menuCategories.id })
+        .from(menuCategories)
+        .where(and(eq(menuCategories.id, v.categoryId), eq(menuCategories.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!category) throw new AuthError('Choose a category from this menu.')
+
+      if (v.taxRateId) {
+        const [taxRate] = await tx
+          .select({ id: taxRates.id })
+          .from(taxRates)
+          .where(and(eq(taxRates.id, v.taxRateId), eq(taxRates.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (!taxRate) throw new AuthError('Choose a tax rate from this menu.')
+      }
+
       const values = {
         tenantId: ctx.tenant.id,
         categoryId: v.categoryId,

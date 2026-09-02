@@ -3,15 +3,40 @@
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Boxes, CalendarDays, Clock, ImageOff, Loader2, Mail, Minus, Phone, Plus, Sparkles, User, Users } from 'lucide-react'
+import { toast } from 'sonner'
+import {
+  ArrowLeft,
+  Boxes,
+  CalendarDays,
+  Clock,
+  CreditCard,
+  ImageOff,
+  Loader2,
+  Mail,
+  Minus,
+  Phone,
+  Plus,
+  Sparkles,
+  User,
+  Users,
+  Wallet,
+} from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail } from '@/lib/booking/public-availability'
-import { getPublicAvailability, createPublicBooking, lookupPublicCustomerByPhone, type PublicSlotOption } from '@/lib/actions/public-booking'
+import {
+  getPublicAvailability,
+  createPublicBooking,
+  createBookingPaymentIntent,
+  lookupPublicCustomerByPhone,
+  type PublicSlotOption,
+} from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
+import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { HoneypotField } from './HoneypotField'
 import {
   DURATIONS,
   DATE_WINDOW_DAYS,
+  SLOT_MINUTES,
   addDays,
   dateCardParts,
   prettyDateLong,
@@ -38,12 +63,17 @@ export function ResourceTypeBookingPage({
   tenant,
   resourceType,
   today,
+  razorpayConfigured,
   initialDuration = 60,
   initialPlayers = 1,
 }: {
   tenant: PublicTenant
   resourceType: PublicResourceTypeDetail
   today: string
+  /** Gates the "pay online now" choice — read server-side from the same
+   *  credential loader createBookingPaymentIntent uses, so the choice is
+   *  hidden rather than offered and then failing (M14 #8). */
+  razorpayConfigured: boolean
   /**
    * Prefill from the portal's rebook redirect (AROS-90). Both default to the
    * values this wizard has always used, so the ordinary public entry point is
@@ -75,6 +105,7 @@ export function ResourceTypeBookingPage({
     found: false,
   })
   const [confirmError, setConfirmError] = useState<string | null>(null)
+  const [payOnline, setPayOnline] = useState(false)
   const [pending, startTransition] = useTransition()
 
   const hourlyRate = Number(resourceType.hourlyRate)
@@ -83,6 +114,10 @@ export function ResourceTypeBookingPage({
   const endsAt = selectedSlot
     ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     : null
+  // Slots already in the past (only relevant for today) are dropped rather
+  // than shown disabled — there's nothing useful for the customer to do with
+  // a start time that's already gone.
+  const visibleSlots = slots ? slots.filter((s) => new Date(s.startsAt).getTime() >= Date.now()) : null
 
   // Times reload for whichever date/duration is current; a fresh fetch
   // invalidates any previously picked slot (its assigned unit may change).
@@ -107,13 +142,12 @@ export function ResourceTypeBookingPage({
     }
   }, [resourceType.id, date, duration])
 
-  // Look the phone up (debounced) as soon as it looks complete enough to
-  // match — same minimum length the booking submission itself requires — so
-  // the name field only appears once we know whether to ask for it.
+  // Look the phone up (debounced) once a full 10-digit number is entered —
+  // phone is already digits-only (see the input's onChange below), so the
+  // name field only appears once we know whether to ask for it.
   useEffect(() => {
     setName('')
-    const digits = phone.replace(/\D/g, '')
-    if (digits.length < 6) {
+    if (phone.length !== 10) {
       setPhoneLookup({ checking: false, checked: false, found: false })
       return
     }
@@ -132,6 +166,65 @@ export function ResourceTypeBookingPage({
     }
   }, [phone])
 
+  /**
+   * Open Razorpay Checkout for a booking just placed with payNow=true. Same
+   * honesty rule as CheckoutClient's payForOrder: the browser's success
+   * callback is unauthenticated client input, never proof of payment — the
+   * webhook (lib/payments/webhook.ts) is what actually settles the deposit.
+   * The booking itself is already confirmed regardless of how this resolves —
+   * every exit routes to the confirmation page.
+   */
+  async function payForBooking(bookingId: string, token: string, bookingNumberValue: string) {
+    const res = await createBookingPaymentIntent({ bookingId })
+    if (res.error || !res.checkout) {
+      toast.error(`Booking #${bookingNumberValue} is confirmed, but online payment could not be started.`, {
+        description: res.error ?? 'Please contact the venue to arrange payment.',
+      })
+      router.push(`/b/${token}`)
+      return
+    }
+    const { orderId: gatewayOrderId, amount, currency, keyId } = res.checkout
+
+    let Razorpay: RazorpayCtor
+    try {
+      Razorpay = await loadCheckoutScript()
+    } catch {
+      toast.error(`Booking #${bookingNumberValue} is confirmed, but the payment window could not load.`, {
+        description: 'Please contact the venue to arrange payment.',
+      })
+      router.push(`/b/${token}`)
+      return
+    }
+
+    const checkout = new Razorpay({
+      key: keyId,
+      order_id: gatewayOrderId,
+      amount,
+      currency,
+      name: tenant.name,
+      description: `Booking #${bookingNumberValue}`,
+      prefill: {
+        ...(name ? { name } : {}),
+        ...(phone ? { contact: phone } : {}),
+      },
+      handler: () => {
+        toast.success('Payment submitted — confirming with the venue.', {
+          description: "We'll have everything ready for your visit.",
+        })
+        router.push(`/b/${token}`)
+      },
+      modal: {
+        ondismiss: () => {
+          toast(`Booking #${bookingNumberValue} is confirmed but not yet paid.`, {
+            description: 'Contact the venue if you’d like to complete payment another way.',
+          })
+          router.push(`/b/${token}`)
+        },
+      },
+    })
+    checkout.open()
+  }
+
   function confirm() {
     if (!selectedSlot || !endsAt) return
     setConfirmError(null)
@@ -144,10 +237,15 @@ export function ResourceTypeBookingPage({
         customerPhone: phone,
         customerEmail: email,
         players: resourceType.capacity != null ? players : undefined,
+        payNow: razorpayConfigured && payOnline && total > 0,
         website,
       })
       if (r.error || !r.confirmationToken) {
         setConfirmError(r.error ?? 'Something went wrong. Please try again.')
+        return
+      }
+      if (r.awaitingOnlinePayment && r.bookingId) {
+        await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '')
         return
       }
       router.push(`/b/${r.confirmationToken}`)
@@ -278,13 +376,16 @@ export function ResourceTypeBookingPage({
                       </div>
                     ) : slotsError ? (
                       <EmptyNotice>{slotsError}</EmptyNotice>
-                    ) : !slots || slots.length === 0 ? (
+                    ) : !visibleSlots || visibleSlots.length === 0 ? (
                       <EmptyNotice>No slots fit this duration today. Try a shorter duration or another day.</EmptyNotice>
                     ) : (
                       <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                        {slots.map((s) => {
+                        {visibleSlots.map((s) => {
                           const isSelected = selectedSlot?.startsAt === s.startsAt
-                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + duration * 60_000).toISOString()
+                          const startsAt = selectedSlot?.startsAt ?? null
+                          const inRange =
+                            !isSelected && startsAt && endsAt && s.startsAt >= startsAt && s.startsAt < endsAt
+                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
                           return (
                             <button
                               key={s.startsAt}
@@ -292,7 +393,9 @@ export function ResourceTypeBookingPage({
                               className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
                                 isSelected
                                   ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                                  : 'border-border bg-card text-foreground hover:border-primary/40'
+                                  : inRange
+                                    ? 'border-primary/50 bg-primary/10 text-primary'
+                                    : 'border-border bg-card text-foreground hover:border-primary/40'
                               }`}
                             >
                               {time12(s.startsAt, tenant.timezone)} – {time12(rangeEnd, tenant.timezone)}
@@ -351,11 +454,13 @@ export function ResourceTypeBookingPage({
                 <div className="relative">
                   <input
                     type="tel"
+                    inputMode="numeric"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                     readOnly={phoneLookup.checked}
                     autoComplete="tel"
-                    placeholder="Your phone number"
+                    maxLength={10}
+                    placeholder="10-digit phone number"
                     className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30 read-only:bg-muted read-only:text-muted-foreground"
                   />
                   {phoneLookup.checked && (
@@ -425,6 +530,36 @@ export function ResourceTypeBookingPage({
                 </div>
               </div>
 
+              {razorpayConfigured && total > 0 && (
+                <div className="mt-6">
+                  <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPayOnline(false)}
+                      className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
+                        !payOnline
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:border-primary/40'
+                      }`}
+                    >
+                      <Wallet size={15} /> Pay at venue
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPayOnline(true)}
+                      className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
+                        payOnline
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:border-primary/40'
+                      }`}
+                    >
+                      <CreditCard size={15} /> Pay online now
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <button
                 onClick={confirm}
                 disabled={
@@ -435,7 +570,7 @@ export function ResourceTypeBookingPage({
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
               >
                 {pending && <Loader2 size={16} className="animate-spin" />}
-                Confirm booking
+                {razorpayConfigured && payOnline ? 'Confirm & pay' : 'Confirm booking'}
               </button>
             </div>
           </div>

@@ -35,11 +35,28 @@ export type CreateBookingInput = {
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
 
-export async function createBookingCore(
+export type PricedBookingSlot = {
+  resourceId: string
+  startsAt: Date
+  endsAt: Date
+  rateApplied: string
+  slotTotal: string
+  resourceName: string
+  resourceTypeName: string
+}
+
+/**
+ * Price a set of slots against their resources' effective hourly rate —
+ * split out of createBookingCore so a caller can learn a booking's total
+ * BEFORE creating it (the public pay-now flow, lib/actions/public-booking.ts,
+ * needs this to decide how much to charge online) without a second,
+ * drifting copy of the rate lookup.
+ */
+export async function priceBookingSlots(
   tx: Db,
-  ctx: { tenantId: string; timezone: string; membershipId: string | null },
-  input: CreateBookingInput,
-): Promise<CreatedBooking> {
+  ctx: { tenantId: string },
+  input: { branchId: string; slots: CreateBookingSlotInput[] },
+): Promise<{ subtotal: number; slots: PricedBookingSlot[] }> {
   for (const s of input.slots) {
     if (new Date(s.endsAt) <= new Date(s.startsAt)) {
       throw new BookingError('Each slot must end after it starts.')
@@ -69,7 +86,7 @@ export async function createBookingCore(
 
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
-  const slotRows = input.slots.map((s) => {
+  const slots = input.slots.map((s) => {
     const r = byId.get(s.resourceId)!
     const rate = Number(r.rateOverride ?? r.typeRate)
     const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
@@ -84,6 +101,19 @@ export async function createBookingCore(
       resourceName: r.name,
       resourceTypeName: r.typeName,
     }
+  })
+
+  return { subtotal, slots }
+}
+
+export async function createBookingCore(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string; membershipId: string | null },
+  input: CreateBookingInput,
+): Promise<CreatedBooking> {
+  const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
+    branchId: input.branchId,
+    slots: input.slots,
   })
 
   const total = Math.max(0, subtotal - input.discount)

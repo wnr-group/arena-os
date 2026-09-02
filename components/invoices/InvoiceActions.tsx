@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Ban, RotateCcw, X } from 'lucide-react'
+import { Ban, Loader2, RotateCcw, X } from 'lucide-react'
 import { refundPayment, voidInvoice } from '@/lib/actions/refunds'
 import { round2 } from '@/lib/billing/pricing'
 import { formatMoney } from '@/lib/format'
@@ -365,12 +365,13 @@ function Buttons({
       <button
         onClick={onConfirm}
         disabled={pending || disabled}
-        className={`rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50 ${
+        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50 ${
           danger
             ? 'bg-destructive text-white hover:opacity-90'
             : 'bg-primary text-primary-foreground hover:opacity-90'
         }`}
       >
+        {pending && <Loader2 size={14} className="animate-spin" />}
         {confirmLabel}
       </button>
     </div>

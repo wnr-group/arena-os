@@ -6,7 +6,10 @@ import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingByToken } from '@/lib/booking/public-confirmation'
 import { publicTenantUrl } from '@/lib/tenant/subdomain'
 import { generateQrSvg } from '@/lib/utils/qr'
-import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
+import { getPublicMenu } from '@/lib/menu/public'
+import { getPublishedBranding } from '@/lib/website/public'
+import { accentColorStyle } from '@/lib/website/color'
+import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { BookingConfirmation } from '@/components/public-booking/BookingConfirmation'
 
@@ -55,25 +58,38 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
   const branch = await getPublicBranch(tenant.id)
   const confirmationUrl = publicTenantUrl(tenant.slug, `/b/${token}`)
   const qrSvg = await generateQrSvg(confirmationUrl)
+  const branding = await getPublishedBranding(tenant.id)
+  const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <PublicNavbar tenantName={tenant.name} icon={<Icon size={18} />} />
-
-      <main className="flex-1 bg-background">
-        <BookingConfirmation booking={booking} tenant={tenant} qrSvg={qrSvg} />
-      </main>
-
-      <PublicFooter
+    <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
+      <SitePageShell
         tenantName={tenant.name}
-        industryLabel={industryLabel}
-        icon={Icon}
-        address={branch?.address ?? null}
-        phone={branch?.phone ?? null}
-      />
+        icon={<Icon size={18} />}
+        logoUrl={branding.logoUrl}
+        hasMenu={hasMenu}
+      >
+        <main className="flex-1 bg-background">
+          <BookingConfirmation
+            booking={booking}
+            confirmationToken={token}
+            tenant={tenant}
+            qrSvg={qrSvg}
+            hasMenu={hasMenu}
+          />
+        </main>
+
+        <PublicFooter
+          tenantName={tenant.name}
+          industryLabel={industryLabel}
+          icon={Icon}
+          address={branch?.address ?? null}
+          phone={branch?.phone ?? null}
+        />
+      </SitePageShell>
     </div>
   )
 }

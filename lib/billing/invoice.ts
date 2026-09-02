@@ -24,6 +24,7 @@ import {
   backfillDepositOrderIds,
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
+import { cancelPendingOrdersForBilledBooking } from '@/lib/orders/service'
 import { loadInvoicePrefix } from '@/lib/settings/business-profile'
 import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
 import {
@@ -171,6 +172,15 @@ export async function loadBookingLines(
  * flipped to `billed` it stops appearing in every future bill for this
  * booking, this function included.
  *
+ * Also gated on `acceptanceStatus = 'accepted'`: an online order still
+ * `pending` in the accept/reject queue (lib/orders/data.ts's
+ * listIncomingOnlineOrders) is `status = 'open'` too, same as an accepted
+ * one — nothing else distinguishes them — so without this a booking billed
+ * while an order sat unreviewed would charge the customer for food the
+ * kitchen was never told to make. A staff-placed order always has
+ * `acceptanceStatus = 'accepted'` (see createOrderCore's default), so this
+ * never excludes anything from the POS flow.
+ *
  * unit_price and tax_rate are read straight off order_items, unchanged: they
  * were already snapshotted at order time (including any happy-hour discount),
  * so this never re-prices a menu item against today's rate.
@@ -210,9 +220,54 @@ export async function loadFoodLines(
         eq(orders.tenantId, tenantId),
         eq(orders.bookingId, bookingId),
         eq(orders.status, 'open'),
+        eq(orders.acceptanceStatus, 'accepted'),
         orderIds ? inArray(orders.id, [...orderIds]) : undefined,
       ),
     )
+    .orderBy(orderItems.id)
+
+  return rows.map((r) => ({
+    description: r.itemName,
+    kind: 'food' as const,
+    sourceId: r.id,
+    qty: r.qty,
+    unitPrice: Number(r.unitPrice),
+    taxPercent: Number(r.taxRate),
+  }))
+}
+
+/**
+ * One standalone order's own lines, as priceBill lines — no booking/
+ * acceptanceStatus filter, unlike loadFoodLines: this is read once, at the
+ * single moment a pay-now order is being priced or invoiced (order-payment.ts
+ * for the gateway amount, issueInvoiceForOrder below for the bill), never as
+ * a repeatable "what's still owed" query the way loadFoodLines is. The
+ * caller is responsible for having already locked and validated the order's
+ * state before calling this.
+ *
+ * unit_price and tax_rate are read straight off order_items, unchanged — the
+ * same snapshot discipline loadFoodLines follows.
+ */
+export async function loadOrderFoodLines(
+  tx: Db,
+  tenantId: string,
+  orderId: string,
+): Promise<BillLine[]> {
+  // Pins order_items_public_select (migration 0067) to this one order — a
+  // no-op under the owner-role connection issueInvoiceForOrder below runs on
+  // (RLS-exempt), and redundant-but-harmless when the caller (order-payment.ts)
+  // already set the same value via loadPayableOrder moments earlier.
+  await tx.execute(sql`select set_config('app.public_order_id', ${orderId}, true)`)
+  const rows = await tx
+    .select({
+      id: orderItems.id,
+      itemName: orderItems.itemName,
+      unitPrice: orderItems.unitPrice,
+      taxRate: orderItems.taxRate,
+      qty: orderItems.qty,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)))
     .orderBy(orderItems.id)
 
   return rows.map((r) => ({
@@ -662,15 +717,20 @@ export async function issueInvoiceForBooking(
 
   // ── 7. mark the food orders billed ────────────────────────────────────────
   // The other half of double-billing prevention: loadFoodLines only reads
-  // status='open' orders, so flipping these to 'billed' here — in the same
-  // transaction as the invoice itself — means the same fries can never end up
-  // on a second bill, and a failure anywhere above rolls this back too.
+  // status='open', acceptanceStatus='accepted' orders, so flipping THE SAME
+  // set to 'billed' here — in the same transaction as the invoice itself —
+  // means the same fries can never end up on a second bill, and a failure
+  // anywhere above rolls this back too.
   //
-  // Scoped to billedOrderIds, NOT to "every open order", and that is the whole
-  // point: those are precisely the orders whose items are on the invoice above.
-  // An unscoped flip would also catch an order created since step 3 — marking
-  // it billed without ever charging for it. Read one set, charge that set, flip
-  // that set.
+  // Two conditions, from two independent fixes, and both must stay:
+  //   * Scoped to billedOrderIds (the set lockOpenFoodOrders captured in step
+  //     3), NOT "every open order" — an unscoped flip would also catch an order
+  //     created since step 3 and mark it billed without ever charging for it.
+  //     Read one set, charge that set, flip that set.
+  //   * acceptanceStatus='accepted', identical to loadFoodLines': a still-
+  //     pending online order is status='open' too, so without this it would be
+  //     flipped 'billed' without appearing on the invoice — charged-for-nothing
+  //     in reverse. Pending orders are handled by step 7b below instead.
   if (billedOrderIds.length > 0) {
     await tx
       .update(orders)
@@ -680,13 +740,23 @@ export async function issueInvoiceForBooking(
           eq(orders.tenantId, tenant.id),
           eq(orders.bookingId, booking.id),
           eq(orders.status, 'open'),
+          eq(orders.acceptanceStatus, 'accepted'),
           inArray(orders.id, billedOrderIds),
         ),
       )
   }
 
+  // ── 7b. void anything still unreviewed ────────────────────────────────────
+  // The other side of the same gap: an order that was still `pending` when
+  // this bill was raised was excluded above (see loadFoodLines' comment) and
+  // just skipped the 'billed' flip too — left `open`/`pending` forever. Left
+  // alone, staff could later accept it from /orders/incoming and the kitchen
+  // would serve food against an invoice that already closed. Reject it here,
+  // in the same transaction as the invoice, so it can never become billable
+  // again — see cancelPendingOrdersForBilledBooking's own comment.
+  await cancelPendingOrdersForBilledBooking(tx, { tenantId: tenant.id }, booking.id)
 
-  // ── 7. carry over any deposit already paid online ─────────────────────────
+  // ── 8. carry over any deposit already paid online ─────────────────────────
   // The usual order is deposit first, bill later, so this is where the money
   // the venue already holds becomes a captured payment against the invoice.
   // From here on the M1 balance — total minus captured — is simply correct, and
@@ -910,4 +980,82 @@ export async function issueWalletTopUpInvoice(
     loyalty: null,
     deposits: { applied: [], unapplied: [] },
   }
+}
+
+/**
+ * Raise the invoice for a PAID STANDALONE ORDER (M14 #6, v2's pay-now).
+ *
+ * Fourth sibling of issueInvoiceForBooking() / issueMembershipInvoice() /
+ * issueWalletTopUpInvoice(), sharing the same money infrastructure
+ * (priceBill, nextInvoiceNumber, loadInvoicePrefix, financialYearPeriod).
+ * Deliberately the simplest of the four: no promo code, no loyalty
+ * redemption, no membership benefit — a prepaid order is charged at face
+ * value, same scope decision issueWalletTopUpInvoice makes for a top-up.
+ *
+ * Called ONLY from lib/payments/webhook.ts, after a verified `payment.captured`
+ * for an `order_payment` intent, inside that webhook's transaction — so the
+ * invoice, its items and the flip of orders.status/acceptanceStatus (done by
+ * the caller, not here) commit or roll back together with the payment
+ * record `recordVerifiedGatewayPayment` writes right after this returns.
+ *
+ * Left at status 'issued', not short-circuited to 'paid': the caller settles
+ * it via recordVerifiedGatewayPayment in the same transaction, exactly like
+ * issueWalletTopUpInvoice leaves the transition to its own caller — one
+ * place owns "when does an invoice become paid".
+ */
+export async function issueInvoiceForOrder(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  order: { id: string; branchId: string; customerId: string | null; orderNumber: string },
+): Promise<{ invoiceId: string; invoiceNumber: string; pricing: PricingResult }> {
+  const lines = await loadOrderFoodLines(tx, tenant.id, order.id)
+  if (lines.length === 0) {
+    throw new BillingError('This order has nothing to bill.')
+  }
+
+  const pricing = priceBill({ lines })
+
+  const period = financialYearPeriod(todayInZone(tenant.timezone))
+  const prefix = await loadInvoicePrefix(tx, tenant.id)
+  const invoiceNumber = await nextInvoiceNumber(tx, tenant.id, period, prefix)
+
+  const [invoice] = await tx
+    .insert(invoices)
+    .values({
+      tenantId: tenant.id,
+      branchId: order.branchId,
+      invoiceNumber,
+      // No booking: this order was never attached to one — that's the whole
+      // reason it went through pay-now instead of add-to-bill.
+      bookingId: null,
+      customerId: order.customerId,
+      subtotal: pricing.subtotal.toFixed(2),
+      discount: pricing.discount.toFixed(2),
+      taxTotal: pricing.taxTotal.toFixed(2),
+      taxBreakup: pricing.taxBreakup.map((g) => ({
+        rate: g.percent,
+        cgst: g.cgst.toFixed(2),
+        sgst: g.sgst.toFixed(2),
+      })),
+      total: pricing.total.toFixed(2),
+      status: 'issued',
+      issuedAt: new Date(),
+    })
+    .returning({ id: invoices.id })
+
+  await tx.insert(invoiceItems).values(
+    pricing.items.map((item) => ({
+      tenantId: tenant.id,
+      invoiceId: invoice.id,
+      kind: item.kind,
+      sourceId: item.sourceId ?? null,
+      description: item.description,
+      qty: item.qty.toFixed(2),
+      unitPrice: item.unitPrice.toFixed(2),
+      taxRate: item.taxPercent.toFixed(2),
+      lineTotal: item.lineTotal.toFixed(2),
+    })),
+  )
+
+  return { invoiceId: invoice.id, invoiceNumber, pricing }
 }

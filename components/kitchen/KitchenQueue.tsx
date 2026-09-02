@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Clock, Flame, CheckCircle2, Bell, Loader2, Printer, type LucideIcon } from 'lucide-react'
+import { Clock, Flame, CheckCircle2, Bell, Loader2, Printer, Smartphone, MapPin, type LucideIcon } from 'lucide-react'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KotStatus } from '@/lib/kots/service'
 import { STATUS_LABEL } from '@/lib/kots/labels'
@@ -21,6 +21,8 @@ export type KotTicket = {
   status: KotStatus
   createdAt: string
   orderNumber: string
+  channel: 'staff' | 'online'
+  stationName: string | null
   items: KotTicketItem[]
 }
 
@@ -104,7 +106,14 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
           return (
             <div key={ticket.kotId} className="rounded-xl border border-border bg-card p-4 shadow-sm">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-base font-semibold">{ticket.kotNumber}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">{ticket.kotNumber}</span>
+                  {ticket.channel === 'online' && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
+                      <Smartphone size={10} /> Online
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   <Link
                     href={`/kitchen/${ticket.kotId}/print`}
@@ -122,6 +131,12 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
               </div>
               <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock size={12} /> waiting {elapsedLabel(ticket.createdAt, now)} · order {ticket.orderNumber}
+                {ticket.stationName && (
+                  <>
+                    {' '}
+                    · <MapPin size={12} /> {ticket.stationName}
+                  </>
+                )}
               </p>
 
               <ul className="mt-3 space-y-1 text-sm">

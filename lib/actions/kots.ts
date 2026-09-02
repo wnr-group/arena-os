@@ -5,6 +5,7 @@ import { withUser } from '@/db'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageKitchen } from '@/lib/auth/roles'
 import { KotError, updateKotStatusCore, type KotStatus } from '@/lib/kots/service'
+import { sendOrderReadyNotification } from '@/lib/notifications/service'
 
 type Result = { error?: string }
 
@@ -21,7 +22,21 @@ export async function updateKotStatus(kotId: string, newStatus: KotStatus): Prom
       throw new AuthError('Only kitchen staff, managers and owners can update tickets.')
     }
 
-    await withUser(ctx.user.id, (tx) => updateKotStatusCore(tx, { tenantId: ctx.tenant.id }, kotId, newStatus))
+    const order = await withUser(ctx.user.id, (tx) =>
+      updateKotStatusCore(tx, { tenantId: ctx.tenant.id }, kotId, newStatus),
+    )
+
+    // Best-effort, in its own transaction, AFTER the status update above has
+    // committed — never let a notification hiccup fail (or delay) marking
+    // food ready. See lib/notifications/service.ts's own doc comment for why
+    // this must not share a transaction with the row-locking update.
+    if (newStatus === 'ready') {
+      try {
+        await withUser(ctx.user.id, (tx) => sendOrderReadyNotification(tx, { tenantId: ctx.tenant.id }, order))
+      } catch (e) {
+        console.error('[kots] order-ready notification failed:', e instanceof Error ? e.message : e)
+      }
+    }
 
     revalidatePath('/kitchen')
     return {}

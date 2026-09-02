@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, ListTree, CheckCircle2, XCircle } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, ListTree, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { upsertMenuCategory, deleteMenuCategory } from '@/lib/actions/menu'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -17,21 +17,21 @@ const input =
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
-const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+const btn =
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
-  const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const run: Run = (fn, onSuccess) => {
-    setError(null)
     start(async () => {
       const r = await fn()
       if (r.error) {
-        setError(r.error)
         toast.error(r.error)
       } else {
         router.refresh()
@@ -52,9 +52,10 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
       description: 'This cannot be undone.',
       confirmText: 'Delete',
       onConfirm: async () => {
+        setDeletingId(row.id)
         const r = await deleteMenuCategory(row.id)
+        setDeletingId(null)
         if (r.error) {
-          setError(r.error)
           toast.error(r.error)
         } else {
           router.refresh()
@@ -66,12 +67,6 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
 
   return (
     <div className="mt-8 space-y-6">
-      {error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
       <div className="grid grid-cols-3 gap-4">
         <StatCard icon={ListTree} label="Total categories" value={stats.total} accent="bg-primary/10 text-primary" />
         <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
@@ -86,7 +81,7 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
           className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
           onClick={() => setModal({ mode: 'add' })}
         >
-          <Plus size={16} /> Add category
+          <Plus size={16} /> Add Category
         </button>
       </div>
 
@@ -133,7 +128,7 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
                         onClick={() => handleDelete(row)}
                         aria-label="Delete"
                       >
-                        <Trash2 size={16} />
+                        {deletingId === row.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                       </button>
                     </div>
                   </td>
@@ -198,11 +193,16 @@ function CategoryModal({
 
   const errors = useMemo(() => {
     const e: { name?: string; sortOrder?: string } = {}
-    if (!name.trim()) e.name = 'Name is required.'
-    if (sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
+    const trimmedName = name.trim()
+    if (!trimmedName) e.name = 'Name is required.'
+    else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
+    else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
+    else if (!NAME_PATTERN.test(trimmedName))
+      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
+    if (row && sortOrder !== '' && (Number.isNaN(Number(sortOrder)) || !Number.isInteger(Number(sortOrder))))
       e.sortOrder = 'Sort order must be a whole number.'
     return e
-  }, [name, sortOrder])
+  }, [name, sortOrder, row])
   const isValid = Object.keys(errors).length === 0
 
   function submit() {
@@ -213,7 +213,8 @@ function CategoryModal({
         upsertMenuCategory({
           id: row?.id,
           name: name.trim(),
-          sortOrder: sortOrder === '' ? 0 : Number(sortOrder),
+          // New categories are always appended server-side — see upsertMenuCategory.
+          ...(row ? { sortOrder: sortOrder === '' ? 0 : Number(sortOrder) } : {}),
           isActive,
         }),
       () => {
@@ -238,26 +239,31 @@ function CategoryModal({
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className={label}>Name</label>
+            <label className={label}>
+              Name <span className="text-destructive">*</span>
+            </label>
             <input
               className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
               placeholder="e.g. Starters"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={100}
               autoFocus
             />
             {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
           </div>
-          <div>
-            <label className={label}>Sort order</label>
-            <input
-              className={`${input} ${submitted && errors.sortOrder ? inputInvalid : ''}`}
-              type="number"
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-            />
-            {submitted && errors.sortOrder && <p className={errorText}>{errors.sortOrder}</p>}
-          </div>
+          {row && (
+            <div>
+              <label className={label}>Sort order</label>
+              <input
+                className={`${input} ${submitted && errors.sortOrder ? inputInvalid : ''}`}
+                type="number"
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+              />
+              {submitted && errors.sortOrder && <p className={errorText}>{errors.sortOrder}</p>}
+            </div>
+          )}
           <label className="flex items-center gap-2 text-base">
             <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
             Active
@@ -266,17 +272,19 @@ function CategoryModal({
 
         <div className="mt-5 flex gap-2">
           <button
-            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={pending}
             onClick={onClose}
           >
             Cancel
           </button>
           <button
-            className={`${btn} flex-1 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
+            className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
             disabled={pending}
             onClick={submit}
           >
-            {row ? 'Save changes' : 'Add category'}
+            {pending && <Loader2 size={15} className="animate-spin" />}
+            {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Category'}
           </button>
         </div>
       </div>

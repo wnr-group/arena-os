@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, ExternalLink, Trash2, UserPlus } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Loader2, Trash2, UserPlus } from 'lucide-react'
 import {
   setCompanyStatus,
   updateCompany,
@@ -51,8 +51,10 @@ export function CompanyManager({
   const confirm = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [statusUpdating, setStatusUpdating] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
 
-  function run(fn: () => Promise<{ error?: string }>, after?: () => void) {
+  function run(fn: () => Promise<{ error?: string }>, after?: () => void, onSettled?: () => void) {
     setError(null)
     start(async () => {
       const r = await fn()
@@ -61,6 +63,7 @@ export function CompanyManager({
         after?.()
         router.refresh()
       }
+      onSettled?.()
     })
   }
 
@@ -87,11 +90,19 @@ export function CompanyManager({
             <button
               key={s}
               disabled={pending || tenant.status === s}
-              onClick={() => run(() => setCompanyStatus(tenant.id, s))}
-              className={`rounded-md border px-2.5 py-1.5 text-xs font-medium capitalize transition disabled:opacity-100 ${
+              onClick={() => {
+                setStatusUpdating(s)
+                run(
+                  () => setCompanyStatus(tenant.id, s),
+                  undefined,
+                  () => setStatusUpdating(null),
+                )
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium capitalize transition disabled:opacity-100 ${
                 tenant.status === s ? 'bg-primary text-primary-foreground' : 'hover:bg-muted disabled:opacity-50'
               }`}
             >
+              {statusUpdating === s && <Loader2 size={12} className="animate-spin" />}
               {s}
             </button>
           ))}
@@ -126,11 +137,18 @@ export function CompanyManager({
                   <td className="px-4 py-3 text-right">
                     <button
                       disabled={pending}
-                      onClick={() => run(() => removeCompanyMember(m.id, tenant.id))}
+                      onClick={() => {
+                        setRemovingId(m.id)
+                        run(
+                          () => removeCompanyMember(m.id, tenant.id),
+                          undefined,
+                          () => setRemovingId(null),
+                        )
+                      }}
                       className="text-destructive hover:opacity-80 disabled:opacity-50"
                       aria-label="Remove"
                     >
-                      <Trash2 size={15} />
+                      {removingId === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                     </button>
                   </td>
                 </tr>
@@ -178,12 +196,13 @@ function CompanyDetails({
 }: {
   tenant: Tenant
   pending: boolean
-  run: (fn: () => Promise<{ error?: string }>) => void
+  run: (fn: () => Promise<{ error?: string }>, after?: () => void, onSettled?: () => void) => void
 }) {
   const [name, setName] = useState(tenant.name)
   const [industry, setIndustry] = useState(tenant.industry)
   const [currency, setCurrency] = useState(tenant.currency)
   const [timezone, setTimezone] = useState(tenant.timezone)
+  const [saving, setSaving] = useState(false)
 
   return (
     <section className="mt-8 rounded-lg border p-4">
@@ -214,18 +233,23 @@ function CompanyDetails({
       </div>
       <button
         disabled={pending || !name}
-        onClick={() =>
-          run(() =>
-            updateCompany(tenant.id, {
-              name,
-              industry: industry as (typeof INDUSTRIES)[number][0],
-              currency,
-              timezone,
-            }),
+        onClick={() => {
+          setSaving(true)
+          run(
+            () =>
+              updateCompany(tenant.id, {
+                name,
+                industry: industry as (typeof INDUSTRIES)[number][0],
+                currency,
+                timezone,
+              }),
+            undefined,
+            () => setSaving(false),
           )
-        }
-        className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+        }}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
       >
+        {saving && <Loader2 size={14} className="animate-spin" />}
         Save details
       </button>
     </section>
@@ -239,12 +263,13 @@ function AddMemberForm({
 }: {
   tenantId: string
   pending: boolean
-  run: (fn: () => Promise<{ error?: string }>, after?: () => void) => void
+  run: (fn: () => Promise<{ error?: string }>, after?: () => void, onSettled?: () => void) => void
 }) {
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<MemberRole>('manager')
   const [password, setPassword] = useState('')
+  const [adding, setAdding] = useState(false)
 
   return (
     <div className="mt-3 rounded-md border border-dashed p-3">
@@ -264,7 +289,8 @@ function AddMemberForm({
         <input className={input} placeholder="Password (new user)" value={password} onChange={(e) => setPassword(e.target.value)} />
         <button
           disabled={pending || !email || !fullName}
-          onClick={() =>
+          onClick={() => {
+            setAdding(true)
             run(
               () => addCompanyMember({ tenantId, email, fullName, role, password: password || undefined }),
               () => {
@@ -272,10 +298,12 @@ function AddMemberForm({
                 setEmail('')
                 setPassword('')
               },
+              () => setAdding(false),
             )
-          }
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+          }}
+          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
+          {adding && <Loader2 size={14} className="animate-spin" />}
           Add
         </button>
       </div>

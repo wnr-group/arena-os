@@ -2,10 +2,10 @@
 
 import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { BadgeCheck, Wallet } from 'lucide-react'
+import { BadgeCheck, Loader2, Wallet } from 'lucide-react'
 import { recordPayment, payInvoiceFromWallet } from '@/lib/actions/payments'
 import { round2 } from '@/lib/billing/pricing'
-import { formatMoney, timeInZone } from '@/lib/format'
+import { formatMoney, timeInZone } from '@/lib/format'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
 
 /**
@@ -289,8 +289,9 @@ export function PaymentPanel({
           <button
             onClick={submit}
             disabled={pending || Boolean(amountError)}
-            className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
+            {pending && <Loader2 size={14} className="animate-spin" />}
             {pending ? 'Recording…' : 'Record payment'}
           </button>
           <p className="text-center text-xs text-muted-foreground">

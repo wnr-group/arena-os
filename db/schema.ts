@@ -186,11 +186,15 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // Unguessable public identifier for the QR-at-station ordering entry
+    // point — see 0048_resource_qr_token.sql for why this can't just be id.
+    qrToken: uuid('qr_token').notNull().defaultRandom(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique('resources_tenant_name_key').on(t.tenantId, t.name),
+    unique('resources_tenant_qr_key').on(t.tenantId, t.qrToken),
     index('idx_resources_branch').on(t.tenantId, t.branchId),
     index('idx_resources_type').on(t.resourceTypeId),
   ],
@@ -608,6 +612,22 @@ export const happyHours = pgTable('happy_hours', {
 
 // ── orders (migration 0012) ──────────────────────────────────────────────────
 export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'])
+// Who placed it (migration 0054) — 'staff' for the POS flow, 'online' for a
+// customer ordering from a station's QR entry point.
+export const orderChannel = pgEnum('order_channel', ['staff', 'online'])
+// Staff accept/reject gate for online orders (migration 0057) — defaults to
+// 'accepted' so every staff/POS order (and every pre-existing row) skips the
+// gate entirely; only an online order can ever be inserted as 'pending'.
+// 'awaiting_payment' (migration 0058) — a standalone pay-now order between
+// being placed and its webhook confirming payment. Distinct from 'pending'
+// (the staff accept/reject queue) and invisible to it the same way; distinct
+// from 'accepted' (visible to /kitchen) until the webhook flips it there.
+export const orderAcceptanceStatus = pgEnum('order_acceptance_status', [
+  'pending',
+  'accepted',
+  'rejected',
+  'awaiting_payment',
+])
 
 export const orders = pgTable(
   'orders',
@@ -622,14 +642,42 @@ export const orders = pgTable(
     bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
     orderNumber: text('order_number').notNull(),
     status: orderStatus('status').notNull().default('open'),
+    // Attribution (migration 0054): channel always set; customerId/resourceId
+    // nullable — a staff order has neither, an online order may have either
+    // or both. See lib/booking/attribution.ts for how resourceId resolves
+    // bookingId when the station has an active booking.
+    channel: orderChannel('channel').notNull().default('staff'),
+    // Accept/reject gate (migration 0057) — see lib/orders/service.ts's
+    // acceptOrderCore/rejectOrderCore. rejectionReason is only ever set
+    // alongside acceptanceStatus: 'rejected'.
+    acceptanceStatus: orderAcceptanceStatus('acceptance_status').notNull().default('accepted'),
+    rejectionReason: text('rejection_reason'),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    // Idempotency (migration 0065, column type fixed in 0068) — a
+    // client-generated key (lib/utils/idempotency-key.ts's newIdempotencyKey,
+    // NOT crypto.randomUUID — see 0068 for why), reused verbatim on any retry
+    // of the SAME checkout/take-order attempt, so createOrderCore can
+    // recognise a retry and hand back the original order instead of creating
+    // a second one. Null for rows that predate this column.
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
+    // Target of payment_intents' composite (tenant_id, order_id) FK
+    // (migration 0058) — same device bookings/invoices/payment_intents
+    // themselves use for the same purpose.
+    unique('orders_tenant_id_key').on(t.tenantId, t.id),
+    // NULLs are never equal to each other under a UNIQUE constraint, so a
+    // caller that omits idempotencyKey never collides with any other row.
+    unique('orders_tenant_idempotency_key').on(t.tenantId, t.idempotencyKey),
     index('idx_orders_branch').on(t.tenantId, t.branchId),
     index('idx_orders_booking').on(t.bookingId),
+    index('idx_orders_customer').on(t.tenantId, t.customerId),
+    index('idx_orders_resource').on(t.resourceId),
   ],
 )
 
@@ -694,6 +742,35 @@ export const kots = pgTable(
   ],
 )
 
+// ── notifications (migration 0061) ───────────────────────────────────────────
+// A minimal outbox, forward-compatible with the roadmap's eventual M3-C
+// design (notification_settings + notifications + retry) — see
+// lib/notifications/service.ts. No real SMS/WhatsApp provider is wired in
+// yet, so every row today is expected to land at status='skipped'.
+export const notificationChannel = pgEnum('notification_channel', ['sms'])
+export const notificationStatus = pgEnum('notification_status', ['sent', 'skipped', 'failed'])
+
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    channel: notificationChannel('channel').notNull(),
+    kind: text('kind').notNull(),
+    recipientPhone: text('recipient_phone'),
+    messageBody: text('message_body').notNull(),
+    status: notificationStatus('status').notNull(),
+    skipReason: text('skip_reason'),
+    providerMessageId: text('provider_message_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_notifications_order').on(t.tenantId, t.orderId)],
+)
+
 // ── customer module (migration 0006) ─────────────────────────────────────────
 // `phone` is stored NORMALISED to E.164 by lib/customers/phone.ts and is the
 // tenant-scoped identity key — see the unique index below.
@@ -710,6 +787,9 @@ export const customers = pgTable(
     dob: date('dob'),
     tags: text('tags').array().notNull().default([]),
     membershipStatus: text('membership_status'),
+    // Explicit, revisable opt-in for "order ready" texts (migration 0061) —
+    // checked by default at checkout; see lib/notifications/service.ts.
+    notifyOrderReady: boolean('notify_order_ready').notNull().default(true),
     /**
      * Communication preferences (migration 0048), edited by the customer in the
      * portal. Consent for messages about their OWN bookings — not a marketing
@@ -946,7 +1026,13 @@ export const paymentIntentStatus = pgEnum('payment_intent_status', [
   'failed',
   'cancelled',
 ])
-export const paymentIntentPurpose = pgEnum('payment_intent_purpose', ['booking_deposit'])
+// 'order_payment' (migration 0058) — pay-now for a standalone order with no
+// booking to add-to-bill against. See payment_intents' order_id/booking_id
+// note below for how the two purposes stay mutually exclusive.
+export const paymentIntentPurpose = pgEnum('payment_intent_purpose', [
+  'booking_deposit',
+  'order_payment',
+])
 
 export const paymentIntents = pgTable(
   'payment_intents',
@@ -958,7 +1044,11 @@ export const paymentIntents = pgTable(
     branchId: uuid('branch_id')
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
-    bookingId: uuid('booking_id').notNull(),
+    // Exactly one of bookingId/orderId is set (migration 0058's
+    // payment_intents_exactly_one_target check) — a booking deposit or a
+    // standalone order's pay-now, never both, never neither.
+    bookingId: uuid('booking_id'),
+    orderId: uuid('order_id'),
     purpose: paymentIntentPurpose('purpose').notNull().default('booking_deposit'),
     gateway: text('gateway').notNull().default('razorpay'),
     /** Razorpay `order_…`. Written only after the gateway call returns. */
@@ -979,10 +1069,21 @@ export const paymentIntents = pgTable(
       columns: [t.tenantId, t.bookingId],
       foreignColumns: [bookings.tenantId, bookings.id],
     }).onDelete('cascade'),
-    // At most ONE pending intent per booking+purpose — the idempotency rule.
-    uniqueIndex('idx_payment_intents_one_pending')
+    foreignKey({
+      name: 'payment_intents_order_tenant_fkey',
+      columns: [t.tenantId, t.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }).onDelete('cascade'),
+    // At most ONE pending intent per booking+purpose, and separately at most
+    // ONE per order+purpose — the idempotency rule, split in two (migration
+    // 0058) because bookingId/orderId are each null on the other's rows and a
+    // single index could no longer assume bookingId was always set.
+    uniqueIndex('idx_payment_intents_one_pending_booking')
       .on(t.tenantId, t.bookingId, t.purpose)
-      .where(sql`${t.status} = 'pending'`),
+      .where(sql`${t.status} = 'pending' and ${t.bookingId} is not null`),
+    uniqueIndex('idx_payment_intents_one_pending_order')
+      .on(t.tenantId, t.orderId, t.purpose)
+      .where(sql`${t.status} = 'pending' and ${t.orderId} is not null`),
     // AROS-50's webhook lookup. Deliberately not tenant-scoped: a Razorpay
     // order id is globally unique and must resolve to exactly one intent.
     uniqueIndex('idx_payment_intents_gateway_order').on(t.gateway, t.gatewayOrderId),
@@ -992,6 +1093,7 @@ export const paymentIntents = pgTable(
       .on(t.gateway, t.gatewayPaymentId)
       .where(sql`${t.gatewayPaymentId} is not null`),
     index('idx_payment_intents_booking').on(t.tenantId, t.bookingId),
+    index('idx_payment_intents_order').on(t.tenantId, t.orderId),
   ],
 )
 
@@ -1121,6 +1223,18 @@ export const loyaltySettings = pgTable('loyalty_settings', {
   pointValue: numeric('point_value', { precision: 10, scale: 2 }).notNull().default('1.00'),
   minRedeemPoints: integer('min_redeem_points').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── order settings (migration 0057) ──────────────────────────────────────────
+// Singleton per tenant, same shape as loyaltySettings above. Off by default —
+// a venue must opt in to skipping the accept/reject step for an online order.
+export const orderSettings = pgTable('order_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  autoAcceptOnlineOrders: boolean('auto_accept_online_orders').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -1448,7 +1562,7 @@ export const sequences = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    kind: text('kind').$type<'booking' | 'invoice' | 'kot'>().notNull(),
+    kind: text('kind').$type<'booking' | 'invoice' | 'kot' | 'order'>().notNull(),
     period: text('period').notNull(),
     value: integer('value').notNull().default(0),
   },
@@ -1768,3 +1882,64 @@ export const auditLogRelations = relations(auditLog, ({ one }) => ({
 export const sequencesRelations = relations(sequences, ({ one }) => ({
   tenant: one(tenants, { fields: [sequences.tenantId], references: [tenants.id] }),
 }))
+
+// ── website builder (migration 0051, M13/AROS-A) ─────────────────────────────
+export const websiteSectionType = pgEnum('website_section_type', [
+  'text',
+  'image',
+  'image_text',
+  'video',
+  'video_text',
+  'resources',
+  'menu',
+  'hours',
+  'map',
+])
+
+/** Draft content — the future editor (AROS-C/D) mutates these rows directly. */
+export const websiteSections = pgTable(
+  'website_sections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    type: websiteSectionType('type').notNull(),
+    heading: text('heading'),
+    // Real per-type shape is enforced by zod at the action boundary
+    // (lib/website/types.ts), not here — it depends on `type`.
+    content: jsonb('content').$type<Record<string, unknown>>().notNull().default({}),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_website_sections_tenant').on(t.tenantId, t.position)],
+)
+
+/** Draft branding (logo/accent/hero) — one row per tenant; consumed by AROS-F. */
+export const websiteSettings = pgTable('website_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  logoUrl: text('logo_url'),
+  accentColor: text('accent_color'),
+  heroImageUrl: text('hero_image_url'),
+  heroHeading: text('hero_heading'),
+  heroSubheading: text('hero_subheading'),
+  heroCtaText: text('hero_cta_text'),
+  heroCtaUrl: text('hero_cta_url'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Publish state — the only one of the three tables the public homepage ever
+ * reads. `publishedSnapshot` is null until the first publish (AROS-E) and is
+ * validated app-side (lib/website/types.ts) on every read.
+ */
+export const websitePages = pgTable('website_pages', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  publishedSnapshot: jsonb('published_snapshot').$type<Record<string, unknown>>(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+})

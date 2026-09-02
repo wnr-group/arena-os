@@ -3,8 +3,9 @@ import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
 import type * as schema from '@/db/schema'
-import { bookings, invoices, paymentIntents, webhookEvents } from '@/db/schema'
-import { paise } from '@/lib/billing/payments'
+import { bookings, invoices, orders, paymentIntents, tenants, webhookEvents } from '@/db/schema'
+import { issueInvoiceForOrder } from '@/lib/billing/invoice'
+import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
 import { applyPaidDepositsToInvoice, backfillDepositOrderIds } from './deposit-settlement'
 import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
@@ -39,10 +40,34 @@ import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
 type Db = NodePgDatabase<typeof schema>
 
-/** What the route should do with the result. */
+/**
+ * What the route should do with the result.
+ *
+ * `processed` is a discriminated union on `purpose`: a booking deposit
+ * settles onto a (possibly not-yet-existing) booking invoice, while an order
+ * payment always raises its OWN invoice right here (there is no earlier point
+ * a standalone order could have been billed). Kept as two shapes rather than
+ * one with optional fields, so a caller reading `outcome.bookingId` on an
+ * order-payment outcome is a type error, not a runtime `undefined`.
+ */
 export type WebhookOutcome =
-  /** Applied for the first time. */
-  | { kind: 'processed'; intentId: string; bookingId: string; invoicePaymentId: string | null }
+  /** A booking deposit, applied for the first time. */
+  | {
+      kind: 'processed'
+      purpose: 'booking_deposit'
+      intentId: string
+      bookingId: string
+      invoicePaymentId: string | null
+    }
+  /** A standalone order's pay-now, applied for the first time. */
+  | {
+      kind: 'processed'
+      purpose: 'order_payment'
+      intentId: string
+      orderId: string
+      invoiceId: string
+      invoicePaymentId: string
+    }
   /** Already applied — a retry, a redelivery, or a replay. A no-op. */
   | { kind: 'duplicate'; intentId: string | null; reason: string }
   /** Verified, but not something we act on (wrong event, unknown order). */
@@ -150,7 +175,9 @@ export async function applyVerifiedPaymentWebhook(
       .select({
         id: paymentIntents.id,
         tenantId: paymentIntents.tenantId,
+        purpose: paymentIntents.purpose,
         bookingId: paymentIntents.bookingId,
+        orderId: paymentIntents.orderId,
         amount: paymentIntents.amount,
         currency: paymentIntents.currency,
         status: paymentIntents.status,
@@ -225,20 +252,54 @@ export async function applyVerifiedPaymentWebhook(
       return { kind: 'rejected', reason: `payment status is ${payment.status}` }
     }
 
-    // ── 5. the booking must exist, in the same tenant ─────────────────────
-    // The composite FK already guarantees this structurally; read it back so a
-    // deleted or cross-tenant booking cannot be settled against.
-    const [booking] = await tx
-      .select({ id: bookings.id, tenantId: bookings.tenantId })
-      .from(bookings)
-      .where(
-        and(eq(bookings.id, intent.bookingId), eq(bookings.tenantId, verifiedTenantId)),
-      )
-      .limit(1)
+    // ── 5. the target — a booking or a standalone order — must exist, in the
+    //      same tenant ──────────────────────────────────────────────────────
+    // The composite FKs already guarantee this structurally; read the row
+    // back so a deleted or cross-tenant target can never be settled against.
+    // Branches on `intent.purpose`: an intent is for exactly one of the two
+    // (payment_intents_exactly_one_target, migration 0058), so exactly one of
+    // `booking`/`order` below is ever looked up.
+    let booking: { id: string } | null = null
+    let order: { id: string; branchId: string; customerId: string | null; orderNumber: string; status: string; acceptanceStatus: string } | null = null
 
-    if (!booking) {
-      await noteOutcome(tx, eventId, 'rejected')
-      return { kind: 'rejected', reason: 'booking not found for this tenant' }
+    if (intent.purpose === 'booking_deposit') {
+      const [row] = await tx
+        .select({ id: bookings.id, tenantId: bookings.tenantId })
+        .from(bookings)
+        .where(and(eq(bookings.id, intent.bookingId!), eq(bookings.tenantId, verifiedTenantId)))
+        .limit(1)
+      if (!row) {
+        await noteOutcome(tx, eventId, 'rejected')
+        return { kind: 'rejected', reason: 'booking not found for this tenant' }
+      }
+      booking = { id: row.id }
+    } else {
+      const [row] = await tx
+        .select({
+          id: orders.id,
+          tenantId: orders.tenantId,
+          branchId: orders.branchId,
+          customerId: orders.customerId,
+          orderNumber: orders.orderNumber,
+          status: orders.status,
+          acceptanceStatus: orders.acceptanceStatus,
+        })
+        .from(orders)
+        .where(and(eq(orders.id, intent.orderId!), eq(orders.tenantId, verifiedTenantId)))
+        .for('update')
+        .limit(1)
+      if (!row) {
+        await noteOutcome(tx, eventId, 'rejected')
+        return { kind: 'rejected', reason: 'order not found for this tenant' }
+      }
+      // Anything other than 'awaiting_payment' means this order was already
+      // settled (a redelivery racing the first) or moved by some other path —
+      // neither should ever re-fire an invoice or re-flip the order.
+      if (row.acceptanceStatus !== 'awaiting_payment' || row.status !== 'open') {
+        await noteOutcome(tx, eventId, 'rejected')
+        return { kind: 'rejected', reason: `order is ${row.status}/${row.acceptanceStatus}, not awaiting payment` }
+      }
+      order = row
     }
 
     // ── 6. settle the intent ──────────────────────────────────────────────
@@ -265,48 +326,118 @@ export async function applyVerifiedPaymentWebhook(
       return { kind: 'duplicate', intentId: intent.id, reason: 'intent settled concurrently' }
     }
 
-    // ── 7. project onto an invoice, if one exists ─────────────────────────
-    // Deposits are taken BEFORE the bill is raised, so usually there is no
-    // invoice yet and this is skipped; AROS-51 nets the deposit off the total
-    // when the invoice is created. When a bill does already exist, the deposit
-    // is recorded against it through the shared M1 path, which applies the same
-    // lock and the same overpayment rule.
-    const [invoice] = await tx
-      .select({ id: invoices.id })
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.tenantId, verifiedTenantId),
-          eq(invoices.bookingId, booking.id),
-          or(eq(invoices.status, 'issued'), eq(invoices.status, 'draft')),
-        ),
-      )
-      .orderBy(sql`${invoices.createdAt} desc`)
-      .limit(1)
+    if (intent.purpose === 'booking_deposit') {
+      // ── 7a. project onto an invoice, if one exists ───────────────────────
+      // Deposits are taken BEFORE the bill is raised, so usually there is no
+      // invoice yet and this is skipped; AROS-51 nets the deposit off the
+      // total when the invoice is created. When a bill does already exist,
+      // the deposit is recorded against it through the shared M1 path, which
+      // applies the same lock and the same overpayment rule.
+      const [invoice] = await tx
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.tenantId, verifiedTenantId),
+            eq(invoices.bookingId, booking!.id),
+            or(eq(invoices.status, 'issued'), eq(invoices.status, 'draft')),
+          ),
+        )
+        .orderBy(sql`${invoices.createdAt} desc`)
+        .limit(1)
 
-    // Goes through the SAME carry-over helper invoice creation uses (AROS-51),
-    // so the two entry points cannot drift on the overpayment rule, the
-    // already-applied check, or the invoice status transition.
-    let invoicePaymentId: string | null = null
-    if (invoice) {
-      const carried = await applyPaidDepositsToInvoice(
-        tx,
-        verifiedTenantId,
-        booking.id,
-        invoice.id,
-      )
-      invoicePaymentId =
-        carried.applied.find((d) => d.gatewayPaymentId === payment.id)?.paymentId ?? null
-      if (carried.applied.length > 0) {
-        await backfillDepositOrderIds(tx, verifiedTenantId, invoice.id)
+      // Goes through the SAME carry-over helper invoice creation uses
+      // (AROS-51), so the two entry points cannot drift on the overpayment
+      // rule, the already-applied check, or the invoice status transition.
+      let invoicePaymentId: string | null = null
+      if (invoice) {
+        const carried = await applyPaidDepositsToInvoice(
+          tx,
+          verifiedTenantId,
+          booking!.id,
+          invoice.id,
+        )
+        invoicePaymentId =
+          carried.applied.find((d) => d.gatewayPaymentId === payment.id)?.paymentId ?? null
+        if (carried.applied.length > 0) {
+          await backfillDepositOrderIds(tx, verifiedTenantId, invoice.id)
+        }
+      }
+
+      return {
+        kind: 'processed',
+        purpose: 'booking_deposit',
+        intentId: intent.id,
+        bookingId: booking!.id,
+        invoicePaymentId,
       }
     }
 
+    // ── 7b. order_payment: raise the order's OWN invoice, right here ───────
+    // Unlike a deposit there is no pre-existing bill to net against — a
+    // standalone order was never billable any other way — so the invoice is
+    // always newly created, in this same transaction as the intent
+    // settlement above and the payment record below.
+    //
+    // The tenant's timezone (for the invoice's financial-year numbering) has
+    // to be read here: unlike the RLS-scoped booking-deposit path, this owner
+    // connection has nothing but `verifiedTenantId` in scope so far.
+    const [tenantRow] = await tx
+      .select({ timezone: tenants.timezone })
+      .from(tenants)
+      .where(eq(tenants.id, verifiedTenantId))
+      .limit(1)
+    if (!tenantRow) {
+      // Cannot happen — the tenant was just resolved by the route to load the
+      // webhook secret that verified this signature — but refuses loudly
+      // rather than raising an invoice with a guessed timezone.
+      throw new Error(`order_payment webhook: tenant ${verifiedTenantId} vanished mid-transaction`)
+    }
+    const issued = await issueInvoiceForOrder(
+      tx,
+      { id: verifiedTenantId, timezone: tenantRow.timezone },
+      order!,
+    )
+
+    // recordVerifiedGatewayPayment is the SAME M1 path the deposit carry-over
+    // uses: locks the invoice, re-reads capturedTotal(), applies the
+    // overpayment rule, and settles it to 'paid'. The amount always covers
+    // the total exactly — this invoice was priced from the very order_items
+    // the intent's own amount was derived from (lib/payments/order-payment.ts),
+    // so there is no partial-payment case to handle here.
+    const recorded = await recordVerifiedGatewayPayment(tx, {
+      tenantId: verifiedTenantId,
+      invoiceId: issued.invoiceId,
+      amount: Number(intent.amount),
+      gateway: GATEWAY,
+      gatewayOrderId: intent.gatewayOrderId,
+      gatewayPaymentId: payment.id,
+    })
+    if (!recorded) {
+      // Cannot happen given the invoice was just raised for exactly this
+      // amount — but recordVerifiedGatewayPayment returning null must never
+      // be swallowed into "processed" for money that was not, in fact,
+      // recorded.
+      throw new Error(
+        `order_payment webhook: recordVerifiedGatewayPayment refused invoice ${issued.invoiceId} for intent ${intent.id}`,
+      )
+    }
+
+    // Release the order: visible to /kitchen (acceptanceStatus='accepted')
+    // and no longer billable a second time (status='billed', the same flip
+    // issueInvoiceForBooking applies to a booking's food orders).
+    await tx
+      .update(orders)
+      .set({ acceptanceStatus: 'accepted', status: 'billed' })
+      .where(and(eq(orders.id, order!.id), eq(orders.tenantId, verifiedTenantId)))
+
     return {
       kind: 'processed',
+      purpose: 'order_payment',
       intentId: intent.id,
-      bookingId: booking.id,
-      invoicePaymentId,
+      orderId: order!.id,
+      invoiceId: issued.invoiceId,
+      invoicePaymentId: recorded.paymentId,
     }
   })
 }

@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Loader2,
   Plus,
   Search,
   ShoppingBag,
@@ -16,9 +17,11 @@ import {
   ReceiptText,
   X,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { NewBookingDialog } from './NewBookingDialog'
 import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -147,15 +150,16 @@ export function BookingsView({
   depositStates: Record<string, 'pending' | 'paid'>
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
   const [showNew, setShowNew] = useState(false)
   const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
+  const [actingAction, setActingAction] = useState<string | null>(null)
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -232,20 +236,40 @@ export function BookingsView({
   const hourTicks: number[] = []
   for (let h = firstHour; h <= lastHour; h++) hourTicks.push(h)
 
-  function act(fn: () => Promise<{ error?: string }>) {
+  function act(action: string, fn: () => Promise<{ error?: string }>) {
+    setActingAction(action)
     start(async () => {
       const r = await fn()
-      if (r.error) setToast(r.error)
+      if (r.error) toast.error(r.error)
       else {
         setSelected(null)
         router.refresh()
       }
+      setActingAction(null)
     })
   }
 
   function openNew(resourceTypeId?: string) {
     setPresetResourceTypeId(resourceTypeId)
     setShowNew(true)
+  }
+
+  async function handleCancel(slot: Slot) {
+    await confirm({
+      title: `Cancel booking ${slot.bookingNumber}?`,
+      description: `This will cancel ${slot.customerName || 'this walk-in'}'s booking. This cannot be undone.`,
+      confirmText: 'Cancel booking',
+      cancelText: 'Keep booking',
+      onConfirm: async () => {
+        const r = await cancelBooking(slot.bookingId)
+        if (r.error) toast.error(r.error)
+        else {
+          setSelected(null)
+          router.refresh()
+          toast.success(`Booking ${slot.bookingNumber} cancelled.`)
+        }
+      },
+    })
   }
 
   return (
@@ -268,7 +292,7 @@ export function BookingsView({
             type="date"
             value={date}
             onChange={(e) => e.target.value && router.push(`/bookings?date=${e.target.value}`)}
-            className="rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            className="rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring"
           />
           <Link href={`/bookings?date=${nextDate}`} className="rounded-md border p-2 hover:bg-muted" aria-label="Next day">
             <ChevronRight size={16} />
@@ -276,25 +300,19 @@ export function BookingsView({
           <button
             onClick={() => openNew()}
             disabled={resources.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Plus size={16} /> New booking
           </button>
           <button
             onClick={() => setOrderDialog({})}
             disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-base font-medium transition hover:bg-muted disabled:opacity-50"
           >
             <ShoppingBag size={16} /> Take order
           </button>
         </div>
       </div>
-
-      {toast && (
-        <p className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {toast}
-        </p>
-      )}
 
       {/* view tabs */}
       <div className="mt-5 flex gap-5 border-b border-border">
@@ -516,6 +534,8 @@ export function BookingsView({
           branchId={branchId}
           date={date}
           timeZone={timeZone}
+          openMin={openMin}
+          closeMin={closeMin}
           resources={resources.map((r) => ({
             id: r.id,
             name: r.name,
@@ -527,7 +547,7 @@ export function BookingsView({
           onClose={() => setShowNew(false)}
           onCreated={(num) => {
             setShowNew(false)
-            setToast(`Booking ${num} created.`)
+            toast.success(`Booking ${num} created.`)
             router.refresh()
           }}
         />
@@ -541,7 +561,7 @@ export function BookingsView({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">{selected.bookingNumber}</h2>
+              <h2 className="text-xl font-semibold">{selected.bookingNumber}</h2>
               <button onClick={() => setSelected(null)} aria-label="Close" className="text-muted-foreground hover:text-foreground">
                 <X size={18} />
               </button>
@@ -587,31 +607,53 @@ export function BookingsView({
                 </Link>
               )}
               {selected.status === 'confirmed' && (
-                <ActBtn label="Check in" onClick={() => act(() => setBookingStatus(selected.bookingId, 'checked_in'))} pending={pending} />
+                <ActBtn
+                  label="Check in"
+                  onClick={() => act('check_in', () => setBookingStatus(selected.bookingId, 'checked_in'))}
+                  pending={pending}
+                  loading={actingAction === 'check_in'}
+                />
               )}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                <ActBtn label="Complete" onClick={() => act(() => setBookingStatus(selected.bookingId, 'completed'))} pending={pending} />
+                <ActBtn
+                  label="Complete"
+                  onClick={() => act('complete', () => setBookingStatus(selected.bookingId, 'completed'))}
+                  pending={pending}
+                  loading={actingAction === 'complete'}
+                />
               )}
               {selected.status === 'confirmed' && (
-                <ActBtn label="No-show" variant="muted" onClick={() => act(() => setBookingStatus(selected.bookingId, 'no_show'))} pending={pending} />
+                <ActBtn
+                  label="No-show"
+                  variant="muted"
+                  onClick={() => act('no_show', () => setBookingStatus(selected.bookingId, 'no_show'))}
+                  pending={pending}
+                  loading={actingAction === 'no_show'}
+                />
               )}
               {selected.status !== 'completed' && (
-                <ActBtn label="Cancel" variant="danger" onClick={() => act(() => cancelBooking(selected.bookingId))} pending={pending} />
+                <ActBtn label="Cancel" variant="danger" onClick={() => handleCancel(selected)} pending={pending} />
               )}
             </div>
 
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-muted-foreground">Food orders</h3>
-                <button
-                  onClick={() =>
-                    setOrderDialog({ bookingId: selected.bookingId, bookingLabel: selected.bookingNumber })
-                  }
-                  disabled={menuItems.length === 0}
-                  className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
-                >
-                  <Plus size={14} /> Add order
-                </button>
+                {/* Only while the booking is still active — createOrderCore
+                    (lib/orders/service.ts) enforces the same rule server-side,
+                    this just keeps staff from hitting that error needlessly
+                    on a booking that's already completed/cancelled/no-show. */}
+                {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
+                  <button
+                    onClick={() =>
+                      setOrderDialog({ bookingId: selected.bookingId, bookingLabel: selected.bookingNumber })
+                    }
+                    disabled={menuItems.length === 0}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    <Plus size={14} /> Add order
+                  </button>
+                )}
               </div>
               {(ordersByBooking[selected.bookingId] ?? []).length === 0 ? (
                 <p className="mt-2 text-sm text-muted-foreground">No food orders yet.</p>
@@ -669,7 +711,7 @@ export function BookingsView({
           onClose={() => setOrderDialog(null)}
           onCreated={(num) => {
             setOrderDialog(null)
-            setToast(`Order ${num} created.`)
+            toast.success(`Order ${num} created.`)
             router.refresh()
           }}
         />
@@ -746,11 +788,13 @@ function ActBtn({
   label,
   onClick,
   pending,
+  loading = false,
   variant = 'primary',
 }: {
   label: string
   onClick: () => void
   pending: boolean
+  loading?: boolean
   variant?: 'primary' | 'danger' | 'muted'
 }) {
   const cls =
@@ -760,7 +804,12 @@ function ActBtn({
         ? 'border hover:bg-muted'
         : 'bg-primary text-primary-foreground hover:opacity-90'
   return (
-    <button onClick={onClick} disabled={pending} className={`rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${cls}`}>
+    <button
+      onClick={onClick}
+      disabled={pending}
+      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${cls}`}
+    >
+      {loading && <Loader2 size={14} className="animate-spin" />}
       {label}
     </button>
   )
