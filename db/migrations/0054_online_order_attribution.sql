@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0047 online order attribution: an order needs to know where it
+-- Arena OS — 0054 online order attribution: an order needs to know where it
 -- came from — a channel (staff POS vs. future online ordering), an optional
 -- customer, and an optional station/table (resource) — so the kitchen ticket
 -- and eventual bill land in the right place.
@@ -9,7 +9,9 @@
 -- here — there is no public order-creation path yet (that's a later story).
 -- ============================================================================
 
-create type order_channel as enum ('staff', 'online');
+do $$ begin
+  create type order_channel as enum ('staff', 'online');
+exception when duplicate_object then null; end $$;
 
 alter table public.orders
   add column if not exists channel order_channel not null default 'staff';

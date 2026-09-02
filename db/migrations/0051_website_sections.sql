@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0044 website sections: M13 website builder, AROS-A (data model).
+-- Arena OS — 0051 website sections: M13 website builder, AROS-A (data model).
 --
 -- Draft content lives in website_sections/website_settings — plain relational
 -- rows the future editor (AROS-C/D) can CRUD and reorder freely. Publishing
@@ -52,26 +52,33 @@ alter table public.website_sections enable row level security;
 alter table public.website_settings enable row level security;
 alter table public.website_pages    enable row level security;
 
+drop policy if exists website_sections_select on public.website_sections;
 create policy website_sections_select on public.website_sections
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists website_sections_write on public.website_sections;
 create policy website_sections_write on public.website_sections
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
+drop policy if exists website_settings_select on public.website_settings;
 create policy website_settings_select on public.website_settings
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists website_settings_write on public.website_settings;
 create policy website_settings_write on public.website_settings
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
+drop policy if exists website_pages_select on public.website_pages;
 create policy website_pages_select on public.website_pages
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists website_pages_write on public.website_pages;
 create policy website_pages_write on public.website_pages
   for all using (public.auth_is_manager(tenant_id))
           with check (public.auth_is_manager(tenant_id));
 
 -- Public homepage read (0022_public_booking.sql's current_public_tenant_id()):
 -- the only row of any of these three tables a stranger can ever see.
+drop policy if exists website_pages_public_select on public.website_pages;
 create policy website_pages_public_select on public.website_pages
   for select using (tenant_id = public.current_public_tenant_id());
 

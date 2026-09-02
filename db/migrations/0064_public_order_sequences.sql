@@ -1,8 +1,8 @@
 -- ============================================================================
--- Arena OS — 0057: let a public (no-login) order transaction mint its own
+-- Arena OS — 0064: let a public (no-login) order transaction mint its own
 -- order/KOT numbers from `sequences`
 --
--- 0056 widened sequences.kind to allow 'order', so lib/orders/service.ts can
+-- 0063 widened sequences.kind to allow 'order', so lib/orders/service.ts can
 -- mint OR-/KOT- numbers via the same atomic upsert lib/billing/invoice.ts
 -- already uses for invoices. But sequences_rw (0018) only grants staff
 -- sessions (auth_tenant_ids(), keyed off app.user_id) — placeOnlineOrder
@@ -11,7 +11,7 @@
 -- app.public_tenant_id, which sequences_rw does not recognise at all.
 -- Without this, a public order/station/pickup order would fail outright the
 -- moment it tried to bump the sequence — the previous count(*) queries this
--- replaces got by on orders_public_select/kots_public_select (0049), which
+-- replaces got by on orders_public_select/kots_public_select (0056), which
 -- existed for exactly this reason.
 --
 -- Scoped to kind in ('order','kot') only — a public session may bump the

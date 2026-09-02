@@ -28,7 +28,7 @@ const createInput = z.object({
   branchId: z.string().uuid(),
   bookingId: z.string().uuid().optional(),
   /**
-   * Idempotency (migration 0058) — generated once by TakeOrderDialog per
+   * Idempotency (migration 0065) — generated once by TakeOrderDialog per
    * take-order attempt and reused verbatim on any retry of that SAME attempt
    * (a network retry, or an impatient double-tap on "Place order"). Lets
    * createOrderCore recognise a retry and hand back the original order

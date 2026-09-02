@@ -7,7 +7,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
 /** Flat KOT+item rows for a branch's active tickets — grouped by the caller
  *  (see components/kitchen/KitchenQueue.tsx).
  *
- *  `acceptanceStatus = 'accepted'` (migration 0050) is the gate that keeps an
+ *  `acceptanceStatus = 'accepted'` (migration 0057) is the gate that keeps an
  *  online order awaiting staff accept/reject off this screen: a staff/POS
  *  order is always 'accepted' by default, so this filter never touches it. */
 export function listActiveKots(ctx: ActiveContext, branchId: string) {

@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0056: `order` as a sequences kind
+-- Arena OS — 0063: `order` as a sequences kind
 --
 -- Order and KOT numbers (OR-YYYYMMDD-NNN / KOT-YYYYMMDD-NNN) were minted with
 -- a `count(*) + 1` read against the orders/kots tables — not concurrency-safe

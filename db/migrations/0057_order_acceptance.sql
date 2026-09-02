@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0050 order → kitchen (KOT) + staff incoming-orders queue: an
+-- Arena OS — 0057 order → kitchen (KOT) + staff incoming-orders queue: an
 -- online order needs a staff accept/reject gate before it's cooked, and a
 -- per-tenant auto-accept toggle so a venue that trusts the flow can skip it.
 --
@@ -16,7 +16,9 @@
 -- (lib/auth/roles.ts), same as cancelOrder today.
 -- ============================================================================
 
-create type order_acceptance_status as enum ('pending', 'accepted', 'rejected');
+do $$ begin
+  create type order_acceptance_status as enum ('pending', 'accepted', 'rejected');
+exception when duplicate_object then null; end $$;
 
 alter table public.orders
   add column if not exists acceptance_status order_acceptance_status not null default 'accepted';
@@ -58,7 +60,7 @@ create policy order_settings_write on public.order_settings
 
 -- Read by placeOnlineOrder (lib/actions/public-orders.ts) under the public/anon
 -- RLS context, to decide whether a freshly placed order needs the accept/
--- reject gate at all — same justification as tax_rates_public_select (0049).
+-- reject gate at all — same justification as tax_rates_public_select (0056).
 drop policy if exists order_settings_public_select on public.order_settings;
 create policy order_settings_public_select on public.order_settings
   for select using (tenant_id = public.current_public_tenant_id());

@@ -1,7 +1,7 @@
 -- ============================================================================
--- Arena OS — 0061: orders.idempotency_key is text, not uuid
+-- Arena OS — 0068: orders.idempotency_key is text, not uuid
 --
--- 0058 added this column as `uuid`, which was wrong: client code cannot rely
+-- 0065 added this column as `uuid`, which was wrong: client code cannot rely
 -- on crypto.randomUUID() to generate it — that API is SECURE-CONTEXT ONLY
 -- (https:// or literally "localhost"), so it's simply undefined on this
 -- project's own dev host (`{slug}.lvh.me:3000`, plain http) and throws
@@ -18,7 +18,7 @@
 -- predates this (or omits a key) collides with anything.
 -- ============================================================================
 
--- current_public_order_idempotency_key() (0060) is used by both policies
+-- current_public_order_idempotency_key() (0067) is used by both policies
 -- below — drop them first so the function can be recreated with a different
 -- return type (CREATE OR REPLACE cannot change a function's return type).
 drop policy if exists orders_public_select on public.orders;

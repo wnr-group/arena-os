@@ -1,9 +1,9 @@
 -- ============================================================================
--- Arena OS — 0052 order payments (RLS): let the PUBLIC checkout flow create a
+-- Arena OS — 0059 order payments (RLS): let the PUBLIC checkout flow create a
 -- payment_intents row for the standalone order it just placed.
 --
--- Split from 0051 solely because it references the 'order_payment' enum
--- label that migration adds — see 0051's header for why that cannot happen
+-- Split from 0058 solely because it references the 'order_payment' enum
+-- label that migration adds — see 0058's header for why that cannot happen
 -- in the same transaction.
 --
 -- Unlike a booking deposit (staff-initiated, from an authenticated session —
@@ -11,7 +11,7 @@
 -- payment is customer-initiated from the unauthenticated checkout page
 -- (app/(public)/checkout), which runs under withPublicTenant() and has no
 -- app.user_id to satisfy that policy. Same discipline as orders_public_insert
--- (0049): the public role gets exactly the hole it needs and no more.
+-- (0056): the public role gets exactly the hole it needs and no more.
 --
 -- No public UPDATE policy. An order's total is immutable after creation —
 -- its order_items are a frozen snapshot — so unlike a booking deposit (whose

@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0051 order payments (schema): let a standalone (no-booking)
+-- Arena OS — 0058 order payments (schema): let a standalone (no-booking)
 -- order be paid online through the SAME Razorpay integration booking
 -- deposits already use (AROS-49/50) — same per-tenant keys, same webhook,
 -- same idempotency guarantees.
@@ -9,10 +9,10 @@
 -- keeping exactly one of the two set — a payment intent is always FOR
 -- something, never for both or neither.
 --
--- Split from the RLS migration that follows (0052) because a label just
+-- Split from the RLS migration that follows (0059) because a label just
 -- added by ALTER TYPE ... ADD VALUE cannot be referenced within the same
 -- transaction that added it (a hard Postgres restriction), and
--- scripts/migrate.ts runs each file in one transaction. 0052's policies
+-- scripts/migrate.ts runs each file in one transaction. 0059's policies
 -- reference 'order_payment' by name, so they must live in the next file,
 -- once this one has committed.
 -- ============================================================================

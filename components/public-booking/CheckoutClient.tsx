@@ -139,7 +139,7 @@ export function CheckoutClient({
     }
   }, [phone, phoneIsValid])
 
-  // Idempotency (migration 0058) — stable across every retry of ONE
+  // Idempotency (migration 0065) — stable across every retry of ONE
   // checkout attempt (the button disables while pending, but a failed
   // network request re-enables it, or the customer just double-taps before
   // that disable paints), so a retry never cooks the food twice. Only

@@ -606,13 +606,13 @@ export const happyHours = pgTable('happy_hours', {
 
 // ── orders (migration 0012) ──────────────────────────────────────────────────
 export const orderStatus = pgEnum('order_status', ['open', 'billed', 'cancelled'])
-// Who placed it (migration 0047) — 'staff' for the POS flow, 'online' for a
+// Who placed it (migration 0054) — 'staff' for the POS flow, 'online' for a
 // customer ordering from a station's QR entry point.
 export const orderChannel = pgEnum('order_channel', ['staff', 'online'])
-// Staff accept/reject gate for online orders (migration 0050) — defaults to
+// Staff accept/reject gate for online orders (migration 0057) — defaults to
 // 'accepted' so every staff/POS order (and every pre-existing row) skips the
 // gate entirely; only an online order can ever be inserted as 'pending'.
-// 'awaiting_payment' (migration 0051) — a standalone pay-now order between
+// 'awaiting_payment' (migration 0058) — a standalone pay-now order between
 // being placed and its webhook confirming payment. Distinct from 'pending'
 // (the staff accept/reject queue) and invisible to it the same way; distinct
 // from 'accepted' (visible to /kitchen) until the webhook flips it there.
@@ -636,12 +636,12 @@ export const orders = pgTable(
     bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
     orderNumber: text('order_number').notNull(),
     status: orderStatus('status').notNull().default('open'),
-    // Attribution (migration 0047): channel always set; customerId/resourceId
+    // Attribution (migration 0054): channel always set; customerId/resourceId
     // nullable — a staff order has neither, an online order may have either
     // or both. See lib/booking/attribution.ts for how resourceId resolves
     // bookingId when the station has an active booking.
     channel: orderChannel('channel').notNull().default('staff'),
-    // Accept/reject gate (migration 0050) — see lib/orders/service.ts's
+    // Accept/reject gate (migration 0057) — see lib/orders/service.ts's
     // acceptOrderCore/rejectOrderCore. rejectionReason is only ever set
     // alongside acceptanceStatus: 'rejected'.
     acceptanceStatus: orderAcceptanceStatus('acceptance_status').notNull().default('accepted'),
@@ -649,9 +649,9 @@ export const orders = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
-    // Idempotency (migration 0058, column type fixed in 0061) — a
+    // Idempotency (migration 0065, column type fixed in 0068) — a
     // client-generated key (lib/utils/idempotency-key.ts's newIdempotencyKey,
-    // NOT crypto.randomUUID — see 0061 for why), reused verbatim on any retry
+    // NOT crypto.randomUUID — see 0068 for why), reused verbatim on any retry
     // of the SAME checkout/take-order attempt, so createOrderCore can
     // recognise a retry and hand back the original order instead of creating
     // a second one. Null for rows that predate this column.
@@ -662,7 +662,7 @@ export const orders = pgTable(
   (t) => [
     unique('orders_tenant_number_key').on(t.tenantId, t.orderNumber),
     // Target of payment_intents' composite (tenant_id, order_id) FK
-    // (migration 0051) — same device bookings/invoices/payment_intents
+    // (migration 0058) — same device bookings/invoices/payment_intents
     // themselves use for the same purpose.
     unique('orders_tenant_id_key').on(t.tenantId, t.id),
     // NULLs are never equal to each other under a UNIQUE constraint, so a
@@ -736,7 +736,7 @@ export const kots = pgTable(
   ],
 )
 
-// ── notifications (migration 0054) ───────────────────────────────────────────
+// ── notifications (migration 0061) ───────────────────────────────────────────
 // A minimal outbox, forward-compatible with the roadmap's eventual M3-C
 // design (notification_settings + notifications + retry) — see
 // lib/notifications/service.ts. No real SMS/WhatsApp provider is wired in
@@ -781,7 +781,7 @@ export const customers = pgTable(
     dob: date('dob'),
     tags: text('tags').array().notNull().default([]),
     membershipStatus: text('membership_status'),
-    // Explicit, revisable opt-in for "order ready" texts (migration 0054) —
+    // Explicit, revisable opt-in for "order ready" texts (migration 0061) —
     // checked by default at checkout; see lib/notifications/service.ts.
     notifyOrderReady: boolean('notify_order_ready').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -958,7 +958,7 @@ export const paymentIntentStatus = pgEnum('payment_intent_status', [
   'failed',
   'cancelled',
 ])
-// 'order_payment' (migration 0051) — pay-now for a standalone order with no
+// 'order_payment' (migration 0058) — pay-now for a standalone order with no
 // booking to add-to-bill against. See payment_intents' order_id/booking_id
 // note below for how the two purposes stay mutually exclusive.
 export const paymentIntentPurpose = pgEnum('payment_intent_purpose', [
@@ -976,7 +976,7 @@ export const paymentIntents = pgTable(
     branchId: uuid('branch_id')
       .notNull()
       .references(() => branches.id, { onDelete: 'restrict' }),
-    // Exactly one of bookingId/orderId is set (migration 0051's
+    // Exactly one of bookingId/orderId is set (migration 0058's
     // payment_intents_exactly_one_target check) — a booking deposit or a
     // standalone order's pay-now, never both, never neither.
     bookingId: uuid('booking_id'),
@@ -1008,7 +1008,7 @@ export const paymentIntents = pgTable(
     }).onDelete('cascade'),
     // At most ONE pending intent per booking+purpose, and separately at most
     // ONE per order+purpose — the idempotency rule, split in two (migration
-    // 0051) because bookingId/orderId are each null on the other's rows and a
+    // 0058) because bookingId/orderId are each null on the other's rows and a
     // single index could no longer assume bookingId was always set.
     uniqueIndex('idx_payment_intents_one_pending_booking')
       .on(t.tenantId, t.bookingId, t.purpose)
@@ -1114,7 +1114,7 @@ export const loyaltySettings = pgTable('loyalty_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
-// ── order settings (migration 0050) ──────────────────────────────────────────
+// ── order settings (migration 0057) ──────────────────────────────────────────
 // Singleton per tenant, same shape as loyaltySettings above. Off by default —
 // a venue must opt in to skipping the accept/reject step for an online order.
 export const orderSettings = pgTable('order_settings', {
@@ -1759,7 +1759,7 @@ export const sequencesRelations = relations(sequences, ({ one }) => ({
   tenant: one(tenants, { fields: [sequences.tenantId], references: [tenants.id] }),
 }))
 
-// ── website builder (migration 0044, M13/AROS-A) ─────────────────────────────
+// ── website builder (migration 0051, M13/AROS-A) ─────────────────────────────
 export const websiteSectionType = pgEnum('website_section_type', [
   'text',
   'image',

@@ -43,7 +43,7 @@ const orderInput = z.object({
   // sitting as an unlinked standalone order.
   bookingToken: z.string().uuid().optional(),
   /**
-   * Idempotency (migration 0058) — generated once by CheckoutClient per
+   * Idempotency (migration 0065) — generated once by CheckoutClient per
    * checkout attempt and reused verbatim on any retry of that SAME attempt
    * (a network retry, or an impatient double-tap on "Place order"). Lets
    * createOrderCore recognise a retry and hand back the original order
@@ -300,7 +300,7 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         const parsed = orderInput.safeParse(raw)
         if (parsed.success) {
           const existing = await withPublicTenant(tenant.id, async (tx) => {
-            // Pins orders_public_select (migration 0060) to this one key.
+            // Pins orders_public_select (migration 0067) to this one key.
             await tx.execute(
               sql`select set_config('app.public_order_idempotency_key', ${parsed.data.idempotencyKey}, true)`,
             )

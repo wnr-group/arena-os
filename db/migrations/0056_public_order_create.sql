@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0049 public order creation: let a public (no-login) visitor on
+-- Arena OS — 0056 public order creation: let a public (no-login) visitor on
 -- app/(public)/order/[stationToken] actually place a food order, the same
 -- way 0023_public_booking_create.sql opened up booking creation. Pinned to
 -- app.public_tenant_id exactly like every other public policy.

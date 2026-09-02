@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0054 order status notifications (M14 #7, v2): a customer's
+-- Arena OS — 0061 order status notifications (M14 #7, v2): a customer's
 -- explicit, revisable opt-in for "your order is ready" texts, and a minimal
 -- notifications outbox recording every attempt (sent/skipped/failed).
 --
@@ -55,8 +55,10 @@ create index if not exists idx_notifications_order on public.notifications(tenan
 -- member may read/create" shape (0013_kots.sql); nothing here is customer-facing.
 alter table public.notifications enable row level security;
 
+drop policy if exists notifications_select on public.notifications;
 create policy notifications_select on public.notifications
   for select using (tenant_id in (select public.auth_tenant_ids()));
+drop policy if exists notifications_insert on public.notifications;
 create policy notifications_insert on public.notifications
   for insert with check (tenant_id in (select public.auth_tenant_ids()));
 

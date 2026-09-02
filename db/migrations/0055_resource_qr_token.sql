@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0048 resource QR token: the unguessable identifier for a
+-- Arena OS — 0055 resource QR token: the unguessable identifier for a
 -- station's public ordering entry point (app/(public)/order/[stationToken]),
 -- printed as a QR code from the resources settings screen. Same shape as
 -- bookings.confirmation_token (0026_booking_confirmation_token.sql) — a

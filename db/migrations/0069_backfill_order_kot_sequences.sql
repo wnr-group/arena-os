@@ -1,8 +1,8 @@
 -- ============================================================================
--- Arena OS — 0062: backfill `sequences` for order/KOT numbers already minted
+-- Arena OS — 0069: backfill `sequences` for order/KOT numbers already minted
 --
 -- 359b45a switched order/KOT numbering from a `count(*) + 1` read against
--- orders/kots to the atomic `sequences` upsert 0056/0057 wired up (the same
+-- orders/kots to the atomic `sequences` upsert 0063/0064 wired up (the same
 -- mechanism invoice numbers already used). That fix is forward-only: it never
 -- seeded `sequences` with the count each tenant's numbering had already
 -- reached under the old mechanism.
