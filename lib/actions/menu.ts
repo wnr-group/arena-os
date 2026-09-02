@@ -1,10 +1,10 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems, taxRates, menuItemModifierGroups } from '@/db/schema'
+import { menuCategories, menuItems, taxRates, menuItemModifierGroups, modifierGroups } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageKitchen } from '@/lib/auth/roles'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
@@ -166,6 +166,23 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
       // sends this field for another industry, but ignore it here too
       // rather than trusting the client.
       if (v.modifierGroupIds && ctx.tenant.industry === 'restaurant') {
+        // group_id is a plain FK to modifier_groups(id), same un-tenant-scoped
+        // shape as categoryId/taxRateId above — re-check ownership here too,
+        // rather than trusting a client-supplied id straight into the link
+        // table. Without this, an id from another tenant's modifier_groups
+        // row satisfies the FK and RLS (menu_item_modifier_groups_write only
+        // checks THIS row's own tenant_id, never the referenced group's) and
+        // gets silently attached, leaking that tenant's group name/min/max
+        // into this tenant's ordering flow (lib/orders/service.ts).
+        if (v.modifierGroupIds.length > 0) {
+          const owned = await tx
+            .select({ id: modifierGroups.id })
+            .from(modifierGroups)
+            .where(and(inArray(modifierGroups.id, v.modifierGroupIds), eq(modifierGroups.tenantId, ctx.tenant.id)))
+          if (owned.length !== new Set(v.modifierGroupIds).size) {
+            throw new AuthError('Choose modifier groups from this menu.')
+          }
+        }
         await tx
           .delete(menuItemModifierGroups)
           .where(and(eq(menuItemModifierGroups.menuItemId, id!), eq(menuItemModifierGroups.tenantId, ctx.tenant.id)))

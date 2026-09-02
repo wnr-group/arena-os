@@ -189,7 +189,12 @@ export async function createOrderCore(
       maxSelect: modifierGroups.maxSelect,
     })
     .from(menuItemModifierGroups)
-    .innerJoin(modifierGroups, eq(modifierGroups.id, menuItemModifierGroups.groupId))
+    // Also tenant-filtered on the modifierGroups side, not just
+    // menuItemModifierGroups' own tenant_id — group_id is a plain FK, not
+    // tenant-scoped at the DB level, so without this a cross-tenant link row
+    // (see lib/actions/menu.ts's upsertMenuItem) would still resolve to and
+    // leak another tenant's group name/min/max here.
+    .innerJoin(modifierGroups, and(eq(modifierGroups.id, menuItemModifierGroups.groupId), eq(modifierGroups.tenantId, ctx.tenantId)))
     .where(and(eq(menuItemModifierGroups.tenantId, ctx.tenantId), inArray(menuItemModifierGroups.menuItemId, ids)))
 
   const groupsByMenuItem = new Map<string, typeof groupLinkRows>()
@@ -231,6 +236,18 @@ export async function createOrderCore(
    * priced total to add to the base unit price.
    */
   function resolveLineModifiers(menuItemId: string, optionIds: string[]) {
+    // A single-select group (maxSelect === 1) already rejects a repeated id
+    // below (count > maxSelect), but a multi-select group wouldn't — the
+    // same option twice would silently double its priceDelta. The picker UI
+    // (ModifierPickerSheet/ModifierPickerDialog) can never produce this: it
+    // toggles a Set, so picking an already-selected option deselects it. A
+    // repeat can therefore only come from a tampered/replayed request, not a
+    // real "double portion" choice — there's no per-modifier qty concept to
+    // legitimise one.
+    if (new Set(optionIds).size !== optionIds.length) {
+      throw new OrderError('Choose each modifier option only once.')
+    }
+
     const attachedGroups = groupsByMenuItem.get(menuItemId) ?? []
     const selected = optionIds.map((id) => optionById.get(id)!)
 

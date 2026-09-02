@@ -1,13 +1,12 @@
 import 'server-only'
-import { and, eq, max, min } from 'drizzle-orm'
+import { and, eq, inArray, max, min, ne } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { bookings, bookingSlots, branches, customers, resources } from '@/db/schema'
+import { bookings, bookingSlots, branches, customers, invoices, orderItems, orders, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import {
   findLiveInvoice,
   isBillableBookingStatus,
   loadBillLines,
-  loadFoodLines,
   loadInvoiceLines,
   type ExistingInvoice,
 } from './invoice'
@@ -220,10 +219,14 @@ export type BookingBillingState = {
 }
 
 /**
- * Per-booking billing snapshot for the M17 floor map: one query per booking,
- * same transaction, reusing the exact readers issueInvoiceForBooking itself
- * is built on (loadFoodLines + priceBill for the total, findLiveInvoice for
- * "already billed") — no parallel total-computing logic.
+ * Per-booking billing snapshot for the M17 floor map: TWO batched queries for
+ * every booking (not one round trip per booking), same tenant/status filters
+ * as loadFoodLines/findLiveInvoice (lib/billing/invoice.ts) — just grouped in
+ * memory afterward instead of called once per id, the same "read once, group
+ * in memory" shape this PR already uses elsewhere (e.g. lib/kots/data.ts's
+ * loadModifierNamesByItem). FloorView.tsx polls this every few seconds for
+ * every occupied table on the branch, so a per-booking loop here was 2×N
+ * queries on every poll — this collapses it to 2 regardless of N.
  */
 export async function listBookingBillingStates(
   ctx: ActiveContext,
@@ -231,13 +234,64 @@ export async function listBookingBillingStates(
 ): Promise<Record<string, BookingBillingState>> {
   if (bookingIds.length === 0) return {}
   return withUser(ctx.user.id, async (tx) => {
+    const [foodRows, invoiceRows] = await Promise.all([
+      // Same shape/filter as loadFoodLines, batched across every booking.
+      tx
+        .select({
+          bookingId: orders.bookingId,
+          itemId: orderItems.id,
+          itemName: orderItems.itemName,
+          unitPrice: orderItems.unitPrice,
+          taxRate: orderItems.taxRate,
+          qty: orderItems.qty,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orders.id, orderItems.orderId))
+        .where(
+          and(
+            eq(orders.tenantId, ctx.tenant.id),
+            inArray(orders.bookingId, bookingIds),
+            eq(orders.status, 'open'),
+            eq(orders.acceptanceStatus, 'accepted'),
+            eq(orderItems.voidStatus, 'active'),
+          ),
+        ),
+      // Same shape/filter as findLiveInvoice, batched across every booking.
+      tx
+        .select({ bookingId: invoices.bookingId })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.tenantId, ctx.tenant.id),
+            inArray(invoices.bookingId, bookingIds),
+            ne(invoices.status, 'void'),
+          ),
+        ),
+    ])
+
+    const linesByBooking = new Map<string, BillLine[]>()
+    for (const r of foodRows) {
+      if (!r.bookingId) continue
+      const list = linesByBooking.get(r.bookingId) ?? []
+      if (list.length === 0) linesByBooking.set(r.bookingId, list)
+      list.push({
+        description: r.itemName,
+        kind: 'food',
+        sourceId: r.itemId,
+        qty: r.qty,
+        unitPrice: Number(r.unitPrice),
+        taxPercent: Number(r.taxRate),
+      })
+    }
+    const liveInvoiceBookingIds = new Set(
+      invoiceRows.map((r) => r.bookingId).filter((id): id is string => id !== null),
+    )
+
     const out: Record<string, BookingBillingState> = {}
     for (const bookingId of bookingIds) {
-      const lines = await loadFoodLines(tx, ctx.tenant.id, bookingId)
-      const existing = await findLiveInvoice(tx, ctx.tenant.id, bookingId)
       out[bookingId] = {
-        runningTotal: priceBill({ lines }).total,
-        hasLiveInvoice: existing !== null,
+        runningTotal: priceBill({ lines: linesByBooking.get(bookingId) ?? [] }).total,
+        hasLiveInvoice: liveInvoiceBookingIds.has(bookingId),
       }
     }
     return out

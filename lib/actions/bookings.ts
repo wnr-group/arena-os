@@ -9,6 +9,7 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import {
   createBookingCore,
   seatTableSessionCore,
+  requestBillCore,
   transferTableCore,
   mergeTablesCore,
   splitTableCore,
@@ -141,7 +142,10 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
  * lib/booking/table-status.ts), so this just stamps the timestamp.
  * Industry-gated like seatTable: the column only means anything for a
  * table session, but the gate is enforced here, not assumed from the column
- * being unused elsewhere.
+ * being unused elsewhere. requestBillCore itself re-validates that this is
+ * still an active (checked_in) table session before writing — same
+ * lockTableSession check transferTable/mergeTables/splitTable get, so a
+ * stale/cancelled/timed booking can't have the flag stamped on it.
  */
 export async function requestBill(bookingId: string): Promise<Result> {
   try {
@@ -149,12 +153,7 @@ export async function requestBill(bookingId: string): Promise<Result> {
     if (ctx.tenant.industry !== 'restaurant') {
       throw new AuthError('Table service is not enabled for this business.')
     }
-    await withUser(ctx.user.id, (tx) =>
-      tx
-        .update(bookings)
-        .set({ billRequestedAt: new Date() })
-        .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenant.id))),
-    )
+    await withUser(ctx.user.id, (tx) => requestBillCore(tx, { tenantId: ctx.tenant.id }, bookingId))
     revalidatePath('/floor')
     return {}
   } catch (e) {
