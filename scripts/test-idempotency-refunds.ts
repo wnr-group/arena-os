@@ -40,7 +40,6 @@ async function main() {
   const { purchaseMembership, getActiveMembership } = await import(
     '../lib/memberships/customer-memberships'
   )
-  const { round2 } = await import('../lib/billing/pricing')
 
   const o = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const app = drizzle(new Pool({ connectionString: process.env.DATABASE_URL, max: 10 }), { schema })

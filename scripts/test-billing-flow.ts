@@ -15,7 +15,7 @@
  */
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
-import { sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import {
   BillingError,
@@ -25,8 +25,10 @@ import {
   financialYearPeriod,
   isBillableBookingStatus,
   issueInvoiceForBooking,
+  loadBillLines,
   loadFoodLines,
   loadInvoiceLines,
+  lockOpenFoodOrders,
   nextInvoiceNumber,
 } from '../lib/billing/invoice'
 import { voidInvoiceRecord } from '../lib/billing/refunds'
@@ -725,6 +727,153 @@ async function main() {
         shake.status === 'cancelled' && shake.acceptance_status === 'rejected',
       )
     }
+  }
+
+  // ══ REGRESSION: an order placed mid-billing must not be swallowed ═════════
+  //
+  // The bug this guards: issueInvoiceForBooking used to read the open food
+  // orders, then flip `status='open' → 'billed'` with an UNSCOPED predicate. An
+  // order created between those two statements was invisible to the read but
+  // caught by the flip — marked billed, never charged, and gone from every
+  // future bill. The mirror image of double-billing, and quieter, because
+  // nobody complains about not being charged.
+  //
+  // The sequence below is exactly what issueInvoiceForBooking now does
+  // internally (lockOpenFoodOrders → loadBillLines(ids) → scoped flip), with a
+  // concurrent INSERT committed from a SEPARATE connection in the middle —
+  // which is the only way to reproduce the race, since a row lock cannot
+  // prevent an insert.
+  {
+    console.log('\n── mid-billing order (race regression) ──')
+
+    const rb = await makeBooking(A, { hours: 1 })
+    const first = await makeFoodOrder(A, rb.bookingId, [
+      { name: 'Early Coke', unitPrice: '50.00', qty: 1, taxRate: '5.00' },
+    ])
+
+    // A second connection, so its INSERT genuinely commits while the billing
+    // transaction below is open.
+    const intruder = new Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 1 })
+
+    const captured = await withUser(A.userId, async (tx) => {
+      // 1. what issueInvoiceForBooking captures and holds
+      const ids = await lockOpenFoodOrders(tx, A.tenantId, rb.bookingId)
+
+      // 2. …and now a customer/waiter places another order, committed.
+      await intruder.query(
+        `insert into orders (tenant_id,branch_id,booking_id,order_number,status)
+         values ($1,$2,$3,'FO-RACE','open')`,
+        [A.tenantId, A.branchId, rb.bookingId],
+      )
+      const lateOrder = await intruder.query<{ id: string }>(
+        `select id from orders where tenant_id=$1 and order_number='FO-RACE'`,
+        [A.tenantId],
+      )
+      await intruder.query(
+        `insert into order_items (tenant_id,order_id,item_name,unit_price,tax_rate,qty,line_total)
+         values ($1,$2,'Late Fries','120.00','5.00',1,'120.00')`,
+        [A.tenantId, lateOrder.rows[0].id],
+      )
+
+      // 3. the lines the invoice would charge for, using the captured set
+      const lines = await loadBillLines(tx, A.tenantId, rb.bookingId, 'Asia/Kolkata', ids)
+
+      // 4. the flip, scoped to the captured set — byte-for-byte the predicate
+      //    issueInvoiceForBooking step 7 now uses. Running it here, INSIDE the
+      //    same transaction as the capture, is the only way to reproduce the
+      //    window the bug lived in: calling issueInvoiceForBooking() from
+      //    outside would open a fresh transaction, by which time the late order
+      //    legitimately exists and SHOULD be billed.
+      await tx
+        .update(schema.orders)
+        .set({ status: 'billed' })
+        .where(
+          and(
+            eq(schema.orders.tenantId, A.tenantId),
+            eq(schema.orders.bookingId, rb.bookingId),
+            eq(schema.orders.status, 'open'),
+            inArray(schema.orders.id, ids),
+          ),
+        )
+
+      return { ids, lateOrderId: lateOrder.rows[0].id, lines }
+    })
+
+    check('the capture took exactly the one order that existed', captured.ids.length === 1)
+    check('…and it is the early one', captured.ids[0] === first.orderId)
+    check(
+      'the late order is NOT charged for — its item is absent from the lines',
+      !captured.lines.some((l) => l.description === 'Late Fries'),
+    )
+    check(
+      '…while the early one still is',
+      captured.lines.some((l) => l.description === 'Early Coke'),
+    )
+
+    const raceStatuses = (
+      await ownerPool.query<{ order_number: string; status: string }>(
+        'select order_number, status from orders where booking_id=$1 order by order_number',
+        [rb.bookingId],
+      )
+    ).rows
+    const early = raceStatuses.find((s) => s.order_number !== 'FO-RACE')
+    const late = raceStatuses.find((s) => s.order_number === 'FO-RACE')
+
+    check('the captured order is marked billed', early?.status === 'billed')
+    check(
+      'THE FIX: the late order is still OPEN — charged for later, not silently billed',
+      late?.status === 'open',
+    )
+
+    // The money is not lost: the late order is still billable on the next bill.
+    const stillBillable = await withUser(A.userId, (tx) =>
+      loadFoodLines(tx, A.tenantId, rb.bookingId),
+    )
+    check(
+      'the late order remains billable — the charge was deferred, not destroyed',
+      stillBillable.length === 1 && stillBillable[0].description === 'Late Fries',
+    )
+
+    // ── and the contrast: the OLD unscoped flip would have eaten it ─────────
+    // Rolled back, so it only demonstrates the difference and changes nothing.
+    const wouldHaveSwallowed = await withUser(A.userId, async (tx) => {
+      const r = await tx
+        .update(schema.orders)
+        .set({ status: 'billed' })
+        .where(
+          and(
+            eq(schema.orders.tenantId, A.tenantId),
+            eq(schema.orders.bookingId, rb.bookingId),
+            eq(schema.orders.status, 'open'),
+          ),
+        )
+        .returning({ id: schema.orders.id })
+      // Undo — this branch exists to prove a point, not to change data.
+      await tx
+        .update(schema.orders)
+        .set({ status: 'open' })
+        .where(
+          and(
+            eq(schema.orders.tenantId, A.tenantId),
+            eq(schema.orders.orderNumber, 'FO-RACE'),
+          ),
+        )
+      return r.length
+    })
+    check(
+      '…whereas the old UNSCOPED flip would have swallowed the late order',
+      wouldHaveSwallowed === 1,
+    )
+
+    const unchanged = (
+      await ownerPool.query<{ status: string }>(
+        `select status from orders where tenant_id=$1 and order_number='FO-RACE'`,
+        [A.tenantId],
+      )
+    ).rows[0]
+    check('…and the demonstration left it open', unchanged.status === 'open')
+
+    await intruder.end()
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────

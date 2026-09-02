@@ -33,6 +33,8 @@ import {
   Percent,
   Timer,
   Ticket,
+  Gift,
+  Scale,
   Landmark,
   Receipt,
   Calculator,
@@ -103,6 +105,11 @@ const NAV: NavItem[] = [
       { href: '/settings/tax-rates', label: 'Tax Rates', icon: Percent },
       { href: '/settings/happy-hours', label: 'Happy Hours', icon: Timer },
       { href: '/settings/promo-codes', label: 'Promo Codes', icon: Ticket },
+      // The earn/redeem rule the till reads live (migration 0029). Grouped with
+      // the other money rules because a redemption is a discount on the bill.
+      // The page and the action each enforce manager/owner themselves — this
+      // entry only decides what is worth showing.
+      { href: '/settings/loyalty', label: 'Loyalty', icon: Gift },
     ],
   },
   // Per-tenant Razorpay credentials (migration 0022) — manager and owner only.
@@ -126,6 +133,9 @@ const NAV: NavItem[] = [
     children: [
       { href: '/reports', label: 'Revenue & Bookings', icon: TrendingUp, can: isManager },
       { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
+      // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
+      // and getPnlReport() throws for one; this entry only decides visibility.
+      { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },
     ],
   },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },
@@ -162,23 +172,68 @@ const NAV: NavItem[] = [
   { href: '/settings/business', label: 'Business Profile', icon: Building2, can: isOwner },
 ]
 
-function isChildActive(pathname: string, children: NavChild[]) {
-  return children.some((c) => pathname === c.href || pathname.startsWith(c.href + '/'))
+/**
+ * Does `href` own `pathname`? An exact hit, or a parent whose detail routes
+ * should keep it lit — /customers stays current on /customers/<id>.
+ */
+function matchesHref(pathname: string, href: string) {
+  return pathname === href || pathname.startsWith(href + '/')
+}
+
+/**
+ * The ONE href the sidebar highlights: the LONGEST match across every entry the
+ * current role can see.
+ *
+ * Deciding this globally rather than per entry is the point. Some entries are
+ * prefixes of their own siblings — /reports is both its own page ("Revenue &
+ * Bookings") and the parent of /reports/sales and /reports/pnl, and /bookings
+ * has the same relationship to /bookings/scan. Testing each entry on its own
+ * meant the prefix rule above lit the parent alongside the page actually open,
+ * leaving two items in the purple state at once.
+ *
+ * Longest-match settles it: the most specific entry wins and every other goes
+ * quiet, while a genuine detail route still falls back to its parent because
+ * nothing longer matches it. It also keeps sibling groups honest —
+ * /reports/employees belongs to Employees, so Reports no longer claims it.
+ */
+function resolveActiveHref(pathname: string, items: NavItem[], role: MemberRole): string | null {
+  let best: string | null = null
+  for (const item of items) {
+    // A group's own href is never a link target (the header is a toggle), so
+    // only its visible children can be the current entry.
+    const hrefs = item.children
+      ? item.children.filter((c) => !c.can || c.can(role)).map((c) => c.href)
+      : [item.href]
+    for (const href of hrefs) {
+      if (matchesHref(pathname, href) && (best === null || href.length > best.length)) {
+        best = href
+      }
+    }
+  }
+  return best
+}
+
+function isChildActive(activeHref: string | null, children: NavChild[]) {
+  return children.some((c) => c.href === activeHref)
 }
 
 export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boolean }) {
   const pathname = usePathname()
   const items = useMemo(() => NAV.filter((n) => !n.can || n.can(role)), [role])
+  const activeHref = useMemo(
+    () => resolveActiveHref(pathname, items, role),
+    [pathname, items, role],
+  )
   const [openLabel, setOpenLabel] = useState<string | null>(
-    () => items.find((n) => n.children && isChildActive(pathname, n.children))?.label ?? null,
+    () => items.find((n) => n.children && isChildActive(activeHref, n.children))?.label ?? null,
   )
 
   useEffect(() => {
-    const activeItem = items.find((n) => n.children && isChildActive(pathname, n.children))
+    const activeItem = items.find((n) => n.children && isChildActive(activeHref, n.children))
     if (activeItem) {
       setOpenLabel(activeItem.label)
     }
-  }, [pathname, items])
+  }, [activeHref, items])
 
   return (
     <nav className="flex flex-col gap-1 p-3 flex-1 overflow-y-auto">
@@ -188,7 +243,7 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
         if (item.children) {
           const visibleChildren = item.children.filter((c) => !c.can || c.can(role))
           if (visibleChildren.length === 0) return null
-          const childActive = isChildActive(pathname, visibleChildren)
+          const childActive = isChildActive(activeHref, visibleChildren)
           if (collapsed) {
             return (
               <Link
@@ -229,7 +284,7 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
               {open && (
                 <div className="ml-[1.15rem] mt-1 flex flex-col gap-1 border-l border-border pl-4">
                   {visibleChildren.map((child) => {
-                    const active = pathname === child.href || pathname.startsWith(child.href + '/')
+                    const active = child.href === activeHref
                     const ChildIcon = child.icon
                     return (
                       <Link
@@ -253,7 +308,7 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
           )
         }
 
-        const active = pathname === item.href || pathname.startsWith(item.href + '/')
+        const active = item.href === activeHref
         return (
           <Link
             key={item.href}

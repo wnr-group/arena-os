@@ -56,6 +56,23 @@ export function formatTimeInZone(date: Date, timeZone: string): string {
   }).format(date)
 }
 
+/**
+ * Shift a `YYYY-MM-DD` date by whole days, staying a calendar date.
+ *
+ * Pure string→string arithmetic done in UTC, so it never depends on the
+ * server's zone and never drifts across a DST boundary. Lives here rather than
+ * in lib/booking/data.ts (where it used to sit) because that module is
+ * `server-only` and opens a DB pool on import: a pure date helper must be
+ * importable from anywhere, including the validation path in
+ * lib/reports/date-range.ts. `@/lib/booking/data` still re-exports it, so every
+ * existing import site is unchanged.
+ */
+export function addDays(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + days))
+  return dt.toISOString().slice(0, 10)
+}
+
 /** Today's `YYYY-MM-DD` as seen in `timeZone`. */
 export function todayInZone(timeZone: string, now: Date = new Date()): string {
   const p: Record<string, string> = {}
@@ -68,17 +85,4 @@ export function todayInZone(timeZone: string, now: Date = new Date()): string {
     p[part.type] = part.value
   }
   return `${p.year}-${p.month}-${p.day}`
-}
-
-/**
- * Add `days` to a plain 'YYYY-MM-DD' date string, returning the same shape.
- * Lives here (a pure module, no DB import) so import-order-sensitive callers —
- * e.g. lib/reports/date-range.ts, pulled in by standalone scripts before their
- * env is loaded — can use it without dragging in db/index.ts's pool. Same
- * implementation as lib/booking/data.ts's addDays.
- */
-export function addDays(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const dt = new Date(Date.UTC(y, m - 1, d + days))
-  return dt.toISOString().slice(0, 10)
 }

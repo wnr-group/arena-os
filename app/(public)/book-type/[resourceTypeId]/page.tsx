@@ -40,10 +40,31 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
  * identical-looking units themselves. Tenant is resolved from the subdomain
  * the same way app/(public)/book/[resourceId]/page.tsx does.
  */
+/**
+ * Clamp an optional prefill value from the query string, falling back to the
+ * wizard's own default. Everything here is untrusted text, so a missing, junk,
+ * fractional or out-of-range value is simply ignored — and even a value that
+ * survives is only a form default, re-validated by getPublicAvailability and
+ * createPublicBooking before it can affect anything.
+ */
+function clampPrefill(raw: string | undefined, min: number, max: number, fallback: number): number {
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < min || n > max) return fallback
+  return n
+}
+
 export default async function ResourceTypeBookPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ resourceTypeId: string }>
+  /**
+   * Optional prefill, used by the portal's "book this again" redirect
+   * (app/(portal)/account/bookings/[bookingId]/rebook). Nothing here identifies
+   * anybody — no ids, no phone — and the page behaves exactly as before when
+   * they are absent.
+   */
+  searchParams: Promise<{ duration?: string; players?: string }>
 }) {
   const { resourceTypeId } = await params
   if (!UUID.test(resourceTypeId)) notFound()
@@ -56,6 +77,7 @@ export default async function ResourceTypeBookPage({
   const resourceType = await getPublicResourceType(tenant.id, resourceTypeId)
   if (!resourceType) notFound()
 
+  const prefill = await searchParams
   const branch = await getPublicBranch(tenant.id)
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
@@ -82,6 +104,8 @@ export default async function ResourceTypeBookPage({
             resourceType={resourceType}
             today={todayInZone(tenant.timezone)}
             razorpayConfigured={razorpayCredentials !== null}
+            initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
+            initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}
           />
         </main>
 
