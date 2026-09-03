@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0063: `restaurant` as a tenant industry
+-- Arena OS — 0070: `restaurant` as a tenant industry
 --
 -- M17 (dine-in table service) is opt-in: a restaurant tenant gets floor/table
 -- ergonomics on top of the SAME booking/orders/KOT/billing engine every other

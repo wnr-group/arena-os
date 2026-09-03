@@ -99,7 +99,7 @@ export async function getBillableForBooking(
         bookingCustomerPhone: bookings.customerPhone,
         directoryName: customers.name,
         directoryPhone: customers.phone,
-        // M17: a table session links straight to its resource (0064) instead
+        // M17: a table session links straight to its resource (0071) instead
         // of booking_slots, so its name has to come from here rather than
         // from a booking-kind line below.
         tableResourceName: resources.name,

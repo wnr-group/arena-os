@@ -3,7 +3,7 @@
  * Every input here already exists somewhere (the session, its open orders'
  * KOT progress, whether it has a live invoice) except `billRequestedAt`,
  * which is customer/staff intent with no other signal to derive it from
- * (see 0065_table_bill_requested.sql). Kept as one pure function so the
+ * (see 0072_table_bill_requested.sql). Kept as one pure function so the
  * precedence between "billed" and "asked for the bill" and "still eating"
  * lives in exactly one place.
  */

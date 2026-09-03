@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0066: void/comp a single order_items line (M17 #6)
+-- Arena OS — 0073: void/comp a single order_items line (M17 #6)
 --
 -- Before this, order_items had no lifecycle at all — every line on an `open`
 -- order was billed, unconditionally (see lib/billing/invoice.ts loadFoodLines

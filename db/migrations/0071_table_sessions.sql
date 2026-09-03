@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0064: open-ended table sessions
+-- Arena OS — 0071: open-ended table sessions
 --
 -- M17 #1 — the foundation the rest of the dine-in epic builds on. A
 -- restaurant table isn't rented by the hour like a PS5 station: a party sits

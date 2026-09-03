@@ -705,7 +705,7 @@ async function lockActiveOrderItem(tx: Db, tenantId: string, orderItemId: string
  * lockActiveOrderItem) rather than trusting a row fetched moments — or a
  * request-queue's worth of time — earlier.
  *
- * The row is never deleted, only flagged (migration 0066): loadFoodLines/
+ * The row is never deleted, only flagged (migration 0073): loadFoodLines/
  * loadOrderFoodLines (lib/billing/invoice.ts) exclude anything not
  * `void_status = 'active'`, which is what takes the amount off the tab —
  * everything else (the order, the KOT, the row itself) stays exactly as it
@@ -834,7 +834,7 @@ export async function requestVoidOrderItemCore(
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
 
   // At most one open request per item (also enforced by the DB — see
-  // idx_order_item_void_requests_one_pending, migration 0067) — locking the
+  // idx_order_item_void_requests_one_pending, migration 0074) — locking the
   // order_item above already serialises two concurrent requesters on the
   // same line, so this read is race-free.
   const [existingPending] = await tx

@@ -67,7 +67,7 @@ export const getPublicMenu = cache(async function getPublicMenu(tenantId: string
   // Modifier groups for every item on this menu, one query — same
   // "read once, group in memory" shape as the category grouping below.
   // modifier_groups_public_select/modifier_options_public_select/
-  // menu_item_modifier_groups_public_select (migration 0069) are what make
+  // menu_item_modifier_groups_public_select (migration 0076) are what make
   // this readable at all under the anonymous public connection.
   const itemIds = rows.map((r) => r.itemId)
   const groupRows =

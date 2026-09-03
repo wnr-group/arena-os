@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0068: kitchen-role RLS carve-out for "86" (M17 #7)
+-- Arena OS — 0075: kitchen-role RLS carve-out for "86" (M17 #7)
 --
 -- menu_items_write (0010_menu.sql) is manager-only at the RLS level — the
 -- right default for editing an item's name/price/image/category. But 86-ing

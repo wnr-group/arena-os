@@ -54,7 +54,7 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
         voidReason: orderItems.voidReason,
         // Set only while a void/comp request on this line is awaiting
         // manager approval — at most one per item (idx_order_item_void_
-        // requests_one_pending, migration 0067), so this left join never
+        // requests_one_pending, migration 0074), so this left join never
         // duplicates a row.
         pendingVoidMode: orderItemVoidRequests.mode,
       })

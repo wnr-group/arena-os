@@ -265,12 +265,12 @@ export const bookings = pgTable(
      * the staff work queue, and only staff ever lower it.
      */
     depositReviewRequired: boolean('deposit_review_required').notNull().default(false),
-    // M17 (0064): an open-ended table session's guest count and its direct
+    // M17 (0071): an open-ended table session's guest count and its direct
     // resource link (in place of booking_slots — see that migration's
     // comment). Null for every timed booking in every other industry.
     coverCount: integer('cover_count'),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
-    // M17 (0065): when the table's bill was requested. Null for every
+    // M17 (0072): when the table's bill was requested. Null for every
     // non-restaurant booking.
     billRequestedAt: timestamp('bill_requested_at', { withTimezone: true }),
   },
@@ -282,7 +282,7 @@ export const bookings = pgTable(
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
     index('idx_bookings_status').on(t.tenantId, t.status),
     index('idx_bookings_customer').on(t.tenantId, t.customerId),
-    // Partial (resource_id is not null) in the DB — see 0064_table_sessions.sql.
+    // Partial (resource_id is not null) in the DB — see 0071_table_sessions.sql.
     index('idx_bookings_resource').on(t.tenantId, t.resourceId),
   ],
 )
@@ -605,7 +605,7 @@ export const menuItems = pgTable(
   (t) => [index('idx_menu_items_tenant').on(t.tenantId, t.categoryId)],
 )
 
-// ── modifiers (migration 0069) ───────────────────────────────────────────────
+// ── modifiers (migration 0076) ───────────────────────────────────────────────
 // Structured per-item choices — size, add-ons, "no onions" — as opposed to
 // specialInstructions' free text. A group (e.g. "Size") holds options (e.g.
 // "Small"/"Large", each with its own price_delta); menu_item_modifier_groups
@@ -759,7 +759,7 @@ export const orders = pgTable(
   ],
 )
 
-// Void/comp (migration 0066). See lib/orders/service.ts's voidOrderItemCore —
+// Void/comp (migration 0073). See lib/orders/service.ts's voidOrderItemCore —
 // 'voided' (removed, ordered by mistake) and 'comped' (given free) are both
 // excluded from billing identically; the status is only what tells them
 // apart on the void/comp report (M20).
@@ -797,7 +797,7 @@ export const orderItems = pgTable(
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
 
-// ── order item modifiers (migration 0069) ───────────────────────────────────
+// ── order item modifiers (migration 0076) ───────────────────────────────────
 // The chosen modifiers for one order_items line, snapshotted at order time —
 // same discipline as the happy-hour columns above (group_name/option_name/
 // price_delta are frozen text/numbers, never re-read from modifier_options
@@ -824,7 +824,7 @@ export const orderItemModifiers = pgTable(
   (t) => [index('idx_order_item_modifiers_order_item').on(t.orderItemId)],
 )
 
-// ── order item void/comp requests (migration 0067) ──────────────────────────
+// ── order item void/comp requests (migration 0074) ──────────────────────────
 // A waiter-raised request awaiting manager approval — see
 // lib/orders/service.ts's requestVoidOrderItemCore/decideVoidRequestCore.
 // Approval flips the linked order_items row above; rejection leaves it

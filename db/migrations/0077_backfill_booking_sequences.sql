@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0070: backfill `sequences` for booking numbers already minted
+-- Arena OS — 0077: backfill `sequences` for booking numbers already minted
 --
 -- lib/booking/service.ts's nextBookingNumber just switched from a
 -- `count(*) + 1` read against `bookings` to the atomic `sequences` upsert

@@ -202,11 +202,11 @@ export type SeatTableSessionInput = {
 /**
  * Seat a walk-in party at a table — M17 #1. Unlike createBookingCore, this
  * skips priceBookingSlots and booking_slots entirely: a table session has no
- * time window to price or exclude on, so `bookings.resource_id` (0064) links
+ * time window to price or exclude on, so `bookings.resource_id` (0071) links
  * it to its table directly, and the booking starts life already
  * `checked_in` — a party is, definitionally, present the moment they're
  * seated. Concurrent double-seating of the same table is rejected by the DB
- * (idx_bookings_open_table_session, a partial unique index — see 0064), not
+ * (idx_bookings_open_table_session, a partial unique index — see 0071), not
  * by a check-then-insert race here.
  */
 export async function seatTableSessionCore(
@@ -228,7 +228,7 @@ export async function seatTableSessionCore(
   if (resource.branchId !== input.branchId) {
     throw new BookingError('Table belongs to a different branch.')
   }
-  // The 0064 convention lib/booking/data.ts:listTables also follows: a
+  // The 0071 convention lib/booking/data.ts:listTables also follows: a
   // "table" is a resource whose type carries no hourly rate. Without this, a
   // resourceId belonging to a paid/timed resource type could open a table
   // session that bypasses its hourly billing model entirely and — since
@@ -280,7 +280,7 @@ export async function seatTableSessionCore(
 // All three below move `bookings.resource_id` and/or `orders.booking_id`
 // around, so each locks the row(s) it touches FOR UPDATE and re-validates
 // against the locked state, then leans on idx_bookings_open_table_session
-// (0064) to catch a destination that got occupied a moment ago — the same
+// (0071) to catch a destination that got occupied a moment ago — the same
 // "let the constraint reject it" discipline seatTableSessionCore above uses,
 // not a check-then-write race.
 

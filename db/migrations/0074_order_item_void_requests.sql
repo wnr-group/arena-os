@@ -1,10 +1,10 @@
 -- ============================================================================
--- Arena OS — 0067: void/comp request/approval workflow
+-- Arena OS — 0074: void/comp request/approval workflow
 --
 -- Revises M17 #6: a waiter REQUESTS a void or comp with a reason; a
 -- manager/owner reviews it (table, item, amount, who asked, why) and
 -- approves or rejects it. Only on APPROVAL does order_items.void_status
--- (0066) actually change — that's what loadFoodLines/loadOrderFoodLines
+-- (0073) actually change — that's what loadFoodLines/loadOrderFoodLines
 -- (lib/billing/invoice.ts) key off to keep the amount off the bill.
 --
 -- A manager/owner who requests their own void/comp is auto-approved in the
@@ -71,4 +71,4 @@ create policy order_item_void_requests_rw on public.order_item_void_requests
 grant select, insert, update on public.order_item_void_requests to arena_app;
 
 comment on table public.order_item_void_requests is
-  'Waiter-raised void/comp requests awaiting manager approval (M17 #6). Approval flips the linked order_items row (0066); rejection leaves it untouched.';
+  'Waiter-raised void/comp requests awaiting manager approval (M17 #6). Approval flips the linked order_items row (0073); rejection leaves it untouched.';

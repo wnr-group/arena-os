@@ -45,7 +45,7 @@ function fail(e: unknown): Result {
     return { error: 'That time was just taken for one of the selected resources. Please pick another slot.' }
   }
   // 23505 on idx_bookings_open_table_session = someone else just seated (or
-  // was just transferred/split onto) this table (see 0064_table_sessions.sql)
+  // was just transferred/split onto) this table (see 0071_table_sessions.sql)
   // — the DB caught the race, not us.
   if (pg?.code === '23505' && pg.constraint === 'idx_bookings_open_table_session') {
     return { error: 'That table was just taken. Pick another table.' }

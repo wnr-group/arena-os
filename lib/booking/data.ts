@@ -60,7 +60,7 @@ export function getWorkingHours(ctx: ActiveContext, branchId: string) {
 
 /**
  * Tables for a branch (M17 #1) — resources whose type carries no hourly rate,
- * the 0003 convention a "Table" resource type follows (see 0064_table_sessions.sql)
+ * the 0003 convention a "Table" resource type follows (see 0071_table_sessions.sql)
  * — left-joined to whichever open (confirmed/checked_in) table session, if any,
  * currently occupies each one. A resource with no matching row here is free.
  */

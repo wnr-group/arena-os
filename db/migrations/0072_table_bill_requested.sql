@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0065: "bill requested" flag for table sessions
+-- Arena OS — 0072: "bill requested" flag for table sessions
 --
 -- M17 #2 (live floor map) derives most of a table's status straight from
 -- existing data (whether it has an open session, its open orders' KOT

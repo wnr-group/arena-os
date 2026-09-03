@@ -185,7 +185,7 @@ export async function loadBookingLines(
  * were already snapshotted at order time (including any happy-hour discount),
  * so this never re-prices a menu item against today's rate.
  *
- * `void_status = 'active'` (migration 0066): a voided or comped line is
+ * `void_status = 'active'` (migration 0073): a voided or comped line is
  * excluded here exactly the way a `billed`/`pending` order already is — this
  * is what actually takes the amount off the tab. voidOrderItemCore
  * (lib/orders/service.ts) never deletes the row, so it still exists for the
@@ -255,7 +255,7 @@ export async function loadFoodLines(
  * unit_price and tax_rate are read straight off order_items, unchanged — the
  * same snapshot discipline loadFoodLines follows.
  *
- * `void_status = 'active'` (migration 0066) — same exclusion loadFoodLines
+ * `void_status = 'active'` (migration 0073) — same exclusion loadFoodLines
  * applies, so a voided/comped line on a standalone pay-now order is never
  * charged either.
  */
