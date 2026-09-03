@@ -87,6 +87,11 @@ export async function getRecentPublicBookingsByPhone(
 
     const slotsByBooking = new Map<string, { resourceName: string; startsAt: Date; endsAt: Date }[]>()
     for (const row of slotRows) {
+      // bookingId is nullable since 0082 (an EVENT resource block carries eventId
+      // instead). The inArray above already excludes those — a null never matches
+      // a list of booking ids — so this only narrows the type. Guarding rather
+      // than asserting keeps it true if that predicate ever changes.
+      if (!row.bookingId) continue
       slotsByBooking.set(row.bookingId, [...(slotsByBooking.get(row.bookingId) ?? []), row])
     }
 

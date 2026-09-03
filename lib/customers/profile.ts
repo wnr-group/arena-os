@@ -151,6 +151,9 @@ export async function getCustomerProfile(
 
     const slotsByBooking = new Map<string, typeof slotRows>()
     for (const s of slotRows) {
+      // Nullable since 0082 — an event resource block has no booking. The inArray
+      // above cannot match one; this narrows the type without asserting it.
+      if (!s.bookingId) continue
       const list = slotsByBooking.get(s.bookingId)
       if (list) list.push(s)
       else slotsByBooking.set(s.bookingId, [s])

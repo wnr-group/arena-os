@@ -20,11 +20,17 @@ export function ImageUploadField({
   value,
   onChange,
   hint,
+  upload = uploadWebsiteImage,
 }: {
   label: string
   value: string
   onChange: (url: string) => void
   hint?: string
+  /** Which action receives the file. Defaults to the website uploader, so every
+   *  existing caller is unchanged; the events screen passes its own so a banner
+   *  lands under `tenants/<id>/events` instead. Both go through the same
+   *  lib/storage/s3.ts uploadImage(). */
+  upload?: (fd: FormData) => Promise<{ url?: string; error?: string }>
 }) {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -38,7 +44,7 @@ export function ImageUploadField({
     setUploading(true)
     const fd = new FormData()
     fd.append('file', file)
-    const r = await uploadWebsiteImage(fd)
+    const r = await upload(fd)
     setUploading(false)
     if (r.error) setError(r.error)
     else if (r.url) onChange(r.url)

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { X, Loader2, Type, Image as ImageIcon, Images, Video, Clapperboard, LayoutGrid, UtensilsCrossed, Clock, MapPinned } from 'lucide-react'
+import { X, Loader2, Type, Image as ImageIcon, Images, Video, Clapperboard, LayoutGrid, UtensilsCrossed, Clock, MapPinned, CalendarDays } from 'lucide-react'
 import { upsertWebsiteSection } from '@/lib/actions/website'
 import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
@@ -27,6 +27,7 @@ export const SECTION_TYPES: { type: WebsiteSectionType; label: string; descripti
   { type: 'menu', label: 'Menu Highlights', description: 'A few items from your food menu, pulled in live.', icon: UtensilsCrossed },
   { type: 'hours', label: 'Opening Hours', description: 'Your weekly hours, pulled from Working Hours.', icon: Clock },
   { type: 'map', label: 'Contact & Map', description: 'Your branch address on an embedded map.', icon: MapPinned },
+  { type: 'events', label: 'Upcoming Events', description: 'Your next public events, pulled in live with a link to each.', icon: CalendarDays },
 ]
 
 const DYNAMIC_LIMIT_LABEL: Partial<Record<WebsiteSectionType, string>> = {
@@ -78,7 +79,7 @@ export function SectionModal(props: SectionModalProps) {
   const needsBody = type === 'text' || type === 'image_text' || type === 'video_text'
   const needsImage = type === 'image' || type === 'image_text'
   const needsVideo = type === 'video' || type === 'video_text'
-  const needsLimit = type === 'resources' || type === 'menu'
+  const needsLimit = type === 'resources' || type === 'menu' || type === 'events'
   const isLiveData = type === 'hours' || type === 'map'
 
   const errors = useMemo(() => {
@@ -109,6 +110,7 @@ export function SectionModal(props: SectionModalProps) {
         return { youtubeUrl, body }
       case 'resources':
       case 'menu':
+      case 'events':
         return { limit }
       case 'hours':
       case 'map':
