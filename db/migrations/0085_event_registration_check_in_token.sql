@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0083 registration check-in token (M15 #5)
+-- Arena OS — 0085 registration check-in token (M15 #5)
 --
 -- One column, so a registrant can be checked in from a QR code.
 --
@@ -41,7 +41,7 @@
 --
 -- `not null default gen_random_uuid()` means Postgres fills every existing row
 -- as part of the ALTER, and every future insert gets one without any writer
--- having to remember. A nullable column would leave "registered before 0083"
+-- having to remember. A nullable column would leave "registered before 0085"
 -- as a second state the check-in path had to handle, and the first registrant
 -- who hit it would be told their QR was invalid.
 -- ============================================================================
@@ -73,7 +73,7 @@ comment on column public.event_registrations.check_in_token is
 -- ── no policy or grant change ───────────────────────────────────────────────
 --
 -- Deliberately none. `event_registrations` already has its policies and grants
--- from 0079, and a new column inherits them exactly:
+-- from 0081, and a new column inherits them exactly:
 --
 --   * a MANAGER reads and writes their own tenant's rows
 --     (event_registrations_select / event_registrations_manager_write);

@@ -154,7 +154,7 @@ async function main() {
       ],
     )
     // `class`, not `tournament`: a tournament would need a bracket format
-    // (events_tournament_format, 0076) and this file is not about that rule.
+    // (events_tournament_format, 0078) and this file is not about that rule.
     return r.rows[0].id
   }
 

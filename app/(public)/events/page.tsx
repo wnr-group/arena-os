@@ -21,7 +21,7 @@ import { EventCard } from '@/components/public-booking/EventCard'
  * The tenant comes from the SUBDOMAIN (currentTenantSlug, set by proxy.ts) and
  * is resolved through getPublicTenantBySlug(); it is never read from a query
  * param or header. getPublicEvents() then reads under withPublicTenant(), where
- * events_public_select (0077) admits only published/registration_open rows of
+ * events_public_select (0079) admits only published/registration_open rows of
  * that one tenant.
  */
 

@@ -5,9 +5,9 @@
  * reason ./lifecycle is: the public registration panel is a client component and
  * has to apply the same rules the server does, without dragging a database
  * driver into the browser bundle. The transactional half lives in
- * ./registrations, and the real enforcement lives in migration 0079.
+ * ./registrations, and the real enforcement lives in migration 0081.
  *
- * Keep the unions in sync with the SQL enums, the way ./types mirrors 0076.
+ * Keep the unions in sync with the SQL enums, the way ./types mirrors 0078.
  */
 
 export type EventRegistrationMode = 'solo' | 'team'
@@ -50,7 +50,7 @@ export const EVENT_REGISTRATION_STATUS_LABELS: Record<EventRegistrationStatus, s
  * paid checkouts overselling the final place. A waitlisted entry consumes
  * nothing; that is what makes it a waitlist.
  *
- * Mirrored exactly by event_registration_occupancy() in migration 0079, which is
+ * Mirrored exactly by event_registration_occupancy() in migration 0081, which is
  * the enforcement. This copy exists so the UI can explain a number without
  * re-deriving the rule differently.
  */
@@ -80,7 +80,7 @@ export function awaitsPayment(status: EventRegistrationStatus): boolean {
 /**
  * How long a place is held while the entrant pays.
  *
- * Two windows, both set inside migration 0079 and repeated here only so the UI
+ * Two windows, both set inside migration 0081 and repeated here only so the UI
  * can say how long someone has:
  *
  *   CHECKOUT   30 minutes — the customer is at the payment page right now.

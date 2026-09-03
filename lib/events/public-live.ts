@@ -42,7 +42,7 @@ import type { EventStatus, EventType, TournamentFormat as EventFormat } from './
  * `payment_reference`, `payment_hold_expires_at`, `refund_required`,
  * `check_in_token`, audit rows, or the next-match POINTERS (internal topology a
  * spectator has no use for). `event_registrations` is not readable on the
- * public path at all — see migration 0087.
+ * public path at all — see migration 0089.
  *
  * Registration ids DO appear, because a bracket has to say that the winner of
  * match 1 is the same competitor as the player in match 5. They are opaque
@@ -50,7 +50,7 @@ import type { EventStatus, EventType, TournamentFormat as EventFormat } from './
  * mutation requires a manager session.
  */
 
-/** Statuses a spectator may reach. The outer bound migration 0087 enforces. */
+/** Statuses a spectator may reach. The outer bound migration 0089 enforces. */
 export const PUBLIC_LIVE_STATUSES = [
   'published',
   'registration_open',

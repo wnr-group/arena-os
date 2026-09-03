@@ -1,5 +1,5 @@
 /**
- * The event vocabulary, mirrored from the SQL enums in migration 0076.
+ * The event vocabulary, mirrored from the SQL enums in migration 0078.
  *
  * Deliberately dependency-free (no `server-only`, no db import) so the public
  * event listing, the registration flow and the tournament bracket views can all
@@ -72,7 +72,7 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
  * stranger; the listing, the detail page, the homepage promotion and the
  * metadata generator all derive from this one constant so they cannot drift.
  *
- * It is mirrored by the events_public_select policy in migration 0077, which is
+ * It is mirrored by the events_public_select policy in migration 0079, which is
  * the real enforcement — this constant keeps the queries honest and readable,
  * the policy makes a forgotten filter harmless.
  *
@@ -96,7 +96,7 @@ export function acceptsRegistrations(status: EventStatus): boolean {
  *
  * `registeredCount` stays a parameter rather than something this function
  * fetches, so one piece of arithmetic serves every counter: the public listing
- * counts through public_event_taken_counts() (migration 0079), the manager
+ * counts through public_event_taken_counts() (migration 0081), the manager
  * screen through getEventEntrantCounts(), and a test can simply pass a number.
  *
  * What counts as taken is defined once — OCCUPYING_STATUSES in
@@ -104,7 +104,7 @@ export function acceptsRegistrations(status: EventStatus): boolean {
  * entries, checked-in entries, and LIVE payment holds. A waitlisted entry never
  * counts, which is what makes a waitlist a waitlist.
  *
- * For a TEAM event the unit is a team, not a player (see 0079's capacity note),
+ * For a TEAM event the unit is a team, not a player (see 0081's capacity note),
  * which is why callers pair this with placesNoun().
  */
 export function spotsRemaining(capacity: number | null, registeredCount: number): number | null {
@@ -124,7 +124,7 @@ export function requiresTournamentFormat(type: EventType): boolean {
  * never lets money touch a float — same contract as bookings.total and
  * happy_hours.discountValue. Format it with lib/format.ts formatMoney().
  */
-/** What an event reserves for its window (M15 #4, migration 0082). */
+/** What an event reserves for its window (M15 #4, migration 0084). */
 export const EVENT_RESOURCE_SCOPES = ['none', 'branch', 'specific'] as const
 export type EventResourceScope = (typeof EVENT_RESOURCE_SCOPES)[number]
 
@@ -158,7 +158,7 @@ export type EventWithBranch = EventRow & { branchName: string | null }
 /**
  * What one place IS, for this event — the word the UI puts next to a number.
  *
- * Capacity counts registrations (migration 0079), and a registration is one
+ * Capacity counts registrations (migration 0081), and a registration is one
  * person for a solo event and one TEAM for a team one. "3 places left" on a
  * five-a-side tournament would be read as three players when it means three
  * teams, so the noun is derived rather than written out at each call site.
