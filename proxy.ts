@@ -49,7 +49,7 @@ export function proxy(request: NextRequest) {
     // Public events listing and detail (M15 #2). Safe to open WHOLESALE because
     // /events is now exclusively public — the manager screen lives at
     // /settings/events, behind the staff gate below. Visibility of individual
-    // events is not this gate's job: events_public_select (0077) admits only
+    // events is not this gate's job: events_public_select (0079) admits only
     // published/registration_open rows of the subdomain's own tenant.
     pathname === '/events' ||
     pathname.startsWith('/events/') ||

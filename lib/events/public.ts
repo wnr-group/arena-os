@@ -28,7 +28,7 @@ import { getPublicEventTakenCounts } from './registrations'
  *    of one transaction, and sets no user and no customer. Every staff policy
  *    (keyed off auth_tenant_ids()) therefore matches nothing.
  *
- * 3. events_public_select (0077) then admits only rows whose tenant matches
+ * 3. events_public_select (0079) then admits only rows whose tenant matches
  *    that pin AND whose status is published/registration_open. So even the
  *    query below asking for a bare event id can only ever return a public event
  *    belonging to the pinned tenant — the id alone is not authority.

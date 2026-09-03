@@ -19,7 +19,7 @@ import { LiveBracket } from '@/components/public-booking/LiveBracket'
  *
  * It renders a server DTO and nothing more. It imports no server action, so
  * there is nothing for a spectator to POST to; the only public policies on
- * `events` and `event_matches` are SELECT (0087); and every write action in
+ * `events` and `event_matches` are SELECT (0089); and every write action in
  * lib/actions/event-matches.ts begins with requireManager(). Three independent
  * layers, none of which is "the button is hidden".
  *

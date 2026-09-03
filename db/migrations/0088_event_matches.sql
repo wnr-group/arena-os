@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0086 event matches (M15 #6)
+-- Arena OS — 0088 event matches (M15 #6)
 --
 -- One table. The bracket ENGINE is pure TypeScript (lib/events/bracket.ts);
 -- this is only where its output is kept and where results are recorded.
@@ -13,7 +13,7 @@
 -- the registration already carries the customer, the team and the payment.
 --
 -- It also makes TEAM events work with no special case. A team enters as ONE
--- registration held by the captain (0079), so a team match is two registration
+-- registration held by the captain (0081), so a team match is two registration
 -- ids exactly like a solo match, and the team relationship stays intact through
 -- event_registrations.team_id → event_teams → event_team_members.
 --
@@ -157,7 +157,7 @@ create trigger trg_event_matches_updated before update on public.event_matches
 
 -- ── RLS ─────────────────────────────────────────────────────────────────────
 --
--- The same split events and event_registrations use (0076, 0079): any active
+-- The same split events and event_registrations use (0078, 0081): any active
 -- member of the tenant may READ the draw — a cashier at the desk being asked
 -- "who's on next?" needs it — and only a manager may WRITE. Generation and
 -- score entry are manager actions, and auth_is_manager() is the database half

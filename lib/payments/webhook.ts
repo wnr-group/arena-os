@@ -289,7 +289,7 @@ export async function applyVerifiedPaymentWebhook(
     // The composite FKs already guarantee this structurally; read the row
     // back so a deleted or cross-tenant target can never be settled against.
     // Branches on `intent.purpose`: an intent is for exactly one of the three
-    // (payment_intents_exactly_one_target, migrations 0058/0080), so exactly
+    // (payment_intents_exactly_one_target, migrations 0058/0082), so exactly
     // one of `booking`/`order`/`registration` below is ever looked up.
     let booking: { id: string } | null = null
     let order: { id: string; branchId: string; customerId: string | null; orderNumber: string; status: string; acceptanceStatus: string } | null = null

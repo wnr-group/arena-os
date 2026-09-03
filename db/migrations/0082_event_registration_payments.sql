@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0080 paid event registrations through the EXISTING Razorpay
+-- Arena OS — 0082 paid event registrations through the EXISTING Razorpay
 -- integration (M15 #3).
 --
 -- No new gateway, no new webhook, no second set of credentials. `payment_intents`
@@ -14,13 +14,13 @@
 -- an event entry fee is money the VENUE collects from its customer, not money
 -- the platform collects from the venue.
 --
--- ── Split from 0079 for a hard Postgres reason ──────────────────────────────
+-- ── Split from 0081 for a hard Postgres reason ──────────────────────────────
 --
 -- `alter type … add value` is at the bottom of this file, and a label added
 -- that way cannot be REFERENCED in the transaction that added it. Every policy
 -- and index here that names 'event_registration' therefore has to precede it
 -- in a file that does NOT add it… which is impossible in one file. So the label
--- goes last here and everything that names it lands in 0081. Same split, same
+-- goes last here and everything that names it lands in 0083. Same split, same
 -- reason, as 0058 → 0059.
 -- ============================================================================
 
@@ -62,5 +62,5 @@ create index if not exists idx_payment_intents_event_registration
 
 -- ── 2. the purpose label ────────────────────────────────────────────────────
 -- LAST statement in the file, and nothing above or below may reference it —
--- see the header. 0081 is where it starts being used.
+-- see the header. 0083 is where it starts being used.
 alter type public.payment_intent_purpose add value if not exists 'event_registration';

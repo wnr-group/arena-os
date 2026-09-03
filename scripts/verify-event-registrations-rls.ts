@@ -1,5 +1,5 @@
 /**
- * Proves the SHAPE of migrations 0079–0081 against a real database — the half
+ * Proves the SHAPE of migrations 0081–0083 against a real database — the half
  * scripts/test-event-registrations.ts cannot cover, because that file tests
  * behaviour through the app and this one tests the guarantees the app is
  * allowed to assume:

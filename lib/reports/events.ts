@@ -40,8 +40,8 @@ import { round2 } from '@/lib/billing/pricing'
  * `sum(paid_amount) where payment_reference is not null`.
  *
  * `paid_amount` is written ONLY by confirm_event_registration_payment() from a
- * signature-verified Razorpay webhook (0080) — never by a browser, never by the
- * registration form. Migration 0079's `event_registrations_paid` CHECK makes
+ * signature-verified Razorpay webhook (0082) — never by a browser, never by the
+ * registration form. Migration 0081's `event_registrations_paid` CHECK makes
  * that structural: `paid_amount = 0 or payment_reference is not null`, so an
  * amount without a verified reference cannot exist as a row. The predicate here
  * is therefore belt-and-braces on a guarantee the database already holds, and
@@ -51,7 +51,7 @@ import { round2 } from '@/lib/billing/pricing'
  *
  * ── Money that may have to go back is reported SEPARATELY ───────────────────
  *
- * A registration cancelled after payment carries `refund_required` (0079) —
+ * A registration cancelled after payment carries `refund_required` (0081) —
  * this codebase never auto-refunds. Folding it into revenue would overstate
  * what the venue kept; dropping it would hide money that was actually taken.
  * So it is counted in `refundDue` beside the revenue figure, and the page shows

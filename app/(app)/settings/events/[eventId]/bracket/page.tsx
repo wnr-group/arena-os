@@ -16,7 +16,7 @@ import { EventBracketBoard } from '@/components/events/EventBracketBoard'
  * Manager-gated three ways, the same as the entrants page it sits beside: this
  * redirect keeps it off a cashier's screen, requireManager() inside every
  * action in lib/actions/event-matches.ts rejects their mutations, and
- * event_matches_manager_write (0086) refuses the write at the database even if
+ * event_matches_manager_write (0088) refuses the write at the database even if
  * both were bypassed. Reading is wider — event_matches_select admits any active
  * member — but the page stays manager-only because it is a management surface.
  *

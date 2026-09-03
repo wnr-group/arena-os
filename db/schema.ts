@@ -295,14 +295,14 @@ export const bookingSlots = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     /**
-     * Null when this row is an EVENT RESOURCE BLOCK (M15 #4, migration 0082).
+     * Null when this row is an EVENT RESOURCE BLOCK (M15 #4, migration 0084).
      * `booking_slots_one_owner` CHECKs that exactly one of bookingId/eventId is
      * set, so a slot always has exactly one lifecycle that releases it.
      */
     bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'cascade' }),
     /**
      * Set when this row reserves a resource for an EVENT rather than a
-     * customer (0082). The booking_slots_no_overlap exclusion constraint treats
+     * customer (0084). The booking_slots_no_overlap exclusion constraint treats
      * both identically — which is the whole mechanism by which an event and a
      * booking cannot occupy one resource at the same time.
      */
@@ -1191,7 +1191,7 @@ export const paymentIntentStatus = pgEnum('payment_intent_status', [
 export const paymentIntentPurpose = pgEnum('payment_intent_purpose', [
   'booking_deposit',
   'order_payment',
-  // An event entry fee (migration 0080) — the third target, same table, same
+  // An event entry fee (migration 0082) — the third target, same table, same
   // webhook, same tenant BYO credentials.
   'event_registration',
 ])
@@ -1211,7 +1211,7 @@ export const paymentIntents = pgTable(
     // standalone order's pay-now, never both, never neither.
     bookingId: uuid('booking_id'),
     orderId: uuid('order_id'),
-    // The third target (migration 0080) — an event entry fee. Same one-of-N
+    // The third target (migration 0082) — an event entry fee. Same one-of-N
     // rule: payment_intents_exactly_one_target now counts three columns.
     eventRegistrationId: uuid('event_registration_id'),
     purpose: paymentIntentPurpose('purpose').notNull().default('booking_deposit'),
@@ -2063,7 +2063,7 @@ export const websiteSectionType = pgEnum('website_section_type', [
   'menu',
   'hours',
   'map',
-  // 'events' (migration 0078) — the M15 upcoming-events section.
+  // 'events' (migration 0080) — the M15 upcoming-events section.
   'events',
 ])
 
@@ -2115,7 +2115,7 @@ export const websitePages = pgTable('website_pages', {
   publishedAt: timestamp('published_at', { withTimezone: true }),
 })
 
-// ── events (migration 0076) ──────────────────────────────────────────────────
+// ── events (migration 0078) ──────────────────────────────────────────────────
 // M15 tournaments & events. One table for all five kinds; `type` carries the
 // meaning and `tournamentFormat` is constrained to tournaments in the database.
 export const eventType = pgEnum('event_type', ['tournament', 'class', 'meetup', 'watch_party', 'party'])
@@ -2125,7 +2125,7 @@ export const tournamentFormat = pgEnum('tournament_format', [
   'round_robin',
   'points',
 ])
-// Does one person enter, or one team? (migration 0079) — the question neither
+// Does one person enter, or one team? (migration 0081) — the question neither
 // `type` nor `tournamentFormat` answers.
 export const eventRegistrationMode = pgEnum('event_registration_mode', ['solo', 'team'])
 export const eventStatus = pgEnum('event_status', [
@@ -2138,7 +2138,7 @@ export const eventStatus = pgEnum('event_status', [
   'cancelled',
 ])
 
-/** What an event reserves. See migration 0082. */
+/** What an event reserves. See migration 0084. */
 export const eventResourceScope = pgEnum('event_resource_scope', ['none', 'branch', 'specific'])
 
 export const events = pgTable(
@@ -2150,7 +2150,7 @@ export const events = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     // Tenant-safe composite FK in SQL — (tenant_id, branch_id) references
     // branches(tenant_id, id), so an event can never point at another tenant's
-    // branch. Drizzle models the column; the constraint lives in 0076.
+    // branch. Drizzle models the column; the constraint lives in 0078.
     branchId: uuid('branch_id').notNull(),
     title: text('title').notNull(),
     type: eventType('type').notNull(),
@@ -2163,21 +2163,21 @@ export const events = pgTable(
     capacity: integer('capacity'),
     entryFee: numeric('entry_fee', { precision: 10, scale: 2 }).notNull().default('0'),
     tournamentFormat: tournamentFormat('tournament_format'),
-    // Solo vs team entry (migration 0079). `teamSize` is players per team and
+    // Solo vs team entry (migration 0081). `teamSize` is players per team and
     // is NULL exactly when the mode is 'solo' — the events_team_size CHECK.
     registrationMode: eventRegistrationMode('registration_mode').notNull().default('solo'),
     teamSize: integer('team_size'),
     status: eventStatus('status').notNull().default('draft'),
     /**
-     * What the event reserves (M15 #4, migration 0082). 'none' by default, so
-     * every event written before 0082 keeps behaving exactly as it did.
+     * What the event reserves (M15 #4, migration 0084). 'none' by default, so
+     * every event written before 0084 keeps behaving exactly as it did.
      * 'branch' blocks every bookable resource in the branch; 'specific' blocks
      * the stations listed in `eventResources`.
      */
     resourceScope: eventResourceScope('resource_scope').notNull().default('none'),
     /**
      * Which recurring series produced this occurrence, and for which LOCAL date
-     * (M15 #8, migration 0088). Both null for a hand-created event. The unique
+     * (M15 #8, migration 0090). Both null for a hand-created event. The unique
      * index on the pair is what makes generation idempotent.
      */
     seriesId: uuid('series_id'),
@@ -2192,7 +2192,7 @@ export const events = pgTable(
   ],
 )
 
-// ── recurring event series (migration 0088, M15 #8) ─────────────────────────
+// ── recurring event series (migration 0090, M15 #8) ─────────────────────────
 // A TEMPLATE. scripts/run-recurring-events.ts copies its snapshot fields onto
 // ordinary `events` rows, so a generated occurrence works with registration,
 // check-in, resource blocking, brackets and the public pages with no special
@@ -2206,7 +2206,7 @@ export const eventSeries = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    // Tenant-safe composite FK to branches(tenant_id, id) lives in 0088.
+    // Tenant-safe composite FK to branches(tenant_id, id) lives in 0090.
     branchId: uuid('branch_id').notNull(),
     cadence: eventCadence('cadence').notNull(),
     /** 0 = Sunday … 6 = Saturday, matching EXTRACT(dow). Null for monthly. */
@@ -2240,7 +2240,7 @@ export const eventSeries = pgTable(
   ],
 )
 
-// ── event matches (migration 0086, M15 #6) ──────────────────────────────────
+// ── event matches (migration 0088, M15 #6) ──────────────────────────────────
 // The bracket ENGINE is pure TypeScript in lib/events/bracket.ts; this is only
 // where its output lives. Participants are event_registrations ids — the same
 // identity the check-in list returns — so a team match and a solo match have
@@ -2269,7 +2269,7 @@ export const eventMatches = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     // Composite FKs to (tenant_id, id) on events / event_registrations live in
-    // 0086 — Drizzle models the columns, the database makes cross-tenant
+    // 0088 — Drizzle models the columns, the database makes cross-tenant
     // impossible.
     eventId: uuid('event_id').notNull(),
     side: eventMatchSide('side').notNull(),
@@ -2304,7 +2304,7 @@ export const eventMatches = pgTable(
   ],
 )
 
-// ── event resource selection (migration 0082, M15 #4) ───────────────────────
+// ── event resource selection (migration 0084, M15 #4) ───────────────────────
 // WHICH stations a 'specific'-scope event claims. This is the SELECTION, not
 // the reservation: the reservation lives in `bookingSlots` rows carrying
 // `eventId`, and only exists while the event status blocks. Keeping them apart
@@ -2316,7 +2316,7 @@ export const eventResources = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    // Composite FKs to (tenant_id, id) on events / resources live in 0082 —
+    // Composite FKs to (tenant_id, id) on events / resources live in 0084 —
     // Drizzle models the columns, the database makes cross-tenant impossible.
     eventId: uuid('event_id').notNull(),
     resourceId: uuid('resource_id').notNull(),
@@ -2329,7 +2329,7 @@ export const eventResources = pgTable(
   ],
 )
 
-// ── event registrations, teams (migration 0079, M15 #3) ──────────────────────
+// ── event registrations, teams (migration 0081, M15 #3) ──────────────────────
 // Capacity counts REGISTRATIONS: one entry per person for a solo event, one
 // entry per TEAM for a team event. See the migration header for why, and for
 // why every customer write goes through the SECURITY DEFINER functions rather
@@ -2354,7 +2354,7 @@ export const eventTeams = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    // Composite FKs to (tenant_id, id) on events / customers live in 0079 —
+    // Composite FKs to (tenant_id, id) on events / customers live in 0081 —
     // Drizzle models the columns, the database makes cross-tenant impossible.
     eventId: uuid('event_id').notNull(),
     name: text('name').notNull(),
@@ -2442,7 +2442,7 @@ export const eventRegistrations = pgTable(
     checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
     /**
      * Unguessable bearer credential for day-of QR check-in (M15 #5, migration
-     * 0083). Same pattern as bookings.confirmationToken (0026): a v4 uuid,
+     * 0085). Same pattern as bookings.confirmationToken (0026): a v4 uuid,
      * never derived from any id, resolved only as (tenantId, checkInToken)
      * under a staff session. The QR encodes this and nothing else.
      */
