@@ -27,7 +27,7 @@ import { refusalMessage } from '@/lib/events/registration'
  *
  * Every mutation goes through requireManager(), so a cashier or floor member
  * gets an AuthError before a query runs. That is the FIRST of two gates: the
- * events_manager_write policy in migration 0076 is the second, and it holds
+ * events_manager_write policy in migration 0078 is the second, and it holds
  * even if a future action here forgets its guard.
  */
 

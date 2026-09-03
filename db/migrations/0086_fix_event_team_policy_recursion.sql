@@ -1,12 +1,12 @@
 -- ============================================================================
--- Arena OS — 0084 fix infinite recursion in the event team policies
+-- Arena OS — 0086 fix infinite recursion in the event team policies
 --
--- A CORRECTNESS FIX to 0079 (M15 #3), found while building day-of check-in
+-- A CORRECTNESS FIX to 0081 (M15 #3), found while building day-of check-in
 -- (M15 #5). Not a feature.
 --
 -- ══ THE BUG ═════════════════════════════════════════════════════════════════
 --
--- 0079 gave `event_team_members` two policies that read `event_team_members`:
+-- 0081 gave `event_team_members` two policies that read `event_team_members`:
 --
 --     event_team_members_customer_select
 --     event_team_members_customer_isolation
@@ -75,7 +75,7 @@ revoke all on function public.customer_team_ids() from public;
 grant execute on function public.customer_team_ids() to arena_app;
 
 comment on function public.customer_team_ids() is
-  'Teams the current OTP-session customer belongs to. SECURITY DEFINER so the event_teams / event_team_members policies can test membership without re-entering the table they guard — the same reason auth_tenant_ids() exists for memberships (0002). Added by 0084 to fix the recursion 0079 introduced.';
+  'Teams the current OTP-session customer belongs to. SECURITY DEFINER so the event_teams / event_team_members policies can test membership without re-entering the table they guard — the same reason auth_tenant_ids() exists for memberships (0002). Added by 0086 to fix the recursion 0081 introduced.';
 
 -- ── event_team_members ──────────────────────────────────────────────────────
 drop policy if exists event_team_members_customer_select on public.event_team_members;

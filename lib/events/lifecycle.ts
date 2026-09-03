@@ -15,7 +15,7 @@
  *
  * The database still enforces everything a single row CAN express: the window,
  * the capacity floor, the fee floor and the tournament/format equivalence are
- * all CHECK constraints in migration 0076. validateEventFields() states the
+ * all CHECK constraints in migration 0078. validateEventFields() states the
  * same rules early so a manager gets a sentence instead of a constraint
  * violation; it is not the only line of defence.
  */
@@ -74,7 +74,7 @@ export function isTerminal(status: EventStatus): boolean {
 /**
  * The field rules, stated once so the form, the action, the tests and any
  * future caller agree. Returns an error message, or null when the shape is
- * valid. Mirrors the CHECK constraints in 0076 one-for-one.
+ * valid. Mirrors the CHECK constraints in 0078 one-for-one.
  */
 export function validateEventFields(v: {
   type: EventType
@@ -106,7 +106,7 @@ export function validateEventFields(v: {
     return 'Only tournaments have a bracket format.'
   }
 
-  // The team rules, mirroring the events_team_size CHECK in migration 0079 one
+  // The team rules, mirroring the events_team_size CHECK in migration 0081 one
   // for one. Stated here too so a manager gets a sentence rather than a
   // constraint violation — the same division of labour the fee and window rules
   // above already use.
@@ -129,6 +129,6 @@ export function validateEventFields(v: {
   return null
 }
 
-/** Mirrors the events_team_size CHECK bounds in migration 0079. */
+/** Mirrors the events_team_size CHECK bounds in migration 0081. */
 export const MIN_TEAM_SIZE = 2
 export const MAX_TEAM_SIZE = 50
