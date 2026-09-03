@@ -2536,6 +2536,16 @@ export const platformRefunds = pgTable(
     }),
     /** The retry token, same idiom as payments.idempotencyKey (0040). */
     requestKey: text('request_key'),
+    /**
+     * When the gateway confirmed the money left (migration 0076). Set ONCE, at
+     * the moment `status` becomes 'processed'; null while pending and forever
+     * for a failed refund.
+     *
+     * The revenue series buckets refunds on this, not on `createdAt` (which is
+     * when the refund was RESERVED, potentially a reporting period earlier) and
+     * not on `updatedAt` (which moves on every write). See 0076.
+     */
+    processedAt: timestamp('processed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

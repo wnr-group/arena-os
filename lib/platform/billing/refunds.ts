@@ -430,7 +430,19 @@ export async function refundPlatformInvoice(
   const status = normaliseRefundStatus(gatewayRefund.status)
   await db
     .update(platformRefunds)
-    .set({ gatewayRefundId: gatewayRefund.id, status })
+    .set({
+      gatewayRefundId: gatewayRefund.id,
+      status,
+      // Stamped only on the way to 'processed', and only if it is not already
+      // stamped: `coalesce` makes this SET-ONCE even in the race where a
+      // `refund.processed` webhook lands before this response returns. The
+      // revenue series buckets on this column (0076), and a figure a month has
+      // already been reported on must not move because a duplicate settle
+      // arrived seconds later.
+      ...(status === 'processed'
+        ? { processedAt: sql`coalesce(${platformRefunds.processedAt}, now())` }
+        : {}),
+    })
     .where(eq(platformRefunds.id, reserved.id))
 
   return {
@@ -498,7 +510,15 @@ export async function applyVerifiedRefundEvent(
 
   await tx
     .update(platformRefunds)
-    .set({ status: params.status })
+    .set({
+      status: params.status,
+      // The moment the money actually left, for the revenue series (0076). Only
+      // on 'processed' — a failed refund never settled and must keep a null
+      // here rather than a timestamp that would read as a cash movement.
+      ...(params.status === 'processed'
+        ? { processedAt: sql`coalesce(${platformRefunds.processedAt}, now())` }
+        : {}),
+    })
     .where(eq(platformRefunds.id, row.id))
 
   return { kind: 'applied', tenantId: row.tenantId }

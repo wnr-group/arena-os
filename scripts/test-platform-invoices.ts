@@ -347,6 +347,32 @@ async function main() {
       buyerPlaceOfSupply: 'Tamil Nadu',
     })
     check('the GSTIN outranks a contradictory profile field', gstinWins.stateCode === '29')
+
+    // ── prototype keys are not state names ────────────────────────────────
+    //
+    // `place_of_supply` is FREE TEXT a tenant owner types (0020). The lookup
+    // used `key in map`, which answers true for every member of
+    // Object.prototype — so 'constructor' returned a Function and '__proto__'
+    // returned Object.prototype, from a function typed `string | null`.
+    // resolveSupplyPlace() then found that non-string unequal to the seller's
+    // code and declared the supply INTER-STATE, putting IGST on an invoice
+    // that should carry CGST+SGST, with a stringified Function in
+    // `place_of_supply`. The 0072 CHECKs cannot catch it: the totals still
+    // reconcile, only the tax head is wrong — on a document never rewritten.
+    for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+      const code = stateCodeFromPlaceOfSupply(key)
+      check(`'${key}' is not a state code`, code === null)
+      const r = resolveSupplyPlace({
+        sellerStateCode: '33',
+        buyerGstin: null,
+        buyerPlaceOfSupply: key,
+      })
+      check(`…and does not flip '${key}' to IGST`, r.interstate === false)
+    }
+    check(
+      'a real state name still resolves after the hardening',
+      stateCodeFromPlaceOfSupply('Karnataka') === '29',
+    )
   }
 
   // ══════════════════════════════════════════════════════════════════════════

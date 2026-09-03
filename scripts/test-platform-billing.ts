@@ -974,9 +974,27 @@ async function main() {
     const unknownRes = await deliver(unknown, { signature: sign(unknown, PLATFORM_SECRET), eventId: `evt114c${tag}` })
     check('a refund we never created is ignored, never invented', unknownRes.body.status === 'ignored')
 
+    // ── the webhook stamped WHEN the money left ───────────────────────────
+    //
+    // 0076. Before it, settling wrote only `status`, and the revenue series
+    // bucketed on `created_at` — when the refund was RESERVED, which 0074
+    // deliberately makes a different moment.
+    check(
+      'settling a refund stamps processed_at',
+      (
+        await ownerPool.query<{ processed_at: Date | null }>(
+          'select processed_at from platform_refunds where gateway_refund_id=$1',
+          [gatewayRefundId],
+        )
+      ).rows[0].processed_at instanceof Date,
+    )
+
     // ── and it shows up in the revenue series ─────────────────────────────
     await ownerPool.query(
-      `update platform_refunds set created_at = '2019-06-25T12:00:00+05:30'::timestamptz where gateway_refund_id=$1`,
+      `update platform_refunds
+          set created_at   = '2019-06-25T12:00:00+05:30'::timestamptz,
+              processed_at = '2019-06-25T12:00:00+05:30'::timestamptz
+        where gateway_refund_id=$1`,
       [gatewayRefundId],
     )
     const d = await metrics.getPlatformBillingDashboard({
@@ -987,6 +1005,56 @@ async function main() {
     check('a PROCESSED refund is deducted from net revenue', d.revenueTotals.refunded === 400)
     check('…leaving gross unchanged', d.revenueTotals.gross === 1500)
     check('…and net = gross − refunded', d.revenueTotals.net === 1100)
+
+    // ── the month-boundary case 0076 exists for ───────────────────────────
+    //
+    // Reserved on 30 June, settled on 2 July — the gateway-timeout path, where
+    // 0074 leaves the row pending ON PURPOSE and a later webhook settles it.
+    // The money left in JULY, so it must be July's cash movement. Bucketing on
+    // `created_at` booked it to June and restated a month that had already been
+    // read.
+    await ownerPool.query(
+      `update platform_refunds
+          set created_at   = '2019-06-30T23:00:00+05:30'::timestamptz,
+              processed_at = '2019-07-02T10:00:00+05:30'::timestamptz
+        where gateway_refund_id=$1`,
+      [gatewayRefundId],
+    )
+    const june = await metrics.getPlatformBillingDashboard({
+      range: { start: '2019-06-01', end: '2019-06-30' },
+      bucket: 'month',
+      db: ownerDb,
+    })
+    check('a refund reserved in June but settled in July is NOT June cash', june.revenueTotals.refunded === 0)
+    check('…so June keeps the net it was reported with', june.revenueTotals.net === 1500)
+
+    const july = await metrics.getPlatformBillingDashboard({
+      range: { start: '2019-07-01', end: '2019-07-31' },
+      bucket: 'month',
+      db: ownerDb,
+    })
+    check('…and it lands in July, when the money actually left', july.revenueTotals.refunded === 400)
+
+    // ── rows written before 0076 still bucket ─────────────────────────────
+    //
+    // `coalesce(processed_at, created_at)`: a backfilled-null row keeps the old
+    // behaviour rather than dropping out of the series entirely.
+    await ownerPool.query(
+      `update platform_refunds
+          set created_at   = '2019-06-25T12:00:00+05:30'::timestamptz,
+              processed_at = null
+        where gateway_refund_id=$1`,
+      [gatewayRefundId],
+    )
+    const legacy = await metrics.getPlatformBillingDashboard({
+      range: { start: '2019-06-01', end: '2019-06-30' },
+      bucket: 'month',
+      db: ownerDb,
+    })
+    check(
+      'a pre-0076 refund with no processed_at falls back to created_at',
+      legacy.revenueTotals.refunded === 400,
+    )
   }
 
   // ══════════════════════════════════════════════════════════════════════════

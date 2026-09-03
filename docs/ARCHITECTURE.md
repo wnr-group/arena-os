@@ -98,7 +98,7 @@ verify a platform delivery, or the reverse.
 
 A verified `subscription.charged` on the platform route also raises the GST
 invoice for that renewal, in the same transaction as the state change
-(`platform_invoices`, migration 0052). It is the ONLY event that bills: the
+(`platform_invoices`, migration 0072). It is the ONLY event that bills: the
 platform account emits `payment.captured` and `invoice.paid` for the same
 rupees, and acting on more than one view of a single charge would invoice a
 business twice.
@@ -189,9 +189,20 @@ last month does not change what recurs next month. Refunds are subtracted from
 *revenue over time*, which is the cash view.
 
 **Credit notes are reported, never netted off.** A credit note carries no gateway
-payment (`platform_invoices_credit_note_unpaid`, 0052) because no money moved; it
-is spent by lowering the `adjustment` on a later invoice, whose total is already
-smaller. Subtracting it again would deduct the same credit twice.
+payment (`platform_invoices_credit_note_unpaid`, 0072) because no money moved. It
+is an **obligation**, not a cash movement: an amount Arena OS owes the business,
+which stays `issued` until somebody discharges it deliberately — a refund, which
+does move money and *is* counted, or an explicit operator act. Nothing
+auto-applies a note to a later invoice. Subtracting it from revenue here would
+book the same rupees out twice: once as an unfulfilled promise, again when that
+promise is actually paid.
+
+**Refunds are bucketed by `processed_at`** (0076) — when the gateway confirmed the
+money left — not by `created_at`, when the refund was *reserved*. The two are
+deliberately different moments (see the refund row below), and on the timeout path
+they can fall in different months. Bucketing on `created_at` made a refund
+reserved on 31 March and settled on 2 April appear inside March days after March
+had been read and reported.
 
 **Churn is measured per tenant, not per subscription row** — this codebase changes
 a plan by cancelling the old subscription and opening a new one, so counting rows
@@ -205,7 +216,7 @@ else is available and nothing is back-filled.
 | --- | --- |
 | **Change plan** | the existing `assignPlan()`, which still refuses to touch a subscription with a live Razorpay mandate. Old row closed, new row opened, history kept. |
 | **Extend trial** | moves `current_period_end` — the field the entitlement reader actually tests. Trials only, and refused for a gateway-backed subscription, where the next webhook would overwrite it. |
-| **Comp / discount** | a **credit note**, applied in full against the next invoice by the `consumeProrationCredit()` path AROS-4 already built. No second discount model, no comp period, no zero-price subscription. Whole notes only. |
+| **Comp / discount** | a **credit note** — the model AROS-4 already built for proration, reused unchanged (same numbering series, same GST split, same letterhead snapshot). No second discount model, no coupon table, no comp period, no zero-price subscription. It applies **to the next invoice, and it does not apply itself**: the note is raised `issued` and stays outstanding until an operator discharges it. Auto-consuming notes was tried and removed — nothing reduces what Razorpay charges, so netting a credit off the document produced an invoice totalling less than the money captured, declared output GST on the reduced figure, and understated platform revenue by the netted amount. |
 | **Refund** | reserve → instruct Razorpay → settle. A pending row counts against the invoice's refundable balance, so concurrent refunds cannot exceed it; a 4xx marks the row failed and releases the amount; a timeout leaves it pending, because releasing a cap against money that may already be gone is the one mistake that cannot be undone. `refund.processed` / `refund.failed` webhooks are authoritative. |
 | **Force cancel** | the existing `cancelTenantSubscription()` — at the end of the paid period by default, `immediate` as a platform-admin-only override. The gateway is told first. The **account** is not closed; that stays a separate action. |
 

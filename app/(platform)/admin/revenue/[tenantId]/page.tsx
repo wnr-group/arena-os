@@ -83,7 +83,11 @@ export default async function TenantBillingPage({
           billingPeriodStart: i.billingPeriodStart.toISOString(),
           billingPeriodEnd: i.billingPeriodEnd.toISOString(),
         }))}
-        refunds={detail.refunds.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }))}
+        refunds={detail.refunds.map((r) => ({
+          ...r,
+          createdAt: r.createdAt.toISOString(),
+          processedAt: r.processedAt?.toISOString() ?? null,
+        }))}
         history={detail.history.map((h) => ({
           id: h.id,
           action: h.action,

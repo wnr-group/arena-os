@@ -434,10 +434,24 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  * and both are decided by a signature-verified webhook rather than by the
  * request that started them.
  *
- * Refunds are bucketed by when they PROCESSED, not by the date of the invoice
- * they reverse. A refund issued in March against a January charge is March's
- * cash movement; restating January would change a month an operator has already
- * read and reported on.
+ * Refunds are bucketed by when they PROCESSED — `processed_at` (0076) — and not
+ * by two other dates it would be easy to reach for:
+ *
+ *   NOT the invoice they reverse. A refund issued in March against a January
+ *   charge is March's cash movement; restating January would change a month an
+ *   operator has already read and reported on.
+ *
+ *   NOT `created_at`, which is when the refund was RESERVED. 0074 splits
+ *   reserving from settling on purpose, and on a gateway timeout the row is
+ *   deliberately left pending until a webhook settles it — possibly the next
+ *   day, and across a month boundary the next reporting period. Bucketing on
+ *   `created_at` reintroduced exactly the restatement above by the back door: a
+ *   refund reserved on 31 March and settled on 2 April was absent when March was
+ *   read on the 1st and present inside March when it was read on the 3rd.
+ *
+ * `coalesce(processed_at, created_at)` is the read, so rows written before 0076
+ * (and any that somehow reach 'processed' without a stamp) keep the old
+ * behaviour instead of dropping out of the series.
  *
  * ── Three queries, merged over a few hundred rows ───────────────────────────
  *
@@ -471,17 +485,21 @@ async function readRevenue(
     order by 1
   `)
 
+  // `coalesce(processed_at, created_at)` — see the note above. Written once as a
+  // lateral so the bucket expression and the range filter can never drift onto
+  // two different columns, which is the shape the 0076 bug took.
   const refundRows = await db.execute<RefundBucketRow>(sql`
     select
-      date_trunc(
-        ${bucket},
-        ((r.created_at at time zone ${PLATFORM_TIMEZONE})::date)::timestamp
-      )::date::text as bucket_start,
+      date_trunc(${bucket}, (s.settled_on)::timestamp)::date::text as bucket_start,
       coalesce(sum(r.amount), 0) as refunded
     from public.platform_refunds r
+    cross join lateral (
+      select (coalesce(r.processed_at, r.created_at) at time zone ${PLATFORM_TIMEZONE})::date
+        as settled_on
+    ) s
     where r.status = 'processed'
-      and (r.created_at at time zone ${PLATFORM_TIMEZONE})::date >= ${range.start}::date
-      and (r.created_at at time zone ${PLATFORM_TIMEZONE})::date <= ${range.end}::date
+      and s.settled_on >= ${range.start}::date
+      and s.settled_on <= ${range.end}::date
     group by 1
     order by 1
   `)

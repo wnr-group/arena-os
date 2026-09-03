@@ -85,6 +85,7 @@ type Refund = {
   status: string
   gatewayRefundId: string | null
   createdAt: string
+  processedAt: string | null
 }
 
 type HistoryEntry = {
@@ -325,7 +326,16 @@ export function TenantBillingPanel({
                 </span>
                 <span className="text-xs text-muted-foreground">
                   {r.status}
-                  {r.gatewayRefundId ? ` · ${r.gatewayRefundId}` : ''} · {day(r.createdAt)}
+                  {r.gatewayRefundId ? ` · ${r.gatewayRefundId}` : ''}
+                  {/* The date the REVENUE CHART uses for a processed refund is
+                      when it settled (0076), not when it was raised. Showing the
+                      raised date alone made the two disagree across a month
+                      boundary. Both are shown when they differ. */}
+                  {' · '}
+                  {r.processedAt ? `settled ${day(r.processedAt)}` : `raised ${day(r.createdAt)}`}
+                  {r.processedAt && day(r.processedAt) !== day(r.createdAt)
+                    ? ` · raised ${day(r.createdAt)}`
+                    : ''}
                 </span>
               </div>
             ))}

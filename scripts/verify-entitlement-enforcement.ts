@@ -272,7 +272,84 @@ async function main() {
     (await withUser(userId, (tx) => countResources(tx, tenantId))) === 1,
   )
 
-  // ── 7. tenant isolation of the gate itself ────────────────────────────────
+  // ── 7. the READERS gate themselves, not just the actions ──────────────────
+  //
+  // A page redirect is presentation. These prove the readers behind two module
+  // pages refuse on their own account, which is what stops a plan-less tenant
+  // reading the data by any route that reaches them — an RSC request, a future
+  // caller, or a page whose redirect someone later removes.
+  //
+  // Both were found ungated: the expenses readers never had the check (while
+  // app/(app)/expenses/page.tsx claimed in a comment that they did), and
+  // getPnlReport() arrived with M12 after M16 #2 was written, so it enforced
+  // role but not plan.
+  section('module gates live in the readers')
+  {
+    const { listExpenses, listExpenseCategoryOptions, listVendorOptions } = await import(
+      '../lib/expenses/data'
+    )
+    const { getPnlReport } = await import('../lib/reports/pnl')
+    // A whole month in the past — the figures do not matter, only whether the
+    // reader is allowed to produce them at all.
+    const range = { start: '2019-06-01', end: '2019-06-30' }
+
+    // Plan present, both modules OFF.
+    await setEntitlements({ 'module.expenses': false, 'module.reports': false })
+    await subscribe('active', 30)
+
+    check(
+      'listExpenses is refused when module.expenses is false',
+      (await refusal(() => listExpenses(ctx))) !== null,
+    )
+    check(
+      '…as are the category options behind the same page',
+      (await refusal(() => listExpenseCategoryOptions(ctx))) !== null,
+    )
+    check(
+      '…and the vendor options',
+      (await refusal(() => listVendorOptions(ctx))) !== null,
+    )
+    check(
+      'getPnlReport is refused when module.reports is false',
+      (await refusal(() => getPnlReport(ctx, range))) !== null,
+    )
+    check(
+      '…and the refusal is an EntitlementError, not an access error',
+      await (async () => {
+        try {
+          await getPnlReport(ctx, range)
+          return false
+        } catch (e) {
+          return e instanceof EntitlementError && e.key === 'module.reports'
+        }
+      })(),
+    )
+
+    // Same tenant, same role, modules ON — so the refusals above are the PLAN
+    // talking and not the owner's authorization or an unrelated failure.
+    await setEntitlements({ 'module.expenses': true, 'module.reports': true })
+    check(
+      'listExpenses succeeds once the plan includes Expenses',
+      (await refusal(() => listExpenses(ctx))) === null,
+    )
+    check(
+      'getPnlReport succeeds once the plan includes Reports',
+      (await refusal(() => getPnlReport(ctx, range))) === null,
+    )
+
+    // And fail-closed with no subscription at all, the case that matters most.
+    await owner.query(`delete from tenant_subscriptions where tenant_id = $1`, [tenantId])
+    check(
+      'listExpenses is refused outright with no subscription',
+      (await refusal(() => listExpenses(ctx))) !== null,
+    )
+    check(
+      'getPnlReport is refused outright with no subscription',
+      (await refusal(() => getPnlReport(ctx, range))) !== null,
+    )
+  }
+
+  // ── 8. tenant isolation of the gate itself ────────────────────────────────
   section('isolation')
   // A second tenant on no plan; the first tenant's grant must not leak to it.
   const t2 = await owner.query<{ id: string }>(

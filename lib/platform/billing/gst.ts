@@ -155,7 +155,7 @@ export function stateCodeFromGstin(gstin: string | null | undefined): string | n
   const value = gstin?.trim().toUpperCase()
   if (!value || value.length < 2) return null
   const code = value.slice(0, 2)
-  return code in GST_STATE_CODES ? code : null
+  return Object.hasOwn(GST_STATE_CODES, code) ? code : null
 }
 
 /**
@@ -165,6 +165,27 @@ export function stateCodeFromGstin(gstin: string | null | undefined): string | n
  * Accepts a bare code ('33'), an abbreviation ('TN'), or a state name in any
  * case. Returns null when it cannot be recognised, which the caller must treat
  * as "unknown", never as "same state".
+ *
+ * ── Object.hasOwn, NOT `key in map`. This decides a tax ─────────────────────
+ *
+ * These maps are plain object literals, so `in` also answers true for every
+ * member of Object.prototype. This field is FREE TEXT a tenant owner types
+ * (0020 puts no shape on it), so `'constructor'` and `'__proto__'` reached the
+ * lookup and returned a Function and Object.prototype respectively — from a
+ * function declared to return `string | null`.
+ *
+ * That was not cosmetic. resolveSupplyPlace() then compared a non-string
+ * against the seller's code, found them unequal, and declared the supply
+ * INTER-STATE: an owner who typed either word got IGST instead of CGST+SGST on
+ * a GST invoice, with `"function Object() { [native code] }-…"` snapshotted
+ * into `place_of_supply`. The 0072 CHECKs could not catch it because the
+ * totals still reconcile — only the tax HEAD is wrong, on a document that is
+ * never rewritten.
+ *
+ * Same reasoning, and the same fix, as decideLimit() in
+ * lib/platform/entitlement-guard.ts. Applied to every lookup in this file
+ * rather than only the reachable one, so the class is gone rather than the
+ * instance.
  */
 export function stateCodeFromPlaceOfSupply(text: string | null | undefined): string | null {
   const value = text?.trim()
@@ -172,12 +193,12 @@ export function stateCodeFromPlaceOfSupply(text: string | null | undefined): str
 
   if (/^[0-9]{1,2}$/.test(value)) {
     const padded = value.padStart(2, '0')
-    return padded in GST_STATE_CODES ? padded : null
+    return Object.hasOwn(GST_STATE_CODES, padded) ? padded : null
   }
 
   const lower = value.toLowerCase()
-  if (lower in NAME_TO_CODE) return NAME_TO_CODE[lower]
-  if (lower.length === 2 && lower in ABBREVIATIONS) return ABBREVIATIONS[lower]
+  if (Object.hasOwn(NAME_TO_CODE, lower)) return NAME_TO_CODE[lower]
+  if (lower.length === 2 && Object.hasOwn(ABBREVIATIONS, lower)) return ABBREVIATIONS[lower]
   return null
 }
 

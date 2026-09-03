@@ -104,6 +104,8 @@ export type TenantBillingRefund = {
   status: string
   gatewayRefundId: string | null
   createdAt: Date
+  /** When the money actually left (0076). Null unless the refund processed. */
+  processedAt: Date | null
 }
 
 export type TenantBillingAuditEntry = {
@@ -251,6 +253,7 @@ export async function getTenantBillingDetail(
         status: platformRefunds.status,
         gatewayRefundId: platformRefunds.gatewayRefundId,
         createdAt: platformRefunds.createdAt,
+        processedAt: platformRefunds.processedAt,
       })
       .from(platformRefunds)
       .where(eq(platformRefunds.tenantId, tenantId))

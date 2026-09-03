@@ -10,6 +10,7 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { ReportAccessError } from './daily-revenue'
 import type { DateRange } from './date-range'
 
@@ -143,6 +144,14 @@ export type PnlReport = {
  */
 export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promise<PnlReport> {
   requireReportAccess(ctx)
+  // Module gate (M16 #2): the plan must include Reports. Authoritative —
+  // the page redirects for presentation, this is what actually refuses.
+  //
+  // `module.reports`, not `module.payroll`, even though a payroll line appears
+  // below: this is a REPORT, and lib/reports/payroll.ts — the payroll cost
+  // report proper — gates on the same key for the same reason. One rule for
+  // the whole module rather than a second, per-figure one.
+  await requireEntitlement(ctx, 'module.reports')
 
   const periods = monthsOverlapping(range)
   const approximate = !isWholeMonths(range)
