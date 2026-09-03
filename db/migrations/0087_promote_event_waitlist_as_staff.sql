@@ -1,18 +1,18 @@
 -- ============================================================================
--- Arena OS — 0085 staff waitlist promotion entry point (M15 #5 §7)
+-- Arena OS — 0087 staff waitlist promotion entry point (M15 #5 §7)
 --
 -- One SECURITY DEFINER entry point, so a manager can promote the next entrant
 -- when a confirmed registrant is a no-show.
 --
 -- ══ WHY AN ENTRY POINT AND NOT A GRANT ══════════════════════════════════════
 --
--- `promote_event_waitlist()` already exists (0079) and already does the whole
+-- `promote_event_waitlist()` already exists (0081) and already does the whole
 -- job correctly: FIFO by (created_at, id), re-reading occupancy on every
 -- iteration, stopping at capacity, and promoting to `pending_payment` with a
 -- 24-hour hold on a paid event rather than to `registered`. It is exactly what
 -- this ticket needs, and it is deliberately NOT to be reimplemented.
 --
--- But 0079 revoked it from `public` and never granted it to `arena_app`, on
+-- But 0081 revoked it from `public` and never granted it to `arena_app`, on
 -- purpose: it takes a bare event id, performs no authorization of its own, and
 -- is only ever called from inside another SECURITY DEFINER function that has
 -- already established who the caller is. Granting it directly to the app role
@@ -20,7 +20,7 @@
 -- anybody's waitlist by guessing an event id.
 --
 -- So this adds the missing half — the authorising wrapper — following the shape
--- 0079's own entry points use: SECURITY DEFINER, authorises from the SESSION
+-- 0081's own entry points use: SECURITY DEFINER, authorises from the SESSION
 -- rather than from an argument, and returns a value rather than raising.
 --
 -- ══ AUTHORIZATION ═══════════════════════════════════════════════════════════
@@ -71,4 +71,4 @@ revoke all on function public.promote_event_waitlist_as_staff(uuid) from public;
 grant execute on function public.promote_event_waitlist_as_staff(uuid) to arena_app;
 
 comment on function public.promote_event_waitlist_as_staff(uuid) is
-  'Manager-authorised waitlist promotion for no-show recovery (M15 #5). Wraps promote_event_waitlist() (0079) — which owns every capacity, FIFO and paid-event rule — with an auth_is_manager() check against the EVENT''s tenant and a per-event lock. Returns the number promoted; returns 0 for a non-manager and for an unknown event alike, so event ids cannot be probed.';
+  'Manager-authorised waitlist promotion for no-show recovery (M15 #5). Wraps promote_event_waitlist() (0081) — which owns every capacity, FIFO and paid-event rule — with an auth_is_manager() check against the EVENT''s tenant and a per-event lock. Returns the number promoted; returns 0 for a non-manager and for an unknown event alike, so event ids cannot be probed.';

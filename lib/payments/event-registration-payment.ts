@@ -22,7 +22,7 @@ import type { RazorpayCredentials } from '@/lib/settings/razorpay-credentials'
  *
  * A registration id. Nothing else. The amount is `events.entry_fee` read fresh
  * from the database on both passes, and — the part that matters — the customer
- * INSERT policy on payment_intents (migration 0081) contains
+ * INSERT policy on payment_intents (migration 0083) contains
  *
  *     payment_intents.amount = e.entry_fee
  *
@@ -113,7 +113,7 @@ type PayableRegistration = {
  *
  * Deliberately NOT `FOR UPDATE`. Same reason order-payment.ts documents: a
  * locking read requires the row to pass an UPDATE policy too, and a customer
- * context has no UPDATE policy on event_registrations (by design — see 0079).
+ * context has no UPDATE policy on event_registrations (by design — see 0081).
  * A lock here would silently match zero rows. None is needed: the capacity hold
  * was taken under the event lock at claim time, and the concurrency guard
  * against two simultaneous "Pay" presses is the partial unique index
@@ -163,7 +163,7 @@ async function loadPayableRegistration(
   }
   if (!row.holdExpiresAt || row.holdExpiresAt.getTime() <= Date.now()) {
     // The place was released. Paying now would be paying for nothing, and the
-    // INSERT policy in 0081 would refuse the intent anyway.
+    // INSERT policy in 0083 would refuse the intent anyway.
     throw new EventRegistrationPaymentError(
       'The place we were holding for you has expired. Please register again.',
     )

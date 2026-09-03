@@ -11,7 +11,7 @@ import type { EventStatus } from './types'
  * ══ AN EVENT BLOCK IS A booking_slots ROW ═══════════════════════════════════
  *
  * There is no second availability system here, and that is the entire design.
- * Migration 0082 lets `booking_slots` carry an `event_id` instead of a
+ * Migration 0084 lets `booking_slots` carry an `event_id` instead of a
  * `booking_id`, so the constraint 0003 already declared —
  *
  *     exclude using gist (resource_id with =, tstzrange(starts_at, ends_at) with &&)
@@ -104,7 +104,7 @@ export function statusBlocks(status: EventStatus): boolean {
  *
  *   * a 'branch' event enumerates the branch's resources and then inserts a row
  *     per resource. A station created between the enumeration and the insert
- *     would be missed by this event. (Migration 0082's trigger closes the same
+ *     would be missed by this event. (Migration 0084's trigger closes the same
  *     hole from the other direction, for a resource created while a block is
  *     already committed; the lock closes the window where neither side can see
  *     the other yet.)
@@ -157,7 +157,7 @@ async function lockEvent(tx: DB, tenantId: string, eventId: string): Promise<Eve
  *
  * Both branches read `resources` under the caller's own RLS-scoped
  * transaction, so a station belonging to another tenant cannot appear here even
- * if its id were supplied — and 0082's composite FK makes the cross-tenant
+ * if its id were supplied — and 0084's composite FK makes the cross-tenant
  * selection unrepresentable in the first place.
  *
  * Only `status = 'available'` stations are blocked. One in maintenance is
@@ -400,7 +400,7 @@ export async function syncEventBlocks(
  *
  * The selection is validated against the live catalogue rather than trusted:
  * every id must be a resource of THIS tenant in THIS event's branch. A caller
- * passing another tenant's station id gets a refusal, and 0082's composite FK
+ * passing another tenant's station id gets a refusal, and 0084's composite FK
  * would refuse it a second time at the database.
  */
 export async function setEventResources(

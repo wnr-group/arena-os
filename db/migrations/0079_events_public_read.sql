@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0077 public event visibility (M15 #2).
+-- Arena OS — 0079 public event visibility (M15 #2).
 --
 -- The public events listing, the event detail page and the homepage promotion
 -- all read `events` with NO session. This adds the one policy that makes that

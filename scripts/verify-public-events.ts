@@ -42,7 +42,7 @@ const ALL_STATUSES = [
 const PUBLIC = new Set(['published', 'registration_open'])
 
 /**
- * What the POLICY admits, widened by migration 0087 for the live bracket
+ * What the POLICY admits, widened by migration 0089 for the live bracket
  * (M15 #7): everything except the two that must never be public. A finished or
  * running tournament has to stay reachable by link so spectators can watch it
  * and read the result; the listing still shows only the two above, because the
@@ -70,7 +70,7 @@ async function main() {
   check('…pins the tenant via current_public_tenant_id()', qual.includes('current_public_tenant_id'))
   check('…and filters status in the policy itself', /status/.test(qual))
   // The security property is the EXCLUSION, so that is what is asserted — not
-  // the shape of the list, which 0087 legitimately widened.
+  // the shape of the list, which 0089 legitimately widened.
   check('…and names draft as excluded', /draft/.test(qual))
   check('…and cancelled as excluded', /cancelled/.test(qual))
 
@@ -155,7 +155,7 @@ async function main() {
     rawUnfiltered.every((r) => !NEVER_PUBLIC.includes(r.status)),
   )
   // The policy widened; the LISTING must not have. This is the assertion that
-  // keeps 0087 from quietly putting finished tournaments back in "what's on".
+  // keeps 0089 from quietly putting finished tournaments back in "what's on".
   const announced = new Set([idsByStatus.published, idsByStatus.registration_open])
   check(
     '…while the LISTING reader still narrows to the announced two',

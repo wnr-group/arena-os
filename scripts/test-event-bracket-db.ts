@@ -7,7 +7,7 @@
  * (305 assertions). This suite covers the half that needs one: writing a draw,
  * following the advancement pointers, the transaction boundaries, and RLS.
  *
- * Everything real: migration 0086, the constraints, the policies, the actual
+ * Everything real: migration 0088, the constraints, the policies, the actual
  * generateEventBracket / recordMatchResult / resetEventBracket, and the actual
  * check-in path that produces the participants. Nothing is stubbed.
  */

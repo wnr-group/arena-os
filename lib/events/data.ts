@@ -9,7 +9,7 @@ import type { EventRow, EventWithBranch } from './types'
  * Event readers.
  *
  * Every query runs through withUser() on the restricted app connection, so the
- * events_select policy (0076) is what actually confines the result to the
+ * events_select policy (0078) is what actually confines the result to the
  * caller's tenant. The explicit tenantId predicate is belt-and-braces and makes
  * the intent readable at the call site — the same shape lib/happy-hours/data.ts
  * and lib/loyalty/data.ts use.

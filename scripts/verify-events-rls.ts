@@ -1,6 +1,6 @@
 /**
  * Proves the events table's isolation, role and constraint rules (migration
- * 0076) against a REAL database — everything scripts/test-events.ts cannot
+ * 0078) against a REAL database — everything scripts/test-events.ts cannot
  * cover because it needs no connection.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/verify-events-rls.ts
