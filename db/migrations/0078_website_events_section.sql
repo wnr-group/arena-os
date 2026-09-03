@@ -1,0 +1,23 @@
+-- ============================================================================
+-- Arena OS — 0078 website builder "Upcoming Events" section (M15 #2).
+--
+-- Reuses M13's dynamic-section architecture rather than adding a parallel one:
+-- no new table and no new column, just one more value on the section type enum.
+-- The content shape (a `limit`) reuses the same dynamicLimitSchema the
+-- 'resources' and 'menu' sections already use, and the render path reads live
+-- data through the public event reader exactly as those two read resources and
+-- menu items.
+--
+-- ── Why this file contains ONLY the ALTER TYPE ──────────────────────────────
+--
+-- scripts/migrate.ts runs each file inside one transaction, and a label added
+-- by ALTER TYPE ... ADD VALUE cannot be REFERENCED in the same transaction that
+-- added it. 0058/0059 were split for exactly this reason. Nothing here needs to
+-- reference 'events', so one statement in its own file keeps that impossible to
+-- get wrong later.
+--
+-- `if not exists` makes it idempotent, matching 0052 which added the first four
+-- dynamic section types.
+-- ============================================================================
+
+alter type public.website_section_type add value if not exists 'events';
