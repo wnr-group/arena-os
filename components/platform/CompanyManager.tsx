@@ -33,6 +33,7 @@ const INDUSTRIES = [
   ['podcast_studio', 'Podcast Studio'],
   ['dance_studio', 'Dance Studio'],
   ['vr_centre', 'VR Centre'],
+  ['restaurant', 'Restaurant'],
   ['other', 'Other'],
 ] as const
 const ROLES: MemberRole[] = ['owner', 'manager', 'cashier', 'kitchen_staff', 'floor_staff', 'receptionist']

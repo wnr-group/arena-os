@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { requireContext, AuthError } from '@/lib/auth/guard'
+import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageIncomingOrders } from '@/lib/auth/roles'
 import {
   OrderError,
@@ -12,6 +12,8 @@ import {
   cancelOrderCore,
   acceptOrderCore,
   rejectOrderCore,
+  requestVoidOrderItemCore,
+  decideVoidRequestCore,
 } from '@/lib/orders/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -41,6 +43,10 @@ const createInput = z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1),
         specialInstructions: z.string().trim().optional(),
+        // Structured choices (M17 #8) — see CreateOrderItemInput's doc
+        // comment (lib/orders/service.ts) for what createOrderCore does
+        // with these.
+        modifierOptionIds: z.array(z.string().uuid()).optional(),
       }),
     )
     .min(1, 'Add at least one item'),
@@ -140,6 +146,83 @@ export async function rejectOnlineOrder(orderId: string, reason: string): Promis
     await withUser(ctx.user.id, (tx) => rejectOrderCore(tx, { tenantId: ctx.tenant.id }, orderId, trimmed))
     revalidatePath('/orders/incoming')
     revalidatePath('/kitchen')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const requestVoidOrderItemInput = z.object({
+  orderItemId: z.string().uuid(),
+  mode: z.enum(['void', 'comp']),
+  reason: z.string().trim().min(1, 'A reason is required.'),
+})
+
+type VoidRequestResultDTO = Result & { status?: 'pending' | 'approved' }
+
+/**
+ * Raise a void/comp request on one line of an open order — front-of-house
+ * roles and up (same gate as accept/reject online orders); money actually
+ * coming off the tab still requires a manager, but the REQUEST itself is a
+ * waiter's job. See requestVoidOrderItemCore (lib/orders/service.ts): a
+ * manager/owner raising their own request is applied immediately in the same
+ * transaction, so `status` comes back 'approved' for them and 'pending' for
+ * everyone else — decideVoidRequest below is what a manager then uses to
+ * approve or reject someone else's.
+ */
+export async function requestVoidOrderItem(
+  input: z.input<typeof requestVoidOrderItemInput>,
+): Promise<VoidRequestResultDTO> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Void/comp is only available for restaurant tenants.')
+    }
+    if (!canManageIncomingOrders(ctx.role)) {
+      throw new AuthError('Only front-of-house staff, managers and owners can request a void or comp.')
+    }
+    const v = requestVoidOrderItemInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      requestVoidOrderItemCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId, role: ctx.role }, v),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/floor')
+    if (result.status === 'approved') revalidatePath('/kitchen')
+    else revalidatePath('/orders/void-requests')
+    return { status: result.status }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const decideVoidRequestInput = z.object({
+  requestId: z.string().uuid(),
+  decision: z.enum(['approve', 'reject']),
+  note: z.string().trim().optional(),
+})
+
+/**
+ * Approve or reject a pending void/comp request — manager (or owner) only,
+ * per lib/billing/refunds.ts's precedent that money coming off a tab is a
+ * manager-gated, audited action, never a UI-only restriction. See
+ * decideVoidRequestCore for what actually happens on approval: the line is
+ * flagged, never deleted, excluded from billing, and reflected on the
+ * kitchen ticket if that was the last active item on the order.
+ */
+export async function decideVoidRequest(input: z.input<typeof decideVoidRequestInput>): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Void/comp is only available for restaurant tenants.')
+    }
+    const v = decideVoidRequestInput.parse(input)
+    await withUser(ctx.user.id, (tx) =>
+      decideVoidRequestCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/floor')
+    revalidatePath('/kitchen')
+    revalidatePath('/orders/void-requests')
     return {}
   } catch (e) {
     return fail(e)

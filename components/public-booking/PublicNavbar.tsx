@@ -21,13 +21,13 @@ const ROUTES: Record<string, string> = {
   resources: '/resources',
 }
 
-function buildNavLinks(myBookingHref?: string) {
-  if (!myBookingHref) return BASE_NAV_LINKS
-  return [
-    ...BASE_NAV_LINKS.slice(0, 3),
-    { id: 'my-booking', label: 'My Booking' },
-    ...BASE_NAV_LINKS.slice(3),
-  ]
+function buildNavLinks(myBookingHref?: string, showMenuLink = true) {
+  const base = showMenuLink ? BASE_NAV_LINKS : BASE_NAV_LINKS.filter((l) => l.id !== 'menu')
+  if (!myBookingHref) return base
+  // Spliced in right after "Resources" — findIndex rather than a fixed
+  // offset, since showMenuLink=false shifts every later link left by one.
+  const afterResources = base.findIndex((l) => l.id === 'resources') + 1
+  return [...base.slice(0, afterResources), { id: 'my-booking', label: 'My Booking' }, ...base.slice(afterResources)]
 }
 
 function scrollToId(id: string) {
@@ -46,6 +46,7 @@ export function PublicNavbar({
   cartCount,
   onCartClick,
   myBookingHref,
+  showMenuLink = true,
 }: {
   tenantName: string
   icon: ReactNode
@@ -58,12 +59,17 @@ export function PublicNavbar({
   onCartClick?: () => void
   /** When set, shows a "My Booking" button linking here — passed by OrderNavbar, to the phone-lookup hub where a customer finds their food orders and device bookings. */
   myBookingHref?: string
+  /** False for a restaurant tenant's homepage/website — dine-in ordering
+   *  happens via the table QR flow, not a general "browse the menu" nav
+   *  link, so TenantHome/WebsitePage omit it there. Every other industry
+   *  keeps it (default true). */
+  showMenuLink?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
-  const navLinks = buildNavLinks(myBookingHref)
+  const navLinks = buildNavLinks(myBookingHref, showMenuLink)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)

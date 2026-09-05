@@ -3,10 +3,11 @@
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Clock, Flame, CheckCircle2, Bell, Loader2, Printer, Smartphone, MapPin, type LucideIcon } from 'lucide-react'
+import { Clock, Flame, CheckCircle2, Bell, Loader2, Printer, Smartphone, MapPin, PackageX, type LucideIcon } from 'lucide-react'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KotStatus } from '@/lib/kots/service'
 import { STATUS_LABEL } from '@/lib/kots/labels'
+import { EightySixPanel, type EightySixItem } from './EightySixPanel'
 
 export type { KotStatus }
 export type KotTicketItem = {
@@ -14,6 +15,8 @@ export type KotTicketItem = {
   itemName: string
   qty: number
   specialInstructions: string | null
+  /** Chosen modifier option names (M17 #8) — e.g. ["Large", "Extra cheese"]. */
+  modifiers: string[]
 }
 export type KotTicket = {
   kotId: string
@@ -55,11 +58,12 @@ function elapsedLabel(createdAt: string, now: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
 }
 
-export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
+export function KitchenQueue({ tickets, menuItems }: { tickets: KotTicket[]; menuItems: EightySixItem[] }) {
   const router = useRouter()
   const [now, setNow] = useState(() => Date.now())
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [show86Panel, setShow86Panel] = useState(false)
   const [, startTransition] = useTransition()
 
   useEffect(() => {
@@ -83,21 +87,29 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
     })
   }
 
-  if (tickets.length === 0) {
-    return (
-      <div className="mt-8 rounded-xl border border-dashed border-border p-12 text-center text-base text-muted-foreground">
-        No active tickets. New orders will appear here automatically.
-      </div>
-    )
-  }
-
   return (
     <div className="mt-6 space-y-4">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => setShow86Panel(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted"
+        >
+          <PackageX size={15} /> 86 items
+        </button>
+      </div>
+
       {error && (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </p>
       )}
+
+      {tickets.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border p-12 text-center text-base text-muted-foreground">
+          No active tickets. New orders will appear here automatically.
+        </div>
+      ) : (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {tickets.map((ticket) => {
           const next = NEXT_ACTION[ticket.status]
@@ -145,6 +157,9 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
                     <span className="font-medium">
                       {item.qty}× {item.itemName}
                     </span>
+                    {item.modifiers.length > 0 && (
+                      <span className="block text-xs font-medium text-primary">— {item.modifiers.join(', ')}</span>
+                    )}
                     {item.specialInstructions && (
                       <span className="block text-xs text-muted-foreground">— {item.specialInstructions}</span>
                     )}
@@ -167,6 +182,9 @@ export function KitchenQueue({ tickets }: { tickets: KotTicket[] }) {
           )
         })}
       </div>
+      )}
+
+      {show86Panel && <EightySixPanel items={menuItems} onClose={() => setShow86Panel(false)} />}
     </div>
   )
 }

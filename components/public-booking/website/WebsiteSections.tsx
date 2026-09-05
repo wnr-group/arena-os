@@ -28,6 +28,7 @@ export function WebsiteSections({
   branch,
   currency,
   timezone,
+  isRestaurant = false,
 }: {
   sections: WebsiteSection[]
   /** Needed by the dynamic sections (resources/menu/hours/map) to fetch their own live data. */
@@ -36,6 +37,8 @@ export function WebsiteSections({
   currency: string
   /** Needed by the 'menu' section to price items against live happy-hour rules. */
   timezone: string
+  /** See WebsitePage's doc comment — hides a 'menu' section entirely. */
+  isRestaurant?: boolean
 }) {
   return (
     <main className="flex-1">
@@ -48,6 +51,7 @@ export function WebsiteSections({
           branch={branch}
           currency={currency}
           timezone={timezone}
+          isRestaurant={isRestaurant}
         />
       ))}
     </main>
@@ -61,6 +65,7 @@ async function WebsiteSectionBlock({
   branch,
   currency,
   timezone,
+  isRestaurant,
 }: {
   section: WebsiteSection
   tinted: boolean
@@ -68,7 +73,14 @@ async function WebsiteSectionBlock({
   branch: PublicBranch | null
   currency: string
   timezone: string
+  isRestaurant: boolean
 }) {
+  // A restaurant tenant orders dine-in via the table QR flow — a 'menu'
+  // section on the marketing homepage would just duplicate that with a
+  // second, weaker entry point, so it's skipped entirely regardless of
+  // whether the operator added one.
+  if (section.type === 'menu' && isRestaurant) return null
+
   switch (section.type) {
     case 'text':
       return (

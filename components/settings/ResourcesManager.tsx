@@ -77,11 +77,15 @@ const STATUS_BADGE: Record<ResourceStatus, string> = {
 export function ResourcesManager({
   branchId,
   currency,
+  industry,
   types,
   resources,
 }: {
   branchId: string
   currency: string
+  /** Gates the simplified name/type/status-only form in ResourceModal —
+   *  restaurant tenants only, every other industry's dialog is unaffected. */
+  industry: string
   types: TypeOption[]
   resources: ResourceRow[]
 }) {
@@ -90,7 +94,12 @@ export function ResourcesManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [view, setView] = useState<View>('grid')
+  // Restaurant tenants only see the table view — a table list reads better
+  // as rows than as photo cards, and there's no grid toggle for them to
+  // switch away with (see below). Every other industry keeps grid as the
+  // default, unaffected.
+  const isRestaurant = industry === 'restaurant'
+  const [view, setView] = useState<View>(isRestaurant ? 'table' : 'grid')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | ResourceStatus>('all')
@@ -184,32 +193,34 @@ export function ResourcesManager({
           All resources {resources.length > 0 && <span className="text-muted-foreground/60">({filteredResources.length})</span>}
         </h2>
         <div className="flex items-center gap-2">
-          <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
-            <button
-              type="button"
-              className={`inline-flex items-center rounded-md p-1.5 transition ${
-                view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => setView('grid')}
-              aria-pressed={view === 'grid'}
-              aria-label="Grid view"
-              title="Grid view"
-            >
-              <LayoutGrid size={15} />
-            </button>
-            <button
-              type="button"
-              className={`inline-flex items-center rounded-md p-1.5 transition ${
-                view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => setView('table')}
-              aria-pressed={view === 'table'}
-              aria-label="Table view"
-              title="Table view"
-            >
-              <Table2 size={15} />
-            </button>
-          </div>
+          {!isRestaurant && (
+            <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-1">
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-md p-1.5 transition ${
+                  view === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+                onClick={() => setView('grid')}
+                aria-pressed={view === 'grid'}
+                aria-label="Grid view"
+                title="Grid view"
+              >
+                <LayoutGrid size={15} />
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-md p-1.5 transition ${
+                  view === 'table' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+                onClick={() => setView('table')}
+                aria-pressed={view === 'table'}
+                aria-label="Table view"
+                title="Table view"
+              >
+                <Table2 size={15} />
+              </button>
+            </div>
+          )}
           <button
             className={`${btn} inline-flex items-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
             onClick={() => setModal({ mode: 'add' })}
@@ -304,7 +315,9 @@ export function ResourcesManager({
                 <tr>
                   <th className="px-4 py-3 font-medium">Resource</th>
                   <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">Rate</th>
+                  {/* A table doesn't have an hourly rate to override (see
+                   *  ResourceModal) — nothing to show for a restaurant tenant. */}
+                  {!isRestaurant && <th className="px-4 py-3 font-medium">Rate</th>}
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
@@ -314,23 +327,30 @@ export function ResourcesManager({
                   <tr key={row.id} className="transition hover:bg-muted/20">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        {row.imageUrl ?? row.typeImageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={row.imageUrl ?? row.typeImageUrl ?? ''}
-                            alt=""
-                            className="h-11 w-11 shrink-0 rounded-md border object-cover"
-                          />
-                        ) : (
-                          <div className="h-11 w-11 shrink-0 rounded-md border border-dashed bg-muted/40" />
-                        )}
+                        {/* Restaurant tenants never set a photo (the dialog
+                         *  has no photo field for them — see ResourceModal),
+                         *  so this would only ever be an empty placeholder
+                         *  box; skip the thumbnail entirely instead. */}
+                        {!isRestaurant &&
+                          (row.imageUrl ?? row.typeImageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={row.imageUrl ?? row.typeImageUrl ?? ''}
+                              alt=""
+                              className="h-11 w-11 shrink-0 rounded-md border object-cover"
+                            />
+                          ) : (
+                            <div className="h-11 w-11 shrink-0 rounded-md border border-dashed bg-muted/40" />
+                          ))}
                         <span className="font-medium">{row.name}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{row.typeName}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {row.rateOverride ? `${formatMoney(row.rateOverride, currency)}/hr` : '—'}
-                    </td>
+                    {!isRestaurant && (
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {row.rateOverride ? `${formatMoney(row.rateOverride, currency)}/hr` : '—'}
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[row.status]}`}>
                         {STATUS_LABELS[row.status]}
@@ -377,6 +397,7 @@ export function ResourcesManager({
           types={types}
           branchId={branchId}
           currency={currency}
+          industry={industry}
           pending={pending}
           run={run}
           onClose={() => setModal(null)}
@@ -546,6 +567,7 @@ function ResourceModal({
   types,
   branchId,
   currency,
+  industry,
   pending,
   run,
   onClose,
@@ -554,10 +576,18 @@ function ResourceModal({
   types: TypeOption[]
   branchId: string
   currency: string
+  industry: string
   pending: boolean
   run: Run
   onClose: () => void
 }) {
+  // Restaurant tenants only: a table doesn't need a rate override,
+  // description, or photo of its own — name, resource type ("4-Seater",
+  // "Booth", etc.) and status are all that matter. Every other field still
+  // submits (upsertResource/the schema are unchanged) — it just keeps its
+  // default value since its input never renders. Every other industry's
+  // dialog is completely unaffected.
+  const isRestaurant = industry === 'restaurant'
   const [name, setName] = useState(row?.name ?? '')
   const [typeId, setTypeId] = useState(row?.resourceTypeId ?? types.find((t) => t.isActive)?.id ?? '')
   const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
@@ -627,10 +657,34 @@ function ResourceModal({
     )
   }
 
+  // Restaurant only: no live preview panel (see below), so the dialog is a
+  // single narrow column instead of the two-column form+preview layout.
+  const actions = (
+    <div className="mt-5 flex items-center justify-between gap-2">
+      <button
+        className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={pending}
+        onClick={onClose}
+      >
+        Cancel
+      </button>
+      <button
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={pending || uploading}
+        onClick={submit}
+      >
+        {pending && <Loader2 size={15} className="animate-spin" />}
+        {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource'}
+      </button>
+    </div>
+  )
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-xl border border-border bg-card shadow-2xl md:grid-cols-[1.3fr_1fr]"
+        className={`relative grid max-h-[92vh] w-full overflow-y-auto rounded-xl border border-border bg-card shadow-2xl ${
+          isRestaurant ? 'max-w-sm grid-cols-1' : 'max-w-4xl grid-cols-1 md:grid-cols-[1.3fr_1fr]'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -644,19 +698,21 @@ function ResourceModal({
         {/* Form */}
         <div className="order-2 p-6 pt-8 md:order-1">
           <h2 className="text-xl font-semibold">{row ? 'Edit resource' : 'Add resource'}</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">Fill in the details — the preview updates as you type.</p>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {isRestaurant ? 'Name, type, and status — that’s it.' : 'Fill in the details — the preview updates as you type.'}
+          </p>
 
           <div className="mt-4 space-y-3">
             {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className={isRestaurant ? 'space-y-3' : 'grid grid-cols-2 gap-3'}>
               <div>
                 <label className={label}>
                   Name <span className="text-destructive">*</span>
                 </label>
                 <input
                   className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
-                  placeholder="e.g. PS5 #1"
+                  placeholder={isRestaurant ? 'e.g. T1' : 'e.g. PS5 #1'}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   autoFocus
@@ -683,7 +739,7 @@ function ResourceModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            {isRestaurant ? (
               <div>
                 <label className={label}>Status</label>
                 <select className={input} value={status} onChange={(e) => setStatus(e.target.value as ResourceStatus)}>
@@ -692,125 +748,135 @@ function ResourceModal({
                   <option value="inactive">Inactive</option>
                 </select>
               </div>
-              <div>
-                <label className={label}>
-                  Rate override{selectedType ? ` (default ${formatMoney(selectedType.hourlyRate, currency)}/hr)` : ''}
-                </label>
-                <input
-                  className={`${input} ${submitted && errors.override ? inputInvalid : ''}`}
-                  placeholder="0.00"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={override}
-                  onChange={(e) => setOverride(e.target.value)}
-                />
-                {submitted && errors.override && <p className={errorText}>{errors.override}</p>}
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={label}>Status</label>
+                    <select
+                      className={input}
+                      value={status}
+                      onChange={(e) => setStatus(e.target.value as ResourceStatus)}
+                    >
+                      <option value="available">Available</option>
+                      <option value="maintenance">Maintenance</option>
+                      <option value="inactive">Inactive</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={label}>
+                      Rate override{selectedType ? ` (default ${formatMoney(selectedType.hourlyRate, currency)}/hr)` : ''}
+                    </label>
+                    <input
+                      className={`${input} ${submitted && errors.override ? inputInvalid : ''}`}
+                      placeholder="0.00"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={override}
+                      onChange={(e) => setOverride(e.target.value)}
+                    />
+                    {submitted && errors.override && <p className={errorText}>{errors.override}</p>}
+                  </div>
+                </div>
 
-            <div>
-              <label className={label}>Description (optional override)</label>
-              <textarea
-                className={input}
-                rows={2}
-                placeholder="Leave blank to use the resource type's description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                <div>
+                  <label className={label}>Description (optional override)</label>
+                  <textarea
+                    className={input}
+                    rows={2}
+                    placeholder="Leave blank to use the resource type's description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className={label}>Photo (optional override)</label>
+                  <label
+                    className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
+                      uploading
+                        ? 'cursor-not-allowed border-border opacity-60'
+                        : 'border-border hover:border-primary/50 hover:bg-muted/30'
+                    }`}
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 size={20} className="animate-spin text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Uploading…</span>
+                      </>
+                    ) : fileName ? (
+                      <>
+                        <FileImage size={20} className="text-primary" />
+                        <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
+                        <span className="text-xs text-muted-foreground">Click to replace</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadCloud size={20} className="text-muted-foreground" />
+                        <span className="text-sm font-medium">Click to upload a photo</span>
+                        <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={handleFile}
+                    />
+                  </label>
+                  {fileName && !uploading ? (
+                    <button
+                      type="button"
+                      className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        setImageUrl('')
+                        setFileName(null)
+                      }}
+                    >
+                      Remove — Use the Type&apos;s Default Photo
+                    </button>
+                  ) : (
+                    !uploading &&
+                    selectedType?.imageUrl && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Currently showing the resource type&apos;s default photo.
+                      </p>
+                    )
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Restaurant tenants get no live preview panel (nothing here needs
+           *  previewing) — the actions sit right under the form instead. */}
+          {isRestaurant && actions}
+        </div>
+
+        {/* Live preview — every other industry only; a restaurant table has
+         *  no photo/rate/description override to preview. */}
+        {!isRestaurant && (
+          <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
+            <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
+            <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+              <div className="group">
+                <ResourceVisual imageUrl={previewImage} status={status} />
+              </div>
+              <ResourceCardBody
+                name={name}
+                typeName={selectedType?.name}
+                rate={previewRate}
+                currency={currency}
+                description={description}
               />
             </div>
+            <p className="mt-3 text-center text-xs text-muted-foreground">This is how the resource will look to staff</p>
 
-            <div>
-              <label className={label}>Photo (optional override)</label>
-              <label
-                className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-                  uploading
-                    ? 'cursor-not-allowed border-border opacity-60'
-                    : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                }`}
-              >
-                {uploading ? (
-                  <>
-                    <Loader2 size={20} className="animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Uploading…</span>
-                  </>
-                ) : fileName ? (
-                  <>
-                    <FileImage size={20} className="text-primary" />
-                    <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
-                    <span className="text-xs text-muted-foreground">Click to replace</span>
-                  </>
-                ) : (
-                  <>
-                    <UploadCloud size={20} className="text-muted-foreground" />
-                    <span className="text-sm font-medium">Click to upload a photo</span>
-                    <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
-                  </>
-                )}
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  className="hidden"
-                  disabled={uploading}
-                  onChange={handleFile}
-                />
-              </label>
-              {fileName && !uploading ? (
-                <button
-                  type="button"
-                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    setImageUrl('')
-                    setFileName(null)
-                  }}
-                >
-                  Remove — Use the Type&apos;s Default Photo
-                </button>
-              ) : (
-                !uploading &&
-                selectedType?.imageUrl && (
-                  <p className="mt-1 text-xs text-muted-foreground">Currently showing the resource type&apos;s default photo.</p>
-                )
-              )}
-            </div>
+            {actions}
           </div>
-        </div>
-
-        {/* Live preview */}
-        <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
-          <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
-          <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-            <div className="group">
-              <ResourceVisual imageUrl={previewImage} status={status} />
-            </div>
-            <ResourceCardBody
-              name={name}
-              typeName={selectedType?.name}
-              rate={previewRate}
-              currency={currency}
-              description={description}
-            />
-          </div>
-          <p className="mt-3 text-center text-xs text-muted-foreground">This is how the resource will look to staff</p>
-
-          <div className="mt-5 flex items-center justify-between gap-2">
-            <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pending}
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pending || uploading}
-              onClick={submit}
-            >
-              {pending && <Loader2 size={15} className="animate-spin" />}
-              {pending ? 'Saving…' : row ? 'Save Changes' : 'Add Resource'}
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   )

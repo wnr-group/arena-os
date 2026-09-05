@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gte, lt } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   resourceTypes,
@@ -55,6 +55,52 @@ export function getWorkingHours(ctx: ActiveContext, branchId: string) {
       .from(workingHours)
       .where(and(eq(workingHours.tenantId, ctx.tenant.id), eq(workingHours.branchId, branchId)))
       .orderBy(asc(workingHours.dayOfWeek)),
+  )
+}
+
+/**
+ * Tables for a branch (M17 #1) — resources whose type carries no hourly rate,
+ * the 0003 convention a "Table" resource type follows (see 0071_table_sessions.sql)
+ * — left-joined to whichever open (confirmed/checked_in) table session, if any,
+ * currently occupies each one. A resource with no matching row here is free.
+ */
+export function listTables(ctx: ActiveContext, branchId: string) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: resources.id,
+        name: resources.name,
+        status: resources.status,
+        sortOrder: resources.sortOrder,
+        typeName: resourceTypes.name,
+        color: resourceTypes.color,
+        bookingId: bookings.id,
+        bookingNumber: bookings.bookingNumber,
+        bookingStatus: bookings.status,
+        coverCount: bookings.coverCount,
+        customerName: bookings.customerName,
+        customerPhone: bookings.customerPhone,
+        checkedInAt: bookings.checkedInAt,
+        billRequestedAt: bookings.billRequestedAt,
+      })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .leftJoin(
+        bookings,
+        and(
+          eq(bookings.resourceId, resources.id),
+          eq(bookings.tenantId, ctx.tenant.id),
+          inArray(bookings.status, ['confirmed', 'checked_in']),
+        ),
+      )
+      .where(
+        and(
+          eq(resources.tenantId, ctx.tenant.id),
+          eq(resources.branchId, branchId),
+          eq(resourceTypes.hourlyRate, '0'),
+        ),
+      )
+      .orderBy(asc(resources.sortOrder), asc(resources.name)),
   )
 }
 

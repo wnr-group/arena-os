@@ -91,6 +91,7 @@ export default async function WebsitePreviewPage() {
           branch={branch}
           currency={ctx.tenant.currency}
           timezone={ctx.tenant.timezone}
+          isRestaurant={ctx.tenant.industry === 'restaurant'}
         />
       )}
     </div>

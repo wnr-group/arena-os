@@ -9,13 +9,29 @@
  * be charged for food the kitchen was never told about, and the kitchen can
  * never be shown a ticket for an order that failed to save.
  */
+import { randomUUID } from 'node:crypto'
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { orders, orderItems, menuItems, taxRates, bookings, happyHours, kots } from '@/db/schema'
+import {
+  orders,
+  orderItems,
+  orderItemModifiers,
+  orderItemVoidRequests,
+  menuItems,
+  modifierGroups,
+  modifierOptions,
+  menuItemModifierGroups,
+  taxRates,
+  bookings,
+  happyHours,
+  kots,
+  auditLog,
+} from '@/db/schema'
 import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
+import { isManager, type MemberRole } from '@/lib/auth/roles'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -26,6 +42,13 @@ export type CreateOrderItemInput = {
   menuItemId: string
   qty: number
   specialInstructions?: string
+  // Structured choices (M17 #8) — a size, an add-on, "no onions" — as
+  // opposed to specialInstructions' free text. Each id must be a
+  // modifier_options row belonging to a group actually attached to this
+  // menu item (see menuItemModifierGroups below); createOrderCore validates
+  // both that and every attached group's min/max, and snapshots the chosen
+  // options' name + price delta onto order_item_modifiers.
+  modifierOptionIds?: string[]
 }
 
 export type CreateOrderInput = {
@@ -133,6 +156,7 @@ export async function createOrderCore(
       id: menuItems.id,
       name: menuItems.name,
       price: menuItems.price,
+      status: menuItems.status,
       taxPercent: taxRates.percent,
     })
     .from(menuItems)
@@ -141,6 +165,121 @@ export async function createOrderCore(
 
   const byId = new Map(rows.map((r) => [r.id, r]))
   if (byId.size !== ids.length) throw new OrderError('One or more menu items were not found.')
+
+  // The true authority, not just a UI filter: the picker (TakeOrderDialog)
+  // already hides 'hidden' items and shows 'out_of_stock' ones disabled, but
+  // a stale client (a menu that went 86'd after the screen loaded) or a
+  // replayed request must not still be able to place them.
+  for (const r of rows) {
+    if (r.status !== 'available') {
+      throw new OrderError(`${r.name} is not available right now.`)
+    }
+  }
+
+  // Modifier groups attached to any of the ordered items (M17 #8), keyed by
+  // menu item — what a client is even allowed to choose from for that item,
+  // and the min/max it must respect. Read once per order, same "trust
+  // nothing from the browser but the ids" discipline as menuItems above.
+  const groupLinkRows = await tx
+    .select({
+      menuItemId: menuItemModifierGroups.menuItemId,
+      groupId: modifierGroups.id,
+      groupName: modifierGroups.name,
+      minSelect: modifierGroups.minSelect,
+      maxSelect: modifierGroups.maxSelect,
+      required: modifierGroups.required,
+    })
+    .from(menuItemModifierGroups)
+    // Also tenant-filtered on the modifierGroups side, not just
+    // menuItemModifierGroups' own tenant_id — group_id is a plain FK, not
+    // tenant-scoped at the DB level, so without this a cross-tenant link row
+    // (see lib/actions/menu.ts's upsertMenuItem) would still resolve to and
+    // leak another tenant's group name/min/max here.
+    .innerJoin(modifierGroups, and(eq(modifierGroups.id, menuItemModifierGroups.groupId), eq(modifierGroups.tenantId, ctx.tenantId)))
+    .where(and(eq(menuItemModifierGroups.tenantId, ctx.tenantId), inArray(menuItemModifierGroups.menuItemId, ids)))
+
+  const groupsByMenuItem = new Map<string, typeof groupLinkRows>()
+  for (const link of groupLinkRows) {
+    const list = groupsByMenuItem.get(link.menuItemId) ?? []
+    list.push(link)
+    groupsByMenuItem.set(link.menuItemId, list)
+  }
+
+  // Every option any line asked for, resolved and tenant-checked in one
+  // query — cheaper than one query per line, and the existence check below
+  // catches a deleted/foreign option id the same way byId.size does for
+  // menu items above.
+  const requestedOptionIds = [...new Set(input.items.flatMap((i) => i.modifierOptionIds ?? []))]
+  const optionRows =
+    requestedOptionIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: modifierOptions.id,
+            name: modifierOptions.name,
+            priceDelta: modifierOptions.priceDelta,
+            groupId: modifierOptions.groupId,
+            groupName: modifierGroups.name,
+          })
+          .from(modifierOptions)
+          .innerJoin(modifierGroups, eq(modifierGroups.id, modifierOptions.groupId))
+          .where(and(eq(modifierOptions.tenantId, ctx.tenantId), inArray(modifierOptions.id, requestedOptionIds)))
+  const optionById = new Map(optionRows.map((o) => [o.id, o]))
+  if (optionById.size !== requestedOptionIds.length) {
+    throw new OrderError('One or more modifier options were not found.')
+  }
+
+  /**
+   * Validate one line's chosen options against the menu item's attached
+   * groups (min/max, and — the part a UI bug or a tampered request could
+   * otherwise smuggle past — that every chosen option actually belongs to a
+   * group THIS item offers, not just any group in the tenant) and return the
+   * priced total to add to the base unit price.
+   */
+  function resolveLineModifiers(menuItemId: string, optionIds: string[]) {
+    // A single-select group (maxSelect === 1) already rejects a repeated id
+    // below (count > maxSelect), but a multi-select group wouldn't — the
+    // same option twice would silently double its priceDelta. The picker UI
+    // (ModifierPickerSheet/ModifierPickerDialog) can never produce this: it
+    // toggles a Set, so picking an already-selected option deselects it. A
+    // repeat can therefore only come from a tampered/replayed request, not a
+    // real "double portion" choice — there's no per-modifier qty concept to
+    // legitimise one.
+    if (new Set(optionIds).size !== optionIds.length) {
+      throw new OrderError('Choose each modifier option only once.')
+    }
+
+    const attachedGroups = groupsByMenuItem.get(menuItemId) ?? []
+    const selected = optionIds.map((id) => optionById.get(id)!)
+
+    const countByGroup = new Map<string, number>()
+    for (const opt of selected) {
+      if (!attachedGroups.some((g) => g.groupId === opt.groupId)) {
+        throw new OrderError(`"${opt.name}" is not a valid option for this item.`)
+      }
+      countByGroup.set(opt.groupId, (countByGroup.get(opt.groupId) ?? 0) + 1)
+    }
+
+    for (const g of attachedGroups) {
+      const count = countByGroup.get(g.groupId) ?? 0
+      // `required` and `minSelect` are set independently in the modifier-group
+      // form, so a group can be flagged required while minSelect stays at its
+      // default 0. Enforce `required` here as an effective floor of at least
+      // one option, rather than trusting minSelect to have been bumped to match
+      // — otherwise a "required" size/choice could be skipped entirely.
+      const effectiveMin = g.required ? Math.max(1, g.minSelect) : g.minSelect
+      if (count < effectiveMin) {
+        const phrase = effectiveMin === g.maxSelect ? 'exactly' : 'at least'
+        throw new OrderError(`Choose ${phrase} ${effectiveMin} option${effectiveMin === 1 ? '' : 's'} for "${g.groupName}".`)
+      }
+      if (count > g.maxSelect) {
+        throw new OrderError(`Choose at most ${g.maxSelect} option${g.maxSelect === 1 ? '' : 's'} for "${g.groupName}".`)
+      }
+    }
+
+    const deltaSum = selected.reduce((sum, o) => sum + Number(o.priceDelta), 0)
+    return { selected, deltaSum }
+  }
 
   // Rules to weigh against every line. Read once per order, then matched in
   // memory — the "is it happy hour right now" decision is made here, on the
@@ -220,15 +359,27 @@ export async function createOrderCore(
     })
     .returning({ id: orders.id })
 
-  await tx.insert(orderItems).values(
-    input.items.map((i) => {
-      const m = byId.get(i.menuItemId)!
-      const basePrice = Number(m.price)
-      // Every item is in scope: a live rule discounts whatever is ordered
-      // inside its time window, with no per-item opt-in required.
-      const applied = applyHappyHour(basePrice, rules, now, ctx.timezone)
-      const unitPrice = applied ? applied.unitPrice : basePrice
-      return {
+  // Ids generated here, not left to the table's default, so this same
+  // transaction can attach order_item_modifiers rows to the right parent
+  // without a second round trip (RETURNING doesn't promise to preserve
+  // input order for a multi-row INSERT ... VALUES).
+  const preparedItems = input.items.map((i) => {
+    const m = byId.get(i.menuItemId)!
+    const basePrice = Number(m.price)
+    // Every item is in scope: a live rule discounts whatever is ordered
+    // inside its time window, with no per-item opt-in required. Only the
+    // BASE price is discounted — modifier deltas (extra cheese, a larger
+    // size) are added after, at full price, same as a real till would never
+    // apply a food discount to an add-on.
+    const applied = applyHappyHour(basePrice, rules, now, ctx.timezone)
+    const baseUnitPrice = applied ? applied.unitPrice : basePrice
+    const { selected, deltaSum } = resolveLineModifiers(i.menuItemId, i.modifierOptionIds ?? [])
+    const unitPrice = baseUnitPrice + deltaSum
+    const id = randomUUID()
+    return {
+      id,
+      values: {
+        id,
         tenantId: ctx.tenantId,
         orderId: order.id,
         menuItemId: i.menuItemId,
@@ -239,15 +390,32 @@ export async function createOrderCore(
         lineTotal: (unitPrice * i.qty).toFixed(2),
         specialInstructions: i.specialInstructions || null,
         // Snapshot so an edited/deleted happy-hour rule never changes what
-        // this line already charged.
+        // this line already charged. originalUnitPrice is the BASE item's
+        // pre-discount price only — never includes modifier deltas, which
+        // were never eligible for the discount in the first place.
         happyHourId: applied?.rule.id ?? null,
         happyHourName: applied?.rule.name ?? null,
         originalUnitPrice: applied ? basePrice.toFixed(2) : null,
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
-      }
-    }),
-  )
+      },
+      modifiers: selected.map((o) => ({
+        tenantId: ctx.tenantId,
+        orderItemId: id,
+        modifierOptionId: o.id,
+        groupName: o.groupName,
+        optionName: o.name,
+        priceDelta: Number(o.priceDelta).toFixed(2),
+      })),
+    }
+  })
+
+  await tx.insert(orderItems).values(preparedItems.map((p) => p.values))
+
+  const modifierRows = preparedItems.flatMap((p) => p.modifiers)
+  if (modifierRows.length > 0) {
+    await tx.insert(orderItemModifiers).values(modifierRows)
+  }
 
   // A kitchen ticket is born the instant the order is — same transaction, so
   // the order and its KOT save together or not at all. The kitchen can never
@@ -460,4 +628,389 @@ export async function cancelPendingOrdersForBilledBooking(
     .where(and(inArray(orders.id, orderIds), eq(orders.tenantId, ctx.tenantId)))
 
   await cancelKotsForOrders(tx, ctx.tenantId, orderIds)
+}
+
+/**
+ * Void/comp actor — same shape as lib/billing/refunds.ts's AuditActor. No
+ * shared audit module exists (see lib/booking/service.ts's writeAudit for the
+ * same note); each domain keeps its own private copy.
+ */
+export type AuditActor = { tenantId: string; membershipId: string }
+
+/** Append one audit row. See lib/billing/refunds.ts's writeAudit — identical shape. */
+async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: {
+    action: string
+    entityType: string
+    entityId: string
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
+
+/**
+ * Lock one order_items line together with its parent order and check it is
+ * still eligible to be voided/comped. Shared by requestVoidOrderItemCore
+ * (the initial check) and applyVoidDecision (the re-check at approval time —
+ * time has passed since the request was raised, so the order may have been
+ * billed or cancelled in between).
+ *
+ * FOR UPDATE on both reads: a concurrent bill being raised on the same
+ * booking blocks against this exact row instead of racing it.
+ */
+async function lockActiveOrderItem(tx: Db, tenantId: string, orderItemId: string) {
+  const [row] = await tx
+    .select({
+      itemId: orderItems.id,
+      itemName: orderItems.itemName,
+      qty: orderItems.qty,
+      unitPrice: orderItems.unitPrice,
+      lineTotal: orderItems.lineTotal,
+      voidStatus: orderItems.voidStatus,
+      orderId: orders.id,
+      orderStatus: orders.status,
+      bookingId: orders.bookingId,
+    })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(and(eq(orderItems.id, orderItemId), eq(orderItems.tenantId, tenantId)))
+    .for('update')
+    .limit(1)
+
+  if (!row) throw new OrderError('Order item not found.')
+  if (row.voidStatus !== 'active') {
+    throw new OrderError(`This item has already been ${row.voidStatus}.`)
+  }
+  if (row.orderStatus === 'billed') {
+    throw new OrderError(
+      'This item has already been billed — void or refund the invoice instead of the item.',
+    )
+  }
+  if (row.orderStatus === 'cancelled') {
+    throw new OrderError('This order is already cancelled.')
+  }
+  return row
+}
+
+/**
+ * The actual money-moving step, shared by requestVoidOrderItemCore's
+ * auto-approve path (a manager/owner requesting their own) and
+ * decideVoidRequestCore's approve path (a manager approving someone else's
+ * request). Re-locks and re-validates the item itself (see
+ * lockActiveOrderItem) rather than trusting a row fetched moments — or a
+ * request-queue's worth of time — earlier.
+ *
+ * The row is never deleted, only flagged (migration 0073): loadFoodLines/
+ * loadOrderFoodLines (lib/billing/invoice.ts) exclude anything not
+ * `void_status = 'active'`, which is what takes the amount off the tab —
+ * everything else (the order, the KOT, the row itself) stays exactly as it
+ * was, so the void/comp report (M20) still has the original line to read.
+ */
+async function applyVoidDecision(
+  tx: Db,
+  actor: AuditActor,
+  input: {
+    orderItemId: string
+    mode: 'void' | 'comp'
+    reason: string
+    requestId: string
+    requestedBy: string | null
+  },
+): Promise<{ orderId: string; bookingId: string | null }> {
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  const newStatus = input.mode === 'void' ? 'voided' : 'comped'
+
+  await tx
+    .update(orderItems)
+    .set({
+      voidStatus: newStatus,
+      voidReason: input.reason,
+      voidedBy: actor.membershipId,
+      voidedAt: new Date(),
+    })
+    .where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+
+  // A VOID is a kitchen mistake that must stop being cooked; a COMP is a
+  // billing decision made after the fact (the food was already made, usually
+  // already served), so it never touches the ticket.
+  //
+  // KOTs are one per ORDER, not one per item (see createOrderCore's
+  // GRANULARITY note) — there is no kot_items table to cross a single line
+  // off of. So this only cancels the ticket once EVERY item on the order has
+  // come off the tab (this was the last active one); if other items on the
+  // order are still active, the ticket is still genuinely needed and is left
+  // alone — the audit row is the record for that item either way. Same
+  // "never touch an already-served ticket" rule as cancelKotsForOrders.
+  if (input.mode === 'void') {
+    const [stillActive] = await tx
+      .select({ id: orderItems.id })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.tenantId, actor.tenantId),
+          eq(orderItems.orderId, row.orderId),
+          eq(orderItems.voidStatus, 'active'),
+        ),
+      )
+      .limit(1)
+    if (!stillActive) {
+      await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+    }
+  }
+
+  await writeAudit(tx, actor, {
+    action: input.mode === 'void' ? 'order_item.void' : 'order_item.comp',
+    entityType: 'order_item',
+    entityId: row.itemId,
+    before: {
+      void_status: row.voidStatus,
+      item_name: row.itemName,
+      qty: row.qty,
+      unit_price: row.unitPrice,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+    },
+    after: {
+      void_status: newStatus,
+      item_name: row.itemName,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+      reason: input.reason,
+      request_id: input.requestId,
+      requested_by: input.requestedBy,
+    },
+  })
+
+  return { orderId: row.orderId, bookingId: row.bookingId }
+}
+
+export type RequestVoidOrderItemInput = {
+  orderItemId: string
+  /** 'void' = removed, ordered by mistake. 'comp' = given free. */
+  mode: 'void' | 'comp'
+  reason: string
+}
+
+export type VoidRequestResult = {
+  requestId: string
+  orderItemId: string
+  orderId: string
+  bookingId: string | null
+  mode: 'void' | 'comp'
+  /** 'approved' when the requester was a manager/owner and this was applied
+   *  immediately, in the same transaction as the request. 'pending' when it
+   *  is now sitting in the manager approval queue. */
+  status: 'pending' | 'approved'
+}
+
+/**
+ * Raise a void/comp request on one order_items line — reasoned, and always
+ * recorded, whoever raises it.
+ *
+ * If the requester is a manager/owner (checked against `actor.role`, which
+ * the caller — lib/actions/orders.ts's requestVoidOrderItem — derives from
+ * requireContext(), never trusted from the client), this applies it
+ * immediately in the SAME transaction: they don't need to ask themselves for
+ * permission, and the pending approval queue (decideVoidRequestCore) exists
+ * for everyone else's requests. Either way there is exactly one request row
+ * and one code path, so the audit trail reads the same regardless of who
+ * pulled the trigger.
+ */
+export async function requestVoidOrderItemCore(
+  tx: Db,
+  actor: AuditActor & { role: MemberRole },
+  input: RequestVoidOrderItemInput,
+): Promise<VoidRequestResult> {
+  const reason = input.reason.trim()
+  if (!reason) throw new OrderError('A reason is required to request a void or comp.')
+
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+
+  // At most one open request per item (also enforced by the DB — see
+  // idx_order_item_void_requests_one_pending, migration 0074) — locking the
+  // order_item above already serialises two concurrent requesters on the
+  // same line, so this read is race-free.
+  const [existingPending] = await tx
+    .select({ id: orderItemVoidRequests.id })
+    .from(orderItemVoidRequests)
+    .where(
+      and(eq(orderItemVoidRequests.orderItemId, row.itemId), eq(orderItemVoidRequests.status, 'pending')),
+    )
+    .limit(1)
+  if (existingPending) {
+    throw new OrderError('A void/comp request is already pending for this item.')
+  }
+
+  const [request] = await tx
+    .insert(orderItemVoidRequests)
+    .values({
+      tenantId: actor.tenantId,
+      orderItemId: row.itemId,
+      mode: input.mode,
+      reason,
+      requestedBy: actor.membershipId,
+    })
+    .returning({ id: orderItemVoidRequests.id })
+
+  await writeAudit(tx, actor, {
+    action: input.mode === 'void' ? 'order_item.void_requested' : 'order_item.comp_requested',
+    entityType: 'order_item_void_request',
+    entityId: request.id,
+    before: {},
+    after: {
+      order_item_id: row.itemId,
+      item_name: row.itemName,
+      amount: row.lineTotal,
+      order_id: row.orderId,
+      booking_id: row.bookingId,
+      reason,
+    },
+  })
+
+  if (isManager(actor.role)) {
+    const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+      orderItemId: row.itemId,
+      mode: input.mode,
+      reason,
+      requestId: request.id,
+      requestedBy: actor.membershipId,
+    })
+    await tx
+      .update(orderItemVoidRequests)
+      .set({ status: 'approved', decidedBy: actor.membershipId, decidedAt: new Date() })
+      .where(eq(orderItemVoidRequests.id, request.id))
+    return { requestId: request.id, orderItemId: row.itemId, orderId, bookingId, mode: input.mode, status: 'approved' }
+  }
+
+  return {
+    requestId: request.id,
+    orderItemId: row.itemId,
+    orderId: row.orderId,
+    bookingId: row.bookingId,
+    mode: input.mode,
+    status: 'pending',
+  }
+}
+
+export type DecideVoidRequestInput = {
+  requestId: string
+  decision: 'approve' | 'reject'
+  /** Optional manager note — mainly useful on a reject ("kitchen already remade it"). */
+  note?: string
+}
+
+export type DecidedVoidRequest = {
+  requestId: string
+  orderItemId: string
+  orderId: string
+  bookingId: string | null
+  mode: 'void' | 'comp'
+  decision: 'approve' | 'reject'
+}
+
+/**
+ * Approve or reject a pending void/comp request — manager-authorised (the
+ * caller, lib/actions/orders.ts's decideVoidRequest, gates on
+ * requireManager() before this ever runs).
+ *
+ * Approving re-validates the item from scratch (applyVoidDecision →
+ * lockActiveOrderItem): time has passed since the waiter raised the request,
+ * so the order may since have been billed or cancelled — in which case this
+ * throws and the request is left `pending` for the manager to reject
+ * explicitly, rather than silently mutating anything.
+ */
+export async function decideVoidRequestCore(
+  tx: Db,
+  actor: AuditActor,
+  input: DecideVoidRequestInput,
+): Promise<DecidedVoidRequest> {
+  const [request] = await tx
+    .select({
+      id: orderItemVoidRequests.id,
+      orderItemId: orderItemVoidRequests.orderItemId,
+      mode: orderItemVoidRequests.mode,
+      reason: orderItemVoidRequests.reason,
+      status: orderItemVoidRequests.status,
+      requestedBy: orderItemVoidRequests.requestedBy,
+    })
+    .from(orderItemVoidRequests)
+    .where(and(eq(orderItemVoidRequests.id, input.requestId), eq(orderItemVoidRequests.tenantId, actor.tenantId)))
+    .for('update')
+    .limit(1)
+
+  if (!request) throw new OrderError('Request not found.')
+  if (request.status !== 'pending') {
+    throw new OrderError(`This request has already been ${request.status}.`)
+  }
+
+  const note = input.note?.trim() || null
+
+  if (input.decision === 'reject') {
+    await tx
+      .update(orderItemVoidRequests)
+      .set({ status: 'rejected', decidedBy: actor.membershipId, decidedAt: new Date(), decisionNote: note })
+      .where(eq(orderItemVoidRequests.id, request.id))
+
+    await writeAudit(tx, actor, {
+      action: request.mode === 'void' ? 'order_item.void_rejected' : 'order_item.comp_rejected',
+      entityType: 'order_item_void_request',
+      entityId: request.id,
+      before: { status: 'pending' },
+      after: { status: 'rejected', order_item_id: request.orderItemId, reason: request.reason, note },
+    })
+
+    // The item itself never moved — just enough to let the caller revalidate
+    // the right pages.
+    const [item] = await tx
+      .select({ orderId: orderItems.orderId, bookingId: orders.bookingId })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(eq(orderItems.id, request.orderItemId))
+      .limit(1)
+
+    return {
+      requestId: request.id,
+      orderItemId: request.orderItemId,
+      orderId: item?.orderId ?? '',
+      bookingId: item?.bookingId ?? null,
+      mode: request.mode,
+      decision: 'reject',
+    }
+  }
+
+  const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+    orderItemId: request.orderItemId,
+    mode: request.mode,
+    reason: request.reason,
+    requestId: request.id,
+    requestedBy: request.requestedBy,
+  })
+
+  await tx
+    .update(orderItemVoidRequests)
+    .set({ status: 'approved', decidedBy: actor.membershipId, decidedAt: new Date(), decisionNote: note })
+    .where(eq(orderItemVoidRequests.id, request.id))
+
+  return {
+    requestId: request.id,
+    orderItemId: request.orderItemId,
+    orderId,
+    bookingId,
+    mode: request.mode,
+    decision: 'approve',
+  }
 }

@@ -35,6 +35,7 @@ export const tenantIndustry = pgEnum('tenant_industry', [
   'podcast_studio',
   'dance_studio',
   'vr_centre',
+  'restaurant',
   'other',
 ])
 export const branchStatus = pgEnum('branch_status', ['active', 'inactive'])
@@ -264,6 +265,14 @@ export const bookings = pgTable(
      * the staff work queue, and only staff ever lower it.
      */
     depositReviewRequired: boolean('deposit_review_required').notNull().default(false),
+    // M17 (0071): an open-ended table session's guest count and its direct
+    // resource link (in place of booking_slots — see that migration's
+    // comment). Null for every timed booking in every other industry.
+    coverCount: integer('cover_count'),
+    resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
+    // M17 (0072): when the table's bill was requested. Null for every
+    // non-restaurant booking.
+    billRequestedAt: timestamp('bill_requested_at', { withTimezone: true }),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -273,6 +282,8 @@ export const bookings = pgTable(
     index('idx_bookings_branch').on(t.tenantId, t.branchId),
     index('idx_bookings_status').on(t.tenantId, t.status),
     index('idx_bookings_customer').on(t.tenantId, t.customerId),
+    // Partial (resource_id is not null) in the DB — see 0071_table_sessions.sql.
+    index('idx_bookings_resource').on(t.tenantId, t.resourceId),
   ],
 )
 
@@ -594,6 +605,73 @@ export const menuItems = pgTable(
   (t) => [index('idx_menu_items_tenant').on(t.tenantId, t.categoryId)],
 )
 
+// ── modifiers (migration 0076) ───────────────────────────────────────────────
+// Structured per-item choices — size, add-ons, "no onions" — as opposed to
+// specialInstructions' free text. A group (e.g. "Size") holds options (e.g.
+// "Small"/"Large", each with its own price_delta); menu_item_modifier_groups
+// is the many-to-many attaching groups to the items that offer them, so
+// "Spice Level" can be defined once and reused across a dozen dishes.
+export const modifierGroups = pgTable(
+  'modifier_groups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    // How many options from this group an order must/may carry. `required`
+    // is a display convenience (minSelect >= 1 is the actual enforcement,
+    // re-derived in lib/orders/service.ts — never trust this flag alone).
+    minSelect: integer('min_select').notNull().default(0),
+    maxSelect: integer('max_select').notNull().default(1),
+    required: boolean('required').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('modifier_groups_tenant_name_key').on(t.tenantId, t.name)],
+)
+
+export const modifierOptions = pgTable(
+  'modifier_options',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => modifierGroups.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    priceDelta: numeric('price_delta', { precision: 10, scale: 2 }).notNull().default('0'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_modifier_options_group').on(t.groupId)],
+)
+
+export const menuItemModifierGroups = pgTable(
+  'menu_item_modifier_groups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    menuItemId: uuid('menu_item_id')
+      .notNull()
+      .references(() => menuItems.id, { onDelete: 'cascade' }),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => modifierGroups.id, { onDelete: 'cascade' }),
+    sortOrder: integer('sort_order').notNull().default(0),
+  },
+  (t) => [
+    unique('menu_item_modifier_groups_item_group_key').on(t.menuItemId, t.groupId),
+    index('idx_menu_item_modifier_groups_item').on(t.menuItemId),
+  ],
+)
+
 export const happyHours = pgTable('happy_hours', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id')
@@ -681,6 +759,12 @@ export const orders = pgTable(
   ],
 )
 
+// Void/comp (migration 0073). See lib/orders/service.ts's voidOrderItemCore —
+// 'voided' (removed, ordered by mistake) and 'comped' (given free) are both
+// excluded from billing identically; the status is only what tells them
+// apart on the void/comp report (M20).
+export const orderItemVoidStatus = pgEnum('order_item_void_status', ['active', 'voided', 'comped'])
+
 export const orderItems = pgTable(
   'order_items',
   {
@@ -705,8 +789,73 @@ export const orderItems = pgTable(
     originalUnitPrice: numeric('original_unit_price', { precision: 10, scale: 2 }),
     happyHourDiscountType: discountType('happy_hour_discount_type'),
     happyHourDiscountValue: numeric('happy_hour_discount_value', { precision: 10, scale: 2 }),
+    voidStatus: orderItemVoidStatus('void_status').notNull().default('active'),
+    voidReason: text('void_reason'),
+    voidedBy: uuid('voided_by').references(() => memberships.id, { onDelete: 'set null' }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
+)
+
+// ── order item modifiers (migration 0076) ───────────────────────────────────
+// The chosen modifiers for one order_items line, snapshotted at order time —
+// same discipline as the happy-hour columns above (group_name/option_name/
+// price_delta are frozen text/numbers, never re-read from modifier_options
+// later), except one-to-MANY (a burger can carry several), so a child table
+// rather than more columns on order_items. modifier_option_id is kept only as
+// a soft pointer (on delete set null) for reporting — nothing re-reads it to
+// reprice. order_items.unit_price already has every selected delta folded in
+// (see createOrderCore), so billing needs no separate awareness of this table.
+export const orderItemModifiers = pgTable(
+  'order_item_modifiers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id')
+      .notNull()
+      .references(() => orderItems.id, { onDelete: 'cascade' }),
+    modifierOptionId: uuid('modifier_option_id').references(() => modifierOptions.id, { onDelete: 'set null' }),
+    groupName: text('group_name').notNull(),
+    optionName: text('option_name').notNull(),
+    priceDelta: numeric('price_delta', { precision: 10, scale: 2 }).notNull(),
+  },
+  (t) => [index('idx_order_item_modifiers_order_item').on(t.orderItemId)],
+)
+
+// ── order item void/comp requests (migration 0074) ──────────────────────────
+// A waiter-raised request awaiting manager approval — see
+// lib/orders/service.ts's requestVoidOrderItemCore/decideVoidRequestCore.
+// Approval flips the linked order_items row above; rejection leaves it
+// untouched. Kept forever either way, for the void/comp report (M20).
+export const orderItemVoidRequestMode = pgEnum('order_item_void_request_mode', ['void', 'comp'])
+export const orderItemVoidRequestStatus = pgEnum('order_item_void_request_status', [
+  'pending',
+  'approved',
+  'rejected',
+])
+
+export const orderItemVoidRequests = pgTable(
+  'order_item_void_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id')
+      .notNull()
+      .references(() => orderItems.id, { onDelete: 'cascade' }),
+    mode: orderItemVoidRequestMode('mode').notNull(),
+    reason: text('reason').notNull(),
+    status: orderItemVoidRequestStatus('status').notNull().default('pending'),
+    requestedBy: uuid('requested_by').references(() => memberships.id, { onDelete: 'set null' }),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedBy: uuid('decided_by').references(() => memberships.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionNote: text('decision_note'),
+  },
+  (t) => [index('idx_order_item_void_requests_pending').on(t.tenantId, t.requestedAt)],
 )
 
 // ── kots (migration 0013) ────────────────────────────────────────────────────

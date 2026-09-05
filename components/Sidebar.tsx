@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   BadgeCheck,
+  Ban,
   Building2,
   CreditCard,
   Wallet,
@@ -41,6 +42,8 @@ import {
   PiggyBank,
   Globe,
   Bell,
+  Armchair,
+  Layers,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -60,18 +63,27 @@ type NavChild = {
   label: string
   icon?: LucideIcon
   can?: (role: MemberRole) => boolean
+  /** Same meaning as NavItem's industries below — omit for every industry. */
+  industries?: string[]
 }
 type NavItem = {
   href: string
   label: string
   icon: LucideIcon
   can?: (role: MemberRole) => boolean
+  // M17: restricts an entry to specific tenant industries. Omit for every
+  // entry every industry should see — every existing entry omits it, so a
+  // gaming-cafe/studio tenant's nav is completely unaffected by this field
+  // existing at all.
+  industries?: string[]
   children?: NavChild[]
 }
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
+  // Dine-in table service (M17) — restaurant tenants only.
+  { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.
@@ -94,6 +106,9 @@ const NAV: NavItem[] = [
     children: [
       { href: '/menu/categories', label: 'Categories', icon: Tags },
       { href: '/menu/items', label: 'Items', icon: ClipboardList },
+      // Modifier groups (M17 #8) — restaurant tenants only, same scoping as
+      // Tables/Void-Comp Requests below.
+      { href: '/menu/modifiers', label: 'Modifiers', icon: Layers, industries: ['restaurant'] },
     ],
   },
   {
@@ -119,6 +134,11 @@ const NAV: NavItem[] = [
   // Accept/reject queue for online orders (AROS M14 #4) — front-of-house
   // roles, not kitchen staff; see lib/auth/roles.ts's canManageIncomingOrders.
   { href: '/orders/incoming', label: 'Incoming Orders', icon: Bell, can: canManageIncomingOrders },
+  // Void/comp approval queue (M17 #6) — manager/owner only: the request
+  // itself is raised by front-of-house staff from the item's own void/comp
+  // button, but approving it is money leaving the tab.
+  // Void/comp (M17 #6) — restaurant tenants only, same scoping as Tables.
+  { href: '/orders/void-requests', label: 'Void/Comp Requests', icon: Ban, can: isManager, industries: ['restaurant'] },
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.
@@ -217,9 +237,21 @@ function isChildActive(activeHref: string | null, children: NavChild[]) {
   return children.some((c) => c.href === activeHref)
 }
 
-export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boolean }) {
+export function Sidebar({
+  role,
+  industry,
+  collapsed,
+}: {
+  role: MemberRole
+  industry: string
+  collapsed?: boolean
+}) {
   const pathname = usePathname()
-  const items = useMemo(() => NAV.filter((n) => !n.can || n.can(role)), [role])
+  const items = useMemo(
+    () =>
+      NAV.filter((n) => (!n.can || n.can(role)) && (!n.industries || n.industries.includes(industry))),
+    [role, industry],
+  )
   const activeHref = useMemo(
     () => resolveActiveHref(pathname, items, role),
     [pathname, items, role],
@@ -241,7 +273,9 @@ export function Sidebar({ role, collapsed }: { role: MemberRole; collapsed?: boo
         const Icon = item.icon
 
         if (item.children) {
-          const visibleChildren = item.children.filter((c) => !c.can || c.can(role))
+          const visibleChildren = item.children.filter(
+            (c) => (!c.can || c.can(role)) && (!c.industries || c.industries.includes(industry)),
+          )
           if (visibleChildren.length === 0) return null
           const childActive = isChildActive(activeHref, visibleChildren)
           if (collapsed) {

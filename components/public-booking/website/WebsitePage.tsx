@@ -24,6 +24,7 @@ export function WebsitePage({
   branch,
   currency,
   timezone,
+  isRestaurant = false,
 }: {
   tenantName: string
   icon: ReactNode
@@ -37,10 +38,16 @@ export function WebsitePage({
   branch: PublicBranch | null
   currency: string
   timezone: string
+  /** A restaurant tenant orders dine-in via the table QR flow, not a 'menu'
+   *  website-builder section — hides that section and the navbar's Menu
+   *  link even if the operator added one, same as TenantHome's default
+   *  (non-website-builder) homepage. */
+  isRestaurant?: boolean
 }) {
   // Only a 'menu' section makes ordering meaningful here — other industries
-  // (gaming cafes, studios, ...) never see a cart button.
-  const hasMenu = sections.some((s) => s.type === 'menu')
+  // (gaming cafes, studios, ...) never see a cart button. A restaurant tenant
+  // never gets the cart-aware navbar either, whatever sections it added.
+  const hasMenu = !isRestaurant && sections.some((s) => s.type === 'menu')
 
   return (
     <div
@@ -49,9 +56,9 @@ export function WebsitePage({
     >
       <OrderCartProvider>
         {hasMenu ? (
-          <OrderNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} />
+          <OrderNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} showMenuLink={!isRestaurant} />
         ) : (
-          <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} />
+          <PublicNavbar tenantName={tenantName} icon={icon} logoUrl={settings.logoUrl} topOffset={navTopOffset} showMenuLink={!isRestaurant} />
         )}
         {settings.heroImageUrl && (
           <section className="relative flex min-h-screen items-center justify-center overflow-hidden bg-black">
@@ -82,7 +89,14 @@ export function WebsitePage({
             </div>
           </section>
         )}
-        <WebsiteSections sections={sections} tenantId={tenantId} branch={branch} currency={currency} timezone={timezone} />
+        <WebsiteSections
+          sections={sections}
+          tenantId={tenantId}
+          branch={branch}
+          currency={currency}
+          timezone={timezone}
+          isRestaurant={isRestaurant}
+        />
         {footer}
       </OrderCartProvider>
     </div>

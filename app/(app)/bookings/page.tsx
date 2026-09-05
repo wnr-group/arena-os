@@ -1,11 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
+import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
-import { listMenuItems } from '@/lib/menu/data'
-import { listOrdersForBookings } from '@/lib/orders/data'
+import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
+import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
 import { listDepositStates } from '@/lib/payments/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
@@ -35,16 +36,28 @@ export default async function BookingsPage({
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [allResources, hours, slots, menuItemRows, happyHourRows] = await Promise.all([
+  // Void/comp (M17 #6) and modifiers (M17 #8) are restaurant-only — every
+  // other industry gets neither the request button nor a modifier picker on
+  // this cross-industry order screen, same scoping as /floor's own gate.
+  const isRestaurant = ctx.tenant.industry === 'restaurant'
+
+  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] = await Promise.all([
     listResources(ctx, branch.id),
     getWorkingHours(ctx, branch.id),
     listDayBookings(ctx, branch.id, date, tz),
     listMenuItems(ctx),
     listHappyHours(ctx),
+    listMostOrderedItemIds(ctx, branch.id),
+    isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
   ])
+  const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
   const orderRows = await listOrdersForBookings(ctx, bookingIds)
+  const orderItemIds = orderRows.map((r) => r.itemId).filter((id): id is string => id !== null)
+  const modifiersByOrderItem = isRestaurant
+    ? await listOrderItemModifierNames(ctx, orderItemIds)
+    : new Map<string, string[]>()
   // Which bookings already have a deposit order open or settled (AROS-49).
   const depositRows = await listDepositStates(ctx, bookingIds)
   const depositStates: Record<string, 'pending' | 'paid'> = {}
@@ -72,22 +85,33 @@ export default async function BookingsPage({
         originalUnitPrice: row.originalUnitPrice,
         happyHourDiscountType: row.happyHourDiscountType,
         happyHourDiscountValue: row.happyHourDiscountValue,
+        voidStatus: row.voidStatus!,
+        voidReason: row.voidReason,
+        pendingVoidMode: row.pendingVoidMode,
+        modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
       })
     }
   }
 
-  const availableItems = menuItemRows.filter((i) => i.status === 'available')
+  // Hidden items never reach the picker; out-of-stock ones do, shown
+  // disabled with an "86'd" badge (TakeOrderDialog) instead of vanishing.
+  const orderableItems = menuItemRows.filter((i) => i.status !== 'hidden')
   const categoryMap = new Map<string, string>()
-  for (const i of availableItems) categoryMap.set(i.categoryId, i.categoryName)
+  for (const i of orderableItems) categoryMap.set(i.categoryId, i.categoryName)
   const categories = [...categoryMap.entries()].map(([id, name]) => ({ id, name }))
-  const menuItems = availableItems.map((i) => ({
+  const menuItems = orderableItems.map((i) => ({
     id: i.id,
     name: i.name,
     price: i.price,
     categoryId: i.categoryId,
     categoryName: i.categoryName,
     taxPercent: i.taxPercent,
+    status: i.status,
+    modifierGroups: modifierGroupsByItem.get(i.id) ?? [],
   }))
+  // menuItemId is null for a row whose menu item has since been deleted
+  // (order_items.menu_item_id is ON DELETE SET NULL) — nothing to quick-add.
+  const popularItemIds = popularItemRows.map((r) => r.menuItemId).filter((id): id is string => id !== null)
 
   // Only what the take-order dialog needs to preview a discount client-side;
   // the server still decides for real when the order is placed.
@@ -150,9 +174,12 @@ export default async function BookingsPage({
       }))}
       categories={categories}
       menuItems={menuItems}
+      popularItemIds={popularItemIds}
       ordersByBooking={ordersByBooking}
       venueName={ctx.tenant.name}
       depositStates={depositStates}
+      canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
+      canToggle86={canManageKitchen(ctx.role)}
     />
   )
 }
