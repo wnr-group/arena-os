@@ -298,11 +298,11 @@ async function main() {
   // ── 4. an option from a group not attached to this item is refused ─────────
   {
     // A second item with no modifier groups attached at all.
-    const otherItem = await ownerPool.query<{ id: string }>(
+    const otherItem = await ownerPool.query<{ category_id: string }>(
       `select category_id from menu_items where id=$1`,
       [A.itemId],
     )
-    const catId = otherItem.rows[0].category_id as unknown as string
+    const catId = otherItem.rows[0].category_id
     const plain = await ownerPool.query<{ id: string }>(
       `insert into menu_items (tenant_id,category_id,name,price) values ($1,$2,'Fries','60.00') returning id`,
       [A.tenantId, catId],
@@ -353,6 +353,52 @@ async function main() {
       "tenant A cannot use tenant B's modifier option (RLS ⇒ not found)",
       !cross.ok && cross.orderError && /modifier options were not found/i.test(cross.message),
     )
+    await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(sql`${schema.bookings.id} = ${session.id}`))
+  }
+
+  // ── 7. REGRESSION: `required` is enforced even when minSelect is left at 0 ──
+  // `required` and `minSelect` are set independently in the group form, so a
+  // group can be required=true with minSelect=0. resolveLineModifiers used to
+  // check only minSelect, so such a group imposed no requirement at all — a
+  // "required" choice could be skipped entirely.
+  {
+    const g = await ownerPool.query<{ id: string }>(
+      `insert into modifier_groups (tenant_id,name,min_select,max_select,required) values ($1,'Spice',0,1,true) returning id`,
+      [A.tenantId],
+    )
+    const spiceGroupId = g.rows[0].id
+    const mild = await ownerPool.query<{ id: string }>(
+      `insert into modifier_options (tenant_id,group_id,name,price_delta) values ($1,$2,'Mild','0') returning id`,
+      [A.tenantId, spiceGroupId],
+    )
+    const item2 = await ownerPool.query<{ id: string }>(
+      `insert into menu_items (tenant_id,category_id,name,price)
+       values ($1,(select category_id from menu_items where id=$2),'Wings','180.00') returning id`,
+      [A.tenantId, A.itemId],
+    )
+    const wingsId = item2.rows[0].id
+    await ownerPool.query(
+      `insert into menu_item_modifier_groups (tenant_id,menu_item_id,group_id,sort_order) values ($1,$2,$3,0)`,
+      [A.tenantId, wingsId, spiceGroupId],
+    )
+
+    const orderWings = (bookingId: string, modifierOptionIds: string[]) =>
+      withUser(A.userId, (tx) =>
+        createOrderCore(
+          tx,
+          { tenantId: A.tenantId, timezone: TZ, membershipId: A.membershipId },
+          { branchId: A.branchId, bookingId, items: [{ menuItemId: wingsId, qty: 1, modifierOptionIds }] },
+        ),
+      )
+
+    const session = await seat(A, A.tables[0], 2)
+    const missing = await attempt(() => orderWings(session.id, []))
+    check(
+      'a required group with minSelect=0 still refuses an order that omits it',
+      !missing.ok && missing.orderError && /1 option for "Spice"/i.test(missing.message),
+    )
+    const ok = await attempt(() => orderWings(session.id, [mild.rows[0].id]))
+    check('…and succeeds once the required option is chosen', ok.ok)
     await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(sql`${schema.bookings.id} = ${session.id}`))
   }
 

@@ -187,6 +187,7 @@ export async function createOrderCore(
       groupName: modifierGroups.name,
       minSelect: modifierGroups.minSelect,
       maxSelect: modifierGroups.maxSelect,
+      required: modifierGroups.required,
     })
     .from(menuItemModifierGroups)
     // Also tenant-filtered on the modifierGroups side, not just
@@ -261,9 +262,15 @@ export async function createOrderCore(
 
     for (const g of attachedGroups) {
       const count = countByGroup.get(g.groupId) ?? 0
-      if (count < g.minSelect) {
-        const phrase = g.minSelect === g.maxSelect ? 'exactly' : 'at least'
-        throw new OrderError(`Choose ${phrase} ${g.minSelect} option${g.minSelect === 1 ? '' : 's'} for "${g.groupName}".`)
+      // `required` and `minSelect` are set independently in the modifier-group
+      // form, so a group can be flagged required while minSelect stays at its
+      // default 0. Enforce `required` here as an effective floor of at least
+      // one option, rather than trusting minSelect to have been bumped to match
+      // — otherwise a "required" size/choice could be skipped entirely.
+      const effectiveMin = g.required ? Math.max(1, g.minSelect) : g.minSelect
+      if (count < effectiveMin) {
+        const phrase = effectiveMin === g.maxSelect ? 'exactly' : 'at least'
+        throw new OrderError(`Choose ${phrase} ${effectiveMin} option${effectiveMin === 1 ? '' : 's'} for "${g.groupName}".`)
       }
       if (count > g.maxSelect) {
         throw new OrderError(`Choose at most ${g.maxSelect} option${g.maxSelect === 1 ? '' : 's'} for "${g.groupName}".`)
