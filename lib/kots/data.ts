@@ -78,6 +78,13 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
  * "served" signal (see lib/booking/table-status.ts). One row per order:
  * every order gets exactly one KOT (lib/orders/service.ts, "one KOT per
  * order, always"), so no item-level join is needed here.
+ *
+ * Scoped to `orders.status = 'open'` and `acceptanceStatus = 'accepted'` —
+ * the same filter loadFoodLines/listBookingBillingStates (lib/billing/data.ts)
+ * use to decide what's still on the tab. Without it, a KOT from a billed or
+ * cancelled order (or an unreviewed online order still awaiting accept/reject)
+ * could set `hasActiveKot`, and the floor status would disagree with what the
+ * bill actually shows.
  */
 export function listKotStatusesForBookings(ctx: ActiveContext, bookingIds: string[]) {
   if (bookingIds.length === 0) return Promise.resolve([])
@@ -90,7 +97,14 @@ export function listKotStatusesForBookings(ctx: ActiveContext, bookingIds: strin
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
-      .where(and(eq(kots.tenantId, ctx.tenant.id), inArray(orders.bookingId, bookingIds))),
+      .where(
+        and(
+          eq(kots.tenantId, ctx.tenant.id),
+          inArray(orders.bookingId, bookingIds),
+          eq(orders.status, 'open'),
+          eq(orders.acceptanceStatus, 'accepted'),
+        ),
+      ),
   )
 }
 

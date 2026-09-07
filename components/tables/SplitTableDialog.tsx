@@ -141,7 +141,11 @@ export function SplitTableDialog({
               ) : (
                 <div className="mt-1 space-y-1.5">
                   {openOrders.map((o) => {
-                    const total = o.items.reduce((sum, it) => sum + Number(it.unitPrice) * it.qty, 0)
+                    // Voided/comped lines are struck through below and never bill — excluding
+                    // them here keeps this total matching what the invoice will actually charge.
+                    const total = o.items
+                      .filter((it) => it.voidStatus === 'active')
+                      .reduce((sum, it) => sum + Number(it.unitPrice) * it.qty, 0)
                     return (
                       <label
                         key={o.orderId}

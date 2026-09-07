@@ -744,7 +744,7 @@ async function applyVoidDecision(
 
   // A VOID is a kitchen mistake that must stop being cooked; a COMP is a
   // billing decision made after the fact (the food was already made, usually
-  // already served), so it never touches the ticket.
+  // already served), so it never touches the ticket or the order.
   //
   // KOTs are one per ORDER, not one per item (see createOrderCore's
   // GRANULARITY note) — there is no kot_items table to cross a single line
@@ -753,6 +753,14 @@ async function applyVoidDecision(
   // order are still active, the ticket is still genuinely needed and is left
   // alone — the audit row is the record for that item either way. Same
   // "never touch an already-served ticket" rule as cancelKotsForOrders.
+  //
+  // The order itself is cancelled off `open` at the same moment (M17 floor
+  // fix): the floor's openOrderCount (app/(app)/floor/page.tsx) counts by
+  // orders.status, not by whether an order still has any active line, so an
+  // all-voided order left `open` kept the table reading 'served' with a ₹0
+  // tab instead of 'seated'. lockActiveOrderItem already guarantees the order
+  // is `open` here (billed/cancelled orders throw above), so this is never a
+  // no-op update on a status it can't legally be in.
   if (input.mode === 'void') {
     const [stillActive] = await tx
       .select({ id: orderItems.id })
@@ -766,6 +774,10 @@ async function applyVoidDecision(
       )
       .limit(1)
     if (!stillActive) {
+      await tx
+        .update(orders)
+        .set({ status: 'cancelled' })
+        .where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
       await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
     }
   }

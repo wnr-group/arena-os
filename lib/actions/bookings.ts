@@ -18,23 +18,10 @@ import {
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
-import { zodErrorMessage } from '@/lib/utils/errors'
+import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
 type Result = { error?: string }
-
-/**
- * Drizzle wraps every driver error in a DrizzleQueryError — the pg error
- * (with `.code`/`.constraint`) lives on `.cause`, not on the wrapper itself.
- * Checking `e.code` directly (as this used to) silently never matches.
- */
-function pgError(e: unknown): { code?: string; constraint?: string } | null {
-  if (!e || typeof e !== 'object') return null
-  const cause = 'cause' in e ? (e as { cause?: unknown }).cause : undefined
-  if (cause && typeof cause === 'object' && 'code' in cause) return cause as { code?: string; constraint?: string }
-  if ('code' in e) return e as { code?: string; constraint?: string }
-  return null
-}
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof BookingError) return { error: e.message }
