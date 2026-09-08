@@ -607,3 +607,114 @@ Mostly non-schema (infra, security, ops). Schema touches:
     cash movement. Partial index `idx_platform_refunds_processed` on
     `(processed_at) where status = 'processed'` — the one predicate it serves.
     No grant change: SELECT only to `arena_app`, as the rest of the table.
+
+- 2026-09-08 — grandfather existing tenants onto a plan — migration 0085.
+  **No schema change at all: three idempotent INSERTs, so that deploying M16
+  does not take working features away from businesses that already have them.**
+
+  M16 #2 attached fail-closed entitlement gates to features that shipped long
+  before plans existed — payroll, expenses, every report, and the staff and
+  resource limits. `readEntitlements()` answers `plan: null, entitlements: {}`
+  for a tenant with no live `tenant_subscriptions` row, and the guard grants a
+  module only on an explicit `true` and a limit only on an explicit number or
+  `null`. Every tenant that existed before M16 is in exactly that state, and
+  none of 0078–0084 writes it a row: the three paths that insert one (self-serve
+  signup, gateway checkout, admin `assignPlan`) all need somebody to act first.
+  The deploy would therefore have switched payroll, expenses and reports off for
+  existing customers and capped their staff and resources, silently, until an
+  operator hand-assigned a plan to each one.
+
+  A migration rather than a runbook step because a runbook step can be skipped
+  and skipping it is invisible — the app does not fail to start, it just starts
+  refusing.
+
+  * **`plans` → `Grandfathered`** `[P]` — `active = false`, priced at 0. Retired
+    on purpose, which is a state this codebase already anticipates in both
+    directions: `plans_select_subscribed` (0078) keeps a retired plan readable to
+    the tenant on it, `readEntitlements()` deliberately does not filter on
+    `plans.active`, and the owner portal's upgrade list filters `p.active` so it
+    can never be offered. Keeping it out of the catalogue is also what keeps
+    `Pro` meaning "somebody chose and pays for Pro" in the 0080/0082 revenue
+    metrics.
+
+  * **`plan_entitlements` for it** `[P]` — the three modules that predate M16 set
+    `true`; `max_branches`, `max_staff` and `max_resources` set to JSON `null`,
+    i.e. UNLIMITED. Unlimited rather than a number because a pre-M16 tenant may
+    already hold more staff or resources than any finite tier allows, so a cap
+    would refuse a business its own existing headcount. `module.events` stays
+    `false`: grandfathering keeps what a business had, not what it never did.
+
+  * **`tenant_subscriptions`** `[T]` — one `active` row per tenant with no live
+    subscription, `gateway` null (what 0078 calls an admin-assigned plan, and
+    what keeps the 0081 dunning sweep away from these rows). "Live" is the same
+    three statuses `idx_tenant_subscriptions_one_live` permits, so a tenant that
+    already subscribed is left completely alone and the partial unique index is
+    never contested. No filter on `tenants.status`: a plan grants nothing on its
+    own to a suspended account, and skipping those would strand them the day
+    they are reactivated.
+
+    `current_period_end` is a fixed far-future sentinel, not `now() + interval
+    '1 month'`. `readEntitlements()` applies status AND clock, so a normal period
+    would have re-broken every one of these tenants thirty days later — the same
+    regression, merely deferred and much harder to diagnose. Fixed rather than
+    relative so a replay or restore reproduces the same date.
+
+  Verified by `npm run test:m16:grandfather`
+  (`scripts/verify-grandfather-backfill.ts`), which executes the migration file
+  itself rather than restating it: it proves the refusal first, applies 0085,
+  then drives the real guard to show payroll, expenses and reports working and
+  the limits uncapped — plus idempotency, and that a tenant already on a plan is
+  untouched.
+
+  **Companies created afterwards** are not covered by this backfill and do not
+  need to be: both create paths attach a plan themselves. Self-serve signup
+  always did; `createCompany()` now requires a `planId` — see the next entry,
+  which is what stops this one-shot repair re-accumulating planless companies.
+
+- 2026-09-08 — an admin-created company is born on a plan — no migration.
+  **The forward half of what 0085 repairs backwards.**
+
+  0085 grandfathers the tenants that existed before M16, but it is a one-shot
+  repair and cannot cover a company created after it runs. `createCompany()`
+  called `provisionTenant()` — which deliberately creates no subscription,
+  because a plan has its own failure modes and must not be able to stop a
+  workspace existing — and then stopped. Self-serve signup attaches a trial in
+  the same flow; this path attached nothing, so every company a platform admin
+  created was born with payroll, expenses and every report refused and its staff
+  and resources capped. The backfill would have begun re-accumulating broken
+  companies the day after it ran.
+
+  * **`planId` is now REQUIRED on `createCompany()`**, with `billingPeriod`
+    defaulting to monthly. The admin create dialog carries a Subscription
+    section, populated from the ACTIVE catalogue only — a retired plan exists to
+    grandfather the tenants already on it and must never start a new company,
+    which the action re-checks server-side rather than trusting the form.
+
+  * **Order is check → provision → assign.** The plan is validated before
+    anything is written, so the ordinary mistake (a stale or newly retired plan
+    id) is a clean refusal rather than a half-made company. The assignment
+    itself reuses `assignPlan()` rather than a second insert written inline: it
+    is the one path that closes out any live row and opens the new one in a
+    single transaction, and it records the platform-override audit entry
+    AROS-114 §9 requires of every manual plan change.
+
+  * **The narrow partial failure is reported, not swallowed.** If provisioning
+    succeeds and the assignment then fails on a genuine database error, the
+    company is real and its owner can sign in, so the action returns a `warning`
+    rather than an error: the dialog stays open, says exactly which plan failed
+    and that payroll, expenses and reports are unavailable until one is
+    assigned. Unwinding by deleting a just-created tenant would be a destructive
+    answer to a recoverable problem.
+
+  * **Not covered:** if the catalogue has no active plans at all, the dialog says
+    so and points at /admin/plans instead of offering a broken create. A
+    subscription product cannot onboard a company onto a plan that does not
+    exist.
+
+  Verified by `npm run test:m16:createplan`
+  (`scripts/verify-admin-create-plan.ts`), which drives the real action as a real
+  platform admin with a real session row and then checks the result through the
+  real entitlement guard: payroll, expenses and reports work for the new company
+  and its staff limit is the plan's number rather than a denial; creating without
+  a plan, with a retired plan, or with an unknown plan id is refused and leaves
+  no tenant behind.
