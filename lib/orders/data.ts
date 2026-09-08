@@ -39,6 +39,7 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
         bookingId: orders.bookingId,
         orderNumber: orders.orderNumber,
         status: orders.status,
+        acceptanceStatus: orders.acceptanceStatus,
         createdAt: orders.createdAt,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
@@ -67,6 +68,33 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
       .where(and(eq(orders.tenantId, ctx.tenant.id), inArray(orders.bookingId, bookingIds)))
       .orderBy(asc(orders.createdAt), asc(orderItems.id)),
   )
+}
+
+/**
+ * Distinct order ids per booking that are still open AND staff-accepted —
+ * the floor map's `openOrderCount` input (lib/booking/table-status.ts). Same
+ * `status='open'` + `acceptanceStatus='accepted'` gate listKotStatusesForBookings
+ * uses for `hasActiveKot` and loadFoodLines/listBookingBillingStates use for
+ * the bill, so all three inputs to deriveTableStatus agree on what "open"
+ * means. Without this, an unreviewed QR order (acceptanceStatus stays
+ * 'pending' until staff accepts it — the default, since autoAcceptOnlineOrders
+ * defaults to false) would count toward openOrderCount despite having no
+ * active KOT, and deriveTableStatus would read that combination as 'served'
+ * — food delivered — before anyone on staff has even seen the order.
+ *
+ * Takes listOrdersForBookings' row shape directly so the two can never drift
+ * apart the way openOrderCount and hasActiveKot's filters once did.
+ */
+export function openOrderIdsByBooking(
+  rows: { bookingId: string | null; orderId: string; status: string; acceptanceStatus: string }[],
+): Record<string, Set<string>> {
+  const result: Record<string, Set<string>> = {}
+  for (const row of rows) {
+    if (!row.bookingId || row.status !== 'open' || row.acceptanceStatus !== 'accepted') continue
+    const set = (result[row.bookingId] ??= new Set())
+    set.add(row.orderId)
+  }
+  return result
 }
 
 /**
