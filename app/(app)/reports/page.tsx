@@ -57,8 +57,10 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   const pagedDays = data.days.slice((dailyPage.page - 1) * DAILY_PAGE_SIZE, dailyPage.page * DAILY_PAGE_SIZE)
   const dailyHref = (page: number) => `/reports?from=${range.start}&to=${range.end}&page=${page}`
 
-  // CSV columns for the client-side export button (shared ExportCsvButton) —
-  // exports exactly the rows already rendered below, nothing re-fetched.
+  // CSV columns for the client-side export button (shared ExportCsvButton).
+  // Exports data.days — the FULL date range, not just the current page of
+  // pagedDays — so "Export CSV" can hand back far more rows than are
+  // visible on screen. Nothing re-fetched either way.
   const dailyCols: CsvColumn<(typeof data.days)[number]>[] = [
     { key: 'day', label: 'Date' },
     { key: 'gross', label: 'Gross' },
