@@ -15,6 +15,12 @@
  *   - gaming: a resource with no active slot produces a standalone order
  *   - tenant isolation: tenant B's resourceId never resolves to tenant A's
  *     session
+ *   - invariant: ACTIVE_BOOKING_STATUSES matches idx_bookings_open_table_session's
+ *     WHERE clause exactly — that index is the only thing guaranteeing the
+ *     table-session branch above ever has one row to find, which is why it's
+ *     allowed to .limit(1) with no ORDER BY. If the two ever drift, this is
+ *     the test that's supposed to catch it before .limit(1) starts silently
+ *     returning an arbitrary row.
  *
  *   npx tsx scripts/test-resource-attribution.ts
  */
@@ -23,7 +29,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql, eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { seatTableSessionCore, createBookingCore } from '../lib/booking/service'
-import { getActiveBookingForResource } from '../lib/booking/attribution'
+import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '../lib/booking/attribution'
 import { createOrderCore } from '../lib/orders/service'
 import { loadEnv } from './env'
 
@@ -198,6 +204,26 @@ async function main() {
     check("tenant G's scope never resolves tenant R's table", crossResolved === null)
 
     await withUser(R.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, session.id)))
+  }
+
+  // ── 7. invariant: ACTIVE_BOOKING_STATUSES matches the partial unique index
+  //      that's the only thing making the table-session .limit(1) safe ──────
+  {
+    const { rows } = await ownerPool.query<{ indexdef: string }>(
+      `select indexdef from pg_indexes where schemaname = 'public' and indexname = 'idx_bookings_open_table_session'`,
+    )
+    if (rows.length !== 1) throw new Error('idx_bookings_open_table_session not found — was it renamed or dropped?')
+
+    // e.g. "... WHERE ((resource_id IS NOT NULL) AND (status = ANY (ARRAY['confirmed'::booking_status, 'checked_in'::booking_status])))"
+    const statusesInIndex = [...rows[0].indexdef.matchAll(/'([a-z_]+)'::booking_status/g)]
+      .map((m) => m[1])
+      .sort()
+    const statusesInCode = [...ACTIVE_BOOKING_STATUSES].sort()
+
+    check(
+      `ACTIVE_BOOKING_STATUSES (${statusesInCode.join(', ')}) matches idx_bookings_open_table_session (${statusesInIndex.join(', ')})`,
+      statusesInIndex.length > 0 && JSON.stringify(statusesInIndex) === JSON.stringify(statusesInCode),
+    )
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────

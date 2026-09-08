@@ -22,6 +22,16 @@ type Db = NodePgDatabase<typeof schema>
  * every attribution path (createOrderCore's direct-bookingId check below,
  * getActiveBookingForResource, and the public "add food to your visit" nudge
  * in lib/booking/public-confirmation.ts) so the rule can't drift between them.
+ *
+ * MUST stay exactly in sync with idx_bookings_open_table_session's WHERE
+ * clause (migration 0071: `status in ('confirmed', 'checked_in')`) — that
+ * partial unique index is the only thing guaranteeing getActiveBookingForResource's
+ * table-session branch below ever has at most one row to find, which is why
+ * it's allowed to .limit(1) with no ORDER BY. Add a status here without
+ * widening the index too and that guarantee silently stops holding: more than
+ * one "active" booking could exist per table, and .limit(1) would return an
+ * arbitrary one instead of erroring. scripts/test-resource-attribution.ts
+ * asserts the two stay identical.
  */
 export const ACTIVE_BOOKING_STATUSES = ['confirmed', 'checked_in'] as const
 
