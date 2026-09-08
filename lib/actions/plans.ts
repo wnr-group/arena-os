@@ -8,6 +8,7 @@ import { planEntitlements, plans, tenantSubscriptions } from '@/db/schema'
 import { requirePlatformAdmin, PlatformError } from '@/lib/platform/guard'
 import { recordPlatformOverride } from '@/lib/platform/billing/audit'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { addMonths } from '@/lib/utils/date'
 
 /**
  * Platform-admin CRUD for the plan catalogue and its entitlements (M16).
@@ -325,10 +326,28 @@ const assignInput = z.object({
   tenantId: z.string().uuid(),
   planId: z.string().uuid(),
   billingPeriod: z.enum(['monthly', 'annual']).default('monthly'),
-  /** Months of runway from now. The billing story replaces this with a real cycle. */
-  periodMonths: z.number().int().min(1).max(36).default(1),
+  /**
+   * Months of runway from now — LITERAL months, whatever `billingPeriod` says.
+   * `months: 12` is twelve months on an annual plan exactly as it is on a
+   * monthly one. See assignPlan() for why this is not multiplied.
+   *
+   * Optional rather than defaulted here, because the default depends on
+   * `billingPeriod` and Zod resolves field defaults independently. Omitted
+   * means "one billing cycle" — resolved in DEFAULT_MONTHS below.
+   */
+  months: z.number().int().min(1).max(36).optional(),
   status: z.enum(['trialing', 'active']).default('active'),
 })
+
+/**
+ * Runway when the caller does not say: ONE BILLING CYCLE.
+ *
+ * A business assigned an annual plan has bought a year, so defaulting it to one
+ * month would expire its entitlements eleven months early. This is the only
+ * place the twelve lives — it is a default, not a multiplier applied to
+ * whatever the operator typed.
+ */
+const DEFAULT_MONTHS = { monthly: 1, annual: 12 } as const
 
 /**
  * Assign (or replace) a tenant's subscription, by hand, from platform admin.
@@ -353,8 +372,27 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
     const v = assignInput.parse(input)
 
     const now = new Date()
-    const end = new Date(now)
-    end.setMonth(end.getMonth() + (v.billingPeriod === 'annual' ? 12 * v.periodMonths : v.periodMonths))
+    // ── how long this assignment runs for ─────────────────────────────────
+    //
+    // `months` is LITERAL. It used to be multiplied by twelve for an annual
+    // plan, which made the unit silently depend on `billingPeriod`: an operator
+    // asking for twelve months of runway on an annual plan got twelve YEARS,
+    // and the field's own documentation said "months". Nothing passed it
+    // explicitly, so the trap had not fired — every caller relied on the
+    // default, where 1 × 12 was the right answer for the wrong reason.
+    //
+    // Splitting the two ideas apart keeps that right answer and removes the
+    // trap: the cycle length is a DEFAULT (DEFAULT_MONTHS above), and anything
+    // the caller states is taken at face value.
+    const months = v.months ?? DEFAULT_MONTHS[v.billingPeriod]
+    // addMonths(), not setMonth(): assigning a one-month plan on 31 August
+    // would otherwise ask for 31 September, which JavaScript resolves FORWARD
+    // to 1 October — a day of free access past the intended end, and in the
+    // wrong calendar month. current_period_end is what readEntitlements()
+    // checks the clock against, so that day is real. The helper clamps to the
+    // last valid day of the target month; it is the same one customer
+    // membership expiry has always used.
+    const end = addMonths(now, months)
 
     // A live row backed by a REAL Razorpay mandate must not be replaced from
     // here (M16 #3). This action only rewrites local rows; the mandate would
@@ -464,7 +502,10 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
             billingPeriod: v.billingPeriod,
             status: v.status,
             currentPeriodEnd: end.toISOString(),
-            periodMonths: v.periodMonths,
+            // The RESOLVED value, not the raw input: an omitted `months` is what most
+            // assignments send, and an audit entry saying `null` would not record
+            // how long the plan was actually granted for.
+            months,
           },
         },
       )

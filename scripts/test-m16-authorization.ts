@@ -228,7 +228,7 @@ async function main() {
     ['compTenantAction', () => compTenantAction({ tenantId, amount: 100, reason: 'audit probe' })],
     ['refundInvoiceAction', () => refundInvoiceAction({ invoiceId, amount: 100, reason: 'audit probe' })],
     ['forceCancelAction', () => forceCancelAction({ tenantId, reason: 'audit probe' })],
-    ['assignPlan', () => assignPlan({ tenantId, planId: planB, billingPeriod: 'monthly', periodMonths: 1 })],
+    ['assignPlan', () => assignPlan({ tenantId, planId: planB, billingPeriod: 'monthly', months: 1 })],
     ['createPlan', () => createPlan({ name: `Nope ${tag}`, monthlyPrice: '1', annualPrice: '10', currency: 'INR' })],
     ['setPlanActive', () => setPlanActive(planA, false)],
     ['savePlatformGateway', () => savePlatformGateway({ razorpayKeyId: 'rzp_test_x', razorpayKeySecret: 'nope', razorpayWebhookSecret: 'nope' })],

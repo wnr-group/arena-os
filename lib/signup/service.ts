@@ -95,7 +95,7 @@ export class SignupError extends Error {
  * How long a self-serve trial runs.
  *
  * A NEW number: nothing in the existing codebase defined a trial length —
- * assignPlan() takes an explicit `periodMonths` from the operator, and
+ * assignPlan() takes an explicit `months` from the operator, and
  * subscribeTenantToPlan()'s three-day window is a pending-authorisation
  * allowance, not a trial. Fourteen days is the ordinary SaaS convention and is
  * long enough to set a venue up and take real bookings through it.
