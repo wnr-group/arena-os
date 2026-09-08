@@ -191,6 +191,16 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
             </tfoot>
           </table>
         </div>
+        {/* Said plainly, because the two halves of this table have different
+            freshness: revenue is read from the AROS-64 pre-aggregate, which is
+            rebuilt out of band, while the booking figures are queried live. A
+            bill raised minutes ago can therefore be missing from Net but its
+            booking already counted. */}
+        <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+          Revenue comes from a pre-aggregated snapshot (refreshed by{' '}
+          <code className="rounded bg-muted px-1 py-0.5">npm run reports:refresh</code>); booking, occupancy and
+          resource figures are live.
+        </p>
         <Pager info={dailyPage} label="Daily breakdown" hrefFor={dailyHref} />
       </Section>
 
