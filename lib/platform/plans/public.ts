@@ -17,7 +17,7 @@ import { planEntitlements, plans } from '@/db/schema'
  * So this is a separate, deliberately narrow reader on the RESTRICTED app
  * connection with no identity set at all. Two things then protect it:
  *
- *   * `plans_select_active` (0070) — `for select using (active)`, with no
+ *   * `plans_select_active` (0078) — `for select using (active)`, with no
  *     tenant predicate. A retired plan is invisible here even to a query that
  *     asked for it by id, so an inactive plan cannot be subscribed to by
  *     guessing its id from an older page load.

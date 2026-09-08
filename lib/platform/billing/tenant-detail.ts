@@ -41,7 +41,7 @@ import { requirePlatformAdmin } from '../guard'
  * ARE included and are not credentials — a `sub_…` appears in the URL Razorpay
  * serves the payer, and a `pay_…` is what a business quotes to support. Every
  * secret lives in a table this module does not touch and `arena_app` has no
- * grant on at all (0071).
+ * grant on at all (0079).
  */
 
 export type TenantBillingSubscription = {
@@ -104,7 +104,7 @@ export type TenantBillingRefund = {
   status: string
   gatewayRefundId: string | null
   createdAt: Date
-  /** When the money actually left (0076). Null unless the refund processed. */
+  /** When the money actually left (0084). Null unless the refund processed. */
   processedAt: Date | null
 }
 

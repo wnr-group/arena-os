@@ -1,17 +1,17 @@
 -- ============================================================================
--- Arena OS — 0075 where a subscription's billing period came from
+-- Arena OS — 0083 where a subscription's billing period came from
 --
 -- A correctness fix to the M16 lifecycle, not a new feature. One boolean.
 --
 -- ── THE BUG THIS CLOSES ─────────────────────────────────────────────────────
 --
--- `tenant_subscriptions.current_period_start/end` are documented (0070, 0071)
+-- `tenant_subscriptions.current_period_start/end` are documented (0078, 0079)
 -- as the PROVIDER's absolute view of the billing cycle — that is what makes
 -- webhook processing idempotent, because applying the same event twice computes
 -- the same period rather than advancing one.
 --
 -- But a row does not START that way. subscribeTenantToPlan() has to write SOME
--- period at creation time (the column is NOT NULL and 0070's
+-- period at creation time (the column is NOT NULL and 0078's
 -- tenant_subscriptions_period CHECK requires end > start), and Razorpay has not
 -- yet told us anything — the payer has not even opened the authorisation page.
 -- So it seeds the period from the tenant's REMAINING RUNWAY: the previous
@@ -69,7 +69,7 @@
 --                                     unchanged, so an out-of-order redelivery
 --                                     still cannot shorten a term.
 --
--- The replay protection 0070/0071 relied on is therefore not weakened for a
+-- The replay protection 0078/0079 relied on is therefore not weakened for a
 -- single row that has ever received a provider period; it is only lifted for
 -- the placeholder it was never meant to guard.
 -- ============================================================================
@@ -106,5 +106,5 @@ update public.tenant_subscriptions
 -- webhook has already located by `gateway_subscription_id` and locked.
 --
 -- No grant change. `arena_app` holds SELECT and nothing else on
--- tenant_subscriptions (0070); this column inherits exactly that, so a business
+-- tenant_subscriptions (0078); this column inherits exactly that, so a business
 -- can no more flip its own period source than it can flip its own status.

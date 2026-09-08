@@ -6,7 +6,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database and migration 0072 with all of its CHECK constraints (so a
+ * REAL: the database and migration 0080 with all of its CHECK constraints (so a
  * rounding bug is a failed INSERT, not a silently wrong bill), the RLS policies
  * and grants, the AES-256-GCM platform credentials, HMAC-SHA256 signatures
  * computed with Razorpay's documented scheme, the actual route handler in
@@ -118,7 +118,7 @@ async function main() {
 
   // ── fixtures ──────────────────────────────────────────────────────────────
   // Clear anything a previously-aborted run left behind. `plans.name` is unique
-  // across the whole catalogue (0070) and the gateway plan ids are unique too,
+  // across the whole catalogue (0078) and the gateway plan ids are unique too,
   // so a stale fixture would fail the next run on a collision that says nothing
   // about the code under test.
   await ownerPool.query(`delete from tenants where slug like 'tinv%'`)
@@ -357,7 +357,7 @@ async function main() {
     // resolveSupplyPlace() then found that non-string unequal to the seller's
     // code and declared the supply INTER-STATE, putting IGST on an invoice
     // that should carry CGST+SGST, with a stringified Function in
-    // `place_of_supply`. The 0072 CHECKs cannot catch it: the totals still
+    // `place_of_supply`. The 0080 CHECKs cannot catch it: the totals still
     // reconcile, only the tax head is wrong — on a document never rewritten.
     for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
       const code = stateCodeFromPlaceOfSupply(key)
@@ -472,7 +472,7 @@ async function main() {
     check('…subtotal is the gross', inv.subtotal === '7999.00')
     check('…taxable value ₹6778.81', inv.taxable_value === '6778.81')
     // The odd paisa goes to SGST, so the two sum EXACTLY to the GST total —
-    // which migration 0072 checks in the database.
+    // which migration 0080 checks in the database.
     check('…CGST ₹610.10', inv.cgst === '610.10')
     check('…SGST ₹610.09', inv.sgst === '610.09')
     check('…which sum to the GST total exactly', round2(Number(inv.cgst) + Number(inv.sgst)) === Number(inv.tax_total))
@@ -789,7 +789,7 @@ async function main() {
          address='99 New Street', place_of_supply='Maharashtra' where tenant_id=$1`,
       [A.tenantId],
     )
-    // Tag-unique: plans.name is globally unique (0070), so a fixed string here
+    // Tag-unique: plans.name is globally unique (0078), so a fixed string here
     // would collide with whatever a previous run left behind.
     await ownerPool.query(`update plans set name=$1, monthly_price='12345.00' where id=$2`, [
       `ZZ Inv Renamed ${tag}`,

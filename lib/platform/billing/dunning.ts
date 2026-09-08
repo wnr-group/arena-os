@@ -82,7 +82,7 @@ import { logDunningNotice, sendDunningNotice, type DunningNotifier } from './dun
  * way: this module reads and writes exactly four tables, always by our own ids,
  * and exports no generic elevated-write helper. `arena_app` has no write grant
  * on tenant_subscriptions, tenants.status or platform_dunning_notices at all
- * (0070/0071/0073), so there is no non-owner path to add.
+ * (0078/0079/0081), so there is no non-owner path to add.
  */
 
 /** What one run did. Every number is a count of ACTIONS TAKEN, not of rows seen. */
@@ -456,7 +456,7 @@ async function afterSuspension(
   //
   // Razorpay was already told, before this transaction opened (see processOne).
   //
-  // `cancelled_at` is required by tenant_subscriptions_cancelled_at (0070),
+  // `cancelled_at` is required by tenant_subscriptions_cancelled_at (0078),
   // which CHECKs that it is set if and only if status = 'cancelled', so the two
   // must move in one statement. `cancel_at_period_end` is cleared because the
   // request — whoever made it — has now been honoured.

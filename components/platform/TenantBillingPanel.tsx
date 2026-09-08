@@ -328,7 +328,7 @@ export function TenantBillingPanel({
                   {r.status}
                   {r.gatewayRefundId ? ` · ${r.gatewayRefundId}` : ''}
                   {/* The date the REVENUE CHART uses for a processed refund is
-                      when it settled (0076), not when it was raised. Showing the
+                      when it settled (0084), not when it was raised. Showing the
                       raised date alone made the two disagree across a month
                       boundary. Both are shown when they differ. */}
                   {' · '}

@@ -8,7 +8,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database, migrations 0070–0074, every RLS policy and grant, the
+ * REAL: the database, migrations 0078–0082, every RLS policy and grant, the
  * actual SQL aggregates behind MRR / mix / churn / revenue, the actual server
  * actions WITH their requirePlatformAdmin() guards driven through real session
  * rows, the actual override and refund domain code, the actual platform webhook
@@ -315,7 +315,7 @@ async function main() {
     // that would produce four rows in a naive count.
     const T_HISTORY = await makeTenant('hist')
     // Each closed period sits entirely in the past and before the next —
-    // tenant_subscriptions_period (0070) CHECKs end > start.
+    // tenant_subscriptions_period (0078) CHECKs end > start.
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -90, endOffsetDays: -60, cancelledOffsetDays: -60, createdOffsetDays: -90 })
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -60, endOffsetDays: -30, cancelledOffsetDays: -30, createdOffsetDays: -60 })
     await makeSub(T_HISTORY, PLAN_A, { status: 'expired', startOffsetDays: -30, endOffsetDays: -20, createdOffsetDays: -30 })
@@ -649,7 +649,7 @@ async function main() {
 
     const row = (await ownerPool.query('select * from tenant_subscriptions where id=$1', [sub])).rows[0]
     check('an admin-assigned subscription is closed immediately', row.status === 'cancelled')
-    check('cancelled_at is set (the 0070 CHECK requires it)', row.cancelled_at !== null)
+    check('cancelled_at is set (the 0078 CHECK requires it)', row.cancelled_at !== null)
     check('the row is kept, not deleted', row.id === sub)
     check(
       'the company account is NOT closed — that is a separate decision',
@@ -976,8 +976,8 @@ async function main() {
 
     // ── the webhook stamped WHEN the money left ───────────────────────────
     //
-    // 0076. Before it, settling wrote only `status`, and the revenue series
-    // bucketed on `created_at` — when the refund was RESERVED, which 0074
+    // 0084. Before it, settling wrote only `status`, and the revenue series
+    // bucketed on `created_at` — when the refund was RESERVED, which 0082
     // deliberately makes a different moment.
     check(
       'settling a refund stamps processed_at',
@@ -1006,10 +1006,10 @@ async function main() {
     check('…leaving gross unchanged', d.revenueTotals.gross === 1500)
     check('…and net = gross − refunded', d.revenueTotals.net === 1100)
 
-    // ── the month-boundary case 0076 exists for ───────────────────────────
+    // ── the month-boundary case 0084 exists for ───────────────────────────
     //
     // Reserved on 30 June, settled on 2 July — the gateway-timeout path, where
-    // 0074 leaves the row pending ON PURPOSE and a later webhook settles it.
+    // 0082 leaves the row pending ON PURPOSE and a later webhook settles it.
     // The money left in JULY, so it must be July's cash movement. Bucketing on
     // `created_at` booked it to June and restated a month that had already been
     // read.
@@ -1035,7 +1035,7 @@ async function main() {
     })
     check('…and it lands in July, when the money actually left', july.revenueTotals.refunded === 400)
 
-    // ── rows written before 0076 still bucket ─────────────────────────────
+    // ── rows written before 0084 still bucket ─────────────────────────────
     //
     // `coalesce(processed_at, created_at)`: a backfilled-null row keeps the old
     // behaviour rather than dropping out of the series entirely.
@@ -1052,7 +1052,7 @@ async function main() {
       db: ownerDb,
     })
     check(
-      'a pre-0076 refund with no processed_at falls back to created_at',
+      'a pre-0084 refund with no processed_at falls back to created_at',
       legacy.revenueTotals.refunded === 400,
     )
   }

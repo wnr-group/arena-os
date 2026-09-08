@@ -42,7 +42,7 @@ import { applyVerifiedRefundEvent } from './refunds'
  * lib/payments/webhook.ts takes, contained the same way: one transaction, one
  * lookup by our own reference, no generic elevated-write helper exported for
  * anything else to reach for. `arena_app` has no write grant on
- * tenant_subscriptions at all (0070), so there is no non-owner path to add.
+ * tenant_subscriptions at all (0078), so there is no non-owner path to add.
  */
 
 // ── payload ──────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ const paymentEntitySchema = z
     // rewords a description cannot change what happens to an account.
     //
     // Length-capped where it is stored (lib/platform/billing/lifecycle.ts) and
-    // again by a CHECK in migration 0073, because it is gateway-authored text
+    // again by a CHECK in migration 0081, because it is gateway-authored text
     // that ends up on a page.
     error_code: z.string().min(1).nullable().optional(),
     error_description: z.string().min(1).nullable().optional(),

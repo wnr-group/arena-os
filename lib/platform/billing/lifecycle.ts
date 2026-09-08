@@ -9,13 +9,13 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  *
  * Two local columns move, and they mean different things:
  *
- *   tenant_subscriptions.status   the SUBSCRIPTION's state (0070)
+ *   tenant_subscriptions.status   the SUBSCRIPTION's state (0078)
  *                                 trialing | active | past_due | cancelled | expired
  *
  *   tenants.status                the ACCOUNT's state as the operator sees it (0001)
  *                                 trial | active | suspended | cancelled
  *
- * 0070 already said they "move independently: a subscription can go past_due
+ * 0078 already said they "move independently: a subscription can go past_due
  * while the tenant is still active, and the decision to suspend is a separate,
  * deliberate act". This module IS that deliberate act, written down once.
  *
@@ -100,7 +100,7 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  *     cannot resurrect an account.
  *  4. A PROVIDER PERIOD NEVER GOES BACKWARDS. An out-of-order redelivery of an
  *     older event cannot shorten a period a newer one already set. The rule is
- *     scoped by `period_from_gateway` (migration 0075) so that it guards only
+ *     scoped by `period_from_gateway` (migration 0083) so that it guards only
  *     periods the provider actually gave us: the placeholder a row is CREATED
  *     with is replaced wholesale by the first real cycle, in either direction.
  *     See the note beside the comparison in applySubscriptionState().
@@ -116,7 +116,7 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  * of this runs.
  */
 
-/** The five subscription states 0070 defines. Not extended here. */
+/** The five subscription states 0078 defines. Not extended here. */
 export type LocalSubscriptionStatus =
   | 'trialing'
   | 'active'
@@ -184,7 +184,7 @@ export const HANDLED_EVENTS = new Set([
   'subscription.updated',
 ])
 
-/** Statuses that still count as "live" — the same three 0070's index permits. */
+/** Statuses that still count as "live" — the same three 0078's index permits. */
 const LIVE_STATUSES = ['trialing', 'active', 'past_due'] as const
 
 /** Once here, a subscription never moves again. */
@@ -245,7 +245,7 @@ export type ApplyParams = {
   failureReason?: string | null
 }
 
-/** Matches tenant_subscriptions_failure_reason_length in migration 0073. */
+/** Matches tenant_subscriptions_failure_reason_length in migration 0081. */
 const MAX_FAILURE_REASON = 300
 
 function normaliseFailureReason(reason: string | null | undefined): string | null {
@@ -289,7 +289,7 @@ export async function applySubscriptionState(
   }
 
   // Locate by OUR reference, and lock. idx_tenant_subscriptions_gateway_ref
-  // (0070) makes at most one row possible, so there is never a choice to make.
+  // (0078) makes at most one row possible, so there is never a choice to make.
   const [row] = await tx
     .select({
       id: tenantSubscriptions.id,
@@ -300,7 +300,7 @@ export async function applySubscriptionState(
       currentPeriodStart: tenantSubscriptions.currentPeriodStart,
       currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
       // Whether the two above are the provider's window or the placeholder the
-      // row was created with (migration 0075). Decides the clamp below.
+      // row was created with (migration 0083). Decides the clamp below.
       periodFromGateway: tenantSubscriptions.periodFromGateway,
       cancelledAt: tenantSubscriptions.cancelledAt,
       lastPaymentId: tenantSubscriptions.gatewayLastPaymentId,
@@ -371,7 +371,7 @@ export async function applySubscriptionState(
   // base period from that invoice, then credited a later plan change for
   // hundreds of days the business had actually consumed.
   //
-  // `period_from_gateway` (migration 0075) records which of the two a row is
+  // `period_from_gateway` (migration 0083) records which of the two a row is
   // holding, so the decision needs no clock reasoning:
   //
   //   false → a placeholder. Take the provider's window WHOLE, in either
@@ -382,7 +382,7 @@ export async function applySubscriptionState(
   // Ordering on the timestamps instead was tried and does not work: Razorpay
   // backdates `current_start` to the real cycle start, which is routinely
   // EARLIER than the moment we created the row, and it is truncated to whole
-  // seconds while the placeholder start is not. Migration 0075's header carries
+  // seconds while the placeholder start is not. Migration 0083's header carries
   // the full argument.
   const providerStart = fromUnixSeconds(params.currentStart)
   const providerEnd = fromUnixSeconds(params.currentEnd)
@@ -393,7 +393,7 @@ export async function applySubscriptionState(
 
   if (providerEnd) {
     // A range we can write as-is: both ends present and correctly ordered, so
-    // tenant_subscriptions_period (0070) holds by construction.
+    // tenant_subscriptions_period (0078) holds by construction.
     const wholeRange = providerStart !== null && providerEnd.getTime() > providerStart.getTime()
 
     if (!periodFromGateway && wholeRange) {
@@ -514,7 +514,7 @@ export async function applySubscriptionState(
           lastPaymentFailureReason: incomingReason ?? row.failureReason,
         }
       : {}),
-    // tenant_subscriptions_cancelled_at (0070) CHECKs that cancelled_at is set
+    // tenant_subscriptions_cancelled_at (0078) CHECKs that cancelled_at is set
     // if and only if status = 'cancelled', so the two must be written in the
     // same statement. An already-cancelled row keeps its ORIGINAL timestamp —
     // a redelivery must not rewrite when the cancellation happened.

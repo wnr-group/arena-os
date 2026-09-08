@@ -19,7 +19,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  * Arena OS giving a business back part or all of what it paid for its
  * subscription. NOT lib/billing/refunds.ts, which is a VENUE refunding its own
  * customer out of its own till — different money, different direction,
- * different Razorpay account (0071), different parent table.
+ * different Razorpay account (0079), different parent table.
  *
  * ═══ THE ORDERING, AND WHY IT IS THIS WAY ═══════════════════════════════════
  *
@@ -64,7 +64,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  *
  * ═══ IDEMPOTENCY, AT THREE LEVELS ═══════════════════════════════════════════
  *
- *   1. `request_key` — the caller's retry token, unique per tenant (0074),
+ *   1. `request_key` — the caller's retry token, unique per tenant (0082),
  *      the same idiom payments.idempotency_key (0040) uses. A double-clicked
  *      button sends the same key, the second insert is refused, and the FIRST
  *      refund is returned. This is what the invoice cap alone cannot do: two
@@ -232,7 +232,7 @@ export async function refundPlatformInvoice(
     if (!invoice) throw new PlatformRefundError('Invoice not found.')
 
     // A credit note is not money that moved — `platform_invoices_credit_note_
-    // unpaid` (0072) guarantees it carries no payment — so there is nothing to
+    // unpaid` (0080) guarantees it carries no payment — so there is nothing to
     // give back.
     if (invoice.kind !== 'subscription') {
       throw new PlatformRefundError('Only a subscription invoice can be refunded.')
@@ -436,7 +436,7 @@ export async function refundPlatformInvoice(
       // Stamped only on the way to 'processed', and only if it is not already
       // stamped: `coalesce` makes this SET-ONCE even in the race where a
       // `refund.processed` webhook lands before this response returns. The
-      // revenue series buckets on this column (0076), and a figure a month has
+      // revenue series buckets on this column (0084), and a figure a month has
       // already been reported on must not move because a duplicate settle
       // arrived seconds later.
       ...(status === 'processed'
@@ -457,7 +457,7 @@ export async function refundPlatformInvoice(
 /**
  * Razorpay's refund status → ours.
  *
- * The three words are identical on purpose (0074), so this is a VALIDATION not
+ * The three words are identical on purpose (0082), so this is a VALIDATION not
  * a translation: anything unrecognised falls back to 'pending', never to
  * 'processed'. Treating an unknown provider status as "the money has left"
  * would be a guess in the one direction that cannot be taken back.
@@ -512,7 +512,7 @@ export async function applyVerifiedRefundEvent(
     .update(platformRefunds)
     .set({
       status: params.status,
-      // The moment the money actually left, for the revenue series (0076). Only
+      // The moment the money actually left, for the revenue series (0084). Only
       // on 'processed' — a failed refund never settled and must keep a null
       // here rather than a timestamp that would read as a cash movement.
       ...(params.status === 'processed'

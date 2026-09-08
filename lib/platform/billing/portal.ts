@@ -50,8 +50,8 @@ import type { OwnSubscription, SubscribablePlan } from './data'
  * ── And nothing here is a security boundary ─────────────────────────────────
  *
  * withUser() on the restricted `arena_app` role; RLS decides every row.
- * `platform_invoices_owner_select` (0072) admits only invoices for a tenant the
- * caller OWNS, `tenant_subscriptions_select` (0070) only their own
+ * `platform_invoices_owner_select` (0080) admits only invoices for a tenant the
+ * caller OWNS, `tenant_subscriptions_select` (0078) only their own
  * subscription. The tenant id comes from the resolved context, never from an
  * argument. The page's role check is presentation; this is the wall.
  */
@@ -88,7 +88,7 @@ export type PortalInvoice = {
   total: string
   currency: string
   status: string
-  /** A stored document, when one exists. Null today — see migration 0072. */
+  /** A stored document, when one exists. Null today — see migration 0080. */
   documentUrl: string | null
 }
 
@@ -213,7 +213,7 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
     // uses — so a business that was cancelled and later re-subscribed sees its
     // NEW subscription's state, not the ghost of the old one.
     //
-    // RLS (tenant_subscriptions_select, 0070) confines this to the caller's own
+    // RLS (tenant_subscriptions_select, 0078) confines this to the caller's own
     // tenant exactly as it does the read above; the tenant id comes from the
     // resolved context.
     const [arrears] = await tx
@@ -330,7 +330,7 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
 
     const portalPlans: PortalPlan[] = catalogue
       // A retired plan the tenant is grandfathered onto stays readable (RLS
-      // policy plans_select_subscribed, 0070) but must never be offered.
+      // policy plans_select_subscribed, 0078) but must never be offered.
       .filter((p) => p.active)
       .map((p) => ({
         id: p.id,

@@ -1,7 +1,7 @@
 -- ============================================================================
--- Arena OS — 0072 platform invoices: recurring billing + GST (M16 #4)
+-- Arena OS — 0080 platform invoices: recurring billing + GST (M16 #4)
 --
--- 0070 built the plan/entitlement model. 0071 connected Arena OS's own Razorpay
+-- 0078 built the plan/entitlement model. 0079 connected Arena OS's own Razorpay
 -- account and the subscription lifecycle. This migration adds the DOCUMENT that
 -- the recurring charge produces: a GST invoice from Arena OS to the business.
 --
@@ -32,12 +32,12 @@
 --
 -- ── MONEY CONVENTION, STATED ONCE ───────────────────────────────────────────
 --
--- numeric(10,2) rupees everywhere, matching `invoices` (0018), `plans` (0070)
+-- numeric(10,2) rupees everywhere, matching `invoices` (0018), `plans` (0078)
 -- and every other money column in this schema. All arithmetic goes through
 -- round2() from lib/billing/pricing.ts — the project's single money helper —
 -- and never through raw float addition.
 --
--- PLAN PRICES ARE GST-INCLUSIVE. This is forced, not chosen: 0071's
+-- PLAN PRICES ARE GST-INCLUSIVE. This is forced, not chosen: 0079's
 -- subscribeTenantToPlan() refuses to create a subscription unless the Razorpay
 -- plan's amount equals plans.monthly_price/annual_price exactly, so the rupees
 -- Razorpay captures ARE the catalogue price. GST is therefore back-computed out
@@ -47,7 +47,7 @@
 
 -- ── 1. who Arena OS is, on its own invoices ─────────────────────────────────
 --
--- A singleton, the same `id boolean` idiom as platform_payment_settings (0071):
+-- A singleton, the same `id boolean` idiom as platform_payment_settings (0079):
 -- there is one supplier. Separate from that table on purpose — that one holds
 -- SECRETS and is granted to nobody, while this is a letterhead. Keeping them
 -- apart means the letterhead can grow fields without anyone re-reasoning about
@@ -129,7 +129,7 @@ create table if not exists public.platform_invoices (
   tenant_id uuid not null references public.tenants(id) on delete cascade,
 
   -- WHAT WAS BILLED FOR. RESTRICT, not cascade — a subscription or plan that
-  -- an invoice references must not be deletable out from under it. 0070 already
+  -- an invoice references must not be deletable out from under it. 0078 already
   -- retires plans with active=false rather than deleting them for this reason.
   subscription_id uuid not null references public.tenant_subscriptions(id) on delete restrict,
   plan_id         uuid not null references public.plans(id) on delete restrict,
@@ -192,7 +192,7 @@ create table if not exists public.platform_invoices (
 
   -- ── reconciliation ──────────────────────────────────────────────────────
   -- 'razorpay' on the PLATFORM account. Named `gateway` to match
-  -- tenant_subscriptions (0070) and payment_intents (0033).
+  -- tenant_subscriptions (0078) and payment_intents (0033).
   gateway                 text,
   gateway_payment_id      text,
   gateway_subscription_id text,
@@ -279,7 +279,7 @@ create index if not exists idx_platform_invoices_subscription
 -- commercial information, of no use to a cashier or a kitchen hand, and this
 -- codebase already draws that exact line: `business_profiles` reserves the
 -- legal identity for owners (0020), /settings/business is owner-only, and
--- 0071's subscribe/cancel actions are behind requireOwner().
+-- 0079's subscribe/cancel actions are behind requireOwner().
 --
 -- So the policy uses auth_role_in() = 'owner', the same helper 0020 uses.
 --
@@ -294,7 +294,7 @@ create index if not exists idx_platform_invoices_subscription
 --
 -- ── platform_billing_settings / platform_sequences ─────────────────────────
 --
--- No policies and no grants, exactly like platform_payment_settings (0071).
+-- No policies and no grants, exactly like platform_payment_settings (0079).
 -- Both are platform-internal: the letterhead is snapshotted onto every invoice
 -- at issue time, so no tenant ever needs to read the live row, and a counter is
 -- nobody's business but the supplier's.

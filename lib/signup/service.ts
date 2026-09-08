@@ -75,7 +75,7 @@ import { pgError } from '@/lib/utils/errors'
  *               500. The availability check is a courtesy; THIS is the rule.
  *   * owner   — findOrCreateUser() is keyed on email, so a retry reuses the
  *               existing user rather than creating a second one.
- *   * plan    — idx_tenant_subscriptions_one_live (0070) permits exactly one
+ *   * plan    — idx_tenant_subscriptions_one_live (0078) permits exactly one
  *               live subscription per tenant, and attachTrialSubscription()
  *               below refuses outright if one already exists.
  */
@@ -144,7 +144,7 @@ export type SignupResult = {
  *
  * Shaped exactly like the local half of subscribeTenantToPlan() — same table,
  * same `trialing` status, same one-live rule — but with `gateway` and
- * `gateway_subscription_id` left null, which is precisely what 0070 says an
+ * `gateway_subscription_id` left null, which is precisely what 0078 says an
  * admin-assigned plan looks like. A trial is not a mandate; there is nothing
  * for Razorpay to hold.
  *
@@ -183,7 +183,7 @@ export async function attachTrialSubscription(
         tenantId: input.tenantId,
         planId: input.planId,
         billingPeriod: input.billingPeriod,
-        // The live-but-unpaid state 0070 already defines. Deliberately NOT a
+        // The live-but-unpaid state 0078 already defines. Deliberately NOT a
         // sixth enum value: a trial IS a subscription that has not been paid
         // for, which is what `trialing` means everywhere else in this codebase.
         status: 'trialing',

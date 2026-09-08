@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0074 platform refunds (AROS-114)
+-- Arena OS — 0082 platform refunds (AROS-114)
 --
 -- AROS-114 asks for a platform billing dashboard with manual overrides. Four of
 -- the five overrides need NO schema at all, and that is worth stating first
@@ -8,8 +8,8 @@
 --   change plan     → lib/actions/plans.ts assignPlan() already does this, and
 --                     already refuses to touch a gateway-backed subscription.
 --   extend trial    → moves tenant_subscriptions.current_period_end, a column
---                     that has existed since 0070.
---   comp / discount → ALREADY MODELLED. 0072 built credit notes plus
+--                     that has existed since 0078.
+--   comp / discount → ALREADY MODELLED. 0080 built credit notes plus
 --                     consumeProrationCredit(), which sets an outstanding
 --                     credit against the next charge as `adjustment`. A comp is
 --                     a credit note with a different reason on it. Adding a
@@ -38,7 +38,7 @@
 --                              status.
 --   credit notes               are the opposite operation: a credit note is an
 --                              unpaid credit set against a FUTURE charge, and
---                              `platform_invoices_credit_note_unpaid` (0072)
+--                              `platform_invoices_credit_note_unpaid` (0080)
 --                              CHECKs that it carries no gateway_payment_id
 --                              precisely so it can never be mistaken for money
 --                              that moved.
@@ -65,7 +65,7 @@ create table if not exists public.platform_refunds (
   -- the LOCKED invoice row, never from a caller.
   tenant_id uuid not null references public.tenants(id) on delete cascade,
 
-  -- restrict, exactly like platform_invoices.subscription_id (0072): the bill a
+  -- restrict, exactly like platform_invoices.subscription_id (0080): the bill a
   -- refund reverses must not be deletable out from under it. Historical billing
   -- data is never deleted.
   invoice_id uuid not null
@@ -73,7 +73,7 @@ create table if not exists public.platform_refunds (
 
   -- ── the gateway side ────────────────────────────────────────────────────
   --
-  -- ARENA OS's Razorpay account, never a tenant's own (see 0071's header for
+  -- ARENA OS's Razorpay account, never a tenant's own (see 0079's header for
   -- why the two must never cross). `gateway_payment_id` is copied from the
   -- invoice being refunded, so a refund can only ever point at the payment that
   -- invoice recorded.
@@ -161,8 +161,8 @@ create index if not exists idx_platform_refunds_tenant
 
 -- ── RLS + grants ────────────────────────────────────────────────────────────
 --
--- Exactly the treatment platform_invoices got in 0072 and
--- platform_dunning_notices got in 0073, for the same reason: what a business
+-- Exactly the treatment platform_invoices got in 0080 and
+-- platform_dunning_notices got in 0081, for the same reason: what a business
 -- pays Arena OS — and what came back — is the PROPRIETOR's own commercial
 -- information. `auth_role_in() = 'owner'`, the helper 0020 introduced.
 --

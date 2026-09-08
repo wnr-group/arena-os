@@ -14,7 +14,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  * There is no `mrr` column, no metrics table, no nightly rollup and no cache.
  * Every figure on the dashboard is an aggregate over the four tables that
  * already hold the facts — `plans`, `tenant_subscriptions`, `tenants` and
- * `platform_invoices` (plus `platform_refunds`, 0074). A stored metric is a
+ * `platform_invoices` (plus `platform_refunds`, 0082). A stored metric is a
  * second source of truth about money, and the first thing it does is drift
  * from the rows it was computed from.
  *
@@ -36,7 +36,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  *
  * NOTHING here reads `platform_payment_settings`. No key id, no ciphertext, no
  * webhook secret — those columns are not selected anywhere in this file, and
- * `arena_app` has no grant on that table at all (0071).
+ * `arena_app` has no grant on that table at all (0079).
  *
  * ═══ MRR — THE DEFINITION ═══════════════════════════════════════════════════
  *
@@ -168,7 +168,7 @@ async function readMrr(db: DB): Promise<MrrByCurrency[]> {
  * `tenant_subscriptions` keeps history — a tenant that has changed plans three
  * times has four rows — so counting rows would report one business several
  * times. The `distinct on (tenant_id)` below collapses each tenant to its ONE
- * live subscription, which `idx_tenant_subscriptions_one_live` (0070) already
+ * live subscription, which `idx_tenant_subscriptions_one_live` (0078) already
  * guarantees is at most one; the `distinct on` is what makes the query correct
  * even if that index were ever dropped or built NOT VALID.
  *
@@ -411,13 +411,13 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  * `kind = 'subscription' and status = 'paid'`. That is not a guess about the
  * existing rules — it is the only combination issueSubscriptionInvoice() can
  * write, because an invoice is raised exactly when a `subscription.charged`
- * webhook proves Razorpay captured the money (0072, AROS-4). A `void` invoice
+ * webhook proves Razorpay captured the money (0080, AROS-4). A `void` invoice
  * and a `draft` never represented cash.
  *
  * ── WHY CREDIT NOTES ARE NOT SUBTRACTED ─────────────────────────────────────
  *
  * A credit note in this schema is NOT money going out —
- * `platform_invoices_credit_note_unpaid` (0072) CHECKs that it carries no
+ * `platform_invoices_credit_note_unpaid` (0080) CHECKs that it carries no
  * gateway payment, precisely because none moved. It is an OBLIGATION: an amount
  * Arena OS owes the tenant, discharged only by a refund (./refunds.ts, which
  * does move money and is counted below) or by an operator's explicit act.
@@ -429,19 +429,19 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  *
  * ── WHY REFUNDS ARE ────────────────────────────────────────────────────────
  *
- * A refund IS money leaving the account (0074). Only `status = 'processed'`
+ * A refund IS money leaving the account (0082). Only `status = 'processed'`
  * counts: a `pending` refund has not left yet and a `failed` one never will,
  * and both are decided by a signature-verified webhook rather than by the
  * request that started them.
  *
- * Refunds are bucketed by when they PROCESSED — `processed_at` (0076) — and not
+ * Refunds are bucketed by when they PROCESSED — `processed_at` (0084) — and not
  * by two other dates it would be easy to reach for:
  *
  *   NOT the invoice they reverse. A refund issued in March against a January
  *   charge is March's cash movement; restating January would change a month an
  *   operator has already read and reported on.
  *
- *   NOT `created_at`, which is when the refund was RESERVED. 0074 splits
+ *   NOT `created_at`, which is when the refund was RESERVED. 0082 splits
  *   reserving from settling on purpose, and on a gateway timeout the row is
  *   deliberately left pending until a webhook settles it — possibly the next
  *   day, and across a month boundary the next reporting period. Bucketing on
@@ -449,7 +449,7 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  *   refund reserved on 31 March and settled on 2 April was absent when March was
  *   read on the 1st and present inside March when it was read on the 3rd.
  *
- * `coalesce(processed_at, created_at)` is the read, so rows written before 0076
+ * `coalesce(processed_at, created_at)` is the read, so rows written before 0084
  * (and any that somehow reach 'processed' without a stamp) keep the old
  * behaviour instead of dropping out of the series.
  *
@@ -487,7 +487,7 @@ async function readRevenue(
 
   // `coalesce(processed_at, created_at)` — see the note above. Written once as a
   // lateral so the bucket expression and the range filter can never drift onto
-  // two different columns, which is the shape the 0076 bug took.
+  // two different columns, which is the shape the 0084 bug took.
   const refundRows = await db.execute<RefundBucketRow>(sql`
     select
       date_trunc(${bucket}, (s.settled_on)::timestamp)::date::text as bucket_start,

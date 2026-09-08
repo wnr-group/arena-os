@@ -15,7 +15,7 @@ import { SubscriptionError } from './subscribe'
  *
  * ── THE CHOSEN BEHAVIOUR ────────────────────────────────────────────────────
  *
- * The project's existing rules say nothing about cancellation timing — 0070
+ * The project's existing rules say nothing about cancellation timing — 0078
  * left the whole billing story out — so this establishes one, and states it
  * where an operator will find it:
  *
@@ -113,7 +113,7 @@ export async function cancelTenantSubscription(
   if (!live) throw new SubscriptionError('There is no active subscription to cancel.')
 
   if (!live.gatewaySubscriptionId || live.gateway !== GATEWAY) {
-    // An admin-assigned plan (0070's assignPlan) has no gateway object, so
+    // An admin-assigned plan (0078's assignPlan) has no gateway object, so
     // there is nothing to cancel at Razorpay. Ending it is an operator action,
     // not a self-serve one — there is no money to stop.
     throw new SubscriptionError(

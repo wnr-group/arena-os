@@ -6,7 +6,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database, migration 0073, every RLS policy and grant, the
+ * REAL: the database, migration 0081, every RLS policy and grant, the
  * AES-256-GCM encryption of the platform credentials, the HMAC-SHA256 webhook
  * signatures, the actual route handler in
  * app/api/webhooks/platform-razorpay/route.ts driven with real NextRequest
@@ -806,7 +806,7 @@ async function main() {
     const row = await subRow(idC)
 
     check('the subscription is cancelled', run.cancelled >= 1 && row.status === 'cancelled')
-    check('cancelled_at is set (the 0070 CHECK requires it)', row.cancelled_at !== null)
+    check('cancelled_at is set (the 0078 CHECK requires it)', row.cancelled_at !== null)
     check('cancel_at_period_end is cleared', row.cancel_at_period_end === false)
     check('tenant → cancelled', (await tenantStatus(A.tenantId)) === 'cancelled')
     check(

@@ -58,7 +58,7 @@ type LiveSubscription = {
 /**
  * The tenant's one live subscription, LOCKED.
  *
- * The same three statuses `idx_tenant_subscriptions_one_live` (0070) permits,
+ * The same three statuses `idx_tenant_subscriptions_one_live` (0078) permits,
  * and the same "newest first" tiebreak every other reader in this codebase
  * uses, so an override acts on exactly the row the dashboard displayed.
  */
@@ -240,7 +240,7 @@ export type CompResult = {
  * This was the single most important finding of the inspection. AROS-114 says
  * "inspect whether the current model already supports discounts, credits, comp
  * periods or zero-price subscriptions… do NOT add a second discount system."
- * It supports credits, fully, and has since AROS-4 (migration 0072):
+ * It supports credits, fully, and has since AROS-4 (migration 0080):
  *
  *   issueCreditNote()         raises a positive-valued credit note against the
  *                             tenant, status 'issued' = outstanding.
@@ -401,7 +401,7 @@ export type ForceCancelResult = {
  *
  * `tenants.status` is deliberately NOT touched. Cancelling a SUBSCRIPTION and
  * closing an ACCOUNT are two decisions; `setCompanyStatus()` is the second one
- * and already exists. 0071's header states the same separation from the other
+ * and already exists. 0079's header states the same separation from the other
  * direction ("cancelling an account in platform admin does not stop its
  * subscription"), and the lifecycle already applies exactly this rule to an
  * uncharged subscription — `wasPaid === false` leaves the tenant alone. Where a
@@ -509,7 +509,7 @@ export async function forceCancelTenantSubscription(
       .update(tenantSubscriptions)
       .set({
         status: 'cancelled',
-        // tenant_subscriptions_cancelled_at (0070) CHECKs that this is set if
+        // tenant_subscriptions_cancelled_at (0078) CHECKs that this is set if
         // and only if status = 'cancelled', so the two move in one statement.
         cancelledAt: now,
         cancelAtPeriodEnd: false,
