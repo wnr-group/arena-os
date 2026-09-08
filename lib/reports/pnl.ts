@@ -151,6 +151,35 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
   // below: this is a REPORT, and lib/reports/payroll.ts — the payroll cost
   // report proper — gates on the same key for the same reason. One rule for
   // the whole module rather than a second, per-figure one.
+  //
+  // ── Reviewed and kept. Why a per-figure gate would be worse ───────────────
+  //
+  // The obvious alternative — zero the payroll and expense lines when those
+  // modules are not entitled — does not degrade this report, it FALSIFIES it.
+  // netProfit is revenue − expenses − payroll, so suppressing the cost side
+  // leaves an owner reading their entire revenue as profit. A wrong profit
+  // figure presented as a real one is worse than either showing the number or
+  // refusing the whole report.
+  //
+  // And there is nothing here a tenant did not already own. Every write in
+  // lib/actions/expenses.ts and lib/actions/payroll.ts is gated, so a tenant
+  // that never held those modules has no rows to total and sees 0.00 on both
+  // lines regardless. The only tenant for whom these figures are non-zero is
+  // one that HELD the module and later downgraded — which makes this a read of
+  // its own history, the same line drawn for self-service payslips in
+  // lib/payroll/payslips.ts.
+  //
+  // That property holds BECAUSE every write goes through those gated actions.
+  // A future import tool, seeding path or admin override that writes expenses
+  // or payslips directly would break it, and reopen this question.
+  //
+  // Audience is the last piece: requireReportAccess() above is owner/manager
+  // only, and the payroll line is an aggregate (SUM of gross, a payslip count)
+  // with no per-employee figure in it. Nobody sees a salary here who could not
+  // already see the wage bill.
+  //
+  // If the modules' figures ever must be strictly separated, the answer is to
+  // refuse the whole report — not to zero two of its three lines.
   await requireEntitlement(ctx, 'module.reports')
 
   const periods = monthsOverlapping(range)

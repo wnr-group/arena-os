@@ -718,3 +718,55 @@ Mostly non-schema (infra, security, ops). Schema touches:
   and its staff limit is the plan's number rather than a denial; creating without
   a plan, with a retired plan, or with an unknown plan id is refused and leaves
   no tenant behind.
+
+- 2026-09-08 — already-issued payslips survive a downgrade — no migration.
+  **A module gate was answering the wrong question for one of its readers.**
+
+  M16 #2's gates ask "does this business's plan include Payroll?". That is right
+  for generating payroll and for the manager's payroll console. It was wrong for
+  an employee opening a payslip they had already been issued: `listMyPayslips()`
+  and `getPayslipById()` both called `requireEntitlement('module.payroll')`, and
+  `/payslips` redirected before either was reached. So a tenant downgrading to a
+  plan without Payroll — or simply letting its subscription lapse — retroactively
+  cut every member of its staff off from their own salary records. In India a
+  salary slip is routinely required for a loan, a visa or a tax filing, and the
+  employee is not the party that changed the plan.
+
+  The line now runs between GENERATING payroll and READING YOUR OWN record:
+
+  | | |
+  |---|---|
+  | `runPayrollForPeriod`, salary structures, advances (all 5 writes) | gated |
+  | `listPayrollPeriods`, `listPayslipsForPeriod` (manager console) | gated |
+  | `listMyPayslips`, `getPayslipById` (self-service) | **ungated** |
+
+  This is the same line `entitlement-guard.ts` already draws for limits —
+  "denial blocks CREATING new items … it never blocks reading what a tenant
+  already has" — applied to a module gate, and the same line the customer portal
+  (M9) draws by carrying no entitlement gate at all: a third party's access to
+  their own records sits outside the plan model. The plan still sells running
+  payroll; it can no longer un-issue a payslip.
+
+  **RLS is untouched and remains the security boundary.** `payslips_self_select`
+  (migration 0030) scopes an employee to their own `membership_id` and
+  `payslips_manager_select` lets an owner/manager open any single row. Removing
+  the plan check widened nothing — a manager on a downgraded plan still cannot
+  ENUMERATE payslips, because `listPayslipsForPeriod()` stays gated, so only
+  documents already known to exist are reachable.
+
+  Verified by `npm run test:m16:payslip-downgrade`
+  (`scripts/test-payslip-downgrade.ts`), which moves ONE tenant across the
+  downgrade — checking either side alone would miss a gate that never fired or
+  one that never lifted — and asserts all three rows of the table above, plus the
+  fully-lapsed (no subscription at all) case, plus that an employee still cannot
+  read a colleague's payslip.
+
+  **Related, deliberately NOT changed:** the P&L report gates on
+  `module.reports` alone, so a tenant with Reports but without Payroll/Expenses
+  still sees the wage-bill and expense lines. Reviewed and kept — zeroing those
+  lines would not degrade the report but falsify it, since `netProfit` is
+  revenue − expenses − payroll and an owner would read all revenue as profit.
+  Every expense/payroll write is gated, so a tenant that never held those
+  modules totals zero anyway; a non-zero figure means it held the module and
+  downgraded, which is the same read-your-own-history case as above. The
+  reasoning is recorded in `lib/reports/pnl.ts`.
