@@ -6,7 +6,11 @@ import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
 import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
-import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
+import {
+  listOrdersForBookings,
+  listOrderItemModifierNames,
+  openOrderIdsByBooking as computeOpenOrderIdsByBooking,
+} from '@/lib/orders/data'
 import { listKotStatusesForBookings } from '@/lib/kots/data'
 import { listBookingBillingStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
@@ -56,9 +60,6 @@ export default async function FloorPage() {
   )
 
   const ordersByBooking: Record<string, OrderSummary[]> = {}
-  // Distinct open orders per booking (a left-joined item row would otherwise
-  // double-count the same order once per item).
-  const openOrderIdsByBooking: Record<string, Set<string>> = {}
   for (const row of orderRows) {
     if (!row.bookingId) continue
     const list = (ordersByBooking[row.bookingId] ??= [])
@@ -84,11 +85,13 @@ export default async function FloorPage() {
         modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
       })
     }
-    if (row.status === 'open') {
-      const set = (openOrderIdsByBooking[row.bookingId] ??= new Set())
-      set.add(row.orderId)
-    }
   }
+  // Distinct open orders per booking (a left-joined item row would otherwise
+  // double-count the same order once per item) — filtered the same way as
+  // activeKotByBooking below, so a still-unreviewed QR order can't count as
+  // "open" here while also failing to set hasActiveKot (see
+  // openOrderIdsByBooking's doc comment in lib/orders/data.ts).
+  const openOrderIdsByBooking = computeOpenOrderIdsByBooking(orderRows)
 
   const activeKotByBooking = new Set<string>()
   for (const row of kotRows) {

@@ -15,6 +15,10 @@
  *   - an item on a `cancelled` order is refused
  *   - voiding the LAST active item on an order cancels its still-open KOT;
  *     voiding one of several active items leaves the ticket alone
+ *   - a comped item still counts as "something happened": mixing a comp
+ *     with a void on the same order never cancels the order or its KOT,
+ *     regardless of which decision comes last (comp-then-void and
+ *     void-then-comp both leave the order open)
  *   - a non-manager's request sits `pending` and does NOT touch the bill,
  *     the item row, or the KOT until a manager decides it
  *   - a manager approving a pending request applies it exactly like a direct
@@ -194,6 +198,11 @@ async function main() {
 
   async function kotStatus(orderId: string): Promise<string | undefined> {
     const { rows } = await ownerPool.query(`select status from kots where order_id=$1`, [orderId])
+    return rows[0]?.status
+  }
+
+  async function orderStatus(orderId: string): Promise<string | undefined> {
+    const { rows } = await ownerPool.query(`select status from orders where id=$1`, [orderId])
     return rows[0]?.status
   }
 
@@ -464,6 +473,56 @@ async function main() {
 
     const cross = await attempt(() => decide(B, req.requestId, 'approve'))
     check("tenant B cannot decide tenant A's request (RLS ⇒ not found)", !cross.ok && cross.orderError && /not found/i.test(cross.message))
+
+    await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, session.id)))
+  }
+
+  // ── 9. a mix of comp + void on the same order — a comped item still
+  //      counts as "something happened", so it must block the order/KOT
+  //      cancellation the same way an active item would, regardless of
+  //      which decision (comp or void) is made last ────────────────────────
+  {
+    // comp first, then void the remaining item
+    const session = await seat(A, A.tables[0], 2)
+    const o = await order(A, session.id, 2)
+    const [item1, item2] = await orderItemIds(o.id)
+
+    await voidItem(A, item1, 'comp', 'Manager comped this one')
+    await voidItem(A, item2, 'void', 'Kitchen ran out')
+
+    check('comp-then-void: order stays open, not wrongly cancelled', (await orderStatus(o.id)) === 'open')
+    check('comp-then-void: KOT left alone — the comped item was served', (await kotStatus(o.id)) === 'pending')
+
+    await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, session.id)))
+  }
+  {
+    // void first, then comp the remaining item — same end state as above,
+    // regardless of click order
+    const session = await seat(A, A.tables[1], 2)
+    const o = await order(A, session.id, 2)
+    const [item1, item2] = await orderItemIds(o.id)
+
+    await voidItem(A, item1, 'void', 'Kitchen ran out')
+    await voidItem(A, item2, 'comp', 'Manager comped this one')
+
+    check('void-then-comp: order stays open, not wrongly cancelled', (await orderStatus(o.id)) === 'open')
+    check('void-then-comp: KOT left alone — the comped item was served', (await kotStatus(o.id)) === 'pending')
+
+    await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, session.id)))
+  }
+  {
+    // all-voided (no comp at all) must still cancel the order + KOT, exactly
+    // as section 1 already covers for a single item — repeat with two, to
+    // pin down that the new ne('voided') check doesn't regress the plain case
+    const session = await seat(A, A.tables[2], 2)
+    const o = await order(A, session.id, 2)
+    const [item1, item2] = await orderItemIds(o.id)
+
+    await voidItem(A, item1, 'void', 'wrong table')
+    await voidItem(A, item2, 'void', '86ed')
+
+    check('all-voided: order is cancelled once nothing is left active or comped', (await orderStatus(o.id)) === 'cancelled')
+    check('all-voided: KOT cancelled too', (await kotStatus(o.id)) === 'cancelled')
 
     await withUser(A.userId, (tx) => tx.update(schema.bookings).set({ status: 'completed' }).where(eq(schema.bookings.id, session.id)))
   }

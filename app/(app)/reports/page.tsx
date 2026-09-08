@@ -8,8 +8,11 @@ import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
 import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
+import { Pager, pageInfo } from '@/components/reports/Pager'
 
-type Search = { from?: string; to?: string }
+type Search = { from?: string; to?: string; page?: string }
+
+const DAILY_PAGE_SIZE = 10
 
 /**
  * Revenue & Bookings dashboard (AROS-65).
@@ -48,8 +51,16 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   const maxPeak = Math.max(...bookings.peakHours.map((h) => h.bookings), 0)
   const maxResource = Math.max(...bookings.topResources.map((r) => r.minutes), 0)
 
-  // CSV columns for the client-side export button (shared ExportCsvButton) —
-  // exports exactly the rows already rendered below, nothing re-fetched.
+  // Table only — the CSV export below still gets every day in range, and the
+  // summary cards/footer totals are computed over the full range, not the page.
+  const dailyPage = pageInfo(sp.page, data.days.length, DAILY_PAGE_SIZE)
+  const pagedDays = data.days.slice((dailyPage.page - 1) * DAILY_PAGE_SIZE, dailyPage.page * DAILY_PAGE_SIZE)
+  const dailyHref = (page: number) => `/reports?from=${range.start}&to=${range.end}&page=${page}`
+
+  // CSV columns for the client-side export button (shared ExportCsvButton).
+  // Exports data.days — the FULL date range, not just the current page of
+  // pagedDays — so "Export CSV" can hand back far more rows than are
+  // visible on screen. Nothing re-fetched either way.
   const dailyCols: CsvColumn<(typeof data.days)[number]>[] = [
     { key: 'day', label: 'Date' },
     { key: 'gross', label: 'Gross' },
@@ -143,7 +154,7 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
               </tr>
             </thead>
             <tbody>
-              {data.days.map((d) => (
+              {pagedDays.map((d) => (
                 <tr key={d.day} className="border-b border-border last:border-0">
                   <td className="whitespace-nowrap px-4 py-3 tabular-nums">{d.day}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{money(d.gross)}</td>
@@ -192,6 +203,7 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
           <code className="rounded bg-muted px-1 py-0.5">npm run reports:refresh</code>); booking, occupancy and
           resource figures are live.
         </p>
+        <Pager info={dailyPage} label="Daily breakdown" hrefFor={dailyHref} />
       </Section>
 
       <div className="grid gap-6 lg:grid-cols-2">
