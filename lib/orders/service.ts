@@ -762,18 +762,21 @@ async function applyVoidDecision(
   // is `open` here (billed/cancelled orders throw above), so this is never a
   // no-op update on a status it can't legally be in.
   if (input.mode === 'void') {
-    const [stillActive] = await tx
+    // "Nothing left to cancel for" means every item is voided — a comped
+    // item still counts as something that happened (food made and given
+    // away free), so it must block this the same way an active item would.
+    const [somethingHappened] = await tx
       .select({ id: orderItems.id })
       .from(orderItems)
       .where(
         and(
           eq(orderItems.tenantId, actor.tenantId),
           eq(orderItems.orderId, row.orderId),
-          eq(orderItems.voidStatus, 'active'),
+          ne(orderItems.voidStatus, 'voided'),
         ),
       )
       .limit(1)
-    if (!stillActive) {
+    if (!somethingHappened) {
       await tx
         .update(orders)
         .set({ status: 'cancelled' })
