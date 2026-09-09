@@ -4,7 +4,7 @@
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-public-live-bracket.ts
  *
- * Everything real: migration 0089, the public policies, the SECURITY DEFINER
+ * Everything real: migration 0099, the public policies, the SECURITY DEFINER
  * name projection, the actual getPublicEventLive() reader, and the actual staff
  * recordMatchResult() — so "does a staff score appear publicly?" is answered by
  * writing one and then reading the public page's data, not by inspection.

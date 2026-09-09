@@ -5,7 +5,7 @@
  *
  * ── What is real ────────────────────────────────────────────────────────────
  *
- * The database, migration 0085, every RLS policy and grant, the real
+ * The database, migration 0095, every RLS policy and grant, the real
  * checkInByTokenCore() / promoteEventWaitlistAsStaff() / count and seeding
  * readers, and the real promote_event_waitlist() the cancellation path already
  * uses. Registrations are created through the actual claimEventRegistration()

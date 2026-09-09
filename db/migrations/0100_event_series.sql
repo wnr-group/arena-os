@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0090 recurring event series (M15 #8)
+-- Arena OS — 0100 recurring event series (M15 #8)
 --
 -- A TEMPLATE table (event_series) plus two provenance columns on `events`.
 --
@@ -95,7 +95,7 @@ create table if not exists public.event_series (
     and (cadence = 'monthly') = (day_of_month is not null)
   ),
 
-  -- The same two rules `events` enforces (0078/0081), restated here so a series
+  -- The same two rules `events` enforces (0088/0091), restated here so a series
   -- cannot be configured to generate events that would violate them — the job
   -- would then fail every night with no way for a manager to see why.
   constraint event_series_tournament_format check (
@@ -171,7 +171,7 @@ create index if not exists idx_events_series
   on public.events(tenant_id, series_id) where (series_id is not null);
 
 -- ── RLS ─────────────────────────────────────────────────────────────────────
--- The same split `events` itself uses (0078): any active member may read, only
+-- The same split `events` itself uses (0088): any active member may read, only
 -- a manager may write. No public policy — a series is a scheduling artefact,
 -- and the public sees the OCCURRENCES it generates, which are ordinary events
 -- already covered by events_public_select.

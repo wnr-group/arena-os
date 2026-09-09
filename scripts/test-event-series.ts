@@ -3,7 +3,7 @@
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-event-series.ts
  *
- * Everything real: migration 0090, the unique index that makes generation
+ * Everything real: migration 0100, the unique index that makes generation
  * idempotent, the ACTUAL generator script (spawned as a child process, twice
  * and concurrently, exactly as cron would run it), the real registration and
  * check-in paths, and the real getEventReport() reader.
