@@ -29,7 +29,7 @@ import { formatMoney } from '@/lib/format'
  * the server chose. It does not decide whether there is room, whether the
  * customer is eligible, or what the fee is — the price shown here is display
  * only, and the amount actually charged is read from the event row by the
- * server and pinned by a WITH CHECK in migration 0083.
+ * server and pinned by a WITH CHECK in migration 0093.
  *
  * ── Razorpay ────────────────────────────────────────────────────────────────
  *

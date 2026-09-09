@@ -18,7 +18,7 @@ import { EventCheckInPanel } from '@/components/events/EventCheckInPanel'
  *
  * Manager-gated the same three ways the events list is: this redirect, then
  * requireManager() inside cancelEventRegistration/checkInEventRegistration, then
- * event_registrations_manager_write in migration 0081. Reading is wider —
+ * event_registrations_manager_write in migration 0091. Reading is wider —
  * event_registrations_select admits any active member of the tenant — but the
  * page itself stays manager-only because it is reached from a manager screen
  * and shows amounts paid.
