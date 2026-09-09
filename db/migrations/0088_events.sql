@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0078 events: the event model behind M15 tournaments & events.
+-- Arena OS — 0088 events: the event model behind M15 tournaments & events.
 --
 -- One table, deliberately. A tournament, a coaching class, a meetup, a watch
 -- party and a birthday party differ in what they MEAN, not in what a venue
@@ -150,7 +150,7 @@ alter table public.events enable row level security;
 
 -- Readable by any active member of the tenant. Staff need to see what is on:
 -- a cashier taking a walk-in, a floor member setting up the room. The same
--- read-wide/write-narrow split loyalty_tiers (0078's sibling, 0049) and
+-- read-wide/write-narrow split loyalty_tiers (0088's sibling, 0049) and
 -- tax_rates (0009) use.
 drop policy if exists events_select on public.events;
 create policy events_select on public.events

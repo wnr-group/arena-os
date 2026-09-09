@@ -191,7 +191,7 @@ export function EventsManager({
                     <dd className="flex items-center gap-1.5">
                       <Users size={14} />
                       {/* Capacity counts ENTRIES: people for a solo event,
-                          teams for a team one (migration 0081). */}
+                          teams for a team one (migration 0091). */}
                       {e.capacity === null
                         ? `${e.entrantCount} entered · unlimited`
                         : `${e.entrantCount} of ${e.capacity} ${e.registrationMode === 'team' ? 'teams' : 'places'}`}

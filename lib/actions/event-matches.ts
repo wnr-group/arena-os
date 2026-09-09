@@ -20,7 +20,7 @@ import {
  * Every export begins with `await requireManager()`, before it parses input and
  * before it touches anything. A server action is a public POST endpoint, so a
  * cashier, a customer or an unauthenticated caller reaching any of these gets
- * an AuthError and nothing happens. `event_matches_manager_write` (0088) is the
+ * an AuthError and nothing happens. `event_matches_manager_write` (0098) is the
  * database half of the same rule, and RLS confines every statement to the
  * caller's own tenant regardless of what id was supplied.
  *

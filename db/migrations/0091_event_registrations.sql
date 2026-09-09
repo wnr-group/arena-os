@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0081 event registrations, teams and the capacity guard (M15 #3).
+-- Arena OS — 0091 event registrations, teams and the capacity guard (M15 #3).
 --
 -- Three tables and one idea: a place in an event is a scarce resource, and the
 -- only thing that can hand one out safely is Postgres holding a lock. Every
@@ -58,7 +58,7 @@
 --
 -- The one rule that IS expressible as a policy is expressed as one: that a
 -- payment intent's amount must equal the event's own entry_fee lives in a WITH
--- CHECK in 0082, so a tampered amount is refused by Postgres and not merely by
+-- CHECK in 0092, so a tampered amount is refused by Postgres and not merely by
 -- the action that was supposed to check.
 -- ============================================================================
 
@@ -869,7 +869,7 @@ revoke all on function public.confirm_event_registration_payment(uuid, text, num
 -- SECURITY DEFINER because a stranger has no policy on event_registrations and
 -- must not get one — "how many places are left" is public, "who registered" is
 -- not. This returns only an aggregate, and only for events already publicly
--- visible under events_public_select (0079), so it cannot be used to learn
+-- visible under events_public_select (0089), so it cannot be used to learn
 -- anything about a draft or a private event.
 create or replace function public.public_event_taken_counts(p_tenant_id uuid)
 returns table (event_id uuid, taken integer)
@@ -988,7 +988,7 @@ alter table public.event_teams         enable row level security;
 alter table public.event_team_members  enable row level security;
 
 -- ── staff ───────────────────────────────────────────────────────────────────
--- The same read-wide / write-narrow split `events` itself uses (0078): every
+-- The same read-wide / write-narrow split `events` itself uses (0088): every
 -- active member of the tenant can see who is entered (the front desk needs the
 -- door list), and only an owner/manager may write.
 drop policy if exists event_registrations_select on public.event_registrations;
@@ -1113,7 +1113,7 @@ create policy event_team_members_customer_isolation on public.event_team_members
   );
 
 -- A signed-in customer must be able to read the event they are entering — for
--- the page itself, and (in 0082) for the WITH CHECK that ties a payment
+-- the page itself, and (in 0092) for the WITH CHECK that ties a payment
 -- intent's amount to events.entry_fee. Everything except `draft` is admitted: a
 -- draft is the venue's private working copy, and every other status has already
 -- been announced. There is still no customer WRITE policy on events of any kind.

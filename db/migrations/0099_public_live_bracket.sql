@@ -1,12 +1,12 @@
 -- ============================================================================
--- Arena OS — 0089 public live bracket (M15 #7)
+-- Arena OS — 0099 public live bracket (M15 #7)
 --
 -- Spectator access to a running tournament: the draw, the scores, the
 -- standings. Read-only, and nothing else.
 --
 -- ══ 1. VISIBILITY HAS TO WIDEN, AND EXACTLY HOW FAR ═════════════════════════
 --
--- 0079 made two statuses public — `published` and `registration_open` — because
+-- 0089 made two statuses public — `published` and `registration_open` — because
 -- it was written for a LISTING of events people can still enter. A live bracket
 -- is the opposite case: it only becomes interesting once the tournament is
 -- running, which is `in_progress`, and it must survive `completed` so the final
@@ -32,13 +32,13 @@
 -- the live page reachable by link without putting a finished tournament back
 -- into the "what's on" list.
 --
--- 0079's reasoning for putting the status test in the policy rather than only
+-- 0089's reasoning for putting the status test in the policy rather than only
 -- in a reader stands unchanged: a future reader that forgets its filter still
 -- cannot serve a draft.
 --
 -- ══ 2. MATCHES ARE PUBLIC, REGISTRATIONS ARE NOT ════════════════════════════
 --
--- `event_matches` (0088) holds registration ids, scores and a winner — nothing
+-- `event_matches` (0098) holds registration ids, scores and a winner — nothing
 -- private — so it gets a public SELECT policy scoped to publicly-visible events
 -- of the pinned tenant.
 --
@@ -51,7 +51,7 @@
 -- Instead `public_event_participants()` below returns ONLY (registration id,
 -- display name), for only the people actually drawn into the bracket, as a
 -- SECURITY DEFINER function — the same shape public_event_teams() and
--- public_event_taken_counts() already use (0081).
+-- public_event_taken_counts() already use (0091).
 -- ============================================================================
 
 -- ── 1. widen the event policy ───────────────────────────────────────────────
@@ -85,7 +85,7 @@ create policy event_matches_public_select on public.event_matches
 
 -- Deliberately NO public insert/update/delete policy of any kind. A spectator
 -- reads the bracket; nothing on the public path can write a score, a winner, a
--- participant or a match. `event_matches_manager_write` (0088) remains the only
+-- participant or a match. `event_matches_manager_write` (0098) remains the only
 -- write policy, and it requires auth_is_manager().
 
 -- ── 3. participant display names, and nothing else ──────────────────────────
@@ -132,7 +132,7 @@ comment on function public.public_event_participants(uuid) is
 
 -- ── 4. the index the spectator poll rides on ────────────────────────────────
 --
--- 0088 already indexes (event_id, side, round, position), which is exactly the
+-- 0098 already indexes (event_id, side, round, position), which is exactly the
 -- live page's read: every match of one event in draw order. Stated here so the
 -- polling cost is a documented decision rather than an accident — a spectator
 -- refresh is one index range scan plus one function call, not a table scan.

@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0084 event resource blocking (M15 #4)
+-- Arena OS — 0094 event resource blocking (M15 #4)
 --
 -- An event reserves gaming stations for its window, so nothing else can be
 -- booked on them while it runs.
@@ -64,7 +64,7 @@
 
 -- ── tenant-safe resource references ─────────────────────────────────────────
 --
--- The composite-FK pattern 0016/0018/0078 use. A plain `references
+-- The composite-FK pattern 0016/0018/0088 use. A plain `references
 -- resources(id)` would let tenant A's event claim tenant B's station, because
 -- the FK never sees tenant_id. Referencing (tenant_id, id) makes that
 -- combination unrepresentable rather than merely rejected by application code
@@ -224,7 +224,7 @@ create trigger trg_resources_branch_event_blocks
 alter table public.event_resources enable row level security;
 
 -- Any member may read which stations an event claims; only a manager may
--- change it. The same split events itself uses (0078).
+-- change it. The same split events itself uses (0088).
 drop policy if exists event_resources_select on public.event_resources;
 create policy event_resources_select on public.event_resources
   for select using (tenant_id in (select public.auth_tenant_ids()));

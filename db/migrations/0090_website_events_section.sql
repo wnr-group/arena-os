@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0080 website builder "Upcoming Events" section (M15 #2).
+-- Arena OS — 0090 website builder "Upcoming Events" section (M15 #2).
 --
 -- Reuses M13's dynamic-section architecture rather than adding a parallel one:
 -- no new table and no new column, just one more value on the section type enum.
