@@ -308,6 +308,16 @@ export function generateSingleElimination(seeds: BracketParticipant[]): Generate
  * champion. Emitting it up front keeps the topology static — advancement never
  * has to create a row — and voiding it keeps the bracket honest about whether
  * it will be played.
+ *
+ * ══ n === 2 — no losers bracket, and none needed ═══════════════════════════
+ *
+ * With two entrants the winners bracket is a single match, so there is no
+ * losers bracket to build (lbRoundCount is 0) and nothing for its champion to
+ * emerge from. The WB final's loser therefore enters the grand final's slot
+ * 'b' directly. The result is exactly what double elimination means at this
+ * size — first to two losses, in two or three games — and every rule above
+ * still holds: slot 'a' is the unbeaten player, slot 'b' carries one loss, and
+ * the reset is played only if slot 'b' levels the score.
  */
 export function generateDoubleElimination(seeds: BracketParticipant[]): GeneratedMatch[] {
   const n = seeds.length
@@ -367,16 +377,27 @@ export function generateDoubleElimination(seeds: BracketParticipant[]): Generate
   // ── route every winners-bracket loser into the losers bracket ───────────
   const withLoserRoutes = wb.map((m) => {
     if (m.round === wbRounds) {
-      // The WB final's loser goes to the last LB round, slot 'b'.
-      return lbRoundCount === 0
-        ? m
-        : {
-            ...m,
-            loserTo: {
-              key: { side: 'losers' as const, round: lbRoundCount, position: 0 },
-              slot: 'b' as Slot,
-            },
-          }
+      // The WB final's loser goes to the last LB round, slot 'b' — except at
+      // n === 2, where there is no losers bracket to drop into (one WB match
+      // IS the final, so lbRoundCount is 0). Routing the loser straight to the
+      // grand final's slot 'b' is not a special case in disguise: it is what
+      // double elimination already means with two entrants — first to two
+      // losses. Game 1 is the WB final, the grand final is the rematch, and
+      // the reset decides it if the game-1 loser levels the score.
+      //
+      // Without this the loser was dropped with no destination, slot 'b' was
+      // never filled, and recordMatchResult refused the grand final forever —
+      // an unplayable draw for a size MIN_PARTICIPANTS.double_elim allows.
+      return {
+        ...m,
+        loserTo:
+          lbRoundCount === 0
+            ? { key: { side: 'final' as const, round: 1, position: 0 }, slot: 'b' as Slot }
+            : {
+                key: { side: 'losers' as const, round: lbRoundCount, position: 0 },
+                slot: 'b' as Slot,
+              },
+      }
     }
     const targetRound = m.round === 1 ? 1 : (m.round - 1) * 2
     const targetCount = lbCounts[targetRound]
@@ -405,7 +426,8 @@ export function generateDoubleElimination(seeds: BracketParticipant[]): Generate
       round: 1,
       position: 0,
       a: null, // the winners-bracket champion
-      b: null, // the losers-bracket champion
+      b: null, // the losers-bracket champion — or, at n === 2, the WB final's
+      //          loser, who is the same thing with no rounds in between
       status: 'pending',
       // If the LB champion wins, both sides carry one loss and the reset decides
       // it. The service voids this row when the WB champion wins instead.
