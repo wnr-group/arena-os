@@ -580,6 +580,50 @@ async function main() {
   check('…no duplicate registration is created', afterRedelivery.rows[0].n === 1)
   check('…and the amount is not doubled', (await reg(pr1.registrationId)).paid_amount === '500.00')
 
+  // ── a SECOND, genuinely distinct capture for one already-settled place ────
+  // Not the redelivery above (same payment id, `duplicate`, owes nothing). A
+  // different payment id means the customer really was charged twice, so the
+  // venue is holding money against no additional place and it MUST be flagged.
+  //
+  // Reachable because idx_payment_intents_one_pending_event_registration only
+  // constrains PENDING rows: once intent #1 settles to 'paid' the index no
+  // longer covers it, so a second intent can be opened for the same
+  // registration — e.g. a stale Razorpay checkout tab completed later.
+  const ORDER_SECOND = `order_${RUN}_second`
+  await owner.query(
+    `insert into payment_intents (tenant_id,branch_id,event_registration_id,purpose,gateway,
+                                  gateway_order_id,amount,currency,status)
+     values ($1,$2,$3,'event_registration','razorpay',$4,'500.00','INR','pending')`,
+    [A.tenantId, A.branchId, pr1.registrationId, ORDER_SECOND],
+  )
+
+  const secondCapture = await applyVerifiedPaymentWebhook({
+    verifiedTenantId: A.tenantId,
+    eventType: 'payment.captured',
+    eventId: `evt_${RUN}_second`,
+    payment: payment({ id: `pay_${RUN}_2`, order_id: ORDER_SECOND }) as never,
+  })
+  check(
+    'a SECOND distinct payment for one place reports already_paid',
+    secondCapture.kind === 'processed' &&
+      secondCapture.purpose === 'event_registration' &&
+      secondCapture.registrationOutcome === 'already_paid',
+    secondCapture,
+  )
+  check(
+    '…and is flagged refund_required, not silently kept',
+    secondCapture.kind === 'processed' &&
+      secondCapture.purpose === 'event_registration' &&
+      secondCapture.refundRequired === true,
+    secondCapture,
+  )
+
+  const afterSecond = await reg(pr1.registrationId)
+  check('…the first payment reference is NOT overwritten', afterSecond.payment_reference === `pay_${RUN}_1`)
+  check('…the recorded amount is still the single fee', afterSecond.paid_amount === '500.00')
+  check('…the entrant keeps their place', afterSecond.status === 'registered')
+  check('…and the event is not oversold', (await occupancy(paidEvent)) === 1)
+
   const sameEventId = await applyVerifiedPaymentWebhook({
     verifiedTenantId: A.tenantId,
     eventType: 'payment.captured',
