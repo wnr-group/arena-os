@@ -1,6 +1,6 @@
 import 'server-only'
 import { cache } from 'react'
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, or, sql } from 'drizzle-orm'
 import { withCustomer, withPublicTenant, withUser, type DB } from '@/db'
 import { branches, customers, eventRegistrations, events, eventTeams } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -374,10 +374,29 @@ export async function getEventEntrantCounts(ctx: ActiveContext): Promise<Map<str
       .where(
         and(
           eq(eventRegistrations.tenantId, ctx.tenant.id),
-          // Confirmed and at-the-door only. A live payment hold is a place the
-          // venue cannot sell twice, so it counts here too — the same set
-          // OCCUPYING_STATUSES names and event_registration_occupancy() counts.
-          inArray(eventRegistrations.status, ['registered', 'checked_in', 'pending_payment']),
+          // Confirmed and at-the-door only. A payment hold is a place the venue
+          // cannot sell twice, so it counts here too — but ONLY while the hold
+          // is live, which is the half OCCUPYING_STATUSES cannot express: it is
+          // a list of statuses, and liveness is a column.
+          //
+          // Expired holds are swept to `cancelled` lazily —
+          // expire_event_registration_holds() runs under the lock at the top of
+          // every claim and cancellation, so an event with no traffic keeps
+          // stale pending_payment rows indefinitely. Counting those made this
+          // manager column disagree with both authorities that DO check the
+          // expiry (event_registration_occupancy() and
+          // public_event_taken_counts(), migration 0091), so "X / N entered"
+          // could exceed capacity while the public page still offered places.
+          //
+          // now() is the DATABASE clock, matching those two functions exactly —
+          // a Date built here would be the app server's, which can drift.
+          or(
+            inArray(eventRegistrations.status, ['registered', 'checked_in']),
+            and(
+              eq(eventRegistrations.status, 'pending_payment'),
+              gt(eventRegistrations.paymentHoldExpiresAt, sql`now()`),
+            ),
+          ),
         ),
       )
       .groupBy(eventRegistrations.eventId),
