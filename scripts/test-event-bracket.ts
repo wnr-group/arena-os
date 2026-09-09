@@ -220,7 +220,7 @@ section('5. double elimination')
     // EVERY loser has exactly one destination, except where elimination is the
     // point: losers-bracket matches and the reset.
     const wbNoRoute = wb.filter((m) => m.loserTo === null)
-    check(`${label}: every winners-bracket loser has a destination`, n === 2 ? true : wbNoRoute.length === 0, `${wbNoRoute.length} unrouted`)
+    check(`${label}: every winners-bracket loser has a destination`, wbNoRoute.length === 0, `${wbNoRoute.length} unrouted`)
     check(`${label}: losers-bracket losers are eliminated (no route)`, lb.every((m) => m.loserTo === null))
 
     // Every destination — winner or loser — names a match that exists.
@@ -233,7 +233,25 @@ section('5. double elimination')
       .map((d) => `${d.key.side}:${d.key.round}:${d.key.position}:${d.slot}`)
     check(`${label}: no slot is fed by two matches`, new Set(dests).size === dests.length, `${dests.length - new Set(dests).size} collisions`)
 
-    check(`${label}: the losers final feeds the grand final slot b`, n === 2 ? true : (() => {
+    // The invariant that actually matters, and it holds at EVERY size: the
+    // grand final's slot b is fed by exactly one match. Normally that is the
+    // losers final's winner; at n === 2 there is no losers bracket, so it is
+    // the winners final's loser. A draw where nothing feeds slot b can never
+    // be finished — recordMatchResult refuses a match with an undecided
+    // participant, so the event would sit unplayable forever.
+    const feedsFinalB = ms.filter((m) =>
+      [m.winnerTo, m.loserTo].some(
+        (d) => d !== null && d.key.side === 'final' && d.key.round === 1 && d.slot === 'b',
+      ),
+    )
+    check(`${label}: exactly one match feeds the grand final slot b`, feedsFinalB.length === 1, `${feedsFinalB.length} feeders`)
+
+    // n === 2 is the degenerate shape: one winners match, no losers bracket.
+    if (n === 2) {
+      check(`${label}: with no losers bracket, the WB final's loser IS the grand finalist`, lb.length === 0 && feedsFinalB[0]?.side === 'winners')
+    }
+
+    check(`${label}: the losers final feeds the grand final slot b`, lb.length === 0 || (() => {
       const last = lb.filter((m) => m.round === Math.max(...lb.map((x) => x.round)))
       return last.every((m) => m.winnerTo!.key.side === 'final' && m.winnerTo!.slot === 'b')
     })())
