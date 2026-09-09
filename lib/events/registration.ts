@@ -50,9 +50,20 @@ export const EVENT_REGISTRATION_STATUS_LABELS: Record<EventRegistrationStatus, s
  * paid checkouts overselling the final place. A waitlisted entry consumes
  * nothing; that is what makes it a waitlist.
  *
- * Mirrored exactly by event_registration_occupancy() in migration 0091, which is
- * the enforcement. This copy exists so the UI can explain a number without
+ * Mirrored by event_registration_occupancy() in migration 0091, which is the
+ * enforcement. This copy exists so the UI can explain a number without
  * re-deriving the rule differently.
+ *
+ * ── This list is only HALF the rule ─────────────────────────────────────────
+ *
+ * It names statuses, and "LIVE" above is not a status — it is
+ * `payment_hold_expires_at > now()`. Any query counting occupancy must pair
+ * this list with that predicate for the pending_payment rows, exactly as
+ * event_registration_occupancy() and public_event_taken_counts() do. Filtering
+ * on the three statuses alone over-counts, because expired holds are swept to
+ * `cancelled` lazily (expire_event_registration_holds() runs on claim and
+ * cancel, not on a schedule), so a quiet event keeps stale pending_payment
+ * rows for as long as nobody touches it.
  */
 export const OCCUPYING_STATUSES = [
   'registered',
