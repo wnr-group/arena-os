@@ -372,7 +372,10 @@ export async function createEventRegistrationPayment(
  *
  *   confirmed        the place is theirs and the money is recorded against it
  *   duplicate        this exact Razorpay payment was already applied
- *   already_paid     a DIFFERENT payment already settled this entry
+ *   already_paid     a DIFFERENT payment already settled this entry — a second
+ *                    capture against one place, so it is refund-required
+ *                    (see REFUND_OUTCOMES); contrast `duplicate` above, which
+ *                    is the same payment id replayed and owes nothing
  *   unfulfillable    money arrived but the last place had gone — cancelled and
  *                    flagged refund_required
  *   amount_mismatch  the fee moved between checkout and capture — same landing
@@ -386,8 +389,22 @@ export type ConfirmRegistrationOutcome =
   | 'amount_mismatch'
   | 'not_found'
 
-/** Outcomes that mean the venue owes the customer money back. */
+/**
+ * Outcomes that mean the venue owes the customer money back.
+ *
+ * `already_paid` belongs here for exactly the reason the other two do: it is a
+ * SECOND, distinct, verified-and-captured payment landing on a registration a
+ * DIFFERENT payment had already settled. The place is never doubled —
+ * confirm_event_registration_payment refuses to apply it — so the money is
+ * held against nothing and a human has to send it back.
+ *
+ * `duplicate` is deliberately NOT here, and the difference is the whole point:
+ * that is the SAME Razorpay payment id arriving twice (a gateway retry), which
+ * captured once and owes nothing. Distinguishing the two is what makes this
+ * list a refund rule rather than a "did we write anything?" flag.
+ */
 export const REFUND_OUTCOMES: readonly ConfirmRegistrationOutcome[] = [
+  'already_paid',
   'unfulfillable',
   'amount_mismatch',
 ]
