@@ -11,6 +11,7 @@
  */
 import { Client } from 'pg'
 import { loadEnv } from './env'
+import { entitleTenant } from './entitle-fixture'
 
 loadEnv()
 
@@ -67,6 +68,10 @@ async function main() {
        on conflict (slug) do update set status='active' returning id`,
       [slug, `${slug} co`],
     )
+    // Entitlement enforcement is fail-closed (M16 #2): a tenant with no
+    // plan is granted nothing, so this fixture states that it is a paying
+    // customer. See scripts/entitle-fixture.ts.
+    await entitleTenant(owner, t.rows[0].id)
     const br = await owner.query<{ id: string }>(
       `insert into branches (tenant_id, name, is_primary) values ($1,'Main',true)
        on conflict (tenant_id, name) do update set is_primary=true returning id`,

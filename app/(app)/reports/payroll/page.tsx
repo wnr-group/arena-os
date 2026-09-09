@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { Users, TrendingUp, TrendingDown, Wallet, type LucideIcon } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager, ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { getPayrollCostReport } from '@/lib/reports/payroll'
 import { formatMoney, formatPayrollPeriod, shiftPayrollPeriod } from '@/lib/format'
@@ -20,6 +21,10 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
   // Presentation only — getPayrollCostReport() is read-only and tenant-scoped
   // by payslips_manager_select RLS (0030) regardless of this gate.
   if (!isManager(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.reports'))) redirect('/dashboard')
 
   const sp = await searchParams
   const currentPeriod = todayInZone(ctx.tenant.timezone).slice(0, 7)

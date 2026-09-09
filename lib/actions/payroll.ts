@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { salaryStructures, employeeAdvances } from '@/db/schema'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { hasRecoveries } from '@/lib/payroll/advances'
 import { runPayroll, PayrollError, type RunPayrollResult } from '@/lib/payroll/run'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -16,6 +17,9 @@ class AdvanceError extends Error {}
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  // The plan does not include Payroll. A different refusal from AuthError —
+  // that one is about who you are, this one about what you bought.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof AdvanceError) return { error: e.message }
   if (e instanceof PayrollError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
@@ -53,6 +57,7 @@ const salaryStructureInput = z.object({
 export async function upsertSalaryStructure(input: z.input<typeof salaryStructureInput>): Promise<Result> {
   try {
     const ctx = await requireOwner()
+    await requireEntitlement(ctx, 'module.payroll')
     const v = salaryStructureInput.parse(input)
 
     const allowancesTotal = v.allowances.reduce((sum, a) => sum + a.amount, 0)
@@ -93,6 +98,7 @@ export async function upsertSalaryStructure(input: z.input<typeof salaryStructur
 export async function deleteSalaryStructure(id: string): Promise<Result> {
   try {
     const ctx = await requireOwner()
+    await requireEntitlement(ctx, 'module.payroll')
     await withUser(ctx.user.id, (tx) =>
       tx
         .delete(salaryStructures)
@@ -122,6 +128,7 @@ const advanceInput = z.object({
 export async function recordAdvance(input: z.input<typeof advanceInput>): Promise<Result> {
   try {
     const ctx = await requireOwner()
+    await requireEntitlement(ctx, 'module.payroll')
     const v = advanceInput.parse(input)
     if (v.instalmentAmount > v.amount) {
       return { error: 'The instalment cannot be larger than the advance itself.' }
@@ -149,6 +156,7 @@ export async function recordAdvance(input: z.input<typeof advanceInput>): Promis
 export async function deleteAdvance(id: string): Promise<Result> {
   try {
     const ctx = await requireOwner()
+    await requireEntitlement(ctx, 'module.payroll')
     await withUser(ctx.user.id, async (tx) => {
       if (await hasRecoveries(tx, ctx.tenant.id, id)) {
         throw new AdvanceError('This advance already has recoveries recorded and cannot be deleted.')
@@ -175,6 +183,7 @@ type RunPayrollResultOrError = Result & { result?: RunPayrollResult }
 export async function runPayrollForPeriod(period: string): Promise<RunPayrollResultOrError> {
   try {
     const ctx = await requireOwner()
+    await requireEntitlement(ctx, 'module.payroll')
     const result = await withUser(ctx.user.id, (tx) => runPayroll(tx, ctx.tenant.id, period, ctx.membershipId))
     revalidatePath('/settings/payroll/runs')
     return { result }

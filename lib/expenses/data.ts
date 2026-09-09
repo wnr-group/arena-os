@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { expenseCategories, expenses, vendors } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 
 /**
  * The Expenses page's reads (AROS-108).
@@ -76,6 +77,10 @@ function whereFor(tenantId: string, f: ExpenseFilters): SQL | undefined {
  * see the same snapshot.
  */
 export async function listExpenses(ctx: ActiveContext, f: ExpenseFilters = {}): Promise<ExpenseList> {
+  // Module gate (M16 #2). Authoritative for READS — the page redirect is
+  // presentation only; this is what a plan without Expenses actually blocks.
+  await requireEntitlement(ctx, 'module.expenses')
+
   const where = whereFor(ctx.tenant.id, f)
 
   return withUser(ctx.user.id, async (tx) => {
@@ -115,7 +120,9 @@ export async function listExpenses(ctx: ActiveContext, f: ExpenseFilters = {}): 
 }
 
 /** Active categories for the selector — this tenant's only, RLS-scoped. */
-export function listExpenseCategoryOptions(ctx: ActiveContext): Promise<OptionRow[]> {
+export async function listExpenseCategoryOptions(ctx: ActiveContext): Promise<OptionRow[]> {
+  await requireEntitlement(ctx, 'module.expenses')
+
   return withUser(ctx.user.id, (tx) =>
     tx
       .select({ id: expenseCategories.id, name: expenseCategories.name })
@@ -126,7 +133,9 @@ export function listExpenseCategoryOptions(ctx: ActiveContext): Promise<OptionRo
 }
 
 /** Active vendors for the selector — this tenant's only, RLS-scoped. */
-export function listVendorOptions(ctx: ActiveContext): Promise<OptionRow[]> {
+export async function listVendorOptions(ctx: ActiveContext): Promise<OptionRow[]> {
+  await requireEntitlement(ctx, 'module.expenses')
+
   return withUser(ctx.user.id, (tx) =>
     tx
       .select({ id: vendors.id, name: vendors.name })

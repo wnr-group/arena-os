@@ -7,6 +7,10 @@ import { formatMoney, formatPayrollPeriod } from '@/lib/format'
 export default async function MyPayslipsPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
+  // NO plan gate. Self-service payslips survive a downgrade: they are the
+  // employee's own already-issued records, and the employee is not the party
+  // that changed the plan — see listMyPayslips() in lib/payroll/payslips.ts.
+  // Generating payroll is still gated; reading what was generated is not.
 
   // RLS (payslips_self_select, migration 0030) already scopes this to the
   // caller's own membership_id — the explicit filter in listMyPayslips is

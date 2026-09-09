@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { Building2 } from 'lucide-react'
 import { listCompanies } from '@/lib/platform/data'
+import { listPlans } from '@/lib/platform/plans/data'
 import { getCurrentUser } from '@/lib/auth/session'
 import { rootDomain } from '@/lib/tenant/subdomain'
 import { CreateCompanyButton } from '@/components/platform/CreateCompanyButton'
@@ -30,6 +31,20 @@ export default async function AdminHome() {
   const companies = await listCompanies()
   const domain = rootDomain()
 
+  // Creating a company REQUIRES choosing a plan — an admin-created tenant with
+  // no subscription opens with payroll, expenses and reports refused (M16's
+  // gates are fail-closed). Active plans only: a retired one exists to
+  // grandfather the tenants already on it, never to start a new company.
+  const plans = (await listPlans())
+    .filter((p) => p.active)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      monthlyPrice: p.monthlyPrice,
+      annualPrice: p.annualPrice,
+      currency: p.currency,
+    }))
+
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -39,7 +54,7 @@ export default async function AdminHome() {
             {companies.length} onboarded · each isolated by subdomain and RLS.
           </p>
         </div>
-        <CreateCompanyButton />
+        <CreateCompanyButton plans={plans} />
       </div>
 
       <div className="mt-6 overflow-hidden rounded-lg border">

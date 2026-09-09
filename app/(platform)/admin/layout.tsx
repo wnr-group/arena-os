@@ -35,6 +35,21 @@ export default async function PlatformLayout({ children }: { children: React.Rea
             Arena OS <span className="text-muted-foreground">· Platform Admin</span>
           </Link>
           <div className="flex items-center gap-4 text-sm">
+            <Link href="/admin" className="text-muted-foreground transition-colors hover:text-foreground">
+              Companies
+            </Link>
+            <Link href="/admin/plans" className="text-muted-foreground transition-colors hover:text-foreground">
+              Plans
+            </Link>
+            {/* Two distinct surfaces, deliberately named apart: "Revenue" is
+                the money (AROS-114), "Billing" is the platform's own Razorpay
+                account and GST letterhead (M16 #3/#4). */}
+            <Link href="/admin/revenue" className="text-muted-foreground transition-colors hover:text-foreground">
+              Revenue
+            </Link>
+            <Link href="/admin/billing" className="text-muted-foreground transition-colors hover:text-foreground">
+              Billing
+            </Link>
             <span className="text-muted-foreground">{user.email}</span>
             <form action={signOut}>
               <button className="rounded-md border px-3 py-1.5 hover:bg-muted">Sign out</button>

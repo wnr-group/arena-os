@@ -16,6 +16,7 @@
  */
 import { Client } from 'pg'
 import { loadEnv } from './env'
+import { entitleTenant } from './entitle-fixture'
 
 let passed = 0
 let failed = 0
@@ -54,6 +55,10 @@ async function main() {
       [slug, `${slug} co`],
     )
     const tenantId = t.rows[0].id
+    // Entitlement enforcement is fail-closed (M16 #2): a tenant with no plan is
+    // granted nothing, and listExpenses() gates on module.expenses. This fixture
+    // states that it is a paying customer. See scripts/entitle-fixture.ts.
+    await entitleTenant(owner, tenantId)
     return {
       tenantId,
       ownerId: await makeUser(tenantId, `exp108-owner@${slug}.test`, 'owner'),

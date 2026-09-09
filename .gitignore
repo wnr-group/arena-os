@@ -27,6 +27,9 @@ yarn-error.log*
 
 # local tooling / editor
 .claude/settings.local.json
+# Scratch git worktrees created by local agent sessions. Each is a full second
+# copy of this repo; committing one would add megabytes of duplicated source.
+.claude/worktrees/
 .vscode
 .idea
 .playwright-mcp

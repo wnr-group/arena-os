@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { Info, TrendingDown, TrendingUp } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { getPnlReport, pnlCsvRows } from '@/lib/reports/pnl'
 import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney, prettyDate } from '@/lib/format'
@@ -28,6 +29,10 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
   const ctx = await getActiveContext()
   if (!ctx) return null // the layout already guards a missing session
   if (!isManager(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — getPnlReport() calls
+  // requireEntitlement() itself and throws. This only turns that refusal into
+  // a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.reports'))) redirect('/dashboard')
 
   const tz = ctx.tenant.timezone
   const currency = ctx.tenant.currency

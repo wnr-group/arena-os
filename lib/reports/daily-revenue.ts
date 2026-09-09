@@ -3,6 +3,7 @@ import { and, asc, eq, gte, lte } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { branches, vDailyRevenue } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import type { CsvColumn } from './csv'
 import type { DateRange } from './date-range'
@@ -69,6 +70,9 @@ export async function getDailyRevenue(
   options: { range: DateRange; branchId?: string | null },
 ): Promise<DailyRevenueRow[]> {
   requireReportAccess(ctx)
+  // Module gate (M16 #2): the plan must include Reports. Authoritative —
+  // the pages redirect for presentation, this is what actually refuses.
+  await requireEntitlement(ctx, 'module.reports')
   const { range, branchId } = options
 
   const rows = await withUser(ctx.user.id, (tx) =>

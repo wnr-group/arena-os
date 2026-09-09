@@ -6,6 +6,8 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { resourceTypes, resources, workingHours } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
+import { countResources, lockTenantUsage } from '@/lib/platform/usage'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -13,6 +15,8 @@ type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  // A plan refusal — its message already says what to do, like AuthError's.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
   if (code === '23505') return { error: 'That name is already in use.' }
@@ -166,6 +170,20 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
           .set(values)
           .where(and(eq(resources.id, v.id), eq(resources.tenantId, ctx.tenant.id)))
       } else {
+        // ── plan resource limit (M16 #2) ────────────────────────────────────
+        // The insert branch only. Editing an existing resource must stay
+        // possible for a tenant that is already at (or, after a downgrade,
+        // over) its cap — the plan limits how many you own, not whether you
+        // may correct one. Counted in THIS transaction, never from the client.
+        //
+        // The lock comes FIRST: count-then-insert is a check-then-act, and
+        // concurrent creates would otherwise all clear the same count. See
+        // lib/platform/usage.ts for the measurement that made this necessary.
+        await lockTenantUsage(tx, ctx.tenant.id)
+        await checkLimitIn(tx, ctx.tenant.id, 'max_resources', await countResources(tx, ctx.tenant.id), {
+          one: 'resource',
+          many: 'resources',
+        })
         await tx.insert(resources).values(values)
       }
     })

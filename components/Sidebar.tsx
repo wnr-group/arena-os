@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import {
   BadgeCheck,
   Ban,
+  BadgeIndianRupee,
   Building2,
   CreditCard,
   Wallet,
@@ -190,6 +191,10 @@ const NAV: NavItem[] = [
   },
   // Owner-only: the business's legal identity (migration 0012).
   { href: '/settings/business', label: 'Business Profile', icon: Building2, can: isOwner },
+  // Owner-only: what this business pays ARENA OS (M16 #5). Deliberately not
+  // next to "Payments" above, which is the venue's own gateway for collecting
+  // its customers' deposits — two different accounts, kept visibly apart.
+  { href: '/settings/billing', label: 'Billing', icon: BadgeIndianRupee, can: isOwner },
 ]
 
 /**

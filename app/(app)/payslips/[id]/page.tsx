@@ -14,7 +14,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export default async function PayslipPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getActiveContext()
   if (!ctx) return null
-
+  // NO plan gate. A payslip is a record already issued to the person reading
+  // it, and a business downgrading its plan must not retroactively withhold
+  // one — see getPayslipById() in lib/payroll/payslips.ts for the full
+  // reasoning. RLS still decides who may see this row.
   const { id } = await params
   if (!UUID.test(id)) notFound()
 
