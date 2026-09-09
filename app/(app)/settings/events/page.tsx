@@ -17,7 +17,7 @@ import { EventSeriesManager } from '@/components/events/EventSeriesManager'
  *
  * Manager-gated three times over, deliberately: this redirect keeps the page
  * out of a cashier's hands, requireManager() in lib/actions/events.ts rejects
- * their mutations, and the events_manager_write policy (0078) refuses the write
+ * their mutations, and the events_manager_write policy (0088) refuses the write
  * at the database even if both were bypassed.
  */
 export default async function EventsPage() {

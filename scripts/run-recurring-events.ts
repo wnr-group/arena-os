@@ -12,7 +12,7 @@
  * ── Why it is safe to run twice, or twice at once ───────────────────────────
  *
  * Not because it checks first — it does not. `idx_events_series_occurrence`
- * (migration 0090) is unique on (series_id, occurrence_period), so a duplicate
+ * (migration 0100) is unique on (series_id, occurrence_period), so a duplicate
  * INSERT is refused by the database. A SELECT-then-INSERT has a window two
  * concurrent jobs can both pass through; a unique index has none. The row lock
  * below turns the race into a no-op rather than an error: whichever job gets

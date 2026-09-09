@@ -15,7 +15,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
  *
  * ── No second scanning system ───────────────────────────────────────────────
  *
- * The token is `event_registrations.check_in_token` (migration 0085), which is
+ * The token is `event_registrations.check_in_token` (migration 0095), which is
  * the SAME shape as `bookings.confirmation_token` (0026) that /bookings/scan
  * already resolves: a v4 uuid, unique per tenant, looked up as
  * (tenant_id, token) with the tenant taken from the staff session. The scan
@@ -25,7 +25,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
  *
  * ── No second capacity system ───────────────────────────────────────────────
  *
- * Promotion delegates to `promote_event_waitlist()` (0081), the same function
+ * Promotion delegates to `promote_event_waitlist()` (0091), the same function
  * cancellation already calls. Every capacity, FIFO and paid-event rule stays in
  * one place, under the lock it already takes.
  */
@@ -87,7 +87,7 @@ export function checkInRefusalMessage(reason: CheckInRefusal): string {
  *   pending_payment    a paid event whose money has not arrived. `registered`
  *                      is reached ONLY through
  *                      confirm_event_registration_payment() from a verified
- *                      webhook (0082), so "has it been paid?" is already
+ *                      webhook (0092), so "has it been paid?" is already
  *                      answered by the status — there is no second, forgeable
  *                      payment check here, and there must not be one.
  *   event cancelled    nobody is arriving.

@@ -88,7 +88,7 @@ const NAV: NavItem[] = [
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // Tournaments, classes, meetups and parties (M15) — manager-only, matching
-  // the events_manager_write policy in migration 0078.
+  // the events_manager_write policy in migration 0088.
   { href: '/settings/events', label: 'Events', icon: Trophy, can: isManager },
   // The customer membership catalogue — manager-only, like Resources.
   { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },

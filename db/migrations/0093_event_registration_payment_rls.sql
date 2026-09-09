@@ -1,6 +1,6 @@
 -- ============================================================================
--- Arena OS — 0083 the customer's payment-intent policies for event
--- registrations (M15 #3). Second half of 0082; see that file's header for why
+-- Arena OS — 0093 the customer's payment-intent policies for event
+-- registrations (M15 #3). Second half of 0092; see that file's header for why
 -- these could not live in it.
 --
 -- ── The point of this file ──────────────────────────────────────────────────
@@ -24,13 +24,13 @@
 --
 -- Because this one IS a single-row question. "May this intent exist?" is
 -- answerable from the row being written plus rows the caller may already read.
--- Capacity is not (see 0081's header), which is why registrations are written
+-- Capacity is not (see 0091's header), which is why registrations are written
 -- through locked functions and intents are written through a policy.
 -- ============================================================================
 
 -- ── read: the customer's own pending order, so a retry reuses it ────────────
 -- Scoped through the registration, which the customer_select policy on
--- event_registrations (0081) has already reduced to their own rows. A booking
+-- event_registrations (0091) has already reduced to their own rows. A booking
 -- deposit or an order pay-now intent is NOT reachable here — those carry a null
 -- event_registration_id and fail the first predicate.
 drop policy if exists payment_intents_customer_select on public.payment_intents;

@@ -5,7 +5,7 @@
  *
  * ── What is real ────────────────────────────────────────────────────────────
  *
- * Everything that matters: the database, migration 0084, the GiST exclusion
+ * Everything that matters: the database, migration 0094, the GiST exclusion
  * constraint, every RLS policy and grant, the real syncEventBlocks() /
  * setEventResources() core, and — the point of the whole ticket — the REAL
  * createBookingCore() that both the public booking flow and the staff walk-in

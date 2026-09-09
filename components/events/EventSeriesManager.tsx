@@ -23,7 +23,7 @@ import { useConfirm } from '@/components/ui/ConfirmDialog'
  *
  * Pausing is the ticket's "stop future generation without deleting history":
  * one boolean the job reads. Deleting is also non-destructive — the FK is
- * ON DELETE SET NULL (0090), so past occurrences survive and merely lose their
+ * ON DELETE SET NULL (0100), so past occurrences survive and merely lose their
  * provenance, which the confirm dialog says in as many words.
  */
 

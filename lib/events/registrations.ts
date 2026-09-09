@@ -20,7 +20,7 @@ import {
  * ── Where the safety actually lives ─────────────────────────────────────────
  *
  * Not here. The capacity rule, the duplicate rule, the FIFO waitlist and the
- * authorisation are all inside migration 0081's functions, which hold
+ * authorisation are all inside migration 0091's functions, which hold
  * `select … from events … for update` while they decide. This module's job is
  * to open the right RLS-scoped transaction, call one of them, and turn a
  * refusal code into something a caller can act on.
@@ -288,7 +288,7 @@ export function listMyEventRegistrations(customerId: string): Promise<MyEventReg
         entryFee: events.entryFee,
       })
       .from(eventRegistrations)
-      // The customer can read `events` (events_customer_select, 0081) and their
+      // The customer can read `events` (events_customer_select, 0091) and their
       // own registration rows, and nothing else on either table.
       .innerJoin(events, eq(events.id, eventRegistrations.eventId))
       .leftJoin(branches, eq(branches.id, events.branchId))
@@ -319,7 +319,7 @@ export type EventEntrant = {
  * The entrants for one event.
  *
  * Runs through withUser() on the restricted connection, so the
- * event_registrations_select policy (0081) is what confines it to the caller's
+ * event_registrations_select policy (0091) is what confines it to the caller's
  * tenant; the explicit tenant predicate is the same belt-and-braces the other
  * event readers use. Waitlisted entries are numbered in FIFO order — the same
  * (created_at, id) ordering promote_event_waitlist() promotes by, so the number
