@@ -4,8 +4,9 @@ import { revalidatePath } from 'next/cache'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { z } from 'zod'
 import { ownerDb } from '@/db'
-import { planEntitlements, plans, tenantSubscriptions } from '@/db/schema'
+import { planEntitlements, plans, tenants, tenantSubscriptions } from '@/db/schema'
 import { requirePlatformAdmin, PlatformError } from '@/lib/platform/guard'
+import { lockTenantUsage } from '@/lib/platform/usage'
 import { recordPlatformOverride } from '@/lib/platform/billing/audit'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { addMonths } from '@/lib/utils/date'
@@ -17,7 +18,7 @@ import { addMonths } from '@/lib/utils/date'
  * every export begins with requirePlatformAdmin() and then writes through
  * `ownerDb`. That is the ONLY write path to these tables — `arena_app`, the
  * role every tenant request runs as, holds SELECT and nothing else on all
- * three (see the grants in migration 0078), so a tenant user cannot reach a
+ * three (see the grants in migration 0079), so a tenant user cannot reach a
  * write here even if an action were somehow invoked without its guard.
  *
  * Deliberately NOT in lib/actions/platform.ts: that file is company
@@ -37,18 +38,27 @@ function fail(e: unknown): Result {
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
   if (code === '23505') {
-    // Two different unique rules reach here now: the catalogue name (0078) and
-    // the gateway plan mapping (0079). Naming the wrong one sends an operator
-    // hunting for a duplicate plan name that does not exist.
+    // THREE different unique rules reach here: the catalogue name (0079), the
+    // gateway plan mapping (0080), and the one-live-subscription-per-tenant
+    // index (0079). Naming the wrong one sends an operator hunting for a
+    // duplicate plan name that does not exist — which is exactly what a
+    // concurrent assignPlan(), or an assignment racing a self-serve checkout,
+    // used to report.
     if (constraint?.startsWith('idx_plans_gateway')) {
       return {
         error: 'That Razorpay plan is already mapped to another Arena OS plan.',
       }
     }
+    if (constraint === 'idx_tenant_subscriptions_one_live') {
+      return {
+        error:
+          'This company’s subscription was changed by someone else a moment ago. Reload the page and try again.',
+      }
+    }
     return { error: 'A plan with that name already exists.' }
   }
   if (code === '23503') return { error: 'That plan or tenant no longer exists.' }
-  // The check constraints in 0078: a malformed entitlement key, a non-scalar
+  // The check constraints in 0079: a malformed entitlement key, a non-scalar
   // value, or a period that ends before it starts.
   if (code === '23514') return { error: 'That value is not allowed for this field.' }
   console.error('[plans] action failed:', e)
@@ -57,7 +67,7 @@ function fail(e: unknown): Result {
 
 // ── plans ────────────────────────────────────────────────────────────────────
 
-/** Rupees at two decimals, matching numeric(10,2) and the >= 0 check in 0078. */
+/** Rupees at two decimals, matching numeric(10,2) and the >= 0 check in 0079. */
 const money = z
   .string()
   .trim()
@@ -68,7 +78,7 @@ const planInput = z.object({
   monthlyPrice: money,
   annualPrice: money,
   // LETTERS, not just three characters. `length(3)` alone accepted "A1B" and
-  // "12$", which the 0078 check (`length(currency) = 3`) also lets through —
+  // "12$", which the 0079 check (`length(currency) = 3`) also lets through —
   // and Intl.NumberFormat throws RangeError on a malformed code, so one such
   // row rendered every billing screen unusable. ISO 4217 codes are alphabetic.
   currency: z
@@ -110,7 +120,7 @@ export async function updatePlan(id: string, input: z.input<typeof planInput>): 
  * taken on it, the FK is ON DELETE RESTRICT, and a deleted plan would make a
  * past invoice unexplainable. Retiring hides it from the catalogue while
  * existing subscribers keep everything it grants — which is exactly what policy
- * `plans_select_subscribed` in 0078 is there to allow.
+ * `plans_select_subscribed` in 0079 is there to allow.
  */
 export async function setPlanActive(id: string, active: boolean): Promise<Result> {
   try {
@@ -123,7 +133,7 @@ export async function setPlanActive(id: string, active: boolean): Promise<Result
   }
 }
 
-// ── gateway mapping (M16 #3, migration 0079) ─────────────────────────────────
+// ── gateway mapping (M16 #3, migration 0080) ─────────────────────────────────
 
 /**
  * A Razorpay plan reference (`plan_…`). Shape-checked only — the alphabet after
@@ -158,8 +168,8 @@ const PLATFORM_GATEWAY = 'razorpay'
  *
  * ── The three collision checks, and which one lives where ───────────────────
  *
- *   monthly ≠ annual ON THIS PLAN        → CHECK plans_gateway_ids_distinct (0079)
- *   no duplicate WITHIN a column         → unique indexes (0079)
+ *   monthly ≠ annual ON THIS PLAN        → CHECK plans_gateway_ids_distinct (0080)
+ *   no duplicate WITHIN a column         → unique indexes (0080)
  *   no duplicate ACROSS the two columns  → HERE
  *
  * The third cannot be a plain unique index — it spans two columns of the same
@@ -213,7 +223,7 @@ export async function setPlanGateway(
       .update(plans)
       .set({
         // The gateway is cleared alongside the ids: an id with no gateway is
-        // unusable, and 0079's plans_gateway_ids_need_gateway would reject it.
+        // unusable, and 0080's plans_gateway_ids_need_gateway would reject it.
         gateway: requested.length > 0 ? PLATFORM_GATEWAY : null,
         gatewayMonthlyPlanId: v.gatewayMonthlyPlanId,
         gatewayAnnualPlanId: v.gatewayAnnualPlanId,
@@ -232,7 +242,7 @@ export async function setPlanGateway(
 /**
  * The value half of an entitlement, parsed from what the admin form typed.
  *
- * Accepts exactly the four JSON scalars the check constraint in 0078 permits,
+ * Accepts exactly the four JSON scalars the check constraint in 0079 permits,
  * and nothing else. 'unlimited' maps to null deliberately: a limit of null is
  * "no ceiling", which must stay distinguishable from 0 ("none allowed").
  */
@@ -394,33 +404,46 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
     // membership expiry has always used.
     const end = addMonths(now, months)
 
-    // A live row backed by a REAL Razorpay mandate must not be replaced from
-    // here (M16 #3). This action only rewrites local rows; the mandate would
-    // survive and keep charging the business for a plan it is no longer on,
-    // and the operator would have no signal that it had happened. Cancelling it
-    // is a deliberate act with its own path — lib/platform/billing/cancel.ts —
-    // so this refuses and says so rather than quietly creating a billing
-    // dispute.
-    const [gatewayBacked] = await ownerDb
-      .select({ ref: tenantSubscriptions.gatewaySubscriptionId })
-      .from(tenantSubscriptions)
-      .where(
-        and(
-          eq(tenantSubscriptions.tenantId, v.tenantId),
-          inArray(tenantSubscriptions.status, ['trialing', 'active', 'past_due']),
-          isNotNull(tenantSubscriptions.gatewaySubscriptionId),
-        ),
-      )
-      .limit(1)
+    const gatewayConflict = await ownerDb.transaction(async (tx) => {
+      // ── serialise every subscription change for this tenant ──────────────
+      //
+      // idx_tenant_subscriptions_one_live is a PARTIAL unique index, so it
+      // constrains rows that exist and locks nothing when none do. Two
+      // concurrent assignments — or an assignment racing a self-serve checkout
+      // — therefore both read "no live row", both close nothing, and both
+      // insert; one gets a 23505 and the operator gets an error about a
+      // duplicate plan NAME.
+      //
+      // The advisory lock is the same one lib/platform/usage.ts takes before a
+      // limit check, deliberately: a plan change and a "may I add one more
+      // resource?" question are both decisions about this tenant's plan, and
+      // holding one lock for both means they cannot interleave either.
+      await lockTenantUsage(tx, v.tenantId)
 
-    if (gatewayBacked) {
-      return {
-        error:
-          'This company has a live Razorpay subscription. Cancel it first — assigning a plan here would leave the gateway charging them for the old one.',
-      }
-    }
+      // A live row backed by a REAL Razorpay mandate must not be replaced from
+      // here (M16 #3). This action only rewrites local rows; the mandate would
+      // survive and keep charging the business for a plan it is no longer on,
+      // and the operator would have no signal that it had happened. Cancelling
+      // it is a deliberate act with its own path —
+      // lib/platform/billing/cancel.ts — so this refuses and says so rather
+      // than quietly creating a billing dispute.
+      //
+      // Inside the lock, so a checkout that completes between the check and the
+      // writes cannot slip a mandate past it.
+      const [gatewayBacked] = await tx
+        .select({ ref: tenantSubscriptions.gatewaySubscriptionId })
+        .from(tenantSubscriptions)
+        .where(
+          and(
+            eq(tenantSubscriptions.tenantId, v.tenantId),
+            inArray(tenantSubscriptions.status, ['trialing', 'active', 'past_due']),
+            isNotNull(tenantSubscriptions.gatewaySubscriptionId),
+          ),
+        )
+        .limit(1)
 
-    await ownerDb.transaction(async (tx) => {
+      if (gatewayBacked) return true
+
       // The outgoing state, read BEFORE it is closed, so the audit entry's
       // `before` is what the row actually was rather than a restatement of the
       // request. Null when this is a first assignment.
@@ -473,6 +496,39 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
         .where(eq(plans.id, v.planId))
         .limit(1)
 
+      // ── reopen an account the dunning processor closed ────────────────────
+      //
+      // Assigning a plan restored every ENTITLEMENT and nothing else, so a
+      // business rescued after non-payment got payroll and reports back while
+      // `tenants.status` stayed 'suspended' — which is the column
+      // public_tenant_by_slug() (0022) reads, so its public booking site stayed
+      // dark, and the column readMix() (billing/metrics.ts) counts, so the
+      // revenue dashboard still filed it under suspended. The operator got no
+      // signal that a second, separate setCompanyStatus() was required, and
+      // lib/platform/entitlement-guard.ts promised the opposite in as many
+      // words: "re-assigning a plan restores everything immediately".
+      //
+      // ONLY from 'suspended', and only when the new plan is actually live.
+      // 'cancelled' is deliberately left alone: that is an operator's own
+      // decision about the business relationship, and reopening a closed
+      // account stays a deliberate act with its own action — the same rule
+      // subscribeTenantToPlan() applies when it refuses to sell to one.
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, v.tenantId))
+        .limit(1)
+
+      const reopened =
+        tenantRow?.status === 'suspended' && (v.status === 'active' || v.status === 'trialing')
+
+      if (reopened) {
+        await tx
+          .update(tenants)
+          .set({ status: 'active' })
+          .where(and(eq(tenants.id, v.tenantId), eq(tenants.status, 'suspended')))
+      }
+
       // ONE entry, in the SAME transaction as the two writes above, so a plan
       // change can never exist without a record of who made it (AROS-114 §9).
       // `entity_id` is the NEW subscription — the row that now governs the
@@ -493,8 +549,9 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
                 billingPeriod: previous.billingPeriod,
                 status: previous.status,
                 currentPeriodEnd: previous.currentPeriodEnd.toISOString(),
+                tenantStatus: tenantRow?.status ?? null,
               }
-            : { subscriptionId: null, planName: null },
+            : { subscriptionId: null, planName: null, tenantStatus: tenantRow?.status ?? null },
           after: {
             subscriptionId: created.id,
             planId: v.planId,
@@ -506,10 +563,22 @@ export async function assignPlan(input: z.input<typeof assignInput>): Promise<Re
             // assignments send, and an audit entry saying `null` would not record
             // how long the plan was actually granted for.
             months,
+            // Recorded whether or not it moved, so the trail answers "did this
+            // assignment reopen the account?" without a second lookup.
+            tenantStatus: reopened ? 'active' : (tenantRow?.status ?? null),
           },
         },
       )
+
+      return false
     })
+
+    if (gatewayConflict) {
+      return {
+        error:
+          'This company has a live Razorpay subscription. Cancel it first — assigning a plan here would leave the gateway charging them for the old one.',
+      }
+    }
 
     revalidatePath('/admin/plans')
     revalidatePath(`/admin/companies/${v.tenantId}`)

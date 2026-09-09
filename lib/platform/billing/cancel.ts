@@ -7,7 +7,7 @@ import {
   type PlatformRazorpayCredentials,
 } from './credentials'
 import { cancelRazorpaySubscription, type CancelSubscriptionFn } from './razorpay-subscriptions'
-import { GATEWAY, LIVE_STATUSES } from './lifecycle'
+import { GATEWAY, LIVE_STATUSES, syncTenantStatus } from './lifecycle'
 import { SubscriptionError } from './subscribe'
 
 /**
@@ -15,7 +15,7 @@ import { SubscriptionError } from './subscribe'
  *
  * ── THE CHOSEN BEHAVIOUR ────────────────────────────────────────────────────
  *
- * The project's existing rules say nothing about cancellation timing — 0078
+ * The project's existing rules say nothing about cancellation timing — 0079
  * left the whole billing story out — so this establishes one, and states it
  * where an operator will find it:
  *
@@ -51,6 +51,19 @@ export type CancelResult = {
   /** true = access continues until currentPeriodEnd; false = ended now. */
   atPeriodEnd: boolean
   currentPeriodEnd: Date
+  /**
+   * Whether `tenants.status` was moved to 'cancelled' — i.e. whether the
+   * ACCOUNT was closed, not just the subscription.
+   *
+   * Reported rather than left to be inferred because the two paths that call
+   * this differ on how much it matters. An owner cancelling their own paid
+   * subscription is closing the relationship. A platform admin force-cancelling
+   * is stopping a mandate, and closing the account takes the venue's public
+   * booking site down with it (public_tenant_by_slug, 0022) — so
+   * ./overrides.ts records this in the audit entry instead of leaving an
+   * operator to discover it.
+   */
+  closedAccount: boolean
 }
 
 /**
@@ -99,6 +112,10 @@ export async function cancelTenantSubscription(
       gatewaySubscriptionId: tenantSubscriptions.gatewaySubscriptionId,
       currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
       cancelAtPeriodEnd: tenantSubscriptions.cancelAtPeriodEnd,
+      // Whether this subscription was ever CHARGED — the same test
+      // applySubscriptionState() makes before it closes an account, read from
+      // our own record rather than from any payload. See the immediate branch.
+      lastPaymentId: tenantSubscriptions.gatewayLastPaymentId,
     })
     .from(tenantSubscriptions)
     .where(
@@ -113,7 +130,7 @@ export async function cancelTenantSubscription(
   if (!live) throw new SubscriptionError('There is no active subscription to cancel.')
 
   if (!live.gatewaySubscriptionId || live.gateway !== GATEWAY) {
-    // An admin-assigned plan (0078's assignPlan) has no gateway object, so
+    // An admin-assigned plan (0079's assignPlan) has no gateway object, so
     // there is nothing to cancel at Razorpay. Ending it is an operator action,
     // not a self-serve one — there is no money to stop.
     throw new SubscriptionError(
@@ -130,12 +147,19 @@ export async function cancelTenantSubscription(
     // down" is not an answer to support being told to stop it today, and
     // Razorpay accepts cancel_at_cycle_end=0 on a subscription that is
     // scheduled to end later.
-    return { atPeriodEnd: true, currentPeriodEnd: live.currentPeriodEnd }
+    return { atPeriodEnd: true, currentPeriodEnd: live.currentPeriodEnd, closedAccount: false }
   }
 
   // Only a subscription Razorpay considers active has a cycle to run out —
   // unless a platform admin has explicitly asked for it to stop now.
   const atCycleEnd = options.immediate ? false : live.status === 'active'
+
+  // "Was this relationship ever paid for?" — read from OUR record, never from a
+  // payload, exactly as applySubscriptionState() reads it. `past_due` counts:
+  // arrears are what happens to a subscription that HAS been charged and then
+  // failed to renew.
+  const wasPaid =
+    live.status === 'active' || live.status === 'past_due' || live.lastPaymentId !== null
 
   const credentials = await (gateway.credentials
     ? gateway.credentials()
@@ -162,22 +186,48 @@ export async function cancelTenantSubscription(
       return
     }
 
-    // Never charged, so there is no paid period to honour. Closed out now —
-    // both so the tenant can start a fresh subscription immediately (the
-    // one-live index would otherwise block it) and because leaving a dead
-    // mandate 'live' would misreport the account.
-    //
-    // tenants.status is deliberately NOT touched. Backing out of a checkout
-    // that was never authorised is not closing a business account, and the
-    // matching `subscription.cancelled` webhook applies the same rule (see the
-    // `wasPaid` refinement in ./lifecycle.ts) so the two paths agree.
+    // No cycle left to honour, so the row is closed out now — both so the
+    // tenant can start a fresh subscription immediately (the one-live index
+    // would otherwise block it) and because leaving a dead mandate 'live' would
+    // misreport the account.
     await tx
       .update(tenantSubscriptions)
       .set({ status: 'cancelled', cancelledAt: new Date(), cancelAtPeriodEnd: false })
       .where(
         and(eq(tenantSubscriptions.id, live.id), eq(tenantSubscriptions.tenantId, tenantId)),
       )
+
+    // ── and the ACCOUNT, but only if this subscription was ever paid for ─────
+    //
+    // The rule is ./lifecycle.ts's `wasPaid` refinement, applied here rather
+    // than restated: a business ending a PAID relationship is a closed account;
+    // one backing out of a checkout it never authorised is not, and closing it
+    // would punish somebody for not buying.
+    //
+    // This branch used to skip the account entirely, on the reasoning that it
+    // only ever ran for a never-charged subscription. That is true of
+    // `trialing` and false of `past_due` — which by definition HAS been charged,
+    // and which is the single most common state to cancel from, since a failed
+    // renewal is what prompts it. The result was an order-dependent outcome for
+    // one user action: cancel while 'active' and the at-cycle-end path let the
+    // webhook close the account later; cancel while 'past_due' and the account
+    // stayed 'active' forever, because writing 'cancelled' here first makes the
+    // matching `subscription.cancelled` delivery hit the terminal-state guard
+    // and do nothing at all.
+    //
+    // Written in the SAME transaction as the row above, so the two can never
+    // disagree.
+    if (wasPaid) {
+      await syncTenantStatus(tx, tenantId, 'cancelled')
+    }
   })
 
-  return { atPeriodEnd: atCycleEnd, currentPeriodEnd: live.currentPeriodEnd }
+  // The account is closed only on the immediate path, and only for a
+  // subscription that was actually paid for. An at-cycle-end cancellation
+  // leaves the row live; the webhook closes the account when the period ends.
+  return {
+    atPeriodEnd: atCycleEnd,
+    currentPeriodEnd: live.currentPeriodEnd,
+    closedAccount: !atCycleEnd && wasPaid,
+  }
 }

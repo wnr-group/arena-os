@@ -14,7 +14,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  * There is no `mrr` column, no metrics table, no nightly rollup and no cache.
  * Every figure on the dashboard is an aggregate over the four tables that
  * already hold the facts — `plans`, `tenant_subscriptions`, `tenants` and
- * `platform_invoices` (plus `platform_refunds`, 0082). A stored metric is a
+ * `platform_invoices` (plus `platform_refunds`, 0083). A stored metric is a
  * second source of truth about money, and the first thing it does is drift
  * from the rows it was computed from.
  *
@@ -36,7 +36,7 @@ import { PLATFORM_TIMEZONE } from './invoices'
  *
  * NOTHING here reads `platform_payment_settings`. No key id, no ciphertext, no
  * webhook secret — those columns are not selected anywhere in this file, and
- * `arena_app` has no grant on that table at all (0079).
+ * `arena_app` has no grant on that table at all (0080).
  *
  * ═══ MRR — THE DEFINITION ═══════════════════════════════════════════════════
  *
@@ -168,7 +168,7 @@ async function readMrr(db: DB): Promise<MrrByCurrency[]> {
  * `tenant_subscriptions` keeps history — a tenant that has changed plans three
  * times has four rows — so counting rows would report one business several
  * times. The `distinct on (tenant_id)` below collapses each tenant to its ONE
- * live subscription, which `idx_tenant_subscriptions_one_live` (0078) already
+ * live subscription, which `idx_tenant_subscriptions_one_live` (0079) already
  * guarantees is at most one; the `distinct on` is what makes the query correct
  * even if that index were ever dropped or built NOT VALID.
  *
@@ -411,13 +411,13 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  * `kind = 'subscription' and status = 'paid'`. That is not a guess about the
  * existing rules — it is the only combination issueSubscriptionInvoice() can
  * write, because an invoice is raised exactly when a `subscription.charged`
- * webhook proves Razorpay captured the money (0080, AROS-4). A `void` invoice
+ * webhook proves Razorpay captured the money (0081, AROS-4). A `void` invoice
  * and a `draft` never represented cash.
  *
  * ── WHY CREDIT NOTES ARE NOT SUBTRACTED ─────────────────────────────────────
  *
  * A credit note in this schema is NOT money going out —
- * `platform_invoices_credit_note_unpaid` (0080) CHECKs that it carries no
+ * `platform_invoices_credit_note_unpaid` (0081) CHECKs that it carries no
  * gateway payment, precisely because none moved. It is an OBLIGATION: an amount
  * Arena OS owes the tenant, discharged only by a refund (./refunds.ts, which
  * does move money and is counted below) or by an operator's explicit act.
@@ -429,19 +429,19 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  *
  * ── WHY REFUNDS ARE ────────────────────────────────────────────────────────
  *
- * A refund IS money leaving the account (0082). Only `status = 'processed'`
+ * A refund IS money leaving the account (0083). Only `status = 'processed'`
  * counts: a `pending` refund has not left yet and a `failed` one never will,
  * and both are decided by a signature-verified webhook rather than by the
  * request that started them.
  *
- * Refunds are bucketed by when they PROCESSED — `processed_at` (0084) — and not
+ * Refunds are bucketed by when they PROCESSED — `processed_at` (0085) — and not
  * by two other dates it would be easy to reach for:
  *
  *   NOT the invoice they reverse. A refund issued in March against a January
  *   charge is March's cash movement; restating January would change a month an
  *   operator has already read and reported on.
  *
- *   NOT `created_at`, which is when the refund was RESERVED. 0082 splits
+ *   NOT `created_at`, which is when the refund was RESERVED. 0083 splits
  *   reserving from settling on purpose, and on a gateway timeout the row is
  *   deliberately left pending until a webhook settles it — possibly the next
  *   day, and across a month boundary the next reporting period. Bucketing on
@@ -449,9 +449,22 @@ type RefundBucketRow = { bucket_start: string; refunded: string | null }
  *   refund reserved on 31 March and settled on 2 April was absent when March was
  *   read on the 1st and present inside March when it was read on the 3rd.
  *
- * `coalesce(processed_at, created_at)` is the read, so rows written before 0084
+ * `coalesce(processed_at, created_at)` is the read, so rows written before 0085
  * (and any that somehow reach 'processed' without a stamp) keep the old
  * behaviour instead of dropping out of the series.
+ *
+ * ── ONE CURRENCY AT A TIME ──────────────────────────────────────────────────
+ *
+ * `currency` is a required argument, and every aggregate below filters on it.
+ * This series used to sum `total` and `amount` across the whole table with no
+ * such filter, while readMrr() a hundred lines up grouped by currency for
+ * exactly the right reason — so a single non-INR plan (createPlan accepts any
+ * ISO 4217 code) made the chart add dollars to rupees and call the result a
+ * number. Two neighbouring aggregates, two different rules, one of them wrong.
+ *
+ * The caller picks which currency to render — see getPlatformBillingDashboard(),
+ * which uses the headline currency from readMrr() so the MRR tile and the chart
+ * always describe the same money.
  *
  * ── Three queries, merged over a few hundred rows ───────────────────────────
  *
@@ -463,6 +476,7 @@ async function readRevenue(
   db: DB,
   range: DateRange,
   bucket: RevenueBucket,
+  currency: string,
 ): Promise<{ points: RevenuePoint[]; totals: RevenueTotals }> {
   // `bucket` is a closed union checked by the caller, never interpolated from a
   // request. It still goes in as a bound parameter rather than as string
@@ -481,13 +495,14 @@ async function readRevenue(
     from public.platform_invoices i
     where i.invoice_date >= ${range.start}::date
       and i.invoice_date <= ${range.end}::date
+      and i.currency = ${currency}
     group by 1
     order by 1
   `)
 
   // `coalesce(processed_at, created_at)` — see the note above. Written once as a
   // lateral so the bucket expression and the range filter can never drift onto
-  // two different columns, which is the shape the 0084 bug took.
+  // two different columns, which is the shape the 0085 bug took.
   const refundRows = await db.execute<RefundBucketRow>(sql`
     select
       date_trunc(${bucket}, (s.settled_on)::timestamp)::date::text as bucket_start,
@@ -498,6 +513,7 @@ async function readRevenue(
         as settled_on
     ) s
     where r.status = 'processed'
+      and r.currency = ${currency}
       and s.settled_on >= ${range.start}::date
       and s.settled_on <= ${range.end}::date
     group by 1
@@ -578,6 +594,38 @@ async function readRevenue(
   )
 
   return { points, totals }
+}
+
+/**
+ * Every currency the platform issued a paid invoice or settled a refund in over
+ * this window, busiest first.
+ *
+ * Exists so the dashboard can TELL an operator that the revenue chart is one
+ * currency out of several, rather than silently showing a subset — the honest
+ * half of making readRevenue() single-currency.
+ */
+async function readBilledCurrencies(db: DB, range: DateRange): Promise<string[]> {
+  const { rows } = await db.execute<{ currency: string }>(sql`
+    select currency, sum(n) as n from (
+      select i.currency, count(*) as n
+        from public.platform_invoices i
+       where i.kind = 'subscription'
+         and i.status = 'paid'
+         and i.invoice_date >= ${range.start}::date
+         and i.invoice_date <= ${range.end}::date
+       group by i.currency
+      union all
+      select r.currency, count(*) as n
+        from public.platform_refunds r
+       where r.status = 'processed'
+         and (coalesce(r.processed_at, r.created_at) at time zone ${PLATFORM_TIMEZONE})::date
+             between ${range.start}::date and ${range.end}::date
+       group by r.currency
+    ) s
+    group by currency
+    order by sum(n) desc, currency asc
+  `)
+  return rows.map((r) => r.currency)
 }
 
 // ── the per-tenant table ─────────────────────────────────────────────────────
@@ -696,6 +744,18 @@ export type PlatformBillingDashboard = {
   churn: ChurnMetrics
   revenue: RevenuePoint[]
   revenueTotals: RevenueTotals
+  /**
+   * WHICH currency `revenue` and `revenueTotals` are denominated in. The series
+   * is single-currency by construction — see readRevenue() — so this has to be
+   * rendered alongside the figures rather than assumed to be INR.
+   */
+  revenueCurrency: string
+  /**
+   * Every currency the platform has actually billed in over this range. More
+   * than one entry means the chart is showing a subset, which the dashboard
+   * says out loud instead of quietly under-reporting.
+   */
+  billedCurrencies: string[]
   tenants: TenantBillingRow[]
 }
 
@@ -716,6 +776,16 @@ export const TENANT_ROW_LIMIT = 200
 export async function getPlatformBillingDashboard(options: {
   range: DateRange
   bucket: RevenueBucket
+  /**
+   * Which currency the revenue series should be denominated in. Defaults to the
+   * MRR headline, so the tiles and the chart describe the same money unless an
+   * operator deliberately switches.
+   *
+   * Ignored unless the platform has actually billed in it over this range —
+   * this arrives from a query string, and a chart that is silently empty
+   * because somebody typed `?currency=ZZZ` is worse than one that says INR.
+   */
+  currency?: string
   db?: DB
 }): Promise<PlatformBillingDashboard> {
   await requirePlatformAdmin()
@@ -728,7 +798,33 @@ export async function getPlatformBillingDashboard(options: {
     const mrr = await readMrr(tx)
     const mix = await readMix(tx)
     const churn = await readChurn(tx, range)
-    const revenue = await readRevenue(tx, range, bucket)
+
+    // Which currencies actually appear in this window, so the caller can say
+    // whether the single-currency series below is the whole picture.
+    const billed = await readBilledCurrencies(tx, range)
+
+    // The operator's explicit choice, if it names a currency actually billed in
+    // this window; otherwise the MRR HEADLINE — the currency the platform makes
+    // most of its money in — so the tiles and the chart describe the same money
+    // by default. Falling back to whatever was billed, then to INR, keeps a
+    // platform with no live subscriptions from rendering an empty chart for a
+    // currency it demonstrably has invoices in.
+    // The MRR headline is computed over LIVE SUBSCRIPTIONS; `billed` is
+    // computed over INVOICES IN THIS WINDOW. They usually agree, and when they
+    // do not, following the headline blindly renders an empty chart for a
+    // currency with no activity in the range while a note underneath says where
+    // the activity actually is. So the headline wins only if it is one of the
+    // currencies actually billed here.
+    const asked = options.currency?.trim().toUpperCase()
+    const headlineCurrency = mrr[0]?.currency
+    const revenueCurrency =
+      asked && billed.includes(asked)
+        ? asked
+        : headlineCurrency && (billed.length === 0 || billed.includes(headlineCurrency))
+          ? headlineCurrency
+          : (billed[0] ?? headlineCurrency ?? 'INR')
+
+    const revenue = await readRevenue(tx, range, bucket, revenueCurrency)
     const tenantRows = await readTenantRows(tx, TENANT_ROW_LIMIT)
 
     return {
@@ -740,6 +836,8 @@ export async function getPlatformBillingDashboard(options: {
       churn,
       revenue: revenue.points,
       revenueTotals: revenue.totals,
+      revenueCurrency,
+      billedCurrencies: billed,
       tenants: tenantRows,
     }
   })

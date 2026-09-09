@@ -99,7 +99,7 @@ export async function paymentMethodUpdateFlow(
     throw new SubscriptionError('There is no active subscription to update.')
   }
   if (live.gateway !== GATEWAY || !live.gatewaySubscriptionId) {
-    // An admin-assigned plan (0078's assignPlan) has no gateway object at all,
+    // An admin-assigned plan (0079's assignPlan) has no gateway object at all,
     // so there is no mandate and nothing to re-authorise. Saying so is more
     // useful than a broken link.
     throw new SubscriptionError(

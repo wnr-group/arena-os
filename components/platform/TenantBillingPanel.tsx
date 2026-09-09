@@ -328,7 +328,7 @@ export function TenantBillingPanel({
                   {r.status}
                   {r.gatewayRefundId ? ` · ${r.gatewayRefundId}` : ''}
                   {/* The date the REVENUE CHART uses for a processed refund is
-                      when it settled (0084), not when it was raised. Showing the
+                      when it settled (0085), not when it was raised. Showing the
                       raised date alone made the two disagree across a month
                       boundary. Both are shown when they differ. */}
                   {' · '}
@@ -616,7 +616,13 @@ function ForceCancel({
             (r) =>
               r.atPeriodEnd
                 ? `Cancelling at the end of the period (${day(String(r.effectiveAt))}).`
-                : 'Subscription cancelled.',
+                : r.closedAccount
+                  ? // Said explicitly, because it is the half of this action an
+                    // operator is least likely to have expected: closing the
+                    // account stops public_tenant_by_slug() resolving, so the
+                    // venue's public booking site goes dark immediately.
+                    'Subscription cancelled and the account closed — the public booking site is now offline. Reopen it from Company status if that was not intended.'
+                  : 'Subscription cancelled.',
           )
         }
       >

@@ -1,6 +1,6 @@
 /**
  * An admin-created company is born ON A PLAN — the forward half of the
- * guarantee migration 0085 repairs backwards.
+ * guarantee migration 0086 repairs backwards.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs \
  *           --import ./scripts/next-runtime-hook.mjs \
@@ -8,7 +8,7 @@
  *
  * ── Why this exists ─────────────────────────────────────────────────────────
  *
- * 0085 grandfathers every tenant that existed before M16. It is a one-shot
+ * 0086 grandfathers every tenant that existed before M16. It is a one-shot
  * repair, and it cannot cover a company created after it runs. `createCompany()`
  * used to call `provisionTenant()` — which deliberately creates no subscription
  * — and then stop, so every company an admin created was born with payroll,
@@ -167,7 +167,7 @@ async function main() {
   // ══ 2. a plan is not optional ═════════════════════════════════════════════
   //
   // The regression this change closes. A company created without a plan is the
-  // exact broken workspace 0085 had to repair, so the action must refuse rather
+  // exact broken workspace 0086 had to repair, so the action must refuse rather
   // than create one — and it must refuse BEFORE writing anything.
   section('creating a company without a plan is refused')
 
@@ -180,7 +180,7 @@ async function main() {
   // ══ 3. a retired plan cannot start a company ══════════════════════════════
   //
   // `active = false` means "grandfathering only, never sell this again" — the
-  // Grandfathered plan 0085 creates is exactly such a row, and starting a new
+  // Grandfathered plan 0086 creates is exactly such a row, and starting a new
   // company on a free unlimited tier would be the worst possible reading of it.
   section('a retired plan cannot start a company')
 

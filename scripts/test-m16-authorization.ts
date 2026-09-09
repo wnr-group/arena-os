@@ -150,7 +150,7 @@ async function main() {
         status, gateway, gateway_payment_id)
      values ($1,$2,$3,$4,'2026-08',
              now() - interval '5 days', now() + interval '25 days', 'monthly',
-             -- GST is INCLUSIVE (0080): subtotal is the gross captured,
+             -- GST is INCLUSIVE (0081): subtotal is the gross captured,
              -- taxable_value is what remains once the tax inside it is removed,
              -- and total = taxable_value + tax_total = subtotal - adjustment.
              'AuthA', 1180, 'Arena OS', 'M16 Auth Co',
@@ -295,7 +295,7 @@ async function main() {
 
   // ══ 5. a currency code must be LETTERS ════════════════════════════════════
   //
-  // `length(currency) = 3` (0078) and the old `z.string().length(3)` both
+  // `length(currency) = 3` (0079) and the old `z.string().length(3)` both
   // accepted "A1B" and "12$". Intl.NumberFormat throws RangeError on a
   // malformed code, and every billing screen formats a currency read from this
   // column — so one such row was a hard render crash for /admin/revenue, with

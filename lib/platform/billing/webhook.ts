@@ -13,7 +13,7 @@ import {
 import { issueSubscriptionInvoice } from './invoices'
 import { billableChargeFor, CHARGE_EVENT } from './renewal'
 import { sendDunningNotice } from './dunning-notify'
-import { cancellationDueAt, graceEndsAt } from './dunning-policy'
+import { deadlinesFor } from './dunning-policy'
 import { applyVerifiedRefundEvent } from './refunds'
 
 /**
@@ -42,7 +42,7 @@ import { applyVerifiedRefundEvent } from './refunds'
  * lib/payments/webhook.ts takes, contained the same way: one transaction, one
  * lookup by our own reference, no generic elevated-write helper exported for
  * anything else to reach for. `arena_app` has no write grant on
- * tenant_subscriptions at all (0078), so there is no non-owner path to add.
+ * tenant_subscriptions at all (0079), so there is no non-owner path to add.
  */
 
 // ── payload ──────────────────────────────────────────────────────────────────
@@ -72,7 +72,19 @@ const paymentEntitySchema = z
     // would mean the payload is not what we think it is, so it is rejected
     // rather than coerced — this figure becomes the invoice total.
     amount: z.number().int().nonnegative().optional(),
-    currency: z.string().min(3).max(3).optional(),
+    // LETTERS, and normalised to upper case. `min(3).max(3)` accepted "1$X",
+    // and the 0081 CHECK (`length(currency) = 3`) lets the same through — so a
+    // malformed code could reach platform_invoices.currency and from there
+    // Intl.NumberFormat, which throws RangeError on anything that is not a
+    // well-formed ISO 4217 code and took the owner's invoice page down with it.
+    // The same tightening lib/actions/plans.ts already applies to a catalogue
+    // price, applied to the one other door a currency comes in through.
+    currency: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z]{3}$/)
+      .transform((c) => c.toUpperCase())
+      .optional(),
     status: z.string().min(1).optional(),
     // Razorpay raises its own invoice for a subscription charge. Its id is
     // stored on our invoice so a dispute can be answered from either side.
@@ -85,7 +97,7 @@ const paymentEntitySchema = z
     // rewords a description cannot change what happens to an account.
     //
     // Length-capped where it is stored (lib/platform/billing/lifecycle.ts) and
-    // again by a CHECK in migration 0081, because it is gateway-authored text
+    // again by a CHECK in migration 0082, because it is gateway-authored text
     // that ends up on a page.
     error_code: z.string().min(1).nullable().optional(),
     error_description: z.string().min(1).nullable().optional(),
@@ -105,7 +117,14 @@ const paymentEntitySchema = z
 const refundEntitySchema = z
   .object({
     id: z.string().min(1),
+    // The payment the refund was taken from. Carried through because it is the
+    // ONLY way to settle a refund whose `rfnd_…` id we never learned — see
+    // applyVerifiedRefundEvent() in ./refunds.ts.
     payment_id: z.string().min(1).nullable().optional(),
+    // Smallest currency unit, like every other Razorpay amount. Used to
+    // disambiguate when one payment carries several unsettled refunds; never to
+    // decide the outcome, which comes from the event name.
+    amount: z.number().int().nonnegative().optional(),
     status: z.string().min(1).optional(),
   })
   .passthrough()
@@ -397,14 +416,27 @@ export async function applyVerifiedPlatformWebhook(
             : null
 
       if (stage) {
-        await sendDunningNotice(tx, {
-          tenantId: result.tenantId,
-          subscriptionId: result.subscriptionId,
-          stage,
-          dunningCycle: result.pastDueSince,
-          graceEndsAt: graceEndsAt(result.pastDueSince),
-          cancelsAt: result.suspendedAt ? cancellationDueAt(result.suspendedAt) : null,
+        // Through deadlinesFor(), so the date this notice quotes is the one the
+        // dunning processor will actually act on. `periodEnd` is passed only
+        // while the subscription is still in past_due, because that is the one
+        // state in which a paid period can push the suspension out past the
+        // grace deadline — see ./dunning-policy.ts § accessEndsAt.
+        const deadlines = deadlinesFor({
+          pastDueSince: result.pastDueSince,
+          suspendedAt: result.suspendedAt,
+          paidThrough: result.to === 'past_due' ? result.periodEnd : null,
         })
+
+        if (deadlines) {
+          await sendDunningNotice(tx, {
+            tenantId: result.tenantId,
+            subscriptionId: result.subscriptionId,
+            stage,
+            dunningCycle: result.pastDueSince,
+            graceEndsAt: deadlines.graceEndsAt,
+            cancelsAt: deadlines.cancelsAt,
+          })
+        }
       }
     }
 
@@ -478,6 +510,11 @@ export async function applyVerifiedPlatformRefundWebhook(
 
     const result = await applyVerifiedRefundEvent(tx, {
       gatewayRefundId: refund.id,
+      // The fallback match. A refund whose instruction timed out is recorded
+      // locally with a NULL gateway_refund_id, so the reference above can never
+      // find it; these let it be recognised by the payment it came from.
+      gatewayPaymentId: refund.payment_id ?? paymentId,
+      amountPaise: refund.amount ?? null,
       status,
     })
 

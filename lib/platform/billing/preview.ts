@@ -4,7 +4,7 @@ import { ownerDb, type DB } from '@/db'
 import { plans, tenantSubscriptions } from '@/db/schema'
 import { round2 } from '@/lib/billing/pricing'
 import { computeProrationCredit } from './proration'
-import { lastPaidInvoiceFor } from './invoices'
+import { lastPaidInvoiceFor, netPaidTotal } from './invoices'
 import { GATEWAY, LIVE_STATUSES } from './lifecycle'
 
 /**
@@ -80,9 +80,27 @@ export type PlanChangePreview = {
    * genuinely WOULD reduce the capture) is the case that makes them differ.
    */
   firstInvoiceTotal: string
+  /**
+   * How long the new subscription is good for if the payer never authorises it.
+   *
+   * The SAME rule subscribeTenantToPlan() applies, restated here so the
+   * confirmation dialog can name the real consequence of walking away instead
+   * of assuming one: the remaining runway carries over ONLY when nothing was
+   * credited back, because a period handed back as a credit note must not also
+   * be served.
+   */
+  unpaidAccessEndsAt: Date
   /** Changes take effect immediately; there is no scheduled-at-period-end path. */
   effective: 'immediate'
 }
+
+/**
+ * Mirrors PENDING_AUTHORISATION_DAYS in ./subscribe.ts, which owns the rule.
+ * Not imported, because ./subscribe.ts pulls in the whole Razorpay client and
+ * this module is read by a page that must not.
+ */
+const PENDING_AUTHORISATION_DAYS = 3
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export class PreviewError extends Error {
   constructor(message: string) {
@@ -176,7 +194,9 @@ export async function previewPlanChangeFor(
     const lastPaid = await lastPaidInvoiceFor(db, live.id)
     if (lastPaid) {
       const c = computeProrationCredit({
-        paidTotal: Number(lastPaid.total),
+        // The SAME base creditUnusedPeriod() will use — net of refunds — so the
+        // figure quoted here is the figure actually issued.
+        paidTotal: netPaidTotal(lastPaid),
         periodStart: lastPaid.billingPeriodStart,
         periodEnd: lastPaid.billingPeriodEnd,
         at,
@@ -240,6 +260,12 @@ export async function previewPlanChangeFor(
     // The credit is still reported above, so the dialog can say what is being
     // issued. It is simply no longer subtracted from anything.
     firstInvoiceTotal: targetPrice.toFixed(2),
+    // Credited → only the authorisation window; not credited → the runway the
+    // business still owns carries over. See the field's note above.
+    unpaidAccessEndsAt:
+      !credit && live && live.currentPeriodEnd.getTime() > at.getTime()
+        ? live.currentPeriodEnd
+        : new Date(at.getTime() + PENDING_AUTHORISATION_DAYS * DAY_MS),
     effective: 'immediate',
   }
 }

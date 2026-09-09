@@ -1,5 +1,5 @@
 /**
- * Migration 0085 — existing tenants keep payroll, expenses and reports after
+ * Migration 0086 — existing tenants keep payroll, expenses and reports after
  * M16 deploys, against a real database.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/verify-grandfather-backfill.ts
@@ -9,9 +9,9 @@
  * M16's gates are fail-closed: a tenant with no `tenant_subscriptions` row is
  * refused payroll, expenses, every report, and is capped on staff and
  * resources. Every tenant that existed before M16 is that tenant, and nothing
- * in 0078–0084 gives them a row. 0085 is the backfill that closes it.
+ * in 0079–0085 gives them a row. 0086 is the backfill that closes it.
  *
- * The test EXECUTES db/migrations/0085_grandfather_existing_tenants.sql itself
+ * The test EXECUTES db/migrations/0086_grandfather_existing_tenants.sql itself
  * rather than restating what it should do. A test that re-implements the
  * migration proves the test author and the migration author agree, which is not
  * the property anybody needs. Reading the real file means an edit to the
@@ -23,8 +23,9 @@
  *
  * ── Safe to run against a dev database ──────────────────────────────────────
  *
- * 0085 is idempotent and grandfathers EVERY tenant with no live subscription,
- * so running it here can create rows for tenants this test did not make. The
+ * 0086 is idempotent and grandfathers every tenant that predates it and has no
+ * subscription history, so running it here can create rows for tenants this
+ * test did not make. The
  * cleanup at the bottom removes exactly the Grandfathered subscriptions that
  * did not exist when the test started, and leaves everything else — including a
  * Grandfathered plan that was already there from a real deploy — untouched.
@@ -64,7 +65,7 @@ async function main() {
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
   const MIGRATION = readFileSync(
-    resolve(process.cwd(), 'db/migrations/0085_grandfather_existing_tenants.sql'),
+    resolve(process.cwd(), 'db/migrations/0086_grandfather_existing_tenants.sql'),
     'utf8',
   )
   /** Run the real migration, exactly as scripts/migrate.ts would. */
@@ -86,9 +87,19 @@ async function main() {
   //
   // Real tenant, real owner membership, and NO subscription row — which is
   // precisely the state every existing customer is in the moment M16 deploys.
+  //
+  // `created_at` is backdated, and that is part of being shaped like a pre-M16
+  // tenant rather than a convenience: 0086's cutoff is the Grandfathered plan's
+  // own creation instant, so the backfill covers tenants that existed BEFORE it
+  // first ran and deliberately not ones created afterwards. A fixture stamped
+  // `now()` on a database where the plan already exists is the second kind.
   const t = await owner.query<{ id: string }>(
-    `insert into tenants (slug, name, status) values ('gfath', 'grandfather co', 'active')
-     on conflict (slug) do update set status = 'active' returning id`,
+    `insert into tenants (slug, name, status, created_at)
+     values ('gfath', 'grandfather co', 'active', now() - interval '365 days')
+     on conflict (slug) do update
+       set status = 'active',
+           created_at = least(tenants.created_at, excluded.created_at)
+     returning id`,
   )
   const tenantId = t.rows[0].id
   const br = await owner.query<{ id: string }>(
@@ -153,7 +164,7 @@ async function main() {
   )
 
   // ── 2. run the real migration ─────────────────────────────────────────────
-  section('running db/migrations/0085_grandfather_existing_tenants.sql')
+  section('running db/migrations/0086_grandfather_existing_tenants.sql')
   await runMigration()
   console.log('  (applied)')
 
@@ -257,10 +268,11 @@ async function main() {
 
   // ── 6. it leaves a paying tenant alone ────────────────────────────────────
   //
-  // The `not exists` clause is keyed on the three LIVE statuses. A tenant that
+  // The `not exists` clause is keyed on ANY subscription history. A tenant that
   // already subscribed — mid-trial, or assigned a tier by an operator — must
   // come out the other side on the plan it had, not silently moved onto a free
-  // one.
+  // one. Since AROS-114 the same clause also protects a tenant that has CHURNED:
+  // see the re-application case below.
   section('a tenant that already has a plan is untouched')
 
   const t2 = await owner.query<{ id: string }>(
@@ -295,6 +307,74 @@ async function main() {
   check('the paying tenant still has exactly one live subscription', stillOn.rowCount === 1)
   check('…and it is still its own plan', stillOn.rows[0]?.name === 'Grandfather Test Tier')
 
+  // ── 7. a CHURNED tenant is not resurrected by a re-application ────────────
+  //
+  // The reason the `not exists` clause is keyed on any history rather than on
+  // the three live statuses. `public._migrations` is keyed on FILENAME, so
+  // renaming a migration — which happened twice on this branch — makes every
+  // environment apply it again. A business that cancelled, or that the dunning
+  // processor closed for non-payment, has no LIVE subscription and would have
+  // been handed a free, unlimited, never-lapsing plan by the second run.
+  section('a churned tenant is not re-grandfathered on a second run')
+
+  const t3 = await owner.query<{ id: string }>(
+    `insert into tenants (slug, name, status, created_at)
+     values ('gfchurn', 'churned co', 'cancelled', now() - interval '365 days')
+     on conflict (slug) do update
+       set status = 'cancelled',
+           created_at = least(tenants.created_at, excluded.created_at)
+     returning id`,
+  )
+  const churnedTenantId = t3.rows[0].id
+  await owner.query(`delete from tenant_subscriptions where tenant_id = $1`, [churnedTenantId])
+  await owner.query(
+    `insert into tenant_subscriptions
+       (tenant_id, plan_id, status, current_period_start, current_period_end, cancelled_at)
+     values ($1, $2, 'cancelled', now() - interval '90 days', now() - interval '60 days',
+             now() - interval '60 days')`,
+    [churnedTenantId, paidPlanId],
+  )
+
+  await runMigration()
+
+  const churned = await owner.query<{ n: string }>(
+    `select count(*) n
+       from tenant_subscriptions s
+       join plans p on p.id = s.plan_id
+      where s.tenant_id = $1
+        and lower(btrim(p.name)) = 'grandfathered'`,
+    [churnedTenantId],
+  )
+  check('the churned tenant got NO Grandfathered plan', churned.rows[0].n === '0')
+
+  const churnedLive = await owner.query(
+    `select 1 from tenant_subscriptions
+      where tenant_id = $1 and status in ('trialing','active','past_due')`,
+    [churnedTenantId],
+  )
+  check('…and still has no live subscription at all', churnedLive.rowCount === 0)
+
+  // A tenant created AFTER the plan — a signup whose plan attach has not landed
+  // yet — is likewise not covered, for the same reason.
+  const t4 = await owner.query<{ id: string }>(
+    `insert into tenants (slug, name, status) values ('gfnew', 'new co', 'trial')
+     on conflict (slug) do update set status = 'trial', created_at = now() returning id`,
+  )
+  const newTenantId = t4.rows[0].id
+  await owner.query(`delete from tenant_subscriptions where tenant_id = $1`, [newTenantId])
+
+  await runMigration()
+
+  const fresh = await owner.query<{ n: string }>(
+    `select count(*) n
+       from tenant_subscriptions s
+       join plans p on p.id = s.plan_id
+      where s.tenant_id = $1
+        and lower(btrim(p.name)) = 'grandfathered'`,
+    [newTenantId],
+  )
+  check('a tenant created after the backfill is NOT grandfathered', fresh.rows[0].n === '0')
+
   // ── cleanup ───────────────────────────────────────────────────────────────
   //
   // Only what this run created. A Grandfathered subscription that existed before
@@ -309,7 +389,7 @@ async function main() {
     await owner.query(`delete from tenant_subscriptions where id = any($1)`, [created])
   }
   await owner.query(`delete from tenant_subscriptions where tenant_id = any($1)`, [
-    [tenantId, paidTenantId],
+    [tenantId, paidTenantId, churnedTenantId, newTenantId],
   ])
   await owner.query(`delete from plans where id = $1`, [paidPlanId])
   if (!planPreexisted) {

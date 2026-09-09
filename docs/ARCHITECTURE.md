@@ -98,7 +98,7 @@ verify a platform delivery, or the reverse.
 
 A verified `subscription.charged` on the platform route also raises the GST
 invoice for that renewal, in the same transaction as the state change
-(`platform_invoices`, migration 0080). It is the ONLY event that bills: the
+(`platform_invoices`, migration 0081). It is the ONLY event that bills: the
 platform account emits `payment.captured` and `invoice.paid` for the same
 rupees, and acting on more than one view of a single charge would invoice a
 business twice.
@@ -189,7 +189,7 @@ last month does not change what recurs next month. Refunds are subtracted from
 *revenue over time*, which is the cash view.
 
 **Credit notes are reported, never netted off.** A credit note carries no gateway
-payment (`platform_invoices_credit_note_unpaid`, 0080) because no money moved. It
+payment (`platform_invoices_credit_note_unpaid`, 0081) because no money moved. It
 is an **obligation**, not a cash movement: an amount Arena OS owes the business,
 which stays `issued` until somebody discharges it deliberately — a refund, which
 does move money and *is* counted, or an explicit operator act. Nothing
@@ -197,7 +197,7 @@ auto-applies a note to a later invoice. Subtracting it from revenue here would
 book the same rupees out twice: once as an unfulfilled promise, again when that
 promise is actually paid.
 
-**Refunds are bucketed by `processed_at`** (0084) — when the gateway confirmed the
+**Refunds are bucketed by `processed_at`** (0085) — when the gateway confirmed the
 money left — not by `created_at`, when the refund was *reserved*. The two are
 deliberately different moments (see the refund row below), and on the timeout path
 they can fall in different months. Bucketing on `created_at` made a refund

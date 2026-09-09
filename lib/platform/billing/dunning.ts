@@ -1,7 +1,7 @@
 import 'server-only'
-import { and, eq, isNotNull, or } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, or } from 'drizzle-orm'
 import { ownerDb, type DB } from '@/db'
-import { tenantSubscriptions } from '@/db/schema'
+import { platformDunningNotices, tenantSubscriptions } from '@/db/schema'
 import { RazorpayApiError } from '@/lib/payments/razorpay'
 import {
   requirePlatformRazorpayCredentials,
@@ -10,11 +10,12 @@ import {
 import { cancelRazorpaySubscription, type CancelSubscriptionFn } from './razorpay-subscriptions'
 import { GATEWAY, recordSubscriptionAudit, syncTenantStatus } from './lifecycle'
 import {
+  accessEndsAt,
+  accessHasEnded,
   assertPolicy,
   cancellationDueAt,
   cancellationIsDue,
   graceEndsAt,
-  graceHasExpired,
   remindersDue,
   DUNNING_POLICY,
   type DunningPolicy,
@@ -82,7 +83,7 @@ import { logDunningNotice, sendDunningNotice, type DunningNotifier } from './dun
  * way: this module reads and writes exactly four tables, always by our own ids,
  * and exports no generic elevated-write helper. `arena_app` has no write grant
  * on tenant_subscriptions, tenants.status or platform_dunning_notices at all
- * (0078/0079/0081), so there is no non-owner path to add.
+ * (0079/0080/0082), so there is no non-owner path to add.
  */
 
 /** What one run did. Every number is a count of ACTIONS TAKEN, not of rows seen. */
@@ -117,6 +118,12 @@ type Candidate = {
   id: string
   tenantId: string
   status: string
+  /**
+   * Read because suspension is NOT decided by the grace clock alone: a business
+   * whose paid period outlasts its grace window keeps the access it paid for.
+   * accessEndsAt() combines the two — see ./dunning-policy.ts.
+   */
+  currentPeriodEnd: Date
   pastDueSince: Date | null
   suspendedAt: Date | null
   gateway: string | null
@@ -168,11 +175,19 @@ export async function processDunning(
   // so it is excluded here rather than skipped later. `cancelled` is terminal
   // and never appears. `active`/`trialing` have had their clocks cleared.
   //
-  // Ids only. The authoritative read happens inside each transaction, under a
-  // lock, so a row that changed between the scan and its turn is handled
-  // correctly rather than acted on from a stale snapshot.
+  // The clocks come back with the ids, but only to decide WHETHER a row is
+  // worth a transaction (see the quiet-row filter below). The AUTHORITATIVE
+  // read still happens inside each transaction, under a lock, so a row that
+  // changed between the scan and its turn is handled correctly rather than
+  // acted on from this snapshot.
   const candidates = await db
-    .select({ id: tenantSubscriptions.id })
+    .select({
+      id: tenantSubscriptions.id,
+      status: tenantSubscriptions.status,
+      currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
+      pastDueSince: tenantSubscriptions.pastDueSince,
+      suspendedAt: tenantSubscriptions.suspendedAt,
+    })
     .from(tenantSubscriptions)
     .where(
       and(
@@ -188,7 +203,62 @@ export async function processDunning(
     )
     .orderBy(tenantSubscriptions.pastDueSince)
 
-  for (const { id } of candidates) {
+  // ── which of those actually have something to do THIS run ─────────────────
+  //
+  // An arrears episode is mostly waiting. Between the last reminder and the
+  // suspension there is nothing for the job to do, and since AROS-114 deferred
+  // suspension past a paid-for period that gap can be months rather than a day:
+  // a subscription paid through to next year sits in `past_due` the whole time,
+  // and every run was opening a transaction, taking a row lock and re-attempting
+  // three notices the unique index had already refused.
+  //
+  // So the notices ALREADY SENT for each live episode are read once, in one
+  // query, and a row is skipped when every reminder now due has been delivered
+  // and neither suspension nor cancellation is due yet. Skipping is only ever
+  // "nothing would have happened": the decision uses the same remindersDue()
+  // and accessHasEnded() the transaction would, and anything not provably quiet
+  // is still processed under a lock. A notice can therefore never be dropped by
+  // this — at worst it is sent by a run that could have skipped.
+  const episodes = candidates.length
+    ? await db
+        .select({
+          subscriptionId: platformDunningNotices.subscriptionId,
+          dunningCycle: platformDunningNotices.dunningCycle,
+          stage: platformDunningNotices.stage,
+        })
+        .from(platformDunningNotices)
+        .where(
+          inArray(
+            platformDunningNotices.subscriptionId,
+            candidates.map((c) => c.id),
+          ),
+        )
+    : []
+
+  // Keyed on (subscription, episode, stage) — the same triple
+  // idx_platform_dunning_notices_once is unique on, so "already sent" here means
+  // exactly what "refused at insert" means there.
+  const sent = new Set(
+    episodes.map((e) => `${e.subscriptionId}|${e.dunningCycle.getTime()}|${e.stage}`),
+  )
+
+  const due = candidates.filter((c) => {
+    const pastDueSince = c.pastDueSince
+    if (!pastDueSince) return true
+
+    if (c.status === 'expired') {
+      // Suspended already; the only thing left is cancellation.
+      return c.suspendedAt ? cancellationIsDue(c.suspendedAt, now, policy) : true
+    }
+
+    // past_due: suspension, or a reminder that has not gone out.
+    if (accessHasEnded(c, now, policy)) return true
+    return remindersDue(pastDueSince, accessEndsAt(c, policy), now, policy).some(
+      (stage) => !sent.has(`${c.id}|${pastDueSince.getTime()}|${stage}`),
+    )
+  })
+
+  for (const { id } of due) {
     try {
       const outcome = await processOne(db, id, { now, policy, notify, gateway })
       summary.examined += 1
@@ -285,6 +355,7 @@ async function processOne(
         id: tenantSubscriptions.id,
         tenantId: tenantSubscriptions.tenantId,
         status: tenantSubscriptions.status,
+        currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
         pastDueSince: tenantSubscriptions.pastDueSince,
         suspendedAt: tenantSubscriptions.suspendedAt,
         gateway: tenantSubscriptions.gateway,
@@ -326,9 +397,18 @@ async function grace(
 ): Promise<OneOutcome> {
   const { now, policy, notify } = ctx
   const pastDueSince = row.pastDueSince as Date
-  const episodeEnds = graceEndsAt(pastDueSince, policy)
 
-  if (graceHasExpired(pastDueSince, now, policy)) {
+  // WHEN THE ACCOUNT ACTUALLY GETS SUSPENDED, which is not always the grace
+  // deadline. accessEndsAt() takes the LATER of the grace window and the
+  // period the business has already paid for, so an annual subscriber whose
+  // mandate fails mid-term is not suspended seven days into a year it has paid
+  // for. See ./dunning-policy.ts § accessEndsAt for the incident this fixes.
+  //
+  // The same value is what the notices below quote as the suspension date, so
+  // a warning can never name a date the job will not act on.
+  const episodeEnds = accessEndsAt(row, policy)
+
+  if (accessHasEnded(row, now, policy)) {
     // ── SUSPENSION ────────────────────────────────────────────────────────
     //
     // The two writes that make it real, in ONE transaction so there is no
@@ -406,15 +486,23 @@ async function grace(
   //
   // The tenant is untouched and keeps working — `tenants.status` stays
   // 'active' and the subscription stays in LIVE_STATUSES, so entitlements
-  // continue to be granted (readEntitlements() extends the effective expiry
-  // across the grace window; see lib/platform/entitlements.ts). Only reminders
-  // go out.
+  // continue to be granted (readEntitlements() asks accessEndsAt() for exactly
+  // the same instant this branch tested; see lib/platform/entitlements.ts).
+  // Only reminders go out.
+  //
+  // Each reminder is timed against the anchor its policy entry declares:
+  // "your payment failed" travels from the arrears start, the two notices that
+  // NAME the suspension date are measured backwards from `episodeEnds` — the
+  // date they actually quote. In the default geometry the two coincide and this
+  // is still days 0, 3 and 6; when a paid period defers the suspension, the
+  // warnings follow it instead of firing ten months early. See
+  // ./dunning-policy.ts § DunningAnchor.
   //
   // EVERY due stage is sent, not just the newest: a job that did not run for
   // three days still owes the warnings it missed, and the unique index silently
   // drops the ones already delivered.
   let remindersSent = 0
-  for (const stage of remindersDue(pastDueSince, now, policy)) {
+  for (const stage of remindersDue(pastDueSince, episodeEnds, now, policy)) {
     const sent = await sendDunningNotice(
       tx,
       {
@@ -456,7 +544,7 @@ async function afterSuspension(
   //
   // Razorpay was already told, before this transaction opened (see processOne).
   //
-  // `cancelled_at` is required by tenant_subscriptions_cancelled_at (0078),
+  // `cancelled_at` is required by tenant_subscriptions_cancelled_at (0079),
   // which CHECKs that it is set if and only if status = 'cancelled', so the two
   // must move in one statement. `cancel_at_period_end` is cleared because the
   // request — whoever made it — has now been honoured.

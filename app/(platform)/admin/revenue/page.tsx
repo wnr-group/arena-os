@@ -46,7 +46,7 @@ import { BillingDashboard } from '@/components/platform/BillingDashboard'
 export default async function PlatformRevenuePage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; bucket?: string }>
+  searchParams: Promise<{ from?: string; to?: string; bucket?: string; currency?: string }>
 }) {
   const user = await getCurrentUser()
   if (!user?.isPlatformAdmin) return null
@@ -68,7 +68,15 @@ export default async function PlatformRevenuePage({
       ? requested
       : defaultBucketFor(range, days)
 
-  const data = await getPlatformBillingDashboard({ range, bucket })
+  // The revenue series is single-currency by construction (currencies are never
+  // summed), so which one is a choice. Unvalidated here on purpose:
+  // getPlatformBillingDashboard() ignores anything the platform has not
+  // actually billed in, which is the only check worth making.
+  const data = await getPlatformBillingDashboard({
+    range,
+    bucket,
+    currency: params.currency,
+  })
 
   return (
     <div>
@@ -98,6 +106,8 @@ export default async function PlatformRevenuePage({
         churn={data.churn}
         revenue={data.revenue}
         revenueTotals={data.revenueTotals}
+        revenueCurrency={data.revenueCurrency}
+        billedCurrencies={data.billedCurrencies}
         tenants={data.tenants.map((t) => ({
           ...t,
           // Serialised for the client boundary; the component formats them.

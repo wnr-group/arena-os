@@ -8,7 +8,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database, migrations 0078–0082, every RLS policy and grant, the
+ * REAL: the database, migrations 0079–0083, every RLS policy and grant, the
  * actual SQL aggregates behind MRR / mix / churn / revenue, the actual server
  * actions WITH their requirePlatformAdmin() guards driven through real session
  * rows, the actual override and refund domain code, the actual platform webhook
@@ -315,7 +315,7 @@ async function main() {
     // that would produce four rows in a naive count.
     const T_HISTORY = await makeTenant('hist')
     // Each closed period sits entirely in the past and before the next —
-    // tenant_subscriptions_period (0078) CHECKs end > start.
+    // tenant_subscriptions_period (0079) CHECKs end > start.
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -90, endOffsetDays: -60, cancelledOffsetDays: -60, createdOffsetDays: -90 })
     await makeSub(T_HISTORY, PLAN_M, { status: 'cancelled', startOffsetDays: -60, endOffsetDays: -30, cancelledOffsetDays: -30, createdOffsetDays: -60 })
     await makeSub(T_HISTORY, PLAN_A, { status: 'expired', startOffsetDays: -30, endOffsetDays: -20, createdOffsetDays: -30 })
@@ -465,15 +465,31 @@ async function main() {
     // A credit note — an entitlement to a discount, not money that moved.
     await mkInvoice({ number: 'CN1', date: '2019-06-22', total: '250.00', kind: 'credit_note', status: 'issued' })
 
-    const d = await metrics.getPlatformBillingDashboard({ range: win, bucket: 'month', db: ownerDb })
+    // `currency: CUR` on every revenue assertion below. The series is
+    // single-currency by construction (AROS-114: currencies are never summed),
+    // and these fixtures are deliberately denominated in the ISO test code XTS
+    // so they cannot collide with real INR data on a dev database — so the
+    // dashboard has to be asked for XTS, exactly as an operator would pick it.
+    const d = await metrics.getPlatformBillingDashboard({
+      range: win,
+      bucket: 'month',
+      currency: CUR,
+      db: ownerDb,
+    })
     check('gross revenue is the sum of PAID subscription invoices', d.revenueTotals.gross === 1500)
+    check('…and the series says which currency it is in', d.revenueCurrency === CUR)
     check('a void invoice is not revenue', d.revenueTotals.gross === 1500)
     check('the invoice count matches', d.revenueTotals.invoices === 2)
     check('credit notes are reported separately', d.revenueTotals.creditsIssued === 250)
     check('…and NOT deducted from revenue', d.revenueTotals.net === 1500)
     check('one monthly bucket', d.revenue.length === 1 && d.revenue[0].bucketStart === '2019-06-01')
 
-    const daily = await metrics.getPlatformBillingDashboard({ range: win, bucket: 'day', db: ownerDb })
+    const daily = await metrics.getPlatformBillingDashboard({
+      range: win,
+      bucket: 'day',
+      currency: CUR,
+      db: ownerDb,
+    })
     // One bucket per DAY IN THE RANGE — all 30 of June, not just the four that
     // carry a document. The series is a time axis, so the 26 silent days are
     // part of the answer: a chart that omits them draws 5 June flush against 20
@@ -530,6 +546,47 @@ async function main() {
       'a void invoice is NOT refundable',
       revenue?.invoices.find((i) => i.status === 'void')?.refundable === 0,
     )
+
+    // ── refunded/refundable must reflect refunds that EXIST ────────────────
+    //
+    // The assertions above all run against invoices with no refunds, which is
+    // why they passed while the drill-down's `refunded` subquery was silently
+    // broken: it interpolated the outer column as a bare `"id"`, Postgres bound
+    // that to platform_refunds' own `id`, and every invoice reported zero
+    // refunded — so `refundable` was always the full total. The panel then
+    // offered a Refund control pre-filled with the whole amount on an invoice
+    // that had already been refunded in full, and only the server-side cap
+    // refused it.
+    {
+      const scratch = await ownerPool.query<{ id: string }>(
+        `insert into platform_refunds
+           (tenant_id, invoice_id, gateway, gateway_payment_id, amount, currency, reason,
+            status, processed_at)
+         values ($1,$2,'razorpay',$3, 400, $4, 'partially refunded', 'processed', now())
+         returning id`,
+        [T_REV, paidInvoiceId, `pay_114${tag}`, CUR],
+      )
+      const withRefund = await getTenantBillingDetail(T_REV, ownerDb)
+      const row = withRefund?.invoices.find((i) => i.id === paidInvoiceId)
+      check('the drill-down reports what has been refunded', row?.refunded === 400)
+      check('…and nets it off the refundable balance', row?.refundable === 600)
+      check(
+        '…agreeing with the cap the server actually enforces',
+        row?.refundable === 1000 - (await refundsMod.refundedForInvoice(ownerDb, paidInvoiceId)),
+      )
+
+      // A fully-refunded invoice offers nothing at all.
+      await ownerPool.query(`update platform_refunds set amount = 1000 where id=$1`, [
+        scratch.rows[0].id,
+      ])
+      const full = await getTenantBillingDetail(T_REV, ownerDb)
+      check(
+        'a fully-refunded invoice is no longer refundable',
+        full?.invoices.find((i) => i.id === paidInvoiceId)?.refundable === 0,
+      )
+
+      await ownerPool.query(`delete from platform_refunds where id=$1`, [scratch.rows[0].id])
+    }
     check('an unknown tenant is null, not a crash', (await getTenantBillingDetail(ADMIN.id, ownerDb)) === null)
   }
 
@@ -649,7 +706,7 @@ async function main() {
 
     const row = (await ownerPool.query('select * from tenant_subscriptions where id=$1', [sub])).rows[0]
     check('an admin-assigned subscription is closed immediately', row.status === 'cancelled')
-    check('cancelled_at is set (the 0078 CHECK requires it)', row.cancelled_at !== null)
+    check('cancelled_at is set (the 0079 CHECK requires it)', row.cancelled_at !== null)
     check('the row is kept, not deleted', row.id === sub)
     check(
       'the company account is NOT closed — that is a separate decision',
@@ -976,8 +1033,8 @@ async function main() {
 
     // ── the webhook stamped WHEN the money left ───────────────────────────
     //
-    // 0084. Before it, settling wrote only `status`, and the revenue series
-    // bucketed on `created_at` — when the refund was RESERVED, which 0082
+    // 0085. Before it, settling wrote only `status`, and the revenue series
+    // bucketed on `created_at` — when the refund was RESERVED, which 0083
     // deliberately makes a different moment.
     check(
       'settling a refund stamps processed_at',
@@ -1000,16 +1057,17 @@ async function main() {
     const d = await metrics.getPlatformBillingDashboard({
       range: { start: '2019-06-01', end: '2019-06-30' },
       bucket: 'month',
+      currency: CUR,
       db: ownerDb,
     })
     check('a PROCESSED refund is deducted from net revenue', d.revenueTotals.refunded === 400)
     check('…leaving gross unchanged', d.revenueTotals.gross === 1500)
     check('…and net = gross − refunded', d.revenueTotals.net === 1100)
 
-    // ── the month-boundary case 0084 exists for ───────────────────────────
+    // ── the month-boundary case 0085 exists for ───────────────────────────
     //
     // Reserved on 30 June, settled on 2 July — the gateway-timeout path, where
-    // 0082 leaves the row pending ON PURPOSE and a later webhook settles it.
+    // 0083 leaves the row pending ON PURPOSE and a later webhook settles it.
     // The money left in JULY, so it must be July's cash movement. Bucketing on
     // `created_at` booked it to June and restated a month that had already been
     // read.
@@ -1023,6 +1081,7 @@ async function main() {
     const june = await metrics.getPlatformBillingDashboard({
       range: { start: '2019-06-01', end: '2019-06-30' },
       bucket: 'month',
+      currency: CUR,
       db: ownerDb,
     })
     check('a refund reserved in June but settled in July is NOT June cash', june.revenueTotals.refunded === 0)
@@ -1031,11 +1090,12 @@ async function main() {
     const july = await metrics.getPlatformBillingDashboard({
       range: { start: '2019-07-01', end: '2019-07-31' },
       bucket: 'month',
+      currency: CUR,
       db: ownerDb,
     })
     check('…and it lands in July, when the money actually left', july.revenueTotals.refunded === 400)
 
-    // ── rows written before 0084 still bucket ─────────────────────────────
+    // ── rows written before 0085 still bucket ─────────────────────────────
     //
     // `coalesce(processed_at, created_at)`: a backfilled-null row keeps the old
     // behaviour rather than dropping out of the series entirely.
@@ -1049,12 +1109,113 @@ async function main() {
     const legacy = await metrics.getPlatformBillingDashboard({
       range: { start: '2019-06-01', end: '2019-06-30' },
       bucket: 'month',
+      currency: CUR,
       db: ownerDb,
     })
     check(
-      'a pre-0084 refund with no processed_at falls back to created_at',
+      'a pre-0085 refund with no processed_at falls back to created_at',
       legacy.revenueTotals.refunded === 400,
     )
+
+    // ── the refund whose reference we never learned ───────────────────────
+    //
+    // refundPlatformInvoice() phase 2 has an UNKNOWN branch: Razorpay was told
+    // to refund and did not answer in time. The row is left 'pending' — its
+    // reservation deliberately kept, because the money may already be gone —
+    // with a NULL gateway_refund_id, and the module header promises "the
+    // webhook settles it".
+    //
+    // It could not. applyVerifiedRefundEvent() matched on gateway_refund_id and
+    // a NULL column matches nothing, so `refund.processed` came back 'ignored'
+    // and the row stayed pending FOREVER: refundedForInvoice() counts 'pending',
+    // so that slice of the invoice was permanently unrefundable and a retry was
+    // refused for "exceeding the refundable amount"; processed_at was never
+    // stamped, so money that had genuinely left never reached the revenue
+    // series; and no operator path existed to clear it. It is now ADOPTED by
+    // the payment it came from.
+    const bodyWithAmount = (event: string, refundId: string, paymentId: string, paise: number) =>
+      JSON.stringify({
+        entity: 'event',
+        event,
+        contains: ['refund'],
+        payload: {
+          refund: { entity: { id: refundId, payment_id: paymentId, amount: paise, status: 'processed' } },
+        },
+        created_at: 1755500000,
+      })
+
+    const orphanPayment = `pay_orph${tag}`
+    await ownerPool.query(
+      `update platform_invoices set gateway_payment_id=$2 where id=$1`,
+      [paidInvoiceId, orphanPayment],
+    )
+    const orphan = await ownerPool.query<{ id: string }>(
+      `insert into platform_refunds
+         (tenant_id, invoice_id, gateway, gateway_payment_id, amount, currency, reason, status)
+       values ($1,$2,'razorpay',$3, 300, $4, 'gateway timed out', 'pending')
+       returning id`,
+      [T_REV, paidInvoiceId, orphanPayment, CUR],
+    )
+    const orphanId = orphan.rows[0].id
+
+    const adoptRaw = bodyWithAmount('refund.processed', `rfnd_adopt${tag}`, orphanPayment, 30000)
+    const adopted = await deliver(adoptRaw, {
+      signature: sign(adoptRaw, PLATFORM_SECRET),
+      eventId: `evt114d${tag}`,
+    })
+    check('a refund with no stored reference is settled by its PAYMENT', adopted.body.status === 'processed')
+
+    const settled = (
+      await ownerPool.query<{ status: string; gateway_refund_id: string | null; processed_at: Date | null }>(
+        'select status, gateway_refund_id, processed_at from platform_refunds where id=$1',
+        [orphanId],
+      )
+    ).rows[0]
+    check('…the row is processed', settled.status === 'processed')
+    check('…the gateway reference is recorded, so a dispute can be answered', settled.gateway_refund_id === `rfnd_adopt${tag}`)
+    check('…and processed_at is stamped for the revenue series', settled.processed_at instanceof Date)
+
+    // Narrow on purpose: adopting the WRONG row would settle a refund that never
+    // happened, so two indistinguishable candidates are left for a human.
+    const ambPayment = `pay_amb${tag}`
+    await ownerPool.query(
+      `insert into platform_refunds
+         (tenant_id, invoice_id, gateway, gateway_payment_id, amount, currency, reason, status)
+       values ($1,$2,'razorpay',$3, 100, $4, 'a', 'pending'),
+              ($1,$2,'razorpay',$3, 100, $4, 'b', 'pending')`,
+      [T_REV, paidInvoiceId, ambPayment, CUR],
+    )
+    const ambRaw = bodyWithAmount('refund.processed', `rfnd_amb${tag}`, ambPayment, 10000)
+    const amb = await deliver(ambRaw, {
+      signature: sign(ambRaw, PLATFORM_SECRET),
+      eventId: `evt114e${tag}`,
+    })
+    check('two indistinguishable pending refunds are NOT guessed between', amb.body.status === 'ignored')
+    check(
+      '…and both are left exactly as they were',
+      (
+        await ownerPool.query<{ n: string }>(
+          `select count(*) n from platform_refunds
+            where gateway_payment_id=$1 and status='pending' and gateway_refund_id is null`,
+          [ambPayment],
+        )
+      ).rows[0].n === '2',
+    )
+
+    // An amount that matches nothing is not adopted either.
+    const wrongRaw = bodyWithAmount('refund.processed', `rfnd_wrong${tag}`, ambPayment, 99999)
+    const wrong = await deliver(wrongRaw, {
+      signature: sign(wrongRaw, PLATFORM_SECRET),
+      eventId: `evt114f${tag}`,
+    })
+    check('a mismatched amount is not adopted', wrong.body.status === 'ignored')
+
+    await ownerPool.query(`delete from platform_refunds where gateway_payment_id=$1`, [ambPayment])
+    await ownerPool.query(`delete from platform_refunds where id=$1`, [orphanId])
+    await ownerPool.query(`update platform_invoices set gateway_payment_id=$2 where id=$1`, [
+      paidInvoiceId,
+      `pay_114${tag}`,
+    ])
   }
 
   // ══════════════════════════════════════════════════════════════════════════

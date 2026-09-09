@@ -53,7 +53,7 @@
  *     running hourly cannot send the same warning twenty-four times a day;
  *   * the grace and suspension clocks are stamped once and never restarted.
  *
- * The guarantees live in lib/platform/billing/dunning.ts and in migration 0081,
+ * The guarantees live in lib/platform/billing/dunning.ts and in migration 0082,
  * not in this file. This is a thin runner: load env, call the function, print
  * what it did.
  */

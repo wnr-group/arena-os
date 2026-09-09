@@ -1,9 +1,9 @@
 -- ============================================================================
--- Arena OS — 0079 platform subscription billing (Razorpay Subscriptions)
+-- Arena OS — 0080 platform subscription billing (Razorpay Subscriptions)
 --
--- M16 #1 (0078) built the MODEL: `plans`, `plan_entitlements`,
+-- M16 #1 (0079) built the MODEL: `plans`, `plan_entitlements`,
 -- `tenant_subscriptions`. M16 #2 built ENFORCEMENT. This migration builds the
--- part 0078 explicitly deferred — "checkout, gateway subscription creation,
+-- part 0079 explicitly deferred — "checkout, gateway subscription creation,
 -- renewals, dunning" — on Razorpay Subscriptions.
 --
 -- ── THE TWO RAZORPAY ACCOUNTS ───────────────────────────────────────────────
@@ -41,7 +41,7 @@
 -- expressible across the two enums this schema has, and the mapping is
 -- documented in lib/platform/billing/lifecycle.ts:
 --
---   tenant_subscription_status  trialing|active|past_due|cancelled|expired (0078)
+--   tenant_subscription_status  trialing|active|past_due|cancelled|expired (0079)
 --   tenant_status               trial|active|suspended|cancelled           (0001)
 --
 -- "suspended" is a TENANT state, not a subscription state: the subscription is
@@ -102,7 +102,7 @@ create trigger trg_platform_payment_settings_updated
 -- column matching the requested billing_period and refuses outright when it is
 -- null. There is deliberately no fallback to the other column.
 --
--- `gateway` names which provider these ids belong to, matching the column 0078
+-- `gateway` names which provider these ids belong to, matching the column 0079
 -- already added to tenant_subscriptions and payment_intents' convention (0033).
 alter table public.plans
   add column if not exists gateway text,
@@ -164,7 +164,7 @@ create unique index if not exists idx_plans_gateway_annual
 
 -- ── 3. what the lifecycle needs on the subscription row ─────────────────────
 --
--- `gateway` and `gateway_subscription_id` already exist (0078) and are REUSED
+-- `gateway` and `gateway_subscription_id` already exist (0079) and are REUSED
 -- unchanged, together with idx_tenant_subscriptions_gateway_ref — the partial
 -- unique index that guarantees a webhook resolves to at most one row. Only the
 -- genuinely missing fields are added.
@@ -179,7 +179,7 @@ alter table public.tenant_subscriptions
   -- period ends, and only then fires subscription.cancelled.
   --
   -- A separate column rather than an early `cancelled_at` write, because
-  -- tenant_subscriptions_cancelled_at (0078) CHECKs that cancelled_at is set if
+  -- tenant_subscriptions_cancelled_at (0079) CHECKs that cancelled_at is set if
   -- and only if status = 'cancelled'. A pending cancellation is not a
   -- cancellation, and the webhook stays the source of truth for the final
   -- provider state.
@@ -280,7 +280,7 @@ alter table public.platform_payment_settings enable row level security;
 revoke update on public.tenants from arena_app;
 grant update (name, industry, currency, timezone) on public.tenants to arena_app;
 
--- plans / tenant_subscriptions keep the policies and grants 0078 gave them:
+-- plans / tenant_subscriptions keep the policies and grants 0079 gave them:
 -- SELECT-only to arena_app, writes only through the owner connection after
 -- requirePlatformAdmin(). The new columns therefore inherit exactly that, and
 -- the subscribe/cancel actions in lib/actions/subscription.ts write through

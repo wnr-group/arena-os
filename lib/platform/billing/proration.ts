@@ -1,7 +1,7 @@
 import 'server-only'
 import type { DB } from '@/db'
 import { round2 } from '@/lib/billing/pricing'
-import { issueCreditNote, lastPaidInvoiceFor } from './invoices'
+import { issueCreditNote, lastPaidInvoiceFor, netPaidTotal } from './invoices'
 
 /**
  * Proration for mid-cycle plan changes (M16 #4).
@@ -181,7 +181,10 @@ export async function creditUnusedPeriod(
   if (!last) return null
 
   const credit = computeProrationCredit({
-    paidTotal: Number(last.total),
+    // NET of anything already refunded against that charge. Crediting the gross
+    // would hand back a second time money the business has already had back —
+    // see netPaidTotal() in ./invoices.ts.
+    paidTotal: netPaidTotal(last),
     periodStart: last.billingPeriodStart,
     periodEnd: last.billingPeriodEnd,
     at: params.at ?? new Date(),

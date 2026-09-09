@@ -6,7 +6,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database and migration 0080 with all of its CHECK constraints (so a
+ * REAL: the database and migration 0081 with all of its CHECK constraints (so a
  * rounding bug is a failed INSERT, not a silently wrong bill), the RLS policies
  * and grants, the AES-256-GCM platform credentials, HMAC-SHA256 signatures
  * computed with Razorpay's documented scheme, the actual route handler in
@@ -118,9 +118,16 @@ async function main() {
 
   // ── fixtures ──────────────────────────────────────────────────────────────
   // Clear anything a previously-aborted run left behind. `plans.name` is unique
-  // across the whole catalogue (0078) and the gateway plan ids are unique too,
+  // across the whole catalogue (0079) and the gateway plan ids are unique too,
   // so a stale fixture would fail the next run on a collision that says nothing
   // about the code under test.
+  // Refunds first: platform_refunds.invoice_id is ON DELETE RESTRICT, so a run
+  // that died mid-way would otherwise leave rows the tenant cascade cannot get
+  // past, and every later run would fail on the teardown rather than on
+  // anything it was testing.
+  await ownerPool.query(
+    `delete from platform_refunds where tenant_id in (select id from tenants where slug like 'tinv%')`,
+  )
   await ownerPool.query(`delete from tenants where slug like 'tinv%'`)
   await ownerPool.query(`delete from plans where name like 'ZZ Inv %'`)
 
@@ -357,7 +364,7 @@ async function main() {
     // resolveSupplyPlace() then found that non-string unequal to the seller's
     // code and declared the supply INTER-STATE, putting IGST on an invoice
     // that should carry CGST+SGST, with a stringified Function in
-    // `place_of_supply`. The 0080 CHECKs cannot catch it: the totals still
+    // `place_of_supply`. The 0081 CHECKs cannot catch it: the totals still
     // reconcile, only the tax head is wrong — on a document never rewritten.
     for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
       const code = stateCodeFromPlaceOfSupply(key)
@@ -472,7 +479,7 @@ async function main() {
     check('…subtotal is the gross', inv.subtotal === '7999.00')
     check('…taxable value ₹6778.81', inv.taxable_value === '6778.81')
     // The odd paisa goes to SGST, so the two sum EXACTLY to the GST total —
-    // which migration 0080 checks in the database.
+    // which migration 0081 checks in the database.
     check('…CGST ₹610.10', inv.cgst === '610.10')
     check('…SGST ₹610.09', inv.sgst === '610.09')
     check('…which sum to the GST total exactly', round2(Number(inv.cgst) + Number(inv.sgst)) === Number(inv.tax_total))
@@ -534,6 +541,18 @@ async function main() {
       paymentId: `pay_PI${tag}0C`,
     })
     const sig2 = sign(body2, PLATFORM_SECRET)
+
+    // The invoice counter before the burst. The two losers each RESERVE a
+    // number and then insert nothing, so what happens to those numbers is the
+    // question below.
+    const counterBefore = Number(
+      (
+        await ownerPool.query<{ value: string }>(
+          `select coalesce(max(value), 0) as value from platform_sequences where kind='invoice'`,
+        )
+      ).rows[0].value,
+    )
+
     const results = await Promise.all([
       deliver(body2, { signature: sig2, eventId: nextEvt() }),
       deliver(body2, { signature: sig2, eventId: nextEvt() }),
@@ -544,6 +563,29 @@ async function main() {
       (r) => r.gateway_payment_id === `pay_PI${tag}0C`,
     )
     check('…and produce exactly ONE invoice', concurrent.length === 1)
+
+    // ── NO HOLE IN THE NUMBERING ──────────────────────────────────────────
+    //
+    // nextPlatformInvoiceNumber() bumps platform_sequences before the insert,
+    // and onConflictDoNothing() can legitimately insert nothing — which used to
+    // leave the transaction to COMMIT with the counter advanced and no document
+    // against the number it burned. On a GST invoice series that is a gap a tax
+    // authority asks about and nobody can answer afterwards.
+    //
+    // issueSubscriptionInvoice() now draws the number and the document inside a
+    // SAVEPOINT, so a loser rolls back both. platform_sequences is an ordinary
+    // table, not a sequence, so its value comes back with it.
+    const counterAfter = Number(
+      (
+        await ownerPool.query<{ value: string }>(
+          `select coalesce(max(value), 0) as value from platform_sequences where kind='invoice'`,
+        )
+      ).rows[0].value,
+    )
+    check(
+      'the counter advanced by exactly one — the two losers burned no numbers',
+      counterAfter === counterBefore + 1,
+    )
 
     const nums = (await invoicesFor(A.tenantId)).map((r) => r.invoice_number)
     check('every invoice number is unique', new Set(nums).size === nums.length)
@@ -721,6 +763,166 @@ async function main() {
     )
     check('…still positive, never a negative invoice', Number(downNote.total) > 0)
     check('…and it names the plan being left', downNote.plan_name === `ZZ Inv Elite ${tag}`)
+
+    // ── a charge already REFUNDED is not credited a second time ───────────
+    //
+    // lastPaidInvoiceFor() returned the invoice's gross `total`, and
+    // platform_invoices.status stays 'paid' after a refund — nothing marks it
+    // otherwise. So a plan change following a refund prorated against money the
+    // business had already had back, and issued a SECOND credit note for it.
+    // Nothing downstream would have caught that: a credit note is an obligation
+    // nobody reconciles against the charge it reverses.
+    const F = await makeTenant(`tinvf-${tag}`.slice(0, 20), { gstin: '33FFFFF5555F1Z5' })
+    const paid = await subscribeTenantToPlan(
+      { tenantId: F.tenantId, planId: ELITE, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    const refundedBody = JSON.stringify({
+      entity: 'event',
+      event: 'subscription.charged',
+      payload: {
+        subscription: {
+          entity: {
+            id: paid.gatewaySubscriptionId,
+            status: 'active',
+            current_start: nowSec - 10 * 24 * hour,
+            current_end: nowSec + 20 * 24 * hour,
+          },
+        },
+        payment: { entity: { id: `pay_PI${tag}P4`, amount: 1999900, currency: 'INR', status: 'captured' } },
+      },
+    })
+    await deliver(refundedBody, { signature: sign(refundedBody, PLATFORM_SECRET), eventId: nextEvt() })
+    const charged = (await invoicesFor(F.tenantId)).find(
+      (r) => r.gateway_payment_id === `pay_PI${tag}P4`,
+    )
+
+    // The whole ₹19,999 given back — settled, so it is real money returned.
+    await ownerPool.query(
+      `insert into platform_refunds
+         (tenant_id, invoice_id, gateway, gateway_payment_id, amount, currency, reason,
+          status, processed_at)
+       values ($1,$2,'razorpay',$3, 19999, 'INR', 'full refund', 'processed', now())`,
+      [F.tenantId, charged.id, `pay_PI${tag}P4`],
+    )
+
+    const afterRefund = await subscribeTenantToPlan(
+      { tenantId: F.tenantId, planId: PRO, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    check(
+      'a plan change after a FULL refund credits nothing — the money is already back',
+      afterRefund.prorationCredit === null,
+    )
+    check(
+      '…and raises no credit note at all',
+      (await invoicesFor(F.tenantId)).filter((r) => r.kind === 'credit_note').length === 0,
+    )
+
+    // A PARTIAL refund reduces the base rather than eliminating it.
+    const G = await makeTenant(`tinvg-${tag}`.slice(0, 20), { gstin: '33GGGGG6666G1Z5' })
+    const partial = await subscribeTenantToPlan(
+      { tenantId: G.tenantId, planId: ELITE, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    const partialBody = JSON.stringify({
+      entity: 'event',
+      event: 'subscription.charged',
+      payload: {
+        subscription: {
+          entity: {
+            id: partial.gatewaySubscriptionId,
+            status: 'active',
+            current_start: nowSec - 10 * 24 * hour,
+            current_end: nowSec + 20 * 24 * hour,
+          },
+        },
+        payment: { entity: { id: `pay_PI${tag}P5`, amount: 1999900, currency: 'INR', status: 'captured' } },
+      },
+    })
+    await deliver(partialBody, { signature: sign(partialBody, PLATFORM_SECRET), eventId: nextEvt() })
+    const partialInv = (await invoicesFor(G.tenantId)).find(
+      (r) => r.gateway_payment_id === `pay_PI${tag}P5`,
+    )
+    await ownerPool.query(
+      `insert into platform_refunds
+         (tenant_id, invoice_id, gateway, gateway_payment_id, amount, currency, reason,
+          status, processed_at)
+       values ($1,$2,'razorpay',$3, 9999.50, 'INR', 'half refund', 'processed', now())`,
+      [G.tenantId, partialInv.id, `pay_PI${tag}P5`],
+    )
+    await subscribeTenantToPlan(
+      { tenantId: G.tenantId, planId: PRO, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    const partialNote = (await invoicesFor(G.tenantId)).find((r) => r.kind === 'credit_note')
+    // 20 of 30 days unused, against ₹19999 − ₹9999.50 still held.
+    check(
+      'a PARTIAL refund shrinks the proration base rather than clearing it',
+      !!partialNote &&
+        Math.abs(Number(partialNote.total) - round2((9999.5 * 20) / 30)) <= 0.02,
+    )
+
+    // ── a credited period is NOT also served ──────────────────────────────
+    //
+    // The new subscription used to INHERIT the outgoing one's remaining runway
+    // unconditionally, while the same remainder was handed back as a credit
+    // note. An owner who opened a plan change and never completed the payment
+    // therefore kept the NEW plan — a dearer tier they had not paid a rupee
+    // towards — for the whole rest of the old period, AND held a credit note
+    // for it. Nothing ever ended that row: `trialing` is a LIVE status and the
+    // dunning sweep only scans `past_due` and `expired`, so
+    // PENDING_AUTHORISATION_DAYS was being walked around entirely.
+    //
+    // Tenant E was charged for a 30-day window with 20 days left and then
+    // downgraded, so a credit WAS issued above.
+    const switched = await ownerPool.query<{ current_period_end: Date; status: string }>(
+      `select current_period_end, status from tenant_subscriptions
+        where tenant_id=$1 and status in ('trialing','active','past_due')`,
+      [E.tenantId],
+    )
+    const daysLeft =
+      (new Date(switched.rows[0].current_period_end).getTime() - Date.now()) / 86_400_000
+    check('the switched-to subscription is unpaid (trialing)', switched.rows[0].status === 'trialing')
+    check(
+      'a credited plan change grants only the authorisation window, not the credited runway',
+      daysLeft > 0 && daysLeft <= 3.01,
+    )
+
+    // …and when NOTHING was credited, the runway still carries over, so a
+    // business that switches before it has ever been charged does not lose
+    // service it is entitled to.
+    const H = await makeTenant(`tinvh-${tag}`.slice(0, 20), { gstin: '33HHHHH7777H1Z5' })
+    await subscribeTenantToPlan(
+      { tenantId: H.tenantId, planId: PRO, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    // Never charged, so creditUnusedPeriod() writes nothing — but give it real
+    // runway so there is something that COULD have been inherited.
+    await ownerPool.query(
+      `update tenant_subscriptions set current_period_end = now() + interval '20 days'
+        where tenant_id=$1 and status in ('trialing','active','past_due')`,
+      [H.tenantId],
+    )
+    const uncredited = await subscribeTenantToPlan(
+      { tenantId: H.tenantId, planId: ELITE, billingPeriod: 'monthly' },
+      fakeGateway(),
+      ownerDb,
+    )
+    check('an uncredited switch raises no credit note', uncredited.prorationCredit === null)
+    const carried = await ownerPool.query<{ current_period_end: Date }>(
+      `select current_period_end from tenant_subscriptions
+        where tenant_id=$1 and status in ('trialing','active','past_due')`,
+      [H.tenantId],
+    )
+    const carriedDays =
+      (new Date(carried.rows[0].current_period_end).getTime() - Date.now()) / 86_400_000
+    check('…so the runway it already owned carries over', carriedDays > 19 && carriedDays <= 20.01)
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -789,7 +991,7 @@ async function main() {
          address='99 New Street', place_of_supply='Maharashtra' where tenant_id=$1`,
       [A.tenantId],
     )
-    // Tag-unique: plans.name is globally unique (0078), so a fixed string here
+    // Tag-unique: plans.name is globally unique (0079), so a fixed string here
     // would collide with whatever a previous run left behind.
     await ownerPool.query(`update plans set name=$1, monthly_price='12345.00' where id=$2`, [
       `ZZ Inv Renamed ${tag}`,
@@ -876,6 +1078,11 @@ async function main() {
 
   // ── cleanup ───────────────────────────────────────────────────────────────
   await ownerPool.query(`delete from webhook_events where gateway='platform_razorpay' and event_id like $1`, [`evt_PI${tag}%`])
+  // platform_refunds.invoice_id is ON DELETE RESTRICT — historical billing data
+  // is never deleted out from under the bill it explains — so the refunds §8
+  // creates must go before the invoices, exactly as the notices do in
+  // test-dunning.ts.
+  await ownerPool.query('delete from platform_refunds where tenant_id = any($1)', [created])
   await ownerPool.query('delete from platform_invoices where tenant_id = any($1)', [created])
   await ownerPool.query('delete from tenants where id = any($1)', [created])
   await ownerPool.query('delete from plans where id = any($1)', [planIds])

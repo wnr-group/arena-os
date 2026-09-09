@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { plans, platformInvoices, tenantSubscriptions } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { graceEndsAt } from './dunning-policy'
+import { accessHasEnded } from './dunning-policy'
 import { LIVE_STATUSES } from './lifecycle'
 
 /**
@@ -17,9 +17,9 @@ import { LIVE_STATUSES } from './lifecycle'
  * restricted `arena_app` role inside a transaction that sets `app.user_id`, and
  * RLS decides what is visible:
  *
- *   tenant_subscriptions_select (0078)  → only the caller's own tenant's rows.
- *   plans_select_active (0078)          → the live catalogue.
- *   plans_select_subscribed (0078)      → plus the plan they are actually ON,
+ *   tenant_subscriptions_select (0079)  → only the caller's own tenant's rows.
+ *   plans_select_active (0079)          → the live catalogue.
+ *   plans_select_subscribed (0079)      → plus the plan they are actually ON,
  *                                         even after it has been retired.
  *
  * The tenant id comes from the resolved context and never from an argument, so
@@ -30,7 +30,7 @@ import { LIVE_STATUSES } from './lifecycle'
  * ── What is deliberately absent ─────────────────────────────────────────────
  *
  * No credential, no ciphertext, and nothing from platform_payment_settings.
- * That table has no grant to `arena_app` at all (0079), so these queries could
+ * That table has no grant to `arena_app` at all (0080), so these queries could
  * not reach it even by mistake — a tenant asking for the platform's Razorpay
  * secret gets a 42501 from Postgres, not a redacted value.
  *
@@ -45,7 +45,7 @@ export type SubscribablePlan = {
   monthlyPrice: string
   annualPrice: string
   currency: string
-  /** Whether this plan can actually be billed on each cycle, per 0079's mapping. */
+  /** Whether this plan can actually be billed on each cycle, per 0080's mapping. */
   monthlyAvailable: boolean
   annualAvailable: boolean
 }
@@ -127,22 +127,15 @@ export async function getBillingOverview(ctx: ActiveContext): Promise<BillingOve
       subscription: row
         ? {
             ...row,
-            // The SAME effective expiry readEntitlements() and getBillingPortal()
-            // use (AROS-113): the later of the paid period and the grace
-            // deadline, because a failed renewal leaves current_period_end in
-            // the past and a business in grace is not lapsed.
-            lapsed:
-              (row.status === 'past_due' && row.pastDueSince
-                ? Math.max(
-                    row.currentPeriodEnd.getTime(),
-                    graceEndsAt(row.pastDueSince).getTime(),
-                  )
-                : row.currentPeriodEnd.getTime()) <= Date.now(),
+            // The SAME effective expiry readEntitlements(), getBillingPortal()
+            // and the dunning processor use — one function, so "lapsed" here
+            // and "grants nothing" there can never disagree.
+            lapsed: accessHasEnded(row, new Date()),
           }
         : null,
       plans: catalogue
         // RLS lets a subscriber read the RETIRED plan it is grandfathered onto
-        // (plans_select_subscribed, 0078), which is right for showing "you are
+        // (plans_select_subscribed, 0079), which is right for showing "you are
         // on X" — but a retired plan must never appear as something to buy.
         .filter((p) => p.active)
         .map((p) => ({
@@ -168,7 +161,7 @@ export async function getBillingOverview(ctx: ActiveContext): Promise<BillingOve
  *
  * Same rule as everything above: `withUser()` on the restricted `arena_app`
  * role, and RLS decides what is visible. `platform_invoices_owner_select`
- * (migration 0080) admits only rows whose tenant the caller OWNS —
+ * (migration 0081) admits only rows whose tenant the caller OWNS —
  * `auth_role_in(tenant_id) = 'owner'`, the same helper `business_profiles`
  * uses — so a manager or a cashier sees nothing here, and another tenant's
  * owner sees nothing either. The tenant id is never taken from an argument.

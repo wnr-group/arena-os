@@ -28,7 +28,7 @@ import {
  *   1. AUTHORIZATION. Every export calls requirePlatformAdmin() first — the
  *      same rule lib/actions/platform.ts and lib/actions/plans.ts state. On top
  *      of that, `arena_app` (the role every tenant request runs as) has NO GRANT
- *      of any kind on platform_payment_settings (0079), so even an action
+ *      of any kind on platform_payment_settings (0080), so even an action
  *      somehow invoked without its guard would hit a 42501 rather than a write.
  *      There is no tenant-reachable path to this table at all.
  *
@@ -177,7 +177,7 @@ export async function clearPlatformRazorpayWebhookSecret(): Promise<Result> {
  * Deliberately in this file rather than a new one: it is the same admin page,
  * the same requirePlatformAdmin() boundary, and the same `{ error?, success? }`
  * return contract. It is a SEPARATE TABLE from the gateway credentials
- * (migration 0080) because one holds secrets and the other is a letterhead —
+ * (migration 0081) because one holds secrets and the other is a letterhead —
  * but they are configured together, because an operator setting up billing
  * needs both before a single invoice can be raised.
  *

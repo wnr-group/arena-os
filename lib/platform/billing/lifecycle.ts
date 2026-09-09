@@ -9,13 +9,13 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  *
  * Two local columns move, and they mean different things:
  *
- *   tenant_subscriptions.status   the SUBSCRIPTION's state (0078)
+ *   tenant_subscriptions.status   the SUBSCRIPTION's state (0079)
  *                                 trialing | active | past_due | cancelled | expired
  *
  *   tenants.status                the ACCOUNT's state as the operator sees it (0001)
  *                                 trial | active | suspended | cancelled
  *
- * 0078 already said they "move independently: a subscription can go past_due
+ * 0079 already said they "move independently: a subscription can go past_due
  * while the tenant is still active, and the decision to suspend is a separate,
  * deliberate act". This module IS that deliberate act, written down once.
  *
@@ -35,8 +35,12 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  *                  │ subscription.charged            │ active             │ active
  *                  │ subscription.resumed            │ active             │ active
  *  pending         │ subscription.pending            │ past_due           │ unchanged
- *  halted          │ subscription.halted             │ expired            │ suspended
- *  paused          │ subscription.paused             │ expired            │ suspended
+ *  halted          │ subscription.halted             │ expired *          │ suspended *
+ *  paused          │ subscription.paused             │ expired *          │ suspended *
+ *
+ *  * …unless the paid-for period is still running, in which case both are
+ *    downgraded to the `pending` row above and the job suspends on schedule.
+ *    See "SUSPENSION NEVER SHORTENS A PERIOD THE BUSINESS PAID FOR" below.
  *  cancelled       │ subscription.cancelled          │ cancelled          │ cancelled
  *  completed       │ subscription.completed          │ expired            │ unchanged
  *  expired         │ (never authenticated in time)   │ expired            │ unchanged
@@ -67,6 +71,11 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  * the tenant becomes 'suspended', so public_tenant_by_slug() (0022) stops
  * resolving and the venue's public booking site goes dark. Nothing is deleted;
  * paying reverses all of it on the next webhook.
+ *
+ * …but ONLY once the paid-for period has actually run out. While it is still
+ * running this is treated as `pending` instead, because the dunning processor
+ * defers suspension to accessEndsAt() and the two must not disagree about the
+ * same non-payment. The reasoning is at the downgrade itself, below.
  *
  * `cancelled` → cancelled + CANCELLED, but only when the subscription was
  * actually being paid for. A checkout that was started and abandoned emits the
@@ -100,7 +109,7 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  *     cannot resurrect an account.
  *  4. A PROVIDER PERIOD NEVER GOES BACKWARDS. An out-of-order redelivery of an
  *     older event cannot shorten a period a newer one already set. The rule is
- *     scoped by `period_from_gateway` (migration 0083) so that it guards only
+ *     scoped by `period_from_gateway` (migration 0084) so that it guards only
  *     periods the provider actually gave us: the placeholder a row is CREATED
  *     with is replaced wholesale by the first real cycle, in either direction.
  *     See the note beside the comparison in applySubscriptionState().
@@ -116,7 +125,7 @@ import { auditLog, tenants, tenantSubscriptions } from '@/db/schema'
  * of this runs.
  */
 
-/** The five subscription states 0078 defines. Not extended here. */
+/** The five subscription states 0079 defines. Not extended here. */
 export type LocalSubscriptionStatus =
   | 'trialing'
   | 'active'
@@ -184,7 +193,7 @@ export const HANDLED_EVENTS = new Set([
   'subscription.updated',
 ])
 
-/** Statuses that still count as "live" — the same three 0078's index permits. */
+/** Statuses that still count as "live" — the same three 0079's index permits. */
 const LIVE_STATUSES = ['trialing', 'active', 'past_due'] as const
 
 /** Once here, a subscription never moves again. */
@@ -245,7 +254,7 @@ export type ApplyParams = {
   failureReason?: string | null
 }
 
-/** Matches tenant_subscriptions_failure_reason_length in migration 0081. */
+/** Matches tenant_subscriptions_failure_reason_length in migration 0082. */
 const MAX_FAILURE_REASON = 300
 
 function normaliseFailureReason(reason: string | null | undefined): string | null {
@@ -289,7 +298,7 @@ export async function applySubscriptionState(
   }
 
   // Locate by OUR reference, and lock. idx_tenant_subscriptions_gateway_ref
-  // (0078) makes at most one row possible, so there is never a choice to make.
+  // (0079) makes at most one row possible, so there is never a choice to make.
   const [row] = await tx
     .select({
       id: tenantSubscriptions.id,
@@ -300,7 +309,7 @@ export async function applySubscriptionState(
       currentPeriodStart: tenantSubscriptions.currentPeriodStart,
       currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
       // Whether the two above are the provider's window or the placeholder the
-      // row was created with (migration 0083). Decides the clamp below.
+      // row was created with (migration 0084). Decides the clamp below.
       periodFromGateway: tenantSubscriptions.periodFromGateway,
       cancelledAt: tenantSubscriptions.cancelledAt,
       lastPaymentId: tenantSubscriptions.gatewayLastPaymentId,
@@ -371,7 +380,7 @@ export async function applySubscriptionState(
   // base period from that invoice, then credited a later plan change for
   // hundreds of days the business had actually consumed.
   //
-  // `period_from_gateway` (migration 0083) records which of the two a row is
+  // `period_from_gateway` (migration 0084) records which of the two a row is
   // holding, so the decision needs no clock reasoning:
   //
   //   false → a placeholder. Take the provider's window WHOLE, in either
@@ -382,7 +391,7 @@ export async function applySubscriptionState(
   // Ordering on the timestamps instead was tried and does not work: Razorpay
   // backdates `current_start` to the real cycle start, which is routinely
   // EARLIER than the moment we created the row, and it is truncated to whole
-  // seconds while the placeholder start is not. Migration 0083's header carries
+  // seconds while the placeholder start is not. Migration 0084's header carries
   // the full argument.
   const providerStart = fromUnixSeconds(params.currentStart)
   const providerEnd = fromUnixSeconds(params.currentEnd)
@@ -393,7 +402,7 @@ export async function applySubscriptionState(
 
   if (providerEnd) {
     // A range we can write as-is: both ends present and correctly ordered, so
-    // tenant_subscriptions_period (0078) holds by construction.
+    // tenant_subscriptions_period (0079) holds by construction.
     const wholeRange = providerStart !== null && providerEnd.getTime() > providerStart.getTime()
 
     if (!periodFromGateway && wholeRange) {
@@ -415,7 +424,37 @@ export async function applySubscriptionState(
     // properly-formed delivery correct the row.
   }
 
-  const isCancelled = mapping.subscription === 'cancelled'
+  // ── SUSPENSION NEVER SHORTENS A PERIOD THE BUSINESS PAID FOR ──────────────
+  //
+  // `halted` and `paused` map to expired/suspended, and that mapping used to be
+  // applied with no reference to the clock at all. The dunning processor
+  // defers suspension to accessEndsAt() — the later of the grace deadline and
+  // the paid-for period — so the two halves of one policy disagreed: the same
+  // non-payment suspended a business immediately if Razorpay gave up retrying,
+  // and honoured its paid period if Razorpay stayed in `pending`. Which of the
+  // two happened was decided by the provider's retry schedule.
+  //
+  // So while the paid period is still running, this mapping is downgraded to
+  // the ARREARS mapping instead. The subscription stays live, the account is
+  // left alone, the clocks below are stamped exactly as a `pending` would stamp
+  // them — and the job then suspends it at accessEndsAt(), which for such a row
+  // is the period end. One rule, whichever side sees the failure first.
+  //
+  // `paused` shares the treatment deliberately. It is not a payment failure, so
+  // the arrears wording is a little off for it — but it is a state we never
+  // initiate, and suspending a business that has already paid is the worse of
+  // the two mistakes. The failure reason column is diagnostics only; nothing
+  // branches on it.
+  //
+  // The period end used is the one computed ABOVE, so a delivery that also
+  // corrects the window is judged against the corrected value, not a stale one.
+  const suspendsNow = mapping.subscription === 'expired' && mapping.tenant === 'suspended'
+  const paidThrough = suspendsNow && periodEnd.getTime() > Date.now()
+  const effective: StateMapping = paidThrough
+    ? { subscription: 'past_due', tenant: null }
+    : mapping
+
+  const isCancelled = effective.subscription === 'cancelled'
 
   // ── the one refinement the flat table above cannot express ────────────────
   //
@@ -434,7 +473,7 @@ export async function applySubscriptionState(
   // status only a successful charge can produce), never from the payload.
   const wasPaid =
     current === 'active' || current === 'past_due' || row.lastPaymentId !== null
-  const tenantTarget = isCancelled && !wasPaid ? null : mapping.tenant
+  const tenantTarget = isCancelled && !wasPaid ? null : effective.tenant
 
   // ── the dunning clocks (AROS-113) ─────────────────────────────────────────
   //
@@ -472,9 +511,9 @@ export async function applySubscriptionState(
   // A `cancelled` or `completed`/`expired` subscription keeps whatever clocks
   // it had. They are history at that point, and history is not rewritten.
   const now = new Date()
-  const isArrears = mapping.subscription === 'past_due'
-  const isSuspension = mapping.subscription === 'expired' && mapping.tenant === 'suspended'
-  const isRecovery = mapping.subscription === 'active' || mapping.subscription === 'trialing'
+  const isArrears = effective.subscription === 'past_due'
+  const isSuspension = effective.subscription === 'expired' && effective.tenant === 'suspended'
+  const isRecovery = effective.subscription === 'active' || effective.subscription === 'trialing'
 
   const pastDueSince = isRecovery
     ? null
@@ -498,7 +537,7 @@ export async function applySubscriptionState(
       (incomingReason !== null && incomingReason !== row.failureReason))
 
   const set = {
-    status: mapping.subscription,
+    status: effective.subscription,
     currentPeriodStart: periodStart,
     currentPeriodEnd: periodEnd,
     // Written with the period it describes, so the two can never disagree
@@ -514,7 +553,7 @@ export async function applySubscriptionState(
           lastPaymentFailureReason: incomingReason ?? row.failureReason,
         }
       : {}),
-    // tenant_subscriptions_cancelled_at (0078) CHECKs that cancelled_at is set
+    // tenant_subscriptions_cancelled_at (0079) CHECKs that cancelled_at is set
     // if and only if status = 'cancelled', so the two must be written in the
     // same statement. An already-cancelled row keeps its ORIGINAL timestamp —
     // a redelivery must not rewrite when the cancellation happened.
@@ -526,7 +565,7 @@ export async function applySubscriptionState(
     ...(params.paymentId ? { gatewayLastPaymentId: params.paymentId } : {}),
   }
 
-  const noStatusChange = current === mapping.subscription
+  const noStatusChange = current === effective.subscription
   // BOTH ends, because the provider's period can now correct a locally-seeded
   // placeholder without its end moving — a start-only change is still a change.
   const noPeriodChange =
@@ -559,7 +598,7 @@ export async function applySubscriptionState(
       tenantId: row.tenantId,
       subscriptionId: row.id,
       from: current,
-      to: mapping.subscription,
+      to: effective.subscription,
       tenantStatus: tenantTarget,
       source: 'webhook',
       reason: incomingReason,
@@ -580,7 +619,7 @@ export async function applySubscriptionState(
     subscriptionId: row.id,
     tenantId: row.tenantId,
     from: current,
-    to: mapping.subscription,
+    to: effective.subscription,
     tenantStatus: tenantTarget,
     planId: row.planId,
     billingPeriod: row.billingPeriod,

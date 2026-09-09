@@ -427,7 +427,7 @@ export type RefundPaymentFn = (
  * calling the API from elsewhere." That instruction is followed here, on the
  * PLATFORM sibling — because this refunds Arena OS's own charge to a business,
  * not a venue's charge to its customer. The two accounts must never cross
- * (0079), so the refund lives beside the subscription calls that created the
+ * (0080), so the refund lives beside the subscription calls that created the
  * payment, sharing their credentials type, their `request()` and their error
  * vocabulary.
  *

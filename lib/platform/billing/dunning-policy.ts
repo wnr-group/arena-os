@@ -96,7 +96,7 @@
  * test can drive the clock without touching the shipped values.
  */
 
-/** Stages, in the order they occur. The same closed set migration 0081 CHECKs. */
+/** Stages, in the order they occur. The same closed set migration 0082 CHECKs. */
 export type DunningStage =
   | 'payment_failed'
   | 'grace_reminder'
@@ -104,27 +104,67 @@ export type DunningStage =
   | 'suspended'
   | 'cancelled'
 
+/**
+ * WHERE A REMINDER'S CLOCK STARTS. Two anchors, because the notices answer two
+ * different questions.
+ *
+ *   'arrears'     measured FORWARD from `past_due_since`. For "your payment
+ *                 failed" — news that has to travel within days of the event,
+ *                 whatever happens to the deadline afterwards.
+ *
+ *   'suspension'  measured BACKWARD from the instant the account will actually
+ *                 be suspended. For "you will be suspended on <date>" — a
+ *                 warning is only useful near the thing it warns about.
+ *
+ * ── Why this is not just `afterDays` any more ───────────────────────────────
+ *
+ * Every offset used to be forward from `past_due_since`, which was right while
+ * suspension was always `past_due_since + graceDays`. Once suspension became
+ * accessEndsAt() — deferred past a period the business had already paid for —
+ * a "final warning" could arrive ten months before the suspension it named, and
+ * then nothing more until the day itself. The dates in the notices were true;
+ * the sequence had stopped meaning what its stage names say.
+ *
+ * With the default policy below the two anchors coincide exactly, so nothing
+ * moves in the ordinary case: grace 7, reminders at suspension−7 / −4 / −1 are
+ * days 0 / 3 / 6 of arrears, which is what they have always been.
+ */
+export type DunningAnchor = 'arrears' | 'suspension'
+
+export type DunningReminder = {
+  stage: Extract<DunningStage, 'payment_failed' | 'grace_reminder' | 'final_warning'>
+  anchor: DunningAnchor
+  /** Days after `past_due_since` ('arrears') or before suspension ('suspension'). */
+  days: number
+}
+
 export type DunningPolicy = {
-  /** Days from entering past_due to suspension. */
+  /** Days from entering past_due to suspension, when no paid period outlasts it. */
   graceDays: number
   /** Days from suspension to cancellation. */
   suspensionDays: number
   /**
-   * Reminder stages sent DURING grace, each with its offset in days from
-   * past_due_since. Must be strictly increasing and strictly less than
-   * graceDays — a "final warning" sent after the suspension it warns about is
-   * worse than none.
+   * Reminder stages sent DURING grace. Ordered by when they fall in the DEFAULT
+   * geometry (suspension at `past_due_since + graceDays`); each must be
+   * strictly later than the last and strictly before suspension — a "final
+   * warning" sent after the suspension it warns about is worse than none.
    */
-  reminders: { stage: Extract<DunningStage, 'payment_failed' | 'grace_reminder' | 'final_warning'>; afterDays: number }[]
+  reminders: DunningReminder[]
 }
 
 export const DUNNING_POLICY: DunningPolicy = {
   graceDays: 7,
   suspensionDays: 14,
   reminders: [
-    { stage: 'payment_failed', afterDays: 0 },
-    { stage: 'grace_reminder', afterDays: 3 },
-    { stage: 'final_warning', afterDays: 6 },
+    // Day 0 of arrears. Anchored forward on purpose: the webhook raises this one
+    // the moment a charge bounces, and the job's copy is the catch-up if that
+    // delivery never landed. Tying it to a deadline months away would leave a
+    // business hearing nothing about a failed payment until then.
+    { stage: 'payment_failed', anchor: 'arrears', days: 0 },
+    // …and the two that name the date. In the default geometry these are days 3
+    // and 6 of arrears, unchanged.
+    { stage: 'grace_reminder', anchor: 'suspension', days: 4 },
+    { stage: 'final_warning', anchor: 'suspension', days: 1 },
   ],
 }
 
@@ -145,18 +185,26 @@ export function assertPolicy(policy: DunningPolicy = DUNNING_POLICY): void {
   if (!Number.isFinite(policy.suspensionDays) || policy.suspensionDays < 0) {
     throw new Error('dunning policy: suspensionDays must be a non-negative number')
   }
+  // Both anchors are compared on ONE axis — days after `past_due_since` in the
+  // DEFAULT geometry, where suspension is `past_due_since + graceDays`. That is
+  // the only geometry in which the two anchors can be ordered against each
+  // other at all, and it is the one an operator has in mind when authoring the
+  // constant. A deferred suspension stretches the gaps but cannot reorder them:
+  // 'suspension' offsets keep their relative order, and the 'arrears' day-0
+  // notice is first by construction.
   let previous = -Infinity
   for (const r of policy.reminders) {
-    if (!Number.isFinite(r.afterDays) || r.afterDays < 0) {
-      throw new Error(`dunning policy: ${r.stage} afterDays must be a non-negative number`)
+    if (!Number.isFinite(r.days) || r.days < 0) {
+      throw new Error(`dunning policy: ${r.stage} days must be a non-negative number`)
     }
-    if (r.afterDays <= previous) {
+    const offset = r.anchor === 'arrears' ? r.days : policy.graceDays - r.days
+    if (offset <= previous) {
       throw new Error('dunning policy: reminder offsets must be strictly increasing')
     }
-    if (r.afterDays >= policy.graceDays) {
+    if (offset >= policy.graceDays) {
       throw new Error(`dunning policy: ${r.stage} would be sent at or after suspension`)
     }
-    previous = r.afterDays
+    previous = offset
   }
 }
 
@@ -173,6 +221,72 @@ function addDays(from: Date, days: number): Date {
  */
 export function graceEndsAt(pastDueSince: Date, policy: DunningPolicy = DUNNING_POLICY): Date {
   return addDays(pastDueSince, policy.graceDays)
+}
+
+/**
+ * WHEN A SUBSCRIPTION STOPS GRANTING ANYTHING — the single definition.
+ *
+ * ── Why this is one function and not four expressions ───────────────────────
+ *
+ * The rule has two clocks and they are combined with `max`, never with a
+ * branch:
+ *
+ *   normally     `current_period_end` — the paid-for period.
+ *   in past_due  the LATER of that and the grace deadline measured from
+ *                `past_due_since`. A failed renewal leaves current_period_end
+ *                in the PAST (Razorpay does not extend a period it could not
+ *                charge for), so without the grace term a business would lose
+ *                access the instant a charge bounced.
+ *
+ * `max` rather than "grace wins" because GRACE CAN ONLY EVER EXTEND. A
+ * subscription whose paid period outlasts its grace window — an annual plan
+ * whose mandate fails mid-term, or the inherited runway a plan change seeds
+ * (lib/platform/billing/subscribe.ts) — keeps the access it has already paid
+ * for.
+ *
+ * ── This used to be written out four times, and one copy disagreed ──────────
+ *
+ * readEntitlements(), getBillingPortal(), getBillingOverview() and the dunning
+ * processor each decided expiry for themselves. The first three applied the
+ * `max`; the processor did not — it suspended purely on `graceHasExpired()`.
+ * So a business paid through to next year was suspended seven days after one
+ * failed charge, its subscription left LIVE_STATUSES, and the `max` in the
+ * other three became unreachable: they returned "no plan" for a plan that was
+ * paid for. The account's public booking site went dark with it.
+ *
+ * Every one of those call sites now asks THIS function, so the reader and the
+ * job cannot drift again.
+ *
+ * A `past_due` row with no `past_due_since` — possible only for a row written
+ * before migration 0082 backfilled them — gets NO grace and falls back to the
+ * period end. That is the fail-closed direction: an unknown clock grants
+ * nothing.
+ */
+export type AccessClock = {
+  currentPeriodEnd: Date
+  status: string
+  pastDueSince: Date | null
+}
+
+export function accessEndsAt(sub: AccessClock, policy: DunningPolicy = DUNNING_POLICY): Date {
+  if (sub.status !== 'past_due' || !sub.pastDueSince) return sub.currentPeriodEnd
+  const grace = graceEndsAt(sub.pastDueSince, policy)
+  return grace.getTime() > sub.currentPeriodEnd.getTime() ? grace : sub.currentPeriodEnd
+}
+
+/**
+ * The same boundary rule as `graceHasExpired`: access ends AT the deadline.
+ *
+ * So there is no instant in which the dunning job considers a tenant suspended
+ * while the entitlement reader still grants it a plan, and none in which the
+ * reverse holds either.
+ */
+export function accessHasEnded(
+  sub: AccessClock,
+  now: Date,
+  policy: DunningPolicy = DUNNING_POLICY,
+): boolean {
+  return now.getTime() >= accessEndsAt(sub, policy).getTime()
 }
 
 /** When a suspended subscription is cancelled, measured from `suspendedAt`. */
@@ -223,14 +337,29 @@ export function cancellationIsDue(
  * sent are silently skipped at insert time. So "catch up" and "do not repeat"
  * are both true without this function knowing anything about what was sent.
  */
+export function reminderDueAt(
+  reminder: DunningReminder,
+  pastDueSince: Date,
+  suspendsAt: Date,
+): Date {
+  return reminder.anchor === 'arrears'
+    ? addDays(pastDueSince, reminder.days)
+    : addDays(suspendsAt, -reminder.days)
+}
+
+/**
+ * `suspendsAt` is the instant the account will ACTUALLY be suspended —
+ * accessEndsAt(), not the bare grace deadline — so a warning that names a date
+ * is sent near that date rather than near an assumption about it.
+ */
 export function remindersDue(
   pastDueSince: Date,
+  suspendsAt: Date,
   now: Date,
   policy: DunningPolicy = DUNNING_POLICY,
 ): DunningStage[] {
-  const elapsedMs = now.getTime() - pastDueSince.getTime()
   return policy.reminders
-    .filter((r) => elapsedMs >= r.afterDays * MS_PER_DAY)
+    .filter((r) => now.getTime() >= reminderDueAt(r, pastDueSince, suspendsAt).getTime())
     .map((r) => r.stage)
 }
 
@@ -242,19 +371,45 @@ export function remindersDue(
  * both sides.
  */
 export type DunningDeadlines = {
+  /**
+   * When the account is actually suspended — which is `accessEndsAt()`, not the
+   * bare grace deadline, so the banner cannot promise a suspension date the job
+   * will not act on. Kept under its original name because it is what every
+   * surface already renders.
+   */
   graceEndsAt: Date
   /** Null until the account is actually suspended. */
   cancelsAt: Date | null
 }
 
-export function deadlinesFor(
-  pastDueSince: Date | null,
-  suspendedAt: Date | null,
-  policy: DunningPolicy = DUNNING_POLICY,
-): DunningDeadlines | null {
+/**
+ * NAMED arguments, not positional. Three of the four are nullable dates of the
+ * same type, so a caller that got the order wrong would compile cleanly and
+ * quote the wrong deadline at a business — and `policy`, which existed as the
+ * third parameter before `paidThrough` was added, would have been silently
+ * accepted in its place.
+ *
+ * `paidThrough` is the subscription's `current_period_end`, and is passed ONLY
+ * for a row still in `past_due` — the state in which grace can be outlasted by
+ * a period the business paid for. For a row that has already been suspended or
+ * cancelled the grace window is history, so callers omit it and get the
+ * historical grace end back.
+ */
+export function deadlinesFor(args: {
+  pastDueSince: Date | null
+  suspendedAt: Date | null
+  paidThrough?: Date | null
+  policy?: DunningPolicy
+}): DunningDeadlines | null {
+  const { pastDueSince, suspendedAt, paidThrough = null, policy = DUNNING_POLICY } = args
   if (!pastDueSince) return null
   return {
-    graceEndsAt: graceEndsAt(pastDueSince, policy),
+    graceEndsAt: paidThrough
+      ? accessEndsAt(
+          { currentPeriodEnd: paidThrough, status: 'past_due', pastDueSince },
+          policy,
+        )
+      : graceEndsAt(pastDueSince, policy),
     cancelsAt: suspendedAt ? cancellationDueAt(suspendedAt, policy) : null,
   }
 }

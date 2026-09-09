@@ -4,7 +4,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm'
 import { ownerDb, withUser, type DB } from '@/db'
 import { planEntitlements, plans, tenantSubscriptions } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { graceEndsAt } from './billing/dunning-policy'
+import { accessHasEnded } from './billing/dunning-policy'
 import { requirePlatformAdmin } from './guard'
 
 /**
@@ -26,7 +26,7 @@ import { requirePlatformAdmin } from './guard'
  * rows instead of columns.
  */
 
-/** A JSON scalar. The check constraint in 0078 is what keeps it flat. */
+/** A JSON scalar. The check constraint in 0079 is what keeps it flat. */
 export type EntitlementValue = number | boolean | string | null
 
 export type TenantEntitlements = {
@@ -51,7 +51,7 @@ const NO_SUBSCRIPTION: TenantEntitlements = {
 /**
  * The statuses that can still be granting anything.
  *
- * Deliberately the SAME three the partial unique index in 0078
+ * Deliberately the SAME three the partial unique index in 0079
  * (idx_tenant_subscriptions_one_live) uses to permit at most one live
  * subscription per tenant. Keeping the two lists identical is what guarantees
  * this reader can never find two candidate rows and have to pick.
@@ -76,7 +76,7 @@ const NO_SUBSCRIPTION: TenantEntitlements = {
  * trapdoor this list exists to prevent was, in fact, still open.
  *
  * So grace is a SEPARATE clock on a SEPARATE column: `past_due_since`
- * (migration 0081), read below. current_period_end keeps meaning exactly what
+ * (migration 0082), read below. current_period_end keeps meaning exactly what
  * it always meant.
  */
 const LIVE_STATUSES = ['trialing', 'active', 'past_due'] as const
@@ -102,7 +102,7 @@ const LIVE_STATUSES = ['trialing', 'active', 'past_due'] as const
  *
  * A RETIRED plan (active = false) still grants everything it lists. Grandfathering
  * is the normal reason to retire a plan rather than delete it, so there is no
- * filter on plans.active here — and policy `plans_select_subscribed` in 0078
+ * filter on plans.active here — and policy `plans_select_subscribed` in 0079
  * exists precisely so the subscriber can still read it.
  */
 export async function readEntitlements(tx: DB, tenantId: string): Promise<TenantEntitlements> {
@@ -136,34 +136,12 @@ export async function readEntitlements(tx: DB, tenantId: string): Promise<Tenant
 
   // ── expired on the clock even though the status has not caught up ─────────
   //
-  // WHICH clock depends on whether the subscription is in arrears (AROS-113):
-  //
-  //   normally      current_period_end — the paid-for period.
-  //   in past_due   the LATER of that and the grace deadline measured from
-  //                 past_due_since. A failed renewal leaves current_period_end
-  //                 in the past, so without this the grace period would be
-  //                 zero and `past_due` would grant nothing — the exact
-  //                 trapdoor the LIVE_STATUSES note above forbids.
-  //
-  // `Math.max` rather than a branch, so a subscription whose paid period
-  // OUTLASTS its grace window (a mid-period failure on an annual plan) keeps
-  // the access it paid for. Grace can only ever extend, never shorten.
-  //
-  // A `past_due` row with no `past_due_since` — possible only for a row written
-  // before migration 0081 backfilled them, or by a future path that forgets to
-  // stamp it — gets NO grace and falls back to the period end. That is the
-  // fail-closed direction: an unknown clock grants nothing.
-  //
-  // The comparison is `<=`, i.e. access ends AT the deadline, not after it —
-  // the same boundary rule graceHasExpired() applies from the other side. There
-  // is therefore no instant in which the dunning job considers a tenant
-  // suspended while this reader still grants it a plan.
-  const effectiveEnd =
-    row.status === 'past_due' && row.pastDueSince
-      ? Math.max(row.currentPeriodEnd.getTime(), graceEndsAt(row.pastDueSince).getTime())
-      : row.currentPeriodEnd.getTime()
-
-  if (effectiveEnd <= Date.now()) return NO_SUBSCRIPTION
+  // The rule — which clock applies, and why grace can only ever extend — lives
+  // in ONE place, accessEndsAt(), because the dunning processor has to reach
+  // exactly the same verdict about exactly the same row. It did not always:
+  // see ./billing/dunning-policy.ts for the divergence that made this reader's
+  // grace term unreachable in production.
+  if (accessHasEnded(row, new Date())) return NO_SUBSCRIPTION
 
   const rows = await tx
     .select({ key: planEntitlements.key, value: planEntitlements.value })
@@ -190,7 +168,7 @@ export async function readEntitlements(tx: DB, tenantId: string): Promise<Tenant
  * Takes an ActiveContext and runs under withUser(), the same shape as
  * getPnlReport() and every other staff-side reader. The tenant id comes from
  * the resolved context, never from a caller-supplied argument, and RLS
- * (tenant_subscriptions_select, 0078) independently confines the query to the
+ * (tenant_subscriptions_select, 0079) independently confines the query to the
  * tenants this user is an active member of — so even a wrong id here could not
  * read somebody else's plan.
  */

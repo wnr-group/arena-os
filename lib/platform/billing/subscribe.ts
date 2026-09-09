@@ -79,7 +79,7 @@ const TOTAL_COUNT: Record<BillingPeriod, number> = { monthly: 120, annual: 10 }
  * A Razorpay subscription starts life unauthenticated: the payer still has to
  * approve the mandate on Razorpay's hosted page, which can take minutes or
  * days. The local row exists from creation (it is what the webhook will find),
- * and it has to carry SOME current_period_end because 0078 requires one.
+ * and it has to carry SOME current_period_end because 0079 requires one.
  *
  * The rule, and why it is not simply "now + 3 days":
  *
@@ -205,7 +205,7 @@ export async function subscribeTenantToPlan(
   if (!plan) throw new SubscriptionError('That plan no longer exists.')
   if (!plan.active) {
     // Retired plans keep their existing subscribers (that is what
-    // plans_select_subscribed in 0078 is for) but must never take a new one.
+    // plans_select_subscribed in 0079 is for) but must never take a new one.
     throw new SubscriptionError('That plan is no longer available.')
   }
 
@@ -296,94 +296,149 @@ export async function subscribeTenantToPlan(
   const now = new Date()
   let supersededGatewayId: string | null = null
   let prorationCredit: { invoiceNumber: string; amount: string } | null = null
-  const subscriptionId = await db.transaction(async (tx) => {
-    // Lock the tenant's live row so two concurrent checkouts cannot both pass
-    // the "close the old one" step and then race on the one-live index.
-    const [live] = await tx
-      .select({
-        id: tenantSubscriptions.id,
-        currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
-        gateway: tenantSubscriptions.gateway,
-        gatewaySubscriptionId: tenantSubscriptions.gatewaySubscriptionId,
-      })
-      .from(tenantSubscriptions)
-      .where(
-        and(
-          eq(tenantSubscriptions.tenantId, tenantId),
-          inArray(tenantSubscriptions.status, [...LIVE_STATUSES]),
-        ),
-      )
-      .for('update')
-      .orderBy(desc(tenantSubscriptions.currentPeriodStart))
-      .limit(1)
 
-    // Inherit the runway; only a tenant with none gets the pending window.
-    const inherited =
-      live && live.currentPeriodEnd.getTime() > now.getTime() ? live.currentPeriodEnd : null
-    const periodEnd =
-      inherited ??
-      new Date(now.getTime() + PENDING_AUTHORISATION_DAYS * 24 * 60 * 60 * 1000)
+  // ── if the local write fails, say WHICH gateway object is now orphaned ────
+  //
+  // The subscription exists at Razorpay from step 7 onwards. Should this
+  // transaction fail — the one-live index under a concurrent checkout, a driver
+  // fault — nothing local references it, and without this the reference is lost
+  // with the stack trace. It cannot charge anyone (an unauthenticated Razorpay
+  // subscription is never debited, and expires on its own), so this is a
+  // reconciliation breadcrumb rather than an incident: the same treatment, and
+  // the same reason, as the superseded-mandate log below.
+  let subscriptionId: string
+  try {
+    subscriptionId = await db.transaction(async (tx) => {
+      // Lock the tenant's live row so two concurrent checkouts cannot both pass
+      // the "close the old one" step and then race on the one-live index.
+      const [live] = await tx
+        .select({
+          id: tenantSubscriptions.id,
+          currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
+          gateway: tenantSubscriptions.gateway,
+          gatewaySubscriptionId: tenantSubscriptions.gatewaySubscriptionId,
+        })
+        .from(tenantSubscriptions)
+        .where(
+          and(
+            eq(tenantSubscriptions.tenantId, tenantId),
+            inArray(tenantSubscriptions.status, [...LIVE_STATUSES]),
+          ),
+        )
+        .for('update')
+        .orderBy(desc(tenantSubscriptions.currentPeriodStart))
+        .limit(1)
 
-    if (live) {
-      // idx_tenant_subscriptions_one_live permits exactly one live row per
-      // tenant, so the old one is closed in the SAME transaction the new one
-      // is opened in — two statements outside a transaction would fail on the
-      // index half the time and leave the tenant with no plan the other half.
-      await tx
-        .update(tenantSubscriptions)
-        .set({ status: 'cancelled', cancelledAt: now, cancelAtPeriodEnd: false })
-        .where(eq(tenantSubscriptions.id, live.id))
+      let credited: { invoiceNumber: string; amount: string } | null = null
 
-      // A live row backed by a real mandate must not simply be forgotten:
-      // Razorpay would keep charging the business for the plan it just left,
-      // alongside the new one. Cancelled at the gateway immediately after this
-      // transaction commits — see the note below the transaction for the
-      // ordering, which is not arbitrary.
-      if (live.gateway === GATEWAY && live.gatewaySubscriptionId) {
-        supersededGatewayId = live.gatewaySubscriptionId
+      if (live) {
+        // idx_tenant_subscriptions_one_live permits exactly one live row per
+        // tenant, so the old one is closed in the SAME transaction the new one
+        // is opened in — two statements outside a transaction would fail on the
+        // index half the time and leave the tenant with no plan the other half.
+        await tx
+          .update(tenantSubscriptions)
+          .set({
+            status: 'cancelled',
+            cancelledAt: now,
+            cancelAtPeriodEnd: false,
+          })
+          .where(eq(tenantSubscriptions.id, live.id))
+
+        // A live row backed by a real mandate must not simply be forgotten:
+        // Razorpay would keep charging the business for the plan it just left,
+        // alongside the new one. Cancelled at the gateway immediately after this
+        // transaction commits — see the note below the transaction for the
+        // ordering, which is not arbitrary.
+        if (live.gateway === GATEWAY && live.gatewaySubscriptionId) {
+          supersededGatewayId = live.gatewaySubscriptionId
+        }
+
+        // ── proration (M16 #4) ──────────────────────────────────────────────
+        // The business paid for a period it is now leaving part-way through.
+        // Razorpay does not refund that — a plan change here is cancel-and-
+        // recreate, and the new subscription charges its full price — so the
+        // unused remainder is credited by Arena OS.
+        //
+        // In THIS transaction, deliberately: the credit and the closing of the
+        // old row commit together, so there is no state in which the old
+        // subscription is gone and its unused remainder has silently evaporated.
+        //
+        // Writes nothing when the outgoing subscription was never charged, when
+        // its period has already run out, or when the credit rounds to zero.
+        // The rule itself, and why upgrade and downgrade share it, is documented
+        // in ./proration.ts.
+        credited = await creditUnusedPeriod(tx, {
+          tenantId,
+          subscriptionId: live.id,
+          at: now,
+        })
       }
+      prorationCredit = credited
 
-      // ── proration (M16 #4) ──────────────────────────────────────────────
-      // The business paid for a period it is now leaving part-way through.
-      // Razorpay does not refund that — a plan change here is cancel-and-
-      // recreate, and the new subscription charges its full price — so the
-      // unused remainder is credited by Arena OS.
+      // ── how long the UNAUTHORISED new subscription is good for ──────────────
       //
-      // In THIS transaction, deliberately: the credit and the closing of the
-      // old row commit together, so there is no state in which the old
-      // subscription is gone and its unused remainder has silently evaporated.
+      // Two mutually exclusive answers, and getting this wrong gave the period
+      // away twice.
       //
-      // Writes nothing when the outgoing subscription was never charged, when
-      // its period has already run out, or when the credit rounds to zero.
-      // The rule itself, and why upgrade and downgrade share it, is documented
-      // in ./proration.ts.
-      prorationCredit = await creditUnusedPeriod(tx, {
-        tenantId,
-        subscriptionId: live.id,
-        at: now,
-      })
-    }
+      //   credited      the unused remainder has just been handed back as a
+      //                 credit note. It must NOT also be served, or the business
+      //                 is paid for that time AND keeps using it. So the new row
+      //                 gets only the authorisation window.
+      //
+      //   not credited  nothing was given back — the outgoing subscription was
+      //                 never charged, or its period had already run out, or the
+      //                 credit rounded to zero. The remaining runway is still the
+      //                 business's, so it carries over and service does not blink
+      //                 while the payer walks to Razorpay.
+      //
+      // The bug this replaces: the runway was ALWAYS inherited. An owner who
+      // opened a plan change and never completed the payment kept the NEW plan —
+      // possibly a dearer tier they had not paid a rupee towards — for the whole
+      // remainder of the old period, while also holding a credit note for it.
+      // Nothing ever ended that row: it sits in `trialing`, which is a LIVE
+      // status, and the dunning sweep only scans `past_due` and `expired`.
+      //
+      // PENDING_AUTHORISATION_DAYS exists precisely to bound unpaid access, and
+      // the inherited runway was walking around it.
+      const pendingWindow = new Date(
+        now.getTime() + PENDING_AUTHORISATION_DAYS * 24 * 60 * 60 * 1000,
+      )
+      const inherited =
+        !credited && live && live.currentPeriodEnd.getTime() > now.getTime()
+          ? live.currentPeriodEnd
+          : null
+      const periodEnd = inherited ?? pendingWindow
 
-    const [row] = await tx
-      .insert(tenantSubscriptions)
-      .values({
-        tenantId,
-        planId: plan.id,
-        billingPeriod,
-        // NOT 'active'. No money has moved yet — the payer has not even opened
-        // Razorpay's authorisation page. `trialing` is the live-but-unpaid
-        // state 0078 already defines; the webhook is what promotes it.
-        status: 'trialing',
-        currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
-        gateway: GATEWAY,
-        gatewaySubscriptionId: created.id,
-        gatewayCustomerId: customerId,
-      })
-      .returning({ id: tenantSubscriptions.id })
+      const [row] = await tx
+        .insert(tenantSubscriptions)
+        .values({
+          tenantId,
+          planId: plan.id,
+          billingPeriod,
+          // NOT 'active'. No money has moved yet — the payer has not even opened
+          // Razorpay's authorisation page. `trialing` is the live-but-unpaid
+          // state 0079 already defines; the webhook is what promotes it.
+          status: 'trialing',
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          gateway: GATEWAY,
+          gatewaySubscriptionId: created.id,
+          gatewayCustomerId: customerId,
+        })
+        .returning({ id: tenantSubscriptions.id })
 
-    return row.id
-  })
+      return row.id
+    })
+  } catch (e) {
+    console.error(
+      `[subscribe] tenant ${tenantId}: the local subscription record failed to write, so ` +
+        `gateway subscription ${created.id} is orphaned on the Arena OS Razorpay account. ` +
+        `It was never authorised and cannot charge, but it should be cleaned up.`,
+      e instanceof Error ? e.name : 'unknown error',
+    )
+    throw e
+  }
 
   // ── 9. stop the mandate the business just replaced ────────────────────────
   //

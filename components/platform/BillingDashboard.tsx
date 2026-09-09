@@ -105,6 +105,8 @@ export function BillingDashboard({
   churn,
   revenue,
   revenueTotals,
+  revenueCurrency,
+  billedCurrencies,
   tenants,
 }: {
   basePath: string
@@ -116,9 +118,19 @@ export function BillingDashboard({
   churn: Churn
   revenue: RevenuePoint[]
   revenueTotals: { gross: number; refunded: number; net: number; invoices: number; creditsIssued: number }
+  revenueCurrency: string
+  billedCurrencies: string[]
   tenants: TenantRow[]
 }) {
+  // The MRR tiles' currency. Kept separate from `revenueCurrency` even though
+  // getPlatformBillingDashboard() derives one from the other, so this component
+  // never has to assume the two agree — it labels each figure with the currency
+  // the server said it was in.
   const currency = headline?.currency ?? 'INR'
+  // Currencies billed in this window that the chart is NOT showing. Named so an
+  // operator is told the series is a subset rather than reading it as the
+  // total — the series itself is single-currency by construction (readRevenue).
+  const otherCurrencies = billedCurrencies.filter((c) => c !== revenueCurrency)
   // Named for what it actually reduces. It was `maxNet` while summing `gross`,
   // which mattered once the bars started being drawn against it: the column is
   // gross with the refunded part shaded, so the scale has to be gross too.
@@ -140,7 +152,13 @@ export function BillingDashboard({
 
   return (
     <>
-      <Filters basePath={basePath} range={range} bucket={bucket} />
+      <Filters
+        basePath={basePath}
+        range={range}
+        bucket={bucket}
+        currency={revenueCurrency}
+        currencies={billedCurrencies}
+      />
 
       {/* ── the tiles ─────────────────────────────────────────────────────
           Eight equal tiles used to sit here, five of which repeated counts the
@@ -239,13 +257,28 @@ export function BillingDashboard({
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <TrendingUp size={15} className="text-primary" />
             Revenue over time
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {revenueCurrency}
+            </span>
           </h2>
           <p className="text-xs text-muted-foreground">
-            {money(currency, revenueTotals.gross)} billed · {money(currency, revenueTotals.refunded)}{' '}
-            refunded · <strong>{money(currency, revenueTotals.net)} net</strong> ·{' '}
+            {money(revenueCurrency, revenueTotals.gross)} billed ·{' '}
+            {money(revenueCurrency, revenueTotals.refunded)} refunded ·{' '}
+            <strong>{money(revenueCurrency, revenueTotals.net)} net</strong> ·{' '}
             {revenueTotals.invoices} invoice{revenueTotals.invoices === 1 ? '' : 's'}
           </p>
         </div>
+
+        {/* Said out loud rather than left to be inferred: this series covers ONE
+            currency, and summing several into one figure is the bug this
+            replaced. */}
+        {otherCurrencies.length > 0 && (
+          <p className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+            {revenueCurrency} only. This period also has activity in{' '}
+            {otherCurrencies.join(', ')}, which is not included above — currencies are never
+            summed together.
+          </p>
+        )}
 
         {/* ── the series ───────────────────────────────────────────────────
             Was one ROW per bucket with a horizontal bar. That reads fine for a
@@ -498,26 +531,34 @@ export function BillingDashboard({
   )
 }
 
-/** `?from=&to=&bucket=` — a soft RSC navigation, like the tenant reports' filter. */
+/** `?from=&to=&bucket=&currency=` — a soft RSC navigation, like the tenant reports' filter. */
 function Filters({
   basePath,
   range,
   bucket,
+  currency,
+  currencies,
 }: {
   basePath: string
   range: { start: string; end: string }
   bucket: string
+  currency: string
+  /** Every currency actually billed in this window; the picker is hidden below two. */
+  currencies: string[]
 }) {
   const router = useRouter()
   const [from, setFrom] = useState(range.start)
   const [to, setTo] = useState(range.end)
   const [b, setB] = useState(bucket)
+  const [cur, setCur] = useState(currency)
   const [pending, start] = useTransition()
 
   function apply(e: FormEvent) {
     e.preventDefault()
     start(() => {
-      router.push(`${basePath}?from=${from}&to=${to}&bucket=${b}`)
+      router.push(
+        `${basePath}?from=${from}&to=${to}&bucket=${b}&currency=${encodeURIComponent(cur)}`,
+      )
     })
   }
 
@@ -541,6 +582,28 @@ function Filters({
           <option value="month">Month</option>
         </select>
       </div>
+      {/* Only when there is a choice to make. A single-currency platform — which
+          is every platform until somebody prices a plan in something else —
+          should not be asked which one it means. */}
+      {currencies.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="pb-currency" className="text-xs font-medium text-muted-foreground">
+            Revenue in
+          </label>
+          <select
+            id="pb-currency"
+            value={cur}
+            onChange={(e) => setCur(e.target.value)}
+            className={field}
+          >
+            {currencies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <button type="submit" disabled={pending} className="rounded-lg border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50">
         {pending ? 'Loading…' : 'Apply'}
       </button>

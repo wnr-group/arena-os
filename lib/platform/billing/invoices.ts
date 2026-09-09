@@ -76,7 +76,7 @@ const DEFAULT_LETTERHEAD: PlatformLetterhead = {
  *
  * Read on whatever connection the caller hands in. In practice that is always
  * the owner connection — `arena_app` has no grant on this table at all
- * (migration 0080) — because the only caller is the webhook, which has no
+ * (migration 0081) — because the only caller is the webhook, which has no
  * session. Tenants never read it: they read the snapshot on their own invoice.
  */
 export async function loadPlatformLetterhead(tx: DB): Promise<PlatformLetterhead> {
@@ -105,7 +105,7 @@ export async function loadPlatformLetterhead(tx: DB): Promise<PlatformLetterhead
  * The same statement `nextInvoiceNumber()` in lib/billing/invoice.ts uses, and
  * the same formatter — only the counter table differs, because GST numbering
  * belongs to the SUPPLIER and Arena OS is the supplier for every one of these
- * (see migration 0080's header for why `sequences` cannot be reused).
+ * (see migration 0081's header for why `sequences` cannot be reused).
  *
  * `insert … on conflict do update set value = value + 1 returning value` is
  * atomic: a concurrent bumper blocks on the row lock and then reads the
@@ -218,6 +218,21 @@ export type IssuedPlatformInvoice = {
 }
 
 /**
+ * Internal signal, never thrown out of this module.
+ *
+ * The only way to release a savepoint's writes in Postgres is to roll it back,
+ * and the only way to roll one back through the driver is to throw out of the
+ * callback. This carries "the invoice already existed" across that throw so it
+ * can be turned back into the `null` the contract promises.
+ */
+class DuplicateInvoice extends Error {
+  constructor() {
+    super('platform invoice already exists for this payment')
+    this.name = 'DuplicateInvoice'
+  }
+}
+
+/**
  * Raise the invoice for one successful subscription charge.
  *
  * Returns null when this payment has ALREADY been invoiced — the money-level
@@ -314,78 +329,107 @@ export async function issueSubscriptionInvoice(
   const gst = splitGstInclusive(gross, letterhead.gstRate, supply.interstate)
 
   const { date, period } = platformInvoiceDate()
-  const invoiceNumber = await nextPlatformInvoiceNumber(
-    tx,
-    'invoice',
-    letterhead.invoicePrefix,
-    period,
-  )
 
-  const [row] = await tx
-    .insert(platformInvoices)
-    .values({
-      tenantId: params.tenantId,
-      subscriptionId: params.subscriptionId,
-      planId: params.planId,
-      kind: 'subscription',
-      invoiceNumber,
-      invoiceDate: date,
-      period,
-      billingPeriodStart: params.billingPeriodStart,
-      billingPeriodEnd: params.billingPeriodEnd,
-      billingPeriodType: params.billingPeriodType,
-      planName: plan.name,
-      planPrice: catalogPrice,
-      sellerLegalName: letterhead.sellerLegalName,
-      sellerGstin: letterhead.sellerGstin,
-      sellerAddress: letterhead.sellerAddress,
-      sellerStateCode: letterhead.sellerStateCode,
-      buyerLegalName: buyer.legalName,
-      buyerGstin: buyer.gstin,
-      buyerAddress: buyer.address,
-      buyerStateCode: supply.stateCode,
-      placeOfSupply: supply.placeOfSupply,
-      subtotal: money(gross),
-      // Always zero now. The column stays because migration 0080 defines it and
-      // `adjustment <= subtotal` still guards it, and because a future
-      // gateway-side discount (a Razorpay offer, which WOULD reduce the capture)
-      // is exactly what it is for.
-      adjustment: money(0),
-      taxableValue: money(gst.taxableValue),
-      gstRate: money(letterhead.gstRate),
-      cgst: money(gst.cgst),
-      sgst: money(gst.sgst),
-      igst: money(gst.igst),
-      taxTotal: money(gst.taxTotal),
-      total: money(gst.total),
-      currency: params.currency,
-      // Paid by definition: this row exists because Razorpay captured the money.
-      status: 'paid',
-      gateway: GATEWAY,
-      gatewayPaymentId: params.gatewayPaymentId,
-      gatewaySubscriptionId: params.gatewaySubscriptionId,
-      gatewayInvoiceId: params.gatewayInvoiceId,
-      gatewayEventId: params.gatewayEventId,
-      notes: null,
-    })
-    // The real idempotency guarantee: a concurrent delivery that got past the
-    // pre-check above loses HERE, in Postgres, and returns no row.
-    .onConflictDoNothing({
-      target: [platformInvoices.gateway, platformInvoices.gatewayPaymentId],
-      // idx_platform_invoices_gateway_payment is PARTIAL, so its predicate has
-      // to be restated here: without it Postgres cannot match the arbiter and
-      // raises "no unique or exclusion constraint matching the ON CONFLICT
-      // specification" instead of quietly doing nothing.
-      where: sql`${platformInvoices.gatewayPaymentId} is not null`,
-    })
-    .returning({
-      id: platformInvoices.id,
-      invoiceNumber: platformInvoices.invoiceNumber,
-      total: platformInvoices.total,
-    })
+  // ── the number and the document are drawn together, or not at all ─────────
+  //
+  // A SAVEPOINT, because the counter bump and the insert have to succeed or
+  // fail as a unit. nextPlatformInvoiceNumber() writes to platform_sequences,
+  // and the insert below can legitimately write nothing — a concurrent delivery
+  // that slipped past the pre-check loses on the partial unique index and
+  // onConflictDoNothing returns no row. Bumping first and then not inserting
+  // left the outer transaction to COMMIT with the counter advanced and no
+  // document against it: a hole in a GST invoice series, which is a numbering
+  // defect a tax authority asks about and nobody can answer afterwards.
+  //
+  // Rolling back to the savepoint releases the counter — platform_sequences is
+  // an ordinary table, not a sequence, so its value is transactional — while
+  // leaving everything the caller did before this call (the subscription state
+  // change, in the webhook's case) intact.
+  let row: IssuedPlatformInvoice | undefined
+  try {
+    row = await tx.transaction(async (sp) => {
+      const invoiceNumber = await nextPlatformInvoiceNumber(
+        sp,
+        'invoice',
+        letterhead.invoicePrefix,
+        period,
+      )
 
-  if (!row) return null
+      const [inserted] = await sp
+        .insert(platformInvoices)
+        .values({
+          tenantId: params.tenantId,
+          subscriptionId: params.subscriptionId,
+          planId: params.planId,
+          kind: 'subscription',
+          invoiceNumber,
+          invoiceDate: date,
+          period,
+          billingPeriodStart: params.billingPeriodStart,
+          billingPeriodEnd: params.billingPeriodEnd,
+          billingPeriodType: params.billingPeriodType,
+          planName: plan.name,
+          planPrice: catalogPrice,
+          sellerLegalName: letterhead.sellerLegalName,
+          sellerGstin: letterhead.sellerGstin,
+          sellerAddress: letterhead.sellerAddress,
+          sellerStateCode: letterhead.sellerStateCode,
+          buyerLegalName: buyer.legalName,
+          buyerGstin: buyer.gstin,
+          buyerAddress: buyer.address,
+          buyerStateCode: supply.stateCode,
+          placeOfSupply: supply.placeOfSupply,
+          subtotal: money(gross),
+          // Always zero now. The column stays because migration 0081 defines it
+          // and `adjustment <= subtotal` still guards it, and because a future
+          // gateway-side discount (a Razorpay offer, which WOULD reduce the
+          // capture) is exactly what it is for.
+          adjustment: money(0),
+          taxableValue: money(gst.taxableValue),
+          gstRate: money(letterhead.gstRate),
+          cgst: money(gst.cgst),
+          sgst: money(gst.sgst),
+          igst: money(gst.igst),
+          taxTotal: money(gst.taxTotal),
+          total: money(gst.total),
+          currency: params.currency,
+          // Paid by definition: this row exists because Razorpay captured the
+          // money.
+          status: 'paid',
+          gateway: GATEWAY,
+          gatewayPaymentId: params.gatewayPaymentId,
+          gatewaySubscriptionId: params.gatewaySubscriptionId,
+          gatewayInvoiceId: params.gatewayInvoiceId,
+          gatewayEventId: params.gatewayEventId,
+          notes: null,
+        })
+        // The real idempotency guarantee: a concurrent delivery that got past
+        // the pre-check above loses HERE, in Postgres, and returns no row.
+        .onConflictDoNothing({
+          target: [platformInvoices.gateway, platformInvoices.gatewayPaymentId],
+          // idx_platform_invoices_gateway_payment is PARTIAL, so its predicate
+          // has to be restated here: without it Postgres cannot match the
+          // arbiter and raises "no unique or exclusion constraint matching the
+          // ON CONFLICT specification" instead of quietly doing nothing.
+          where: sql`${platformInvoices.gatewayPaymentId} is not null`,
+        })
+        .returning({
+          id: platformInvoices.id,
+          invoiceNumber: platformInvoices.invoiceNumber,
+          total: platformInvoices.total,
+        })
 
+      // Throwing is how a savepoint is rolled back, and rolling back is the
+      // whole point: it un-bumps the counter this attempt reserved. Caught
+      // immediately below and turned back into the documented `null`.
+      if (!inserted) throw new DuplicateInvoice()
+
+      return inserted
+    })
+  } catch (e) {
+    if (e instanceof DuplicateInvoice) return null
+    throw e
+  }
 
   return row
 }
@@ -409,7 +453,7 @@ export type IssueCreditNoteParams = {
  * Raise a credit note for the unused remainder of a period.
  *
  * A credit note carries POSITIVE amounts and its own number series. That is
- * both what GST expects and what keeps migration 0080's `total >= 0` check
+ * both what GST expects and what keeps migration 0081's `total >= 0` check
  * meaningful: a negative invoice is unrepresentable in this schema, so
  * proration cannot accidentally produce one.
  *
@@ -516,6 +560,39 @@ export async function lastPaidInvoiceFor(tx: DB, subscriptionId: string) {
     .select({
       id: platformInvoices.id,
       total: platformInvoices.total,
+      // ── what the business is actually still out of pocket ────────────────
+      //
+      // `total` is what was charged; this is what has since been GIVEN BACK,
+      // counting a refund that is pending at the gateway as well as one that
+      // has settled — the same `RESERVING_STATUSES` set refundedForInvoice()
+      // uses to decide how much of an invoice remains refundable, so the two
+      // answers cannot diverge.
+      //
+      // Callers prorate against `total - refunded`, not `total`. Against
+      // `total`, a plan change after a full refund issued a SECOND credit note
+      // for money that had already been returned once — the business ended up
+      // credited twice for one period, and nothing downstream would have
+      // caught it, because a credit note is an obligation nobody reconciles
+      // against the charge it reverses.
+      //
+      // A correlated subquery rather than a join: platform_refunds has at most
+      // a handful of rows per invoice, this reads exactly one invoice, and a
+      // join would need a group-by over every selected column.
+      //
+      // The outer column is written out in full — `public.platform_invoices.id`
+      // — and NOT interpolated as `${platformInvoices.id}`. Inside a select-list
+      // fragment drizzle renders that as the bare identifier `"id"`, which
+      // Postgres then resolves against the INNER table: `r.invoice_id = "id"`
+      // becomes "this refund's invoice_id equals this refund's own id", which is
+      // never true. The result is not an error but a silent zero — every invoice
+      // reporting nothing refunded, which is precisely the wrong answer this
+      // column exists to prevent.
+      refunded: sql<string>`(
+        select coalesce(sum(r.amount), 0)
+          from public.platform_refunds r
+         where r.invoice_id = public.platform_invoices.id
+           and r.status in ('pending', 'processed')
+      )`,
       billingPeriodStart: platformInvoices.billingPeriodStart,
       billingPeriodEnd: platformInvoices.billingPeriodEnd,
       billingPeriodType: platformInvoices.billingPeriodType,
@@ -532,4 +609,16 @@ export async function lastPaidInvoiceFor(tx: DB, subscriptionId: string) {
     .orderBy(desc(platformInvoices.createdAt))
     .limit(1)
   return row ?? null
+}
+
+/**
+ * What a subscription's last charge is still worth for proration purposes:
+ * billed, less anything already refunded, floored at zero.
+ *
+ * One function so ./proration.ts (which WRITES the credit) and ./preview.ts
+ * (which QUOTES it) cannot compute different bases — the divergence that would
+ * make a confirmation dialog promise a figure the business never receives.
+ */
+export function netPaidTotal(invoice: { total: string; refunded: string }): number {
+  return Math.max(0, round2(Number(invoice.total) - Number(invoice.refunded)))
 }

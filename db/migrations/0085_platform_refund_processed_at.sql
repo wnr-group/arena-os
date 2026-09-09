@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0084 when a platform refund actually processed
+-- Arena OS — 0085 when a platform refund actually processed
 --
 -- A correctness fix to the AROS-114 revenue chart, not a new feature. One
 -- nullable timestamp.
@@ -16,7 +16,7 @@
 -- The intent is right and the first half of it held — refunds were never
 -- bucketed by the invoice they reverse. But the column the query actually
 -- reached for was `created_at`, which is when the refund was RESERVED, and
--- 0082's whole design is that reserving and processing are deliberately not the
+-- 0083's whole design is that reserving and processing are deliberately not the
 -- same moment:
 --
 --     phase 1  reserve   INSERT status='pending'          ← created_at
@@ -24,7 +24,7 @@
 --     phase 3  settle    status='processed'               ← the money moves
 --
 -- Usually those are seconds apart and the bucket is the same. The gap opens
--- exactly where 0082 says it will: on a timeout or a 5xx the row is left
+-- exactly where 0083 says it will: on a timeout or a 5xx the row is left
 -- 'pending' ON PURPOSE — releasing a reservation against money that may already
 -- be gone is the one mistake that cannot be undone — and a signature-verified
 -- `refund.processed` webhook settles it later. Later can be the next day, and
@@ -38,7 +38,7 @@
 --
 -- ── WHY A COLUMN, AND NOT `updated_at` ──────────────────────────────────────
 --
--- `updated_at` is maintained by trg_platform_refunds_updated (0082) on EVERY
+-- `updated_at` is maintained by trg_platform_refunds_updated (0083) on EVERY
 -- update, so it is "when this row last changed", not "when the money left". It
 -- already moves for reasons that have nothing to do with settlement — a 4xx
 -- refusal rewriting `reason` and status to 'failed', for instance — and any
@@ -87,5 +87,5 @@ create index if not exists idx_platform_refunds_processed
   where status = 'processed';
 
 -- No grant change. `arena_app` holds SELECT on platform_refunds and nothing
--- else (0082); this column inherits exactly that, so a business can no more
+-- else (0083); this column inherits exactly that, so a business can no more
 -- stamp its own refund as settled than it can mark it processed.

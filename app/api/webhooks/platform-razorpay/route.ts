@@ -30,7 +30,7 @@ import {
  * THIS route belongs to ARENA OS's own Razorpay account, which charges the
  * BUSINESSES their subscription. There is exactly one such account, so:
  *   * there is no tenant in the URL and none is looked up from the host;
- *   * there is one signing secret, held in platform_payment_settings (0079);
+ *   * there is one signing secret, held in platform_payment_settings (0080);
  *   * the tenant is discovered AFTERWARDS, from our own
  *     tenant_subscriptions.gateway_subscription_id row.
  *

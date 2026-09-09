@@ -10,7 +10,7 @@ import {
   tenants,
 } from '@/db/schema'
 import { round2 } from '@/lib/billing/pricing'
-import { deadlinesFor } from './dunning-policy'
+import { accessHasEnded, deadlinesFor } from './dunning-policy'
 import { LIVE_STATUSES } from './lifecycle'
 import { requirePlatformAdmin } from '../guard'
 
@@ -41,7 +41,7 @@ import { requirePlatformAdmin } from '../guard'
  * ARE included and are not credentials — a `sub_…` appears in the URL Razorpay
  * serves the payer, and a `pay_…` is what a business quotes to support. Every
  * secret lives in a table this module does not touch and `arena_app` has no
- * grant on at all (0079).
+ * grant on at all (0080).
  */
 
 export type TenantBillingSubscription = {
@@ -104,7 +104,7 @@ export type TenantBillingRefund = {
   status: string
   gatewayRefundId: string | null
   createdAt: Date
-  /** When the money actually left (0084). Null unless the refund processed. */
+  /** When the money actually left (0085). Null unless the refund processed. */
   processedAt: Date | null
 }
 
@@ -232,9 +232,24 @@ export async function getTenantBillingDetail(
         // Only 'pending' and 'processed' reserve part of the balance; a failed
         // refund releases what it held. The same rule refundedForInvoice()
         // applies at the moment a refund is booked.
+        // ── the outer column is written out IN FULL, deliberately ───────────
+        //
+        // `${platformInvoices.id}` renders as the bare identifier `"id"` inside
+        // a select-list fragment, and Postgres then resolves it against the
+        // INNER table — platform_refunds has an `id` of its own, so the
+        // predicate silently became `r.invoice_id = r.id`, which is never true.
+        // Not an error: just a permanent zero. Every invoice reported nothing
+        // refunded, so `refundable` below was always the full total, and the
+        // admin panel offered a Refund control (pre-filled with the whole
+        // amount, captioned "Up to ₹X remains refundable") on invoices that had
+        // already been refunded in full. Only the server-side cap in
+        // refundPlatformInvoice() stopped it from being acted on.
+        //
+        // The same trap caught lastPaidInvoiceFor() in ./invoices.ts. These two
+        // are the only correlated subqueries in the module; both now qualify.
         refunded: sql<string>`coalesce((
           select sum(r.amount) from ${platformRefunds} r
-           where r.invoice_id = ${platformInvoices.id}
+           where r.invoice_id = public.platform_invoices.id
              and r.status in ('pending','processed')
         ), 0)`,
       })
@@ -304,8 +319,17 @@ export async function getTenantBillingDetail(
       tenant,
       subscription: sub
         ? (() => {
-            const lapsed = sub.currentPeriodEnd.getTime() <= now
-            const deadlines = deadlinesFor(sub.pastDueSince, sub.suspendedAt)
+            // The SAME rule the owner portal and the entitlement reader apply.
+            // This used to test `current_period_end` alone, which showed an
+            // operator "lapsed" for a business that was in grace and demonstrably
+            // still working. For an `active` subscription the two are identical,
+            // so the MRR test below is unchanged.
+            const lapsed = accessHasEnded(sub, new Date(now))
+            const deadlines = deadlinesFor({
+              pastDueSince: sub.pastDueSince,
+              suspendedAt: sub.suspendedAt,
+              paidThrough: sub.status === 'past_due' ? sub.currentPeriodEnd : null,
+            })
             return {
               id: sub.id,
               planId: sub.planId,

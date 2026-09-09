@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { ownerDb, type DB } from '@/db'
 import { platformInvoices, platformRefunds } from '@/db/schema'
 import { paise, round2 } from '@/lib/billing/pricing'
@@ -19,7 +19,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  * Arena OS giving a business back part or all of what it paid for its
  * subscription. NOT lib/billing/refunds.ts, which is a VENUE refunding its own
  * customer out of its own till — different money, different direction,
- * different Razorpay account (0079), different parent table.
+ * different Razorpay account (0080), different parent table.
  *
  * ═══ THE ORDERING, AND WHY IT IS THIS WAY ═══════════════════════════════════
  *
@@ -54,6 +54,14 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  *                           gone, which is the one mistake that cannot be
  *                           undone.
  *
+ * That second row has NO `gateway_refund_id`: we never saw the response that
+ * carries it. The webhook therefore cannot recognise it by reference, and for a
+ * while it did not recognise it at all — the row stayed pending forever, its
+ * slice of the invoice permanently unrefundable and the money it represented
+ * missing from the revenue series. applyVerifiedRefundEvent() below now ADOPTS
+ * such a row by the payment it came from; the rules it applies to avoid
+ * adopting the wrong one are stated there.
+ *
  * ═══ THE GATEWAY IS AUTHORITATIVE ═══════════════════════════════════════════
  *
  * A row reaches 'processed' only because Razorpay said so — either in the
@@ -64,7 +72,7 @@ import { recordPlatformOverride, type PlatformActor } from './audit'
  *
  * ═══ IDEMPOTENCY, AT THREE LEVELS ═══════════════════════════════════════════
  *
- *   1. `request_key` — the caller's retry token, unique per tenant (0082),
+ *   1. `request_key` — the caller's retry token, unique per tenant (0083),
  *      the same idiom payments.idempotency_key (0040) uses. A double-clicked
  *      button sends the same key, the second insert is refused, and the FIRST
  *      refund is returned. This is what the invoice cap alone cannot do: two
@@ -232,7 +240,7 @@ export async function refundPlatformInvoice(
     if (!invoice) throw new PlatformRefundError('Invoice not found.')
 
     // A credit note is not money that moved — `platform_invoices_credit_note_
-    // unpaid` (0080) guarantees it carries no payment — so there is nothing to
+    // unpaid` (0081) guarantees it carries no payment — so there is nothing to
     // give back.
     if (invoice.kind !== 'subscription') {
       throw new PlatformRefundError('Only a subscription invoice can be refunded.')
@@ -436,7 +444,7 @@ export async function refundPlatformInvoice(
       // Stamped only on the way to 'processed', and only if it is not already
       // stamped: `coalesce` makes this SET-ONCE even in the race where a
       // `refund.processed` webhook lands before this response returns. The
-      // revenue series buckets on this column (0084), and a figure a month has
+      // revenue series buckets on this column (0085), and a figure a month has
       // already been reported on must not move because a duplicate settle
       // arrived seconds later.
       ...(status === 'processed'
@@ -457,7 +465,7 @@ export async function refundPlatformInvoice(
 /**
  * Razorpay's refund status → ours.
  *
- * The three words are identical on purpose (0082), so this is a VALIDATION not
+ * The three words are identical on purpose (0083), so this is a VALIDATION not
  * a translation: anything unrecognised falls back to 'pending', never to
  * 'processed'. Treating an unknown provider status as "the money has left"
  * would be a guess in the one direction that cannot be taken back.
@@ -484,9 +492,20 @@ export function normaliseRefundStatus(raw: string): 'pending' | 'processed' | 'f
  */
 export async function applyVerifiedRefundEvent(
   tx: DB,
-  params: { gatewayRefundId: string; status: 'processed' | 'failed' },
+  params: {
+    gatewayRefundId: string
+    status: 'processed' | 'failed'
+    /**
+     * The payment the gateway says this refund came from, for the ADOPTION path
+     * below. Null when the delivery did not carry one, which simply means the
+     * fallback cannot run.
+     */
+    gatewayPaymentId?: string | null
+    /** The gateway's amount in paise, to disambiguate. Null when absent. */
+    amountPaise?: number | null
+  },
 ): Promise<{ kind: 'applied' | 'unchanged' | 'ignored'; tenantId?: string }> {
-  const [row] = await tx
+  let [row] = await tx
     .select({
       id: platformRefunds.id,
       tenantId: platformRefunds.tenantId,
@@ -502,6 +521,84 @@ export async function applyVerifiedRefundEvent(
     .for('update')
     .limit(1)
 
+  // ── ADOPTION: the refund we instructed but never got an id for ─────────────
+  //
+  // refundPlatformInvoice() phase 2 has an UNKNOWN branch: the gateway was told
+  // to refund and did not answer in time (a timeout, a 5xx). The row stays
+  // 'pending' with a NULL gateway_refund_id, holding its reservation, and the
+  // header above promises that "the webhook will settle it".
+  //
+  // It could not. The lookup above matches on gateway_refund_id, and a NULL
+  // column matches nothing — so `refund.processed` returned 'ignored' and the
+  // row stayed pending FOREVER. Three things followed from that, all durable:
+  // refundedForInvoice() counts 'pending', so that slice of the invoice was
+  // permanently unrefundable and a re-attempt was refused for "exceeding the
+  // refundable amount"; processed_at was never stamped, so money that had
+  // genuinely left never appeared in the AROS-114 revenue series; and no
+  // operator path existed to clear it.
+  //
+  // So when the reference is unknown, the refund is matched instead by the
+  // PAYMENT it came from — the one fact both sides always agree on, because
+  // gateway_payment_id is copied from the locked invoice at reservation time.
+  //
+  // Deliberately narrow, because adopting the wrong row would settle a refund
+  // that never happened:
+  //
+  //   * only rows still 'pending' AND still missing an id — a refund we already
+  //     have a reference for is not this one;
+  //   * only when the amounts agree, when the delivery states one;
+  //   * only when EXACTLY ONE candidate remains. Two indistinguishable pending
+  //     refunds on one payment are left alone for a human, which is the
+  //     fail-closed direction: a stuck row is recoverable, a wrongly-settled
+  //     one is money.
+  //
+  // The unique index idx_platform_refunds_gateway_ref then makes the adoption
+  // itself safe: a second delivery for the same rfnd_… cannot claim a second
+  // row, it collides.
+  if (!row && params.gatewayPaymentId) {
+    const candidates = await tx
+      .select({
+        id: platformRefunds.id,
+        tenantId: platformRefunds.tenantId,
+        status: platformRefunds.status,
+        amount: platformRefunds.amount,
+      })
+      .from(platformRefunds)
+      .where(
+        and(
+          eq(platformRefunds.gateway, GATEWAY),
+          eq(platformRefunds.gatewayPaymentId, params.gatewayPaymentId),
+          eq(platformRefunds.status, 'pending'),
+          isNull(platformRefunds.gatewayRefundId),
+        ),
+      )
+      .for('update')
+
+    const matched =
+      typeof params.amountPaise === 'number'
+        ? candidates.filter((r) => paise(round2(Number(r.amount))) === params.amountPaise)
+        : candidates
+
+    if (matched.length !== 1) {
+      if (matched.length > 1) {
+        console.warn(
+          `[platform-refund] ${params.gatewayRefundId} matches ${matched.length} unsettled ` +
+            `refunds on payment ${params.gatewayPaymentId}; left for manual reconciliation`,
+        )
+      }
+      return { kind: 'ignored' }
+    }
+
+    // Claim it, so every later delivery for this refund takes the fast path
+    // above and the reference is on record for a dispute.
+    await tx
+      .update(platformRefunds)
+      .set({ gatewayRefundId: params.gatewayRefundId })
+      .where(eq(platformRefunds.id, matched[0].id))
+
+    row = matched[0]
+  }
+
   if (!row) return { kind: 'ignored' }
   // Final is final. Both directions.
   if (row.status !== 'pending') {
@@ -512,7 +609,7 @@ export async function applyVerifiedRefundEvent(
     .update(platformRefunds)
     .set({
       status: params.status,
-      // The moment the money actually left, for the revenue series (0084). Only
+      // The moment the money actually left, for the revenue series (0085). Only
       // on 'processed' — a failed refund never settled and must keep a null
       // here rather than a timestamp that would read as a cash movement.
       ...(params.status === 'processed'

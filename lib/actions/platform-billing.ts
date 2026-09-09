@@ -250,6 +250,12 @@ const forceCancelInput = z.object({
 export type ForceCancelActionResult = Result & {
   atPeriodEnd?: boolean
   effectiveAt?: string
+  /**
+   * Whether the ACCOUNT was closed too, not just the subscription. Passed back
+   * so the panel can say that the venue's public booking site has gone dark —
+   * the consequence of a force-cancel an operator is least likely to expect.
+   */
+  closedAccount?: boolean
 }
 
 export async function forceCancelAction(
@@ -263,6 +269,7 @@ export async function forceCancelAction(
     return {
       atPeriodEnd: result.atPeriodEnd,
       effectiveAt: result.currentPeriodEnd.toISOString(),
+      closedAccount: result.closedAccount,
     }
   } catch (e) {
     return fail(e, 'force cancel')

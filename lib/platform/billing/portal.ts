@@ -18,7 +18,7 @@ import {
 import { decideLimit, moduleGranted, type Resolved } from '@/lib/platform/entitlement-guard'
 import { countActiveStaff, countBranches, countResources } from '@/lib/platform/usage'
 import { LIVE_STATUSES } from './lifecycle'
-import { deadlinesFor } from './dunning-policy'
+import { accessHasEnded, deadlinesFor } from './dunning-policy'
 import type { OwnSubscription, SubscribablePlan } from './data'
 
 /**
@@ -50,8 +50,8 @@ import type { OwnSubscription, SubscribablePlan } from './data'
  * ── And nothing here is a security boundary ─────────────────────────────────
  *
  * withUser() on the restricted `arena_app` role; RLS decides every row.
- * `platform_invoices_owner_select` (0080) admits only invoices for a tenant the
- * caller OWNS, `tenant_subscriptions_select` (0078) only their own
+ * `platform_invoices_owner_select` (0081) admits only invoices for a tenant the
+ * caller OWNS, `tenant_subscriptions_select` (0079) only their own
  * subscription. The tenant id comes from the resolved context, never from an
  * argument. The page's role check is presentation; this is the wall.
  */
@@ -88,7 +88,7 @@ export type PortalInvoice = {
   total: string
   currency: string
   status: string
-  /** A stored document, when one exists. Null today — see migration 0080. */
+  /** A stored document, when one exists. Null today — see migration 0081. */
   documentUrl: string | null
 }
 
@@ -191,6 +191,12 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
         currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
         cancelAtPeriodEnd: tenantSubscriptions.cancelAtPeriodEnd,
         gatewaySubscriptionId: tenantSubscriptions.gatewaySubscriptionId,
+        // For accessEndsAt() and for the arrears banner below — which prefers
+        // THIS row precisely so the banner and `lapsed` can never describe two
+        // different subscriptions.
+        pastDueSince: tenantSubscriptions.pastDueSince,
+        suspendedAt: tenantSubscriptions.suspendedAt,
+        reason: tenantSubscriptions.lastPaymentFailureReason,
       })
       .from(tenantSubscriptions)
       .innerJoin(plans, eq(plans.id, tenantSubscriptions.planId))
@@ -208,25 +214,51 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
     // ── the arrears state (AROS-113) ────────────────────────────────────────
     //
     // A SECOND read, deliberately not filtered by LIVE_STATUSES: the whole
-    // point is to describe a subscription that has left them. The most recent
-    // row by period start, which is the same ordering every other reader here
-    // uses — so a business that was cancelled and later re-subscribed sees its
-    // NEW subscription's state, not the ghost of the old one.
+    // point is to describe a subscription that has left them.
     //
-    // RLS (tenant_subscriptions_select, 0078) confines this to the caller's own
+    // ── ordered by created_at, and it has to be ─────────────────────────────
+    //
+    // This used to order by `current_period_start`, matching the live read
+    // above. That column is NOT monotonic: applySubscriptionState() replaces a
+    // freshly-created row's placeholder window with the provider's, and
+    // Razorpay backdates `current_start` to the real cycle start (migration
+    // 0084). A new subscription's start can therefore land BEFORE a row that
+    // was cancelled moments earlier — and this read would then return the dead
+    // one, telling a business its subscription had been cancelled while it sat
+    // happily on the new one. `created_at` is written once and never rewritten,
+    // so it orders these rows by the only thing that cannot move.
+    //
+    // The live row wins outright when there is one: a subscription that is
+    // currently granting service is the one whose story the banner is about.
+    // Only when there is none does this fall back to the most recent history —
+    // which is exactly the suspended/cancelled case the banner exists for.
+    //
+    // RLS (tenant_subscriptions_select, 0079) confines this to the caller's own
     // tenant exactly as it does the read above; the tenant id comes from the
     // resolved context.
-    const [arrears] = await tx
+    const [latest] = await tx
       .select({
+        id: tenantSubscriptions.id,
         status: tenantSubscriptions.status,
+        currentPeriodEnd: tenantSubscriptions.currentPeriodEnd,
         pastDueSince: tenantSubscriptions.pastDueSince,
         suspendedAt: tenantSubscriptions.suspendedAt,
         reason: tenantSubscriptions.lastPaymentFailureReason,
       })
       .from(tenantSubscriptions)
       .where(eq(tenantSubscriptions.tenantId, tenantId))
-      .orderBy(desc(tenantSubscriptions.currentPeriodStart))
+      .orderBy(desc(tenantSubscriptions.createdAt))
       .limit(1)
+
+    const arrears = subRow
+      ? {
+          status: subRow.status,
+          currentPeriodEnd: subRow.currentPeriodEnd,
+          pastDueSince: subRow.pastDueSince,
+          suspendedAt: subRow.suspendedAt,
+          reason: subRow.reason,
+        }
+      : (latest ?? null)
 
     // The three states are read from the STATUS plus the clocks, never guessed
     // from one of them alone. An `expired` row with no `suspended_at` got there
@@ -243,9 +275,18 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
             ? 'grace'
             : null
 
+    // `paidThrough` only while the subscription is still in grace: that is the
+    // one state in which a paid period can push the suspension date out past
+    // the grace deadline, and the banner must quote the date the job will
+    // actually act on. Once suspended or cancelled the grace window is history,
+    // so null gets the historical deadline back.
     const deadlines =
       dunningState && arrears
-        ? deadlinesFor(arrears.pastDueSince, arrears.suspendedAt)
+        ? deadlinesFor({
+            pastDueSince: arrears.pastDueSince,
+            suspendedAt: arrears.suspendedAt,
+            paidThrough: arrears.status === 'past_due' ? arrears.currentPeriodEnd : null,
+          })
         : null
 
     const dunning: DunningState | null =
@@ -330,7 +371,7 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
 
     const portalPlans: PortalPlan[] = catalogue
       // A retired plan the tenant is grandfathered onto stays readable (RLS
-      // policy plans_select_subscribed, 0078) but must never be offered.
+      // policy plans_select_subscribed, 0079) but must never be offered.
       .filter((p) => p.active)
       .map((p) => ({
         id: p.id,
@@ -379,16 +420,11 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
             currentPeriodEnd: subRow.currentPeriodEnd,
             cancelAtPeriodEnd: subRow.cancelAtPeriodEnd,
             gatewaySubscriptionId: subRow.gatewaySubscriptionId,
-            // "Lapsed" means the plan grants nothing, so it is computed from
-            // the SAME effective expiry readEntitlements() uses: the later of
-            // the paid period and the grace deadline. A failed renewal leaves
-            // current_period_end in the past, so without the grace term this
-            // would tell a business in a perfectly good grace period that its
-            // features were unavailable while they demonstrably still worked.
-            lapsed:
-              (dunning?.state === 'grace'
-                ? Math.max(subRow.currentPeriodEnd.getTime(), dunning.graceEndsAt.getTime())
-                : subRow.currentPeriodEnd.getTime()) <= Date.now(),
+            // "Lapsed" means the plan grants nothing, so it asks the SAME
+            // function readEntitlements() and the dunning processor ask, about
+            // the same row — not a re-derivation from the `arrears` read, which
+            // may describe a different subscription entirely.
+            lapsed: accessHasEnded(subRow, new Date()),
           }
         : null,
       dunning,

@@ -6,7 +6,7 @@
  *
  * ── What is real and what is faked ──────────────────────────────────────────
  *
- * REAL: the database, migration 0081, every RLS policy and grant, the
+ * REAL: the database, migration 0082, every RLS policy and grant, the
  * AES-256-GCM encryption of the platform credentials, the HMAC-SHA256 webhook
  * signatures, the actual route handler in
  * app/api/webhooks/platform-razorpay/route.ts driven with real NextRequest
@@ -234,9 +234,22 @@ async function main() {
    * leave such subscriptions lying around. Asserting on the whole array would
    * be asserting on the order the sections happen to run in.
    */
-  const delivered: { stage: string; subscriptionId: string }[] = []
-  const capture = (n: { stage: string; subscriptionId: string }) => {
-    delivered.push({ stage: n.stage, subscriptionId: n.subscriptionId })
+  const delivered: {
+    stage: string
+    subscriptionId: string
+    /** The SUSPENSION date the notice quotes. Kept so section 6b can assert it. */
+    graceEndsAt: Date | null
+  }[] = []
+  const capture = (n: {
+    stage: string
+    subscriptionId: string
+    graceEndsAt: Date | null
+  }) => {
+    delivered.push({
+      stage: n.stage,
+      subscriptionId: n.subscriptionId,
+      graceEndsAt: n.graceEndsAt,
+    })
   }
   const deliveredFor = (subscriptionId: string) =>
     delivered.filter((d) => d.subscriptionId === subscriptionId)
@@ -324,7 +337,7 @@ async function main() {
         assertPolicy({
           graceDays: 2,
           suspensionDays: 14,
-          reminders: [{ stage: 'final_warning', afterDays: 5 }],
+          reminders: [{ stage: 'final_warning', anchor: 'arrears', days: 5 }],
         })
         return false
       } catch {
@@ -338,8 +351,8 @@ async function main() {
           graceDays: 7,
           suspensionDays: 14,
           reminders: [
-            { stage: 'grace_reminder', afterDays: 3 },
-            { stage: 'payment_failed', afterDays: 1 },
+            { stage: 'grace_reminder', anchor: 'arrears', days: 3 },
+            { stage: 'payment_failed', anchor: 'arrears', days: 1 },
           ],
         })
         return false
@@ -380,24 +393,71 @@ async function main() {
         cancellationIsDue(t0, cancelAt),
     )
 
+    // The DEFAULT geometry: suspension is the grace deadline, so the two
+    // anchors coincide and the reminders fall on days 0, 3 and 6 exactly as
+    // they always have.
+    const suspendsAt = graceEndsAt(t0)
     check(
       'no reminder is due before the first offset elapses',
-      remindersDue(t0, new Date(t0.getTime() - 1)).length === 0,
+      remindersDue(t0, suspendsAt, new Date(t0.getTime() - 1)).length === 0,
     )
     check(
       'the day-0 reminder is due at exactly past_due_since',
-      remindersDue(t0, t0).join() === 'payment_failed',
+      remindersDue(t0, suspendsAt, t0).join() === 'payment_failed',
+    )
+    check(
+      'the suspension-anchored reminders still land on days 3 and 6',
+      remindersDue(t0, suspendsAt, new Date(t0.getTime() + 3 * DAY_MS)).join() ===
+        'payment_failed,grace_reminder' &&
+        remindersDue(t0, suspendsAt, new Date(t0.getTime() + 6 * DAY_MS)).join() ===
+          'payment_failed,grace_reminder,final_warning',
     )
     check(
       'a job catching up late owes EVERY missed reminder',
-      remindersDue(t0, new Date(t0.getTime() + 6.5 * DAY_MS)).join() ===
+      remindersDue(t0, suspendsAt, new Date(t0.getTime() + 6.5 * DAY_MS)).join() ===
         'payment_failed,grace_reminder,final_warning',
     )
-    check('no deadlines without a clock', deadlinesFor(null, null) === null)
+
+    // ── and when a paid period defers the suspension, they FOLLOW it ────────
+    //
+    // The regression this shape exists to prevent: with every offset measured
+    // forward from past_due_since, a "final warning" fired on day 6 for a
+    // suspension 300 days away, and the business then heard nothing at all
+    // until the day itself.
+    const farOff = new Date(t0.getTime() + 300 * DAY_MS)
+    check(
+      'the failed-payment notice still goes out at once',
+      remindersDue(t0, farOff, t0).join() === 'payment_failed',
+    )
+    check(
+      '…but the warnings that NAME the date do not fire early',
+      remindersDue(t0, farOff, new Date(t0.getTime() + 6 * DAY_MS)).join() === 'payment_failed',
+    )
+    check(
+      '…they arrive 4 days and 1 day before the real suspension',
+      remindersDue(t0, farOff, new Date(farOff.getTime() - 4 * DAY_MS)).join() ===
+        'payment_failed,grace_reminder' &&
+        remindersDue(t0, farOff, new Date(farOff.getTime() - 1 * DAY_MS)).join() ===
+          'payment_failed,grace_reminder,final_warning',
+    )
+
+    check(
+      'no deadlines without a clock',
+      deadlinesFor({ pastDueSince: null, suspendedAt: null }) === null,
+    )
     check(
       'cancelsAt is null until suspension',
-      deadlinesFor(t0, null)?.cancelsAt === null &&
-        deadlinesFor(t0, t0)?.cancelsAt?.getTime() === cancelAt.getTime(),
+      deadlinesFor({ pastDueSince: t0, suspendedAt: null })?.cancelsAt === null &&
+        deadlinesFor({ pastDueSince: t0, suspendedAt: t0 })?.cancelsAt?.getTime() ===
+          cancelAt.getTime(),
+    )
+    check(
+      'a paid period pushes the quoted suspension date out with it',
+      deadlinesFor({
+        pastDueSince: t0,
+        suspendedAt: null,
+        paidThrough: farOff,
+      })?.graceEndsAt.getTime() === farOff.getTime(),
     )
   }
 
@@ -579,6 +639,90 @@ async function main() {
       outside.plan === null && Object.keys(outside.entitlements).length === 0,
     )
     check('…which is the fail-closed direction', outside.status === null)
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  section('6b. grace never SHORTENS a period the business paid for')
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // The regression: lib/platform/entitlements.ts computed effective expiry as
+  // max(current_period_end, graceEndsAt) and documented that "a subscription
+  // whose paid period OUTLASTS its grace window keeps the access it paid for",
+  // while the processor decided suspension on graceHasExpired() alone. So an
+  // annual subscriber paid through to next year, whose mandate failed once, was
+  // suspended seven days later — and because that takes the row out of
+  // LIVE_STATUSES, the reader's max() became unreachable and returned "no
+  // plan" for a plan that was paid for. The venue's public site went dark with
+  // it. Both sides now ask accessEndsAt().
+  {
+    const subP = `sub_P${tag}`
+    const idP = await makeSubscription(B.tenantId, PLAN, subP, {
+      status: 'past_due',
+      // Paid ~10 months ahead: the inherited runway a plan change seeds, or an
+      // annual term whose mandate failed mid-cycle.
+      periodEndOffsetMs: 300 * DAY_MS,
+    })
+    // Well past the 7-day grace deadline.
+    await setClocks(idP, new Date(Date.now() - (DUNNING_POLICY.graceDays + 3) * DAY_MS), null)
+
+    const before = await readEntitlements(ownerDrizzle, B.tenantId)
+    check('a paid-through subscription in arrears still grants its plan', before.plan !== null)
+
+    // Asserted on THIS row, not on the run's counters: processDunning() sweeps
+    // every candidate in the database, and earlier sections deliberately leave
+    // others past their deadline.
+    await processDunning({
+      db: ownerDrizzle,
+      now: new Date(),
+      notify: capture,
+      gateway: okGateway,
+    })
+    const swept = await subRow(idP)
+    check('the job does not suspend it', swept.status === 'past_due')
+    check('…and stamps no suspended_at', swept.suspended_at === null)
+    check('…the account is untouched', (await tenantStatus(B.tenantId)) === 'active')
+
+    const after = await readEntitlements(ownerDrizzle, B.tenantId)
+    check('…and it still has the plan it paid for', after.plan !== null)
+
+    // The reminders still go out on the arrears clock — a charge HAS bounced —
+    // and they quote the real suspension date rather than the grace deadline.
+    const sent = deliveredFor(idP)
+    check('reminders still go out on the arrears clock', sent.length > 0)
+    check(
+      '…quoting the date the job will actually act on, not the grace deadline',
+      sent.every(
+        (n) =>
+          n.graceEndsAt !== null &&
+          n.graceEndsAt.getTime() > Date.now() + 290 * DAY_MS,
+      ),
+    )
+
+    // …and once the paid period DOES run out, it suspends exactly as before.
+    await ownerPool.query(
+      `update tenant_subscriptions set current_period_end = now() - interval '1 hour' where id=$1`,
+      [idP],
+    )
+    await processDunning({
+      db: ownerDrizzle,
+      now: new Date(),
+      notify: capture,
+      gateway: okGateway,
+    })
+    const lapsed = await subRow(idP)
+    check('once the paid period runs out, it suspends', lapsed.status === 'expired')
+    check('…stamping suspended_at', lapsed.suspended_at !== null)
+    check('…and the account is suspended', (await tenantStatus(B.tenantId)) === 'suspended')
+
+    // Put B back as the rest of the file expects to find it.
+    await ownerPool.query(`delete from platform_dunning_notices where subscription_id=$1`, [idP])
+    await ownerPool.query(`delete from audit_log where entity_id=$1`, [idP])
+    await ownerPool.query(
+      `update tenant_subscriptions set status='cancelled', cancelled_at=now() where id=$1`,
+      [idP],
+    )
+    await ownerPool.query(`update tenants set status='active' where id=$1`, [B.tenantId])
+    delivered.length = 0
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -806,7 +950,7 @@ async function main() {
     const row = await subRow(idC)
 
     check('the subscription is cancelled', run.cancelled >= 1 && row.status === 'cancelled')
-    check('cancelled_at is set (the 0078 CHECK requires it)', row.cancelled_at !== null)
+    check('cancelled_at is set (the 0079 CHECK requires it)', row.cancelled_at !== null)
     check('cancel_at_period_end is cleared', row.cancel_at_period_end === false)
     check('tenant → cancelled', (await tenantStatus(A.tenantId)) === 'cancelled')
     check(
@@ -1089,6 +1233,152 @@ async function main() {
     } as unknown as Parameters<typeof getBillingPortal>[0]
     const portalH = await getBillingPortal(ctxH)
     check('a suspended business gets an explanation too', portalH.dunning?.state === 'suspended')
+
+    // ── the banner and `lapsed` describe the SAME subscription ─────────────
+    //
+    // The arrears read used to take the most recent row by
+    // `current_period_start` across every status. That column is not monotonic:
+    // applySubscriptionState() replaces a new row's placeholder window with the
+    // provider's, and Razorpay backdates `current_start` to the real cycle
+    // start — so a fresh subscription's start can land BEFORE a row cancelled
+    // moments earlier, and the banner would then describe the dead one while
+    // `lapsed` described the live one.
+    const ghost = await ownerPool.query<{ id: string }>(
+      `insert into tenant_subscriptions
+         (tenant_id, plan_id, billing_period, status, current_period_start, current_period_end,
+          cancelled_at, past_due_since, suspended_at)
+       values ($1,$2,'monthly','cancelled', now() + interval '1 hour', now() + interval '2 hours',
+               now(), now() - interval '30 days', now() - interval '20 days')
+       returning id`,
+      [B.tenantId, PLAN],
+    )
+    const withGhost = await getBillingPortal(ctxB)
+    check(
+      'a dead row with a LATER period start does not hijack the banner',
+      withGhost.dunning?.state === 'grace',
+    )
+    check(
+      '…and the live subscription is still the one reported',
+      withGhost.subscription?.id === portalB.subscription?.id,
+    )
+    await ownerPool.query(`delete from tenant_subscriptions where id=$1`, [ghost.rows[0].id])
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  section('17. recovering a suspended account, and closing a paid one')
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // Two writes that used to leave `tenants.status` behind, so the same user
+  // action produced a different account state depending on the order things
+  // happened in.
+  {
+    const { assignPlan } = await import('../lib/actions/plans')
+    const { cancelTenantSubscription } = await import('../lib/platform/billing/cancel')
+    const { randomBytes: rb, createHash: ch } = await import('node:crypto')
+
+    // ── an operator rescues a business the dunning job suspended ────────────
+    //
+    // assignPlan() restored every ENTITLEMENT and nothing else, so the account
+    // stayed 'suspended' — the column public_tenant_by_slug() (0022) reads, so
+    // the venue's public booking site stayed dark, and the column readMix()
+    // counts, so the dashboard still filed it under suspended. Meanwhile
+    // entitlement-guard.ts promised "re-assigning a plan restores everything
+    // immediately".
+    const adminRow = await ownerPool.query<{ id: string }>(
+      `insert into users (email, password_hash, full_name, is_platform_admin)
+       values ($1,'x','dunning admin',true) returning id`,
+      [`dunadmin-${tag}@example.test`],
+    )
+    const adminId = adminRow.rows[0].id
+    const adminToken = rb(32).toString('hex')
+    await ownerPool.query(
+      `insert into sessions (id, user_id, expires_at) values ($1,$2, now() + interval '1 day')`,
+      [ch('sha256').update(adminToken).digest('hex'), adminId],
+    )
+    const g = globalThis as { __ARENA_TEST_SESSION?: string }
+    const previousSession = g.__ARENA_TEST_SESSION
+    g.__ARENA_TEST_SESSION = adminToken
+
+    check('the rescued tenant starts suspended', (await tenantStatus(HEALTHY.tenantId)) === 'suspended')
+
+    const assigned = await assignPlan({
+      tenantId: HEALTHY.tenantId,
+      planId: PLAN,
+      billingPeriod: 'monthly',
+    })
+    if (assigned.error) console.log(`    (assignPlan said: ${assigned.error})`)
+    check('assignPlan succeeds', !assigned.error)
+    const rescued = await readEntitlements(ownerDrizzle, HEALTHY.tenantId)
+    check('entitlements come back', rescued.plan !== null)
+    check(
+      'and so does the ACCOUNT, so its public site resolves again',
+      (await tenantStatus(HEALTHY.tenantId)) === 'active',
+    )
+
+    // A tenant an operator cancelled by hand is NOT reopened by this: that is a
+    // decision about the business relationship, not a billing state.
+    await ownerPool.query(`update tenants set status='cancelled' where id=$1`, [B.tenantId])
+    await assignPlan({ tenantId: B.tenantId, planId: PLAN, billingPeriod: 'monthly' })
+    check(
+      'a deliberately CANCELLED account is not silently reopened',
+      (await tenantStatus(B.tenantId)) === 'cancelled',
+    )
+    g.__ARENA_TEST_SESSION = previousSession
+
+    // ── an owner cancels a subscription that HAS been charged ───────────────
+    //
+    // cancel.ts's immediate branch was documented as "never charged, so there is
+    // no paid period to honour" and left tenants.status alone. True of
+    // `trialing`; false of `past_due`, which by definition has been charged —
+    // and which is the most common state to cancel from, since a failed renewal
+    // is what prompts it. Writing 'cancelled' locally first also makes the
+    // matching webhook hit the terminal-state guard, so the account was never
+    // closed by anything.
+    const noop = {
+      cancelSubscription: async () => ({}) as never,
+      credentials: async () => ({}) as never,
+    }
+
+    const subPD = `sub_PD${tag}`
+    const idPD = await makeSubscription(A.tenantId, PLAN, subPD, {
+      status: 'past_due',
+      periodEndOffsetMs: -2 * DAY_MS,
+    })
+    await ownerPool.query(
+      `update tenant_subscriptions set gateway_last_payment_id=$2, past_due_since=now() where id=$1`,
+      [idPD, `pay_PD${tag}`],
+    )
+    await ownerPool.query(`update tenants set status='active' where id=$1`, [A.tenantId])
+
+    const paidCancel = await cancelTenantSubscription(A.tenantId, noop, ownerDrizzle)
+    check('the past_due subscription is cancelled', (await subRow(idPD)).status === 'cancelled')
+    check(
+      'and the ACCOUNT is closed too, because the relationship was paid for',
+      (await tenantStatus(A.tenantId)) === 'cancelled',
+    )
+    // Reported, not left to be inferred: closing the account is what takes the
+    // venue's public booking site down, and the platform-admin force-cancel
+    // path audits this field and says so in its confirmation.
+    check('…and the caller is TOLD the account was closed', paidCancel.closedAccount === true)
+
+    // …while backing out of a checkout nobody ever authorised still leaves the
+    // account exactly where it was. Not buying is not cancelling.
+    await ownerPool.query(`update tenants set status='trial' where id=$1`, [A.tenantId])
+    const subTR = `sub_TR${tag}`
+    const idTR = await makeSubscription(A.tenantId, PLAN, subTR, {
+      status: 'trialing',
+      periodEndOffsetMs: 3 * DAY_MS,
+    })
+    const trialCancel = await cancelTenantSubscription(A.tenantId, noop, ownerDrizzle)
+    check('the abandoned checkout is closed out', (await subRow(idTR)).status === 'cancelled')
+    check(
+      'but the account is untouched — not buying is not cancelling',
+      (await tenantStatus(A.tenantId)) === 'trial',
+    )
+    check('…and closedAccount says so', trialCancel.closedAccount === false)
+
+    await ownerPool.query(`delete from sessions where user_id=$1`, [adminId])
+    await ownerPool.query(`delete from users where id=$1`, [adminId])
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────

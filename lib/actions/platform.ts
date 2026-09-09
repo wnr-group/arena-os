@@ -75,7 +75,7 @@ const createInput = z.object({
  * capped — a workspace nobody can actually use, with no error to explain it.
  *
  * Self-serve signup never had this problem: lib/signup/service.ts attaches a
- * trial in the same flow. This path is the one that did, which is why 0085
+ * trial in the same flow. This path is the one that did, which is why 0086
  * grandfathers the tenants that already exist and why this makes `planId`
  * required — the backfill is a one-shot repair, and without this it would start
  * re-accumulating the same broken companies the next day.
@@ -109,7 +109,7 @@ export async function createCompany(
     // Validated BEFORE provisioning, so the usual failure — a plan id that is
     // stale, or one retired since the form was opened — costs nothing. Retired
     // plans are excluded on purpose: `active = false` means "grandfathering
-    // only, never sell this again", and the Grandfathered plan 0085 creates is
+    // only, never sell this again", and the Grandfathered plan 0086 creates is
     // exactly such a row. A new company must never be started on one.
     const [plan] = await ownerDb
       .select({ id: plans.id, name: plans.name, active: plans.active })

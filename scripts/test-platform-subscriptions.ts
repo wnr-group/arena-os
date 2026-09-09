@@ -137,8 +137,14 @@ async function main() {
     )
     const tenantId = t.rows[0].id
     created.push(tenantId)
+    // `on conflict` like every other insert in this fixture. The tenant is
+    // upserted on a FIXED slug, so a run that died before its teardown leaves
+    // the row behind — and a bare insert here then failed the NEXT run with a
+    // branches_tenant_id_name_key violation before a single assertion ran,
+    // which looks like a product fault and is not one.
     await ownerPool.query(
-      `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)`,
+      `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
+       on conflict (tenant_id,name) do update set is_primary=true`,
       [tenantId],
     )
     const u = await ownerPool.query<{ id: string }>(
@@ -199,6 +205,25 @@ async function main() {
       })
     }
     return r.rows[0].id
+  }
+
+  // ── clear anything a previous run left behind ─────────────────────────────
+  //
+  // The tenants here are upserted on FIXED slugs, and the fake gateway hands out
+  // DETERMINISTIC subscription ids (sub_FAKE…). So a run that dies before its
+  // teardown — a failed assertion is fine, a harness error is not — leaves rows
+  // that collide with idx_tenant_subscriptions_gateway_ref on the next run,
+  // which then dies before a single assertion executes. The same startup purge
+  // test-platform-invoices.ts already does for `tinv%`.
+  {
+    const stale = `(select id from tenants where slug in ('tstsubsa','tstsubsb'))`
+    await ownerPool.query(`delete from platform_refunds where tenant_id in ${stale}`)
+    await ownerPool.query(`delete from platform_dunning_notices where tenant_id in ${stale}`)
+    await ownerPool.query(`delete from platform_invoices where tenant_id in ${stale}`)
+    await ownerPool.query(`delete from tenant_subscriptions where tenant_id in ${stale}`)
+    await ownerPool.query(
+      `delete from tenant_subscriptions where gateway_subscription_id like 'sub_FAKE%'`,
+    )
   }
 
   const tag = randomBytes(4).toString('hex')
@@ -674,10 +699,56 @@ async function main() {
   }
 
   {
+    // ── halted while the PAID PERIOD is still running ──────────────────────
+    //
+    // Section 5 charged this subscription for a 30-day window that has barely
+    // started, so `current_period_end` is still ahead. `halted` used to expire
+    // and suspend regardless — which disagreed with the dunning processor, and
+    // AROS-114 made that disagreement matter: the job defers suspension to
+    // accessEndsAt(), so the SAME non-payment suspended a business immediately
+    // if Razorpay gave up retrying and honoured its paid period if Razorpay
+    // stayed in `pending`. Which of the two happened was decided by the
+    // provider's retry schedule.
+    const body = subBody({ event: 'subscription.halted', subId: gatewaySubA, status: 'halted' })
+    await deliver(body, { signature: sign(body, PLATFORM_SECRET), eventId: nextEvt() })
+    check(
+      'halted inside a paid period does NOT expire the subscription',
+      (await subRow(subA)).status === 'past_due',
+    )
+    check('…the account is left alone', (await tenantStatus(A.tenantId)) === 'active')
+    check('…and the arrears clock is running', (await subRow(subA)).past_due_since !== null)
+
+    const stillEntitled = await readEntitlements(ownerDb as never, A.tenantId)
+    check(
+      '…so the business keeps the period it paid for',
+      stillEntitled.entitlements['module.payroll'] === true,
+    )
+
+    const stillVisible = await ownerPool.query(`select * from public.public_tenant_by_slug($1)`, [A.slug])
+    check('…and its public booking site stays up', stillVisible.rows.length === 1)
+  }
+
+  {
+    // ── and once that period HAS run out, the same event suspends ──────────
+    //
+    // The paid window is moved into the past — what Razorpay's own timeline
+    // would look like by the time it exhausts its retries at a renewal — and
+    // the documented halted → expired + suspended contract applies unchanged.
+    // BOTH ends move: tenant_subscriptions_period (0079) requires
+    // current_period_end > current_period_start, and the charge in section 5
+    // set the start to now.
+    await ownerPool.query(
+      `update tenant_subscriptions
+          set current_period_start = now() - interval '31 days',
+              current_period_end   = now() - interval '1 hour'
+        where id=$1`,
+      [subA],
+    )
     const body = subBody({ event: 'subscription.halted', subId: gatewaySubA, status: 'halted' })
     await deliver(body, { signature: sign(body, PLATFORM_SECRET), eventId: nextEvt() })
     check('grace exhaustion expires the subscription', (await subRow(subA)).status === 'expired')
     check('…and SUSPENDS the account', (await tenantStatus(A.tenantId)) === 'suspended')
+    check('…stamping suspended_at for the cancellation clock', (await subRow(subA)).suspended_at !== null)
 
     const ent = await readEntitlements(ownerDb as never, A.tenantId)
     check('…entitlements are now revoked (fail-closed)', ent.plan === null && Object.keys(ent.entitlements).length === 0)

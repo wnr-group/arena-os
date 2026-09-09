@@ -110,6 +110,8 @@ type Preview = {
   credit: { amount: string; unusedDays: number; periodDays: number } | null
   firstChargeAmount: string
   firstInvoiceTotal: string
+  /** When the new, unauthorised subscription stops granting anything. */
+  unpaidAccessEndsAt: string
   effective: string
 }
 
@@ -155,10 +157,16 @@ export function BillingManager({
     subscription?.billingPeriod === 'annual' ? 'annual' : 'monthly',
   )
   const [preview, setPreview] = useState<Preview | null>(null)
+  /**
+   * The Razorpay authorisation link from the last plan change, kept so it is
+   * reachable even when the browser blocks the popup below.
+   */
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)
 
   function reset() {
     setError(null)
     setNotice(null)
+    setCheckoutUrl(null)
   }
 
   /** Step 1 of a plan change: ask the server what would happen. */
@@ -189,8 +197,17 @@ export function BillingManager({
       setPreview(null)
       router.refresh()
       if (r.checkoutUrl) {
+        // The link is put ON THE PAGE first, and only then offered as a popup.
+        //
+        // `window.open()` here is several awaits away from the click that
+        // started this, so it is outside the user-gesture window every browser
+        // requires and is routinely blocked. The old copy said the page "just
+        // opened" — and when it had not, the owner was left on an unauthorised
+        // subscription, their previous mandate already cancelled at Razorpay,
+        // with no way back to the checkout from this screen.
+        setCheckoutUrl(r.checkoutUrl)
         setNotice(
-          'Complete the payment on the Razorpay page that just opened. Your new plan shows as active here once the payment clears.',
+          'Your new plan is set up and nothing has been charged yet. Authorise the payment on Razorpay to activate it — a tab may have opened already; if not, use the link below.',
         )
         window.open(r.checkoutUrl, '_blank', 'noopener,noreferrer')
       } else {
@@ -202,11 +219,28 @@ export function BillingManager({
   function stop() {
     if (pending) return
     start(async () => {
+      // WHAT WILL ACTUALLY HAPPEN, which is not the same sentence in every
+      // state. cancelTenantSubscription() only defers to the end of the paid
+      // cycle for a subscription Razorpay considers 'active'; a trial or a
+      // subscription in arrears has no cycle left to honour and is closed
+      // immediately, so its features stop on the next request.
+      //
+      // The old copy promised the deferred outcome unconditionally, so an owner
+      // cancelling during a trial or after a failed renewal agreed to "keeps
+      // working until the 30th" and lost access on the spot. The result toast
+      // below already distinguished the two; the decision point did not, and
+      // that is the one that matters.
+      const endsImmediately = subscription?.status !== 'active'
+
       const ok = await confirm({
         title: 'Cancel your Arena OS subscription?',
-        description: subscription
-          ? `Your workspace keeps working until ${day(subscription.currentPeriodEnd)} and is not billed again. Nothing is deleted.`
-          : 'Nothing is deleted.',
+        description: !subscription
+          ? 'Nothing is deleted.'
+          : endsImmediately
+            ? subscription.status === 'past_due'
+              ? 'Your subscription has an unpaid charge, so there is no paid period left to run out: it ends immediately and payroll, expenses and reports become unavailable. Nothing is deleted, and assigning a plan later restores everything.'
+              : 'Your trial ends immediately and payroll, expenses and reports become unavailable. Nothing is deleted, and subscribing later restores everything.'
+            : `Your workspace keeps working until ${day(subscription.currentPeriodEnd)} and is not billed again. Nothing is deleted.`,
         confirmText: 'Cancel subscription',
         variant: 'destructive',
       })
@@ -261,9 +295,22 @@ export function BillingManager({
         </p>
       )}
       {notice && !error && (
-        <p className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm">
-          {notice}
-        </p>
+        <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm">
+          <p>{notice}</p>
+          {/* A real anchor, so it works when the popup was blocked. It is a
+              plain click in the user's own gesture, which nothing intercepts. */}
+          {checkoutUrl && (
+            <a
+              href={checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              Open the Razorpay payment page
+              <ExternalLink size={12} />
+            </a>
+          )}
+        </div>
       )}
 
       {/* ── current plan ──────────────────────────────────────────────────── */}
@@ -705,8 +752,25 @@ function ChangeConfirmation({
 
         <p className="flex items-start gap-1.5 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
           <Info size={13} className="mt-0.5 shrink-0" />
-          Your existing subscription is cancelled and a new one is created, so you will be asked
-          to authorise payment again on Razorpay. Nothing is charged until you do.
+          <span>
+            Your existing subscription is cancelled and a new one is created, so you will be asked
+            to authorise payment again on Razorpay. Nothing is charged until you do —{' '}
+            {/* Stated because the cancellation is NOT conditional on the
+                authorisation succeeding: subscribeTenantToPlan() stops the old
+                mandate as soon as this is confirmed, so abandoning the Razorpay
+                page leaves the business on the new, unpaid subscription rather
+                than back on the old one. Better said here than discovered. */}
+            <strong className="font-medium text-foreground">
+              but the old subscription is cancelled either way
+            </strong>
+            {/* The date comes from the server, which applies the same rule the
+                write path does: a period handed back as a credit note is not
+                also served, so a credited change leaves only the short
+                authorisation window rather than the old runway. */}
+            {preview.current
+              ? `. If you do not complete the payment, your workspace keeps working until ${day(preview.unpaidAccessEndsAt)} and then has no plan.`
+              : '.'}
+          </span>
         </p>
 
         <div className="flex gap-2">
@@ -818,7 +882,7 @@ function StatusBanner({
       ` Your workspace keeps working normally until ${day(dunning.graceEndsAt)} —` +
       ' re-authorise your payment method before then to avoid suspension.'
   } else if (subscription.status === 'past_due') {
-    // past_due with no clock: a row from before migration 0081, or an arrears
+    // past_due with no clock: a row from before migration 0082, or an arrears
     // state this build cannot date. Warn without inventing a deadline.
     tone = 'warn'
     action = true

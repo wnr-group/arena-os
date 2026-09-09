@@ -319,7 +319,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
   follows the plain RLS-scoped aggregate-query pattern `getEmployeeAnalytics()`
   (M6-C) already established, plus a new reusable client-side CSV export
   (`components/reports/ExportCsvButton.tsx`, no library, no server round trip).
-- 2026-08-26 — platform subscription billing (M16 #3) — migration 0079.
+- 2026-08-26 — platform subscription billing (M16 #3) — migration 0080.
   Arena OS now charges its tenants through **its own** Razorpay account, kept
   rigorously apart from the per-venue gateway `payment_settings` describes:
 
@@ -340,17 +340,17 @@ Mostly non-schema (infra, security, ops). Schema touches:
     `setPlanGateway()`.
   * **`tenant_subscriptions`** gains `gateway_customer_id` ·
     `cancel_at_period_end` · `gateway_last_payment_id`. `gateway` and
-    `gateway_subscription_id` (0078) are reused unchanged, and
+    `gateway_subscription_id` (0079) are reused unchanged, and
     `idx_tenant_subscriptions_gateway_ref` is what guarantees a webhook resolves
     to at most one row. A pending cancellation is its own boolean rather than an
-    early `cancelled_at`, because the 0078 CHECK ties `cancelled_at` to
+    early `cancelled_at`, because the 0079 CHECK ties `cancelled_at` to
     `status = 'cancelled'` exactly.
   * **`webhook_events`** gains `subscription_id`. The table is reused rather than
     duplicated; the platform stream is `gateway = 'platform_razorpay'`, so the
     two accounts' deliveries are separable and their event ids cannot collide.
     `order_id` is deliberately left alone — a subscription is not an order.
   * **No new enum values.** The lifecycle is expressed across the two enums that
-    already exist: `tenant_subscription_status` (0078) carries `past_due`, and
+    already exist: `tenant_subscription_status` (0079) carries `past_due`, and
     `tenant_status` (0001) carries `suspended`/`cancelled`. "Suspended" is an
     ACCOUNT state whose subscription is `expired`. The full Razorpay-state →
     local-state table lives in `lib/platform/billing/lifecycle.ts`.
@@ -422,10 +422,10 @@ Mostly non-schema (infra, security, ops). Schema touches:
     amount paid), which is then applied as `adjustment` on the next charge.
     Upgrade and downgrade use the identical rule. See `lib/platform/billing/proration.ts`.
 
-- 2026-08-28 — dunning & suspension on failed payment (AROS-113) — migration 0081.
-  The last item 0078 deferred. **No new enum value, no new status column, no
+- 2026-08-28 — dunning & suspension on failed payment (AROS-113) — migration 0082.
+  The last item 0079 deferred. **No new enum value, no new status column, no
   second lifecycle**: `active → past_due → suspended → cancelled` is already
-  expressible across the two enums, and 0079 wrote the mapping down. What 0081
+  expressible across the two enums, and 0080 wrote the mapping down. What 0082
   adds is the CLOCKS that let the lifecycle run on a schedule rather than only
   on a webhook.
 
@@ -479,14 +479,14 @@ Mostly non-schema (infra, security, ops). Schema touches:
     on a genuine status transition, in the same transaction, so a replayed
     webhook cannot pad the trail.
 
-- 2026-08-28 — platform billing dashboard (AROS-114) — migration 0082.
+- 2026-08-28 — platform billing dashboard (AROS-114) — migration 0083.
   **One table.** MRR, ARR, subscription mix, churn and revenue-over-time are all
   DERIVED by aggregation over `plans`, `tenant_subscriptions`, `tenants` and
   `platform_invoices` — there is no metrics table, no rollup and no cache,
   because a stored metric is a second source of truth about money and it drifts.
   Four of the five manual overrides needed no schema either: change-plan is
   `assignPlan()`, extend-trial moves `current_period_end`, comp/discount is a
-  **credit note** (0080 already models exactly this — same numbering series, same
+  **credit note** (0081 already models exactly this — same numbering series, same
   GST split, same letterhead snapshot, so a comp and a proration credit are
   indistinguishable downstream), and force-cancel is the existing cancellation
   flow. A comp applies **to the next invoice and does not apply itself**: the note
@@ -500,7 +500,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
     `currency` · `reason` (≤ 500) ·
     `status text check in ('pending','processed','failed')` ·
     `created_by_user_id → users` (SET NULL) · `request_key` · `processed_at`
-    (0084) · timestamps.
+    (0085) · timestamps.
 
     The one thing that genuinely needed a table: a refund is money LEAVING Arena
     OS's account, and nothing could record one. `public.refunds` (0018) is the
@@ -535,7 +535,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
     A business cannot mint itself a refund, mark one processed, or delete the
     record of one.
 
-- 2026-09-01 — where a subscription's billing period came from — migration 0083.
+- 2026-09-01 — where a subscription's billing period came from — migration 0084.
   **One boolean, a correctness fix rather than a feature.**
 
   * **`tenant_subscriptions.period_from_gateway`** `[P/T]` — `boolean not null
@@ -571,7 +571,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
     No index — never a search predicate. No grant change: SELECT only to
     `arena_app`, as the rest of the table.
 
-- 2026-09-03 — when a platform refund actually processed — migration 0084.
+- 2026-09-03 — when a platform refund actually processed — migration 0085.
   **One nullable timestamp, a correctness fix to the AROS-114 revenue chart.**
 
   * **`platform_refunds.processed_at`** `[P/T]` — `timestamptz null`. Set once,
@@ -580,7 +580,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
     `refund.processed` webhook. Null while pending, and null forever for a
     failed refund — nothing processed.
 
-    It exists because 0082 deliberately separates RESERVING a refund from
+    It exists because 0083 deliberately separates RESERVING a refund from
     SETTLING it (reserve → instruct Razorpay → settle), and on a timeout or 5xx
     the row is left `pending` on purpose, to be settled by a later webhook. The
     revenue series documented itself as bucketing refunds by when they
@@ -608,7 +608,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
     `(processed_at) where status = 'processed'` — the one predicate it serves.
     No grant change: SELECT only to `arena_app`, as the rest of the table.
 
-- 2026-09-08 — grandfather existing tenants onto a plan — migration 0085.
+- 2026-09-08 — grandfather existing tenants onto a plan — migration 0086.
   **No schema change at all: three idempotent INSERTs, so that deploying M16
   does not take working features away from businesses that already have them.**
 
@@ -618,7 +618,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
   for a tenant with no live `tenant_subscriptions` row, and the guard grants a
   module only on an explicit `true` and a limit only on an explicit number or
   `null`. Every tenant that existed before M16 is in exactly that state, and
-  none of 0078–0084 writes it a row: the three paths that insert one (self-serve
+  none of 0079–0085 writes it a row: the three paths that insert one (self-serve
   signup, gateway checkout, admin `assignPlan`) all need somebody to act first.
   The deploy would therefore have switched payroll, expenses and reports off for
   existing customers and capped their staff and resources, silently, until an
@@ -630,11 +630,11 @@ Mostly non-schema (infra, security, ops). Schema touches:
 
   * **`plans` → `Grandfathered`** `[P]` — `active = false`, priced at 0. Retired
     on purpose, which is a state this codebase already anticipates in both
-    directions: `plans_select_subscribed` (0078) keeps a retired plan readable to
+    directions: `plans_select_subscribed` (0079) keeps a retired plan readable to
     the tenant on it, `readEntitlements()` deliberately does not filter on
     `plans.active`, and the owner portal's upgrade list filters `p.active` so it
     can never be offered. Keeping it out of the catalogue is also what keeps
-    `Pro` meaning "somebody chose and pays for Pro" in the 0080/0082 revenue
+    `Pro` meaning "somebody chose and pays for Pro" in the 0081/0083 revenue
     metrics.
 
   * **`plan_entitlements` for it** `[P]` — the three modules that predate M16 set
@@ -645,8 +645,8 @@ Mostly non-schema (infra, security, ops). Schema touches:
     `false`: grandfathering keeps what a business had, not what it never did.
 
   * **`tenant_subscriptions`** `[T]` — one `active` row per tenant with no live
-    subscription, `gateway` null (what 0078 calls an admin-assigned plan, and
-    what keeps the 0081 dunning sweep away from these rows). "Live" is the same
+    subscription, `gateway` null (what 0079 calls an admin-assigned plan, and
+    what keeps the 0082 dunning sweep away from these rows). "Live" is the same
     three statuses `idx_tenant_subscriptions_one_live` permits, so a tenant that
     already subscribed is left completely alone and the partial unique index is
     never contested. No filter on `tenants.status`: a plan grants nothing on its
@@ -661,7 +661,7 @@ Mostly non-schema (infra, security, ops). Schema touches:
 
   Verified by `npm run test:m16:grandfather`
   (`scripts/verify-grandfather-backfill.ts`), which executes the migration file
-  itself rather than restating it: it proves the refusal first, applies 0085,
+  itself rather than restating it: it proves the refusal first, applies 0086,
   then drives the real guard to show payroll, expenses and reports working and
   the limits uncapped — plus idempotency, and that a tenant already on a plan is
   untouched.
@@ -672,9 +672,9 @@ Mostly non-schema (infra, security, ops). Schema touches:
   which is what stops this one-shot repair re-accumulating planless companies.
 
 - 2026-09-08 — an admin-created company is born on a plan — no migration.
-  **The forward half of what 0085 repairs backwards.**
+  **The forward half of what 0086 repairs backwards.**
 
-  0085 grandfathers the tenants that existed before M16, but it is a one-shot
+  0086 grandfathers the tenants that existed before M16, but it is a one-shot
   repair and cannot cover a company created after it runs. `createCompany()`
   called `provisionTenant()` — which deliberately creates no subscription,
   because a plan has its own failure modes and must not be able to stop a

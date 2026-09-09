@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isOwner } from '@/lib/auth/roles'
 import { getPlatformInvoice } from '@/lib/platform/billing/data'
+import { money } from '@/lib/format'
 
 /**
  * One Arena OS GST invoice, as a printable document (M16 #4).
@@ -18,7 +19,7 @@ import { getPlatformInvoice } from '@/lib/platform/billing/data'
  *
  * So an invoice from two years ago renders today exactly as it did then, even
  * though the business has since moved office and Arena OS has since reprised
- * its plans. That is the whole point of the snapshot columns in migration 0080.
+ * its plans. That is the whole point of the snapshot columns in migration 0081.
  *
  * ── Why this is the "PDF" ───────────────────────────────────────────────────
  *
@@ -50,11 +51,12 @@ export default async function PlatformInvoicePage({
   if (!invoice) notFound()
 
   const isCredit = invoice.kind === 'credit_note'
-  const fmt = (v: string) =>
-    new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: invoice.currency,
-    }).format(Number(v))
+  // The shared helper, not a local Intl.NumberFormat. A raw one throws
+  // RangeError on a malformed currency code — which `check (length(currency) =
+  // 3)` in 0081 does not exclude — and took this whole page down with it;
+  // lib/format.ts already owns that fallback, and the rounding rule, for every
+  // other billing screen.
+  const fmt = (v: string) => money(invoice.currency, v)
   const day = (v: Date | string) =>
     new Date(v).toLocaleDateString('en-IN', { dateStyle: 'medium' })
 
