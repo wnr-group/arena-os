@@ -343,6 +343,22 @@ export async function recordMatchResult(
 
   if (!match) throw new EventError('Match not found.')
 
+  // The EVENT's own state, which this path never consulted: it read
+  // event_matches and nothing else, so a cancelled tournament's bracket stayed
+  // fully scoreable. generateEventBracket() and resetEventBracket() both refuse
+  // on the event, and score entry is the third door into the same bracket.
+  //
+  // Read after the match lock, so the id is already known to be this tenant's.
+  const [parent] = await tx
+    .select({ status: events.status })
+    .from(events)
+    .where(and(eq(events.id, match.eventId), eq(events.tenantId, ctx.tenant.id)))
+    .limit(1)
+  if (!parent) throw new EventError('Event not found.')
+  if (parent.status === 'cancelled') {
+    throw new EventError('This event has been cancelled, so its results can no longer be changed.')
+  }
+
   if (match.status === 'completed') {
     throw new EventError('This match already has a result. Nothing has been changed.')
   }
@@ -705,6 +721,18 @@ async function participantNames(
       join public.customers c on c.id = r.customer_id
       left join public.event_teams t on t.id = r.team_id
      where r.tenant_id = ${tenantId} and r.event_id = ${eventId}
+       -- Only the participants the draw actually names. Without this the
+       -- reader fetched and sorted EVERY registration on the event —
+       -- cancelled, waitlisted, unpaid — to label a few dozen, and it
+       -- answered "who is a participant" with different SQL from
+       -- public_event_participants() (0099/0101), which is the asymmetry
+       -- that let the two readers' seed order diverge in the first place.
+       and exists (
+         select 1 from public.event_matches m
+          where m.tenant_id = r.tenant_id
+            and m.event_id = r.event_id
+            and (m.participant_a = r.id or m.participant_b = r.id)
+       )
      order by r.checked_in_at asc nulls last, r.id asc
   `)
   return {
