@@ -65,13 +65,19 @@ function PlatformHome() {
   const domain = rootDomain()
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-screen flex-col bg-accent">
       <MarketingNavbar />
 
       <main className="flex-1">
-        <section id="home" className="scroll-mt-16 border-b border-border bg-gradient-to-b from-primary/5 to-transparent">
-          <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-16 text-center sm:py-24">
-            <div className="rounded-full border border-border px-4 py-1 text-xs font-medium text-muted-foreground">
+        <section
+          id="home"
+          className="relative scroll-mt-16 overflow-hidden border-b border-border-strong bg-gradient-to-b from-primary/20 via-accent to-accent"
+        >
+          <div className="pointer-events-none absolute -right-16 -top-16 size-72 rounded-full bg-primary/20 blur-3xl" />
+          <div className="pointer-events-none absolute -left-16 top-24 size-72 rounded-full bg-accent-foreground/15 blur-3xl" />
+
+          <div className="relative mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-16 text-center sm:py-24">
+            <div className="rounded-full border border-border-strong bg-background/70 px-4 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur-sm">
               Smart Booking &amp; POS Platform
             </div>
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">Arena OS</h1>
@@ -86,7 +92,7 @@ function PlatformHome() {
           </div>
         </section>
 
-        <section id="features" className="scroll-mt-16">
+        <section id="features" className="scroll-mt-16 border-b border-border-strong bg-background">
           <div className="mx-auto max-w-5xl px-4 py-14 sm:px-6">
             <h2 className="text-center text-2xl font-bold tracking-tight sm:text-3xl">Everything one venue needs</h2>
             <p className="mx-auto mt-2 max-w-md text-center text-sm text-muted-foreground">
