@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { LayoutGrid } from 'lucide-react'
+import { ArenaLogo } from '@/components/ui/ArenaLogo'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
@@ -16,9 +16,7 @@ export function MarketingFooter({ domain }: { domain: string }) {
         <div className="grid grid-cols-1 gap-8 sm:grid-cols-3">
           <div>
             <div className="flex items-center gap-2.5">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-primary-foreground">
-                <LayoutGrid size={18} />
-              </span>
+              <ArenaLogo className="h-9 w-auto shrink-0" />
               <span className="text-base font-bold tracking-tight text-primary-foreground">Arena OS</span>
             </div>
             <p className="mt-3 text-sm text-primary-foreground/70">Smart Booking &amp; POS Platform</p>

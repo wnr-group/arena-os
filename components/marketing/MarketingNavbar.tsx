@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { LayoutGrid, Menu, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
+import { ArenaLogo } from '@/components/ui/ArenaLogo'
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
@@ -26,9 +27,7 @@ export function MarketingNavbar() {
     <header className="sticky top-0 z-40 bg-primary text-primary-foreground shadow-md shadow-primary/20">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <button type="button" onClick={() => scrollToId('home')} className="flex min-w-0 items-center gap-2.5">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-primary-foreground">
-            <LayoutGrid size={18} />
-          </span>
+          <ArenaLogo className="h-9 w-auto shrink-0" />
           <span className="truncate text-base font-bold tracking-tight text-primary-foreground">Arena OS</span>
         </button>
 
