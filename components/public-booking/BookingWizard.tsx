@@ -373,7 +373,7 @@ export function BookingWizard({
 
       {step === 4 && selectedType && slot && (
         <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
-          <div className="flex size-16 items-center justify-center rounded-full bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/25">
+          <div className="flex size-16 items-center justify-center rounded-full bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/25">
             <CheckCircle2 size={30} />
           </div>
           <h2 className="mt-5 text-xl font-bold tracking-tight text-foreground">You&apos;re booked!</h2>

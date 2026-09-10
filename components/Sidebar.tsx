@@ -214,7 +214,7 @@ function matchesHref(pathname: string, href: string) {
  * Bookings") and the parent of /reports/sales and /reports/pnl, and /bookings
  * has the same relationship to /bookings/scan. Testing each entry on its own
  * meant the prefix rule above lit the parent alongside the page actually open,
- * leaving two items in the purple state at once.
+ * leaving two items in the active state at once.
  *
  * Longest-match settles it: the most specific entry wins and every other goes
  * quiet, while a genuine detail route still falls back to its parent because
@@ -290,10 +290,10 @@ export function Sidebar({
                 href={visibleChildren[0].href}
                 title={item.label}
                 className={cn(
-                  'flex items-center justify-center rounded-lg px-2 py-2.5 text-sm font-medium transition-all duration-200',
+                  'flex items-center justify-center rounded-lg px-2 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                   childActive
                     ? 'bg-primary text-primary-foreground shadow-md shadow-primary/10'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
                 )}
               >
                 <Icon size={18} className="shrink-0" />
@@ -307,10 +307,10 @@ export function Sidebar({
                 type="button"
                 onClick={() => setOpenLabel(open ? null : item.label)}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
+                  'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                   childActive
                     ? 'text-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
                 )}
               >
                 <Icon size={18} className="shrink-0" />
@@ -330,10 +330,10 @@ export function Sidebar({
                         key={child.href}
                         href={child.href}
                         className={cn(
-                          'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200',
+                          'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                           active
                             ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/10'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                            : 'text-[#7c5b63] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
                         )}
                       >
                         {ChildIcon && <ChildIcon size={15} className="shrink-0" />}
@@ -354,10 +354,10 @@ export function Sidebar({
             href={item.href}
             title={collapsed ? item.label : undefined}
             className={cn(
-              'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
+              'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
               active
                 ? 'bg-primary text-primary-foreground shadow-md shadow-primary/10'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
               collapsed && 'justify-center px-2',
             )}
           >

@@ -28,7 +28,7 @@ const TYPE_LABEL: Record<ShiftType, string> = { morning: 'Morning', evening: 'Ev
 const TYPE_STYLE: Record<ShiftType, string> = {
   morning: 'border-amber-500/30 bg-amber-500/10 text-amber-600',
   evening: 'border-blue-500/30 bg-blue-500/10 text-blue-600',
-  night: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-600',
+  night: 'border-primary/30 bg-primary/10 text-primary',
 }
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'

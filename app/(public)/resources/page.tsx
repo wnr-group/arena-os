@@ -72,7 +72,7 @@ export default async function ResourcesPage() {
                 <span className="bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent">
                   Explore our{' '}
                 </span>
-                <span className="bg-gradient-to-r from-primary to-violet-500 bg-clip-text text-transparent">spaces</span>
+                <span className="bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">spaces</span>
               </h1>
               <p className="mx-auto mt-4 max-w-xl text-lg leading-relaxed text-muted-foreground sm:text-xl">
                 Browse everything <span className="font-semibold text-foreground">{tenant.name}</span> has to book —

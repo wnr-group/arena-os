@@ -99,7 +99,7 @@ export function VoidRequestsQueue({ requests, currency }: { requests: VoidReques
                 <div className="flex items-center justify-between gap-2">
                   <span
                     className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${
-                      req.mode === 'comp' ? 'bg-violet-500/10 text-violet-600' : 'bg-destructive/10 text-destructive'
+                      req.mode === 'comp' ? 'bg-accent text-primary' : 'bg-destructive/10 text-destructive'
                     }`}
                   >
                     {req.mode === 'comp' ? <Gift size={12} /> : <Ban size={12} />}

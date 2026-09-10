@@ -103,7 +103,7 @@ export function PublicNavbar({
       style={{ top: topOffset }}
       className={`sticky z-40 border-b transition-all duration-300 ${
         scrolled
-          ? 'border-border/80 bg-background/85 backdrop-blur-md shadow-[0_2px_20px_-8px_rgba(124,58,237,0.08),0_8px_30px_-12px_rgba(0,0,0,0.05)]'
+          ? 'border-border/80 bg-background/85 backdrop-blur-md shadow-[0_2px_20px_-8px_color-mix(in_srgb,var(--primary)_8%,transparent),0_8px_30px_-12px_rgba(0,0,0,0.05)]'
           : 'border-transparent bg-background/60 backdrop-blur-sm'
       }`}
     >
@@ -122,7 +122,7 @@ export function PublicNavbar({
                 className="size-10 shrink-0 rounded-xl object-cover shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105"
               />
             ) : (
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
                 {icon}
               </span>
             )}

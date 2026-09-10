@@ -37,7 +37,7 @@ type PublishStatus = 'unpublished' | 'live' | 'changed'
 type Modal = { mode: 'add'; type: WebsiteSectionType } | { mode: 'edit'; section: SectionRow } | null
 
 const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/
-const DEFAULT_ACCENT = '#7c3aed'
+const DEFAULT_ACCENT = '#8b2242'
 
 export function WebsiteEditor({
   sections,
@@ -316,7 +316,7 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
 
   async function save() {
     if (!accentValid) {
-      toast.error('Accent colour must be a hex value like #7c3aed.')
+      toast.error('Accent colour must be a hex value like #8b2242.')
       return
     }
     if (ctaMismatch) {
@@ -358,11 +358,11 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
               }`}
               value={accentColor}
               onChange={(e) => setAccentColor(e.target.value)}
-              placeholder="#7c3aed"
+              placeholder="#8b2242"
               maxLength={7}
             />
           </div>
-          {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #7c3aed.</p>}
+          {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #8b2242.</p>}
         </div>
       </div>
 

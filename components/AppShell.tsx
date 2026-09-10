@@ -59,7 +59,7 @@ export function AppShell({
       {/* Desktop Sidebar */}
       <aside
         className={cn(
-          'no-print relative hidden shrink-0 flex-col border-r border-border bg-card/65 backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
+          'no-print relative hidden shrink-0 flex-col border-r border-border bg-accent backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
           collapsed ? 'w-[76px]' : 'w-64',
         )}
       >
@@ -69,7 +69,7 @@ export function AppShell({
             collapsed && 'justify-center px-3',
           )}
         >
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-indigo-500 text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
             {initialsOf(tenantName)}
           </div>
           {!collapsed && (
@@ -77,7 +77,7 @@ export function AppShell({
               <p className="truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
                 {industryLabel}
               </p>
-              <p className="truncate text-sm font-semibold tracking-tight">{tenantName}</p>
+              <p className="truncate text-sm font-semibold tracking-tight text-primary">{tenantName}</p>
             </div>
           )}
         </div>
@@ -127,10 +127,10 @@ export function AppShell({
           />
 
           {/* Drawer Panel */}
-          <div className="relative flex w-72 max-w-[80vw] flex-1 flex-col bg-card border-r border-border shadow-2xl transition-transform duration-300 ease-out animate-in slide-in-from-left">
+          <div className="relative flex w-72 max-w-[80vw] flex-1 flex-col bg-accent border-r border-border-strong shadow-2xl transition-transform duration-300 ease-out animate-in slide-in-from-left">
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div className="flex items-center gap-3">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-indigo-500 text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-primary-hover text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
                   {initialsOf(tenantName)}
                 </div>
                 <div className="min-w-0">
@@ -187,7 +187,7 @@ export function AppShell({
             </button>
             <span className="font-semibold tracking-tight text-sm">{tenantName}</span>
           </div>
-          <div className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-tr from-primary to-indigo-500 text-xs font-bold text-primary-foreground shadow-sm">
+          <div className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-tr from-primary to-primary-hover text-xs font-bold text-primary-foreground shadow-sm">
             {initialsOf(tenantName)}
           </div>
         </header>

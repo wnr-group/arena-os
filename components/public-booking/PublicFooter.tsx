@@ -69,7 +69,7 @@ export function PublicFooter({
         <div className="mt-12 grid grid-cols-1 gap-10 sm:grid-cols-3">
           <div>
             <div className="flex items-center gap-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10">
                 <Icon size={18} />
               </span>
               <span className="text-base font-bold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent">
@@ -130,7 +130,7 @@ export function PublicFooter({
           </p>
           <div className="inline-flex items-center gap-2 rounded-full border border-border/80 bg-card/60 backdrop-blur-sm px-3.5 py-1 text-xs text-muted-foreground shadow-sm">
             <span>Powered by</span>
-            <span className="font-semibold text-foreground bg-gradient-to-r from-primary to-violet-500 bg-clip-text text-transparent">
+            <span className="font-semibold text-foreground bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">
               Arena OS
             </span>
           </div>

@@ -93,7 +93,7 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: 'No-show',
 }
 const SOURCE_BADGE: Record<string, string> = {
-  online: 'bg-violet-500/10 text-violet-600',
+  online: 'bg-accent text-primary',
   walk_in: 'bg-muted text-muted-foreground',
   staff: 'bg-muted text-muted-foreground',
 }
@@ -712,7 +712,7 @@ export function BookingsView({
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                                     it.voidStatus === 'comped'
-                                      ? 'bg-violet-500/10 text-violet-600'
+                                      ? 'bg-accent text-primary'
                                       : 'bg-destructive/10 text-destructive'
                                   }`}
                                   title={it.voidReason ?? undefined}
