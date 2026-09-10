@@ -140,14 +140,17 @@ async function main() {
   // ════════════════════════════════════════════════════════════════════════
   section('2. the save contract')
   {
-    const base = { invoicePrefix: 'INV', whatsappGroupEnabled: false }
+    // googleReviewEnabled is required by the schema (0104) and stated here so
+    // these assertions keep testing the WHATSAPP rule rather than passing or
+    // failing because of a field they are not about.
+    const base = { invoicePrefix: 'INV', whatsappGroupEnabled: false, googleReviewEnabled: false }
     // The flag is REQUIRED, deliberately: upsertBusinessProfile() replaces the
     // whole row, so an omitted boolean would silently switch the feature off.
     // Requiring it turned that silent regression into a compile error — and
     // caught three existing call sites that would have done exactly that.
     check(
       'omitting the enabled flag is REFUSED, not defaulted to off',
-      !businessProfileSchema.safeParse({ invoicePrefix: 'INV' }).success,
+      !businessProfileSchema.safeParse({ invoicePrefix: 'INV', googleReviewEnabled: false }).success,
     )
     check(
       'a profile stating the flag parses',

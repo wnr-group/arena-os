@@ -10,6 +10,7 @@ import {
   WHATSAPP_GROUP_URL_MESSAGE,
   WHATSAPP_REDIRECT_SECONDS,
 } from '@/lib/settings/whatsapp-group'
+import { isGoogleReviewUrl, GOOGLE_REVIEW_URL_MESSAGE } from '@/lib/settings/google-review'
 
 /**
  * Owner-only business profile form.
@@ -30,6 +31,8 @@ type Fields = {
   serviceChargeTaxRateId: string
   whatsappGroupUrl: string
   whatsappGroupEnabled: boolean
+  googleReviewUrl: string
+  googleReviewEnabled: boolean
 }
 
 const input =
@@ -84,6 +87,18 @@ export function BusinessProfileForm({
 
   // The SAME predicate the action and the column CHECK use, so the field cannot
   // say "fine" about something the save will refuse.
+  // Same three-state shape as the WhatsApp field below: blank+off is fine,
+  // blank+on is refused, and a non-blank value must pass the SAME predicate
+  // the save action and the column CHECK use.
+  const googleUrl = fields.googleReviewUrl.trim()
+  const googleError = !googleUrl
+    ? fields.googleReviewEnabled
+      ? 'Add a Google review link before turning the prompt on.'
+      : null
+    : isGoogleReviewUrl(googleUrl)
+      ? null
+      : GOOGLE_REVIEW_URL_MESSAGE
+
   const whatsappUrl = fields.whatsappGroupUrl.trim()
   const whatsappError = !whatsappUrl
     ? fields.whatsappGroupEnabled
@@ -94,7 +109,7 @@ export function BusinessProfileForm({
       : WHATSAPP_GROUP_URL_MESSAGE
 
   function submit() {
-    if (pending || prefixError || serviceChargeError || whatsappError) return
+    if (pending || prefixError || serviceChargeError || whatsappError || googleError) return
     setError(null)
     start(async () => {
       const r = await saveBusinessProfile({
@@ -194,6 +209,35 @@ export function BusinessProfileForm({
           placeholder="Tamil Nadu"
           className={input}
         />
+      </Field>
+
+      <Field
+        id="googleReviewUrl"
+        label="Google review link"
+        hint="Paste your Google review or Maps link. When this is on, customers who have had a session or an order are asked to rate you the next time they open their account."
+      >
+        <input
+          id="googleReviewUrl"
+          type="url"
+          value={fields.googleReviewUrl}
+          onChange={(e) => set({ googleReviewUrl: e.target.value })}
+          disabled={pending}
+          placeholder="https://g.page/r/AbC123DeF456/review"
+          autoCorrect="off"
+          spellCheck={false}
+          className={input}
+        />
+        <label className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={fields.googleReviewEnabled}
+            onChange={(e) => set({ googleReviewEnabled: e.target.checked })}
+            disabled={pending}
+            className="size-4 rounded border-input accent-primary"
+          />
+          Ask customers to review us on Google
+        </label>
+        {googleError && <p className="mt-1 text-xs text-destructive">{googleError}</p>}
       </Field>
 
       <Field
@@ -299,7 +343,7 @@ export function BusinessProfileForm({
       <div className="flex items-center gap-3">
         <button
           onClick={submit}
-          disabled={pending || Boolean(prefixError) || Boolean(serviceChargeError) || Boolean(whatsappError)}
+          disabled={pending || Boolean(prefixError) || Boolean(serviceChargeError) || Boolean(whatsappError) || Boolean(googleError)}
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           {pending && <Loader2 size={14} className="animate-spin" />}
