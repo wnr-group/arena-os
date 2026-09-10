@@ -18,7 +18,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
@@ -267,7 +267,7 @@ function TaxRateModal({
 
         <div className="mt-5 flex gap-2">
           <button
-            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             onClick={onClose}
           >
             Cancel

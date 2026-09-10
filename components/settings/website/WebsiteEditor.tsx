@@ -128,7 +128,7 @@ export function WebsiteEditor({
           </h2>
           <div className="relative">
             <button
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md"
               onClick={() => setTypePicker((v) => !v)}
             >
               <Plus size={16} /> Add Section
@@ -280,12 +280,12 @@ function PublishBar({
           href="/settings/website/preview"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted"
         >
           Preview <ExternalLink size={14} />
         </Link>
         <button
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
           disabled={publishing}
           onClick={onPublish}
         >
@@ -426,7 +426,7 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
       </div>
 
       <button
-        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
         disabled={pending}
         onClick={save}
       >

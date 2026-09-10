@@ -64,7 +64,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 const DESCRIPTION_PATTERN = /^[\p{L}\p{N}\s&'".,()!?/-]+$/u
 
@@ -272,7 +272,7 @@ export function MenuItemsManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
                 Clear Filters
               </button>
             )}
@@ -306,7 +306,7 @@ export function MenuItemsManager({
       ) : filteredItems.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No items match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
             Clear Filters
           </button>
         </p>
@@ -464,7 +464,7 @@ function CategoryTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -914,7 +914,7 @@ function ItemModal({
               {fileName && !uploading && (
                 <button
                   type="button"
-                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
@@ -947,14 +947,14 @@ function ItemModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >
