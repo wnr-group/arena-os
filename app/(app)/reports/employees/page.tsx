@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager, ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { getEmployeeAnalytics } from '@/lib/reports/employees'
 import { formatMoney } from '@/lib/format'
@@ -19,6 +20,10 @@ export default async function EmployeeReportPage({ searchParams }: { searchParam
   // Presentation only — getEmployeeAnalytics() is read-only and tenant-scoped
   // by RLS regardless; this just keeps the page off non-managers' nav.
   if (!isManager(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.reports'))) redirect('/dashboard')
 
   const tz = ctx.tenant.timezone
   const sp = await searchParams

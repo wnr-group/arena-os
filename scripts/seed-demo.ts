@@ -21,6 +21,7 @@ import { Client } from 'pg'
 import { hash } from '@node-rs/argon2'
 import { loadEnv } from './env'
 import { DEFAULT_EXPENSE_CATEGORIES } from '../lib/expenses/defaults'
+import { DEFAULT_PLANS } from '../lib/platform/plans/defaults'
 
 const ARGON = { memoryCost: 19456, timeCost: 2, outputLen: 32, parallelism: 1 } as const
 
@@ -252,6 +253,67 @@ async function main() {
       [adminHash],
     )
     console.log('✓ platform admin (admin@arenaos.test / admin1234)')
+
+    // 10. Platform plan catalogue + entitlements (M16).
+    //
+    //     PLATFORM-level, not tenant-level: unlike everything above, these rows
+    //     carry no tenant_id — one catalogue for the whole install, which is why
+    //     they sit next to the platform admin rather than inside the demo
+    //     tenant's block.
+    //
+    //     Idempotent the same way the rest of this file is: plans key on the
+    //     unique lower(btrim(name)) index and entitlements on (plan_id, key), so
+    //     a re-run REPRICES and re-points rather than duplicating. Editing a
+    //     plan in the admin UI and then re-seeding will therefore reset it —
+    //     the same trade every `do update` in this script already makes.
+    for (const plan of DEFAULT_PLANS) {
+      const p = await client.query<{ id: string }>(
+        `insert into public.plans (name, monthly_price, annual_price)
+         values ($1, $2, $3)
+         on conflict (lower(btrim(name)))
+           do update set monthly_price = excluded.monthly_price,
+                         annual_price  = excluded.annual_price
+         returning id`,
+        [plan.name, plan.monthlyPrice, plan.annualPrice],
+      )
+      const planId = p.rows[0].id
+
+      const keys = Object.keys(plan.entitlements)
+      // JSON.stringify is what turns 3 → '3', true → 'true' and null → 'null',
+      // each of which ::jsonb parses back to the right scalar type. Passing the
+      // raw JS value would send null as SQL NULL and break the not-null column.
+      const values = keys.map((k) => JSON.stringify(plan.entitlements[k]))
+      await client.query(
+        `insert into public.plan_entitlements (plan_id, key, value)
+         select $1, k, v::jsonb
+           from unnest($2::text[], $3::text[]) as t(k, v)
+         on conflict (plan_id, key) do update set value = excluded.value`,
+        [planId, keys, values],
+      )
+    }
+    console.log(
+      `✓ ${DEFAULT_PLANS.length} platform plans (${DEFAULT_PLANS.map((p) => p.name).join(', ')})`,
+    )
+
+    // 11. Put the demo tenant on Pro so getEntitlements() has a real answer
+    //     from the first run. `where not exists` rather than `on conflict`:
+    //     idx_tenant_subscriptions_one_live is a PARTIAL unique index and this
+    //     keeps an operator's later hand-assignment from being overwritten by a
+    //     re-seed.
+    await client.query(
+      `insert into public.tenant_subscriptions
+         (tenant_id, plan_id, billing_period, status, current_period_start, current_period_end)
+       select $1, p.id, 'monthly', 'active', now(), now() + interval '1 month'
+         from public.plans p
+        where lower(btrim(p.name)) = 'pro'
+          and not exists (
+            select 1 from public.tenant_subscriptions s
+             where s.tenant_id = $1
+               and s.status in ('trialing','active','past_due')
+          )`,
+      [tenantId],
+    )
+    console.log('✓ demo tenant subscribed to Pro (monthly)')
 
     await client.query('commit')
   } catch (e) {

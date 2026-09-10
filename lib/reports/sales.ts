@@ -2,6 +2,7 @@ import 'server-only'
 import { sql } from 'drizzle-orm'
 import { withUser } from '@/db'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
 import type { CsvColumn } from './csv'
@@ -112,6 +113,9 @@ export async function getSalesReport(
   if (!isManager(ctx.role)) {
     throw new ReportAccessError('Only owners and managers can view reports.')
   }
+  // Module gate (M16 #2): the plan must include Reports. Authoritative —
+  // the pages redirect for presentation, this is what actually refuses.
+  await requireEntitlement(ctx, 'module.reports')
 
   const { range, branchId } = options
   const tenantId = ctx.tenant.id

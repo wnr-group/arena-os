@@ -2,11 +2,19 @@ import Link from 'next/link'
 import { CalendarDays, Boxes } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
 import { ROLE_LABELS, isManager } from '@/lib/auth/roles'
+import { getOnboardingProgress } from '@/lib/onboarding/checklist'
+import { OnboardingChecklist } from '@/components/onboarding/OnboardingChecklist'
 
 export default async function DashboardPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null // layout already guards this
   const { tenant, role } = ctx
+
+  // New-workspace setup (M16 #6). Derived from what the tenant has actually
+  // configured, and renders nothing once every step is done — see
+  // lib/onboarding/checklist.ts. Never blocks: the dashboard is fully usable
+  // with the panel showing.
+  const onboarding = await getOnboardingProgress(ctx)
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
@@ -26,6 +34,8 @@ export default async function DashboardPage() {
           </p>
         </div>
       </div>
+
+      <OnboardingChecklist progress={onboarding} />
 
       {/* Main Grid */}
       <div className="mt-8">

@@ -1,5 +1,6 @@
 import 'server-only'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { getDailyRevenue, sumDailyRevenue, type DailyRevenueRow, type DailyRevenueTotals } from './daily-revenue'
 import { getBookingMetrics, type BookingMetrics } from './bookings'
 import { toCsv, type CsvColumn } from './csv'
@@ -48,6 +49,13 @@ export async function getRevenueDashboard(
   ctx: ActiveContext,
   options: { range: DateRange; branchId?: string | null },
 ): Promise<RevenueDashboard> {
+  // Module gate (M16 #2). Stated here as well as in the two readers below,
+  // which both enforce it themselves: this function is its own entry point
+  // (the /reports page and the CSV export action call it directly), and a gate
+  // that holds only because of what a delegate happens to do today is one
+  // refactor away from not holding at all.
+  await requireEntitlement(ctx, 'module.reports')
+
   const { range, branchId } = options
 
   // Sequential, not Promise.all: each opens its own withUser() transaction on

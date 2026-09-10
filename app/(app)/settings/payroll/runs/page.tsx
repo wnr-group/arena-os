@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isOwner } from '@/lib/auth/roles'
 import { todayInZone } from '@/lib/booking/time'
 import { listPayrollPeriods, listPayslipsForPeriod } from '@/lib/payroll/payslips'
@@ -17,6 +18,10 @@ export default async function PayrollRunsPage({ searchParams }: { searchParams: 
   // Presentation only — runPayrollForPeriod() calls requireOwner() itself, and
   // the payslips_owner_rw RLS policy is owner-only on top of that.
   if (!isOwner(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.payroll'))) redirect('/dashboard')
 
   const sp = await searchParams
   const currentPeriod = todayInZone(ctx.tenant.timezone).slice(0, 7)

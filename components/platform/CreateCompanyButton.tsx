@@ -26,11 +26,18 @@ function slugify(s: string) {
     .slice(0, 50)
 }
 
-export function CreateCompanyButton() {
+/**
+ * The sellable plans, passed in from the server (active only — a retired plan
+ * exists for grandfathering and must never start a new company).
+ */
+export type CreatablePlan = { id: string; name: string; monthlyPrice: string; annualPrice: string; currency: string }
+
+export function CreateCompanyButton({ plans }: { plans: CreatablePlan[] }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const [warning, setWarning] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
@@ -39,9 +46,14 @@ export function CreateCompanyButton() {
   const [ownerName, setOwnerName] = useState('')
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
+  // Defaulted to the first plan rather than left blank: the catalogue is
+  // ordered and the operator is picking a tier, not opting in to having one.
+  const [planId, setPlanId] = useState<string>(plans[0]?.id ?? '')
+  const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'annual'>('monthly')
 
   function submit() {
     setError(null)
+    setWarning(null)
     start(async () => {
       const r = await createCompany({
         companyName: name,
@@ -50,9 +62,19 @@ export function CreateCompanyButton() {
         ownerName,
         ownerEmail,
         ownerPassword,
+        planId,
+        billingPeriod,
       })
       if (r.error) setError(r.error)
-      else {
+      // Created, but WITHOUT the plan. Not an error — the company is real and
+      // its owner can sign in — so it must not read as one. It must not close
+      // the dialog either: this is the one outcome that needs the operator to
+      // go and finish something, and a dialog that vanished would be the last
+      // they heard of it. The list still refreshes, because the company is there.
+      else if (r.warning) {
+        setWarning(r.warning)
+        router.refresh()
+      } else {
         setOpen(false)
         setName('')
         setSlug('')
@@ -143,11 +165,60 @@ export function CreateCompanyButton() {
                 </div>
               </div>
 
+              {/*
+                The plan is part of creating a company, not an afterthought.
+                A company with no plan opens with payroll, expenses and every
+                report refused and its staff and resources capped, because the
+                M16 entitlement gates are fail-closed — so there is deliberately
+                no "assign later" option here.
+              */}
+              <div className="rounded-md border border-dashed p-3">
+                <p className="text-xs font-medium text-muted-foreground">Subscription</p>
+                {plans.length === 0 ? (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    There are no live plans yet. Create one under{' '}
+                    <a href="/admin/plans" className="font-medium underline">
+                      Plans
+                    </a>{' '}
+                    first — a company created without one cannot use payroll, expenses or reports.
+                  </p>
+                ) : (
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={label}>Plan</label>
+                      <select className={input} value={planId} onChange={(e) => setPlanId(e.target.value)}>
+                        {plans.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={label}>Billing period</label>
+                      <select
+                        className={input}
+                        value={billingPeriod}
+                        onChange={(e) => setBillingPeriod(e.target.value as 'monthly' | 'annual')}
+                      >
+                        <option value="monthly">Monthly</option>
+                        <option value="annual">Annual</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {error && <p className="text-sm text-destructive">{error}</p>}
+              {warning && (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-sm text-amber-700 dark:text-amber-400">
+                  {warning}
+                </p>
+              )}
 
               <button
                 onClick={submit}
-                disabled={pending || !name || !slug || !ownerEmail || !ownerName || ownerPassword.length < 8}
+                disabled={pending || !name || !slug || !ownerEmail || !ownerName || ownerPassword.length < 8 || !planId}
                 className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
               >
                 {pending && <Loader2 size={15} className="animate-spin" />}

@@ -5,6 +5,7 @@ import { withUser } from '@/db'
 import type * as schema from '@/db/schema'
 import { memberships, employeeAdvances, employeeAdvanceRecoveries } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -28,7 +29,11 @@ export type AdvanceRow = {
  * (lib/reports/employees.ts): a GROUP BY subquery aggregated before joining,
  * so an advance with many recovery rows never inflates anything else.
  */
-export function listAdvances(ctx: ActiveContext) {
+export async function listAdvances(ctx: ActiveContext) {
+  // Module gate (M16 #2). Authoritative for READS — the page redirect is
+  // presentation only; this is what a plan without Payroll actually blocks.
+  await requireEntitlement(ctx, 'module.payroll')
+
   return withUser(ctx.user.id, async (tx) => {
     const recoveredAgg = tx
       .select({

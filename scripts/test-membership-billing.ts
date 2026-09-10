@@ -177,12 +177,11 @@ async function main() {
   const invRow = async (id: string) =>
     (await ownerPool.query('select * from invoices where id=$1', [id])).rows[0]
 
-  /** Set a tax rate on the booking lines so GST maths can be exercised. */
-  async function setTax(_pct: number) {
-    /* loadBookingLines hardcodes taxPercent 0 (tax_rates not wired to resources
-       yet), so GST behaviour is verified against priceBill directly below. */
-  }
-  await setTax(18)
+  // NOTE ON GST COVERAGE: there is deliberately no "set a tax rate on the
+  // booking lines" helper here. loadBookingLines() hardcodes taxPercent 0
+  // (tax_rates are not wired to resources yet), so setting one would change
+  // nothing and read as coverage that does not exist. GST behaviour is
+  // exercised against priceBill() directly below instead.
 
   // ══ A + E. the worked example, end to end ════════════════════════════════
   {

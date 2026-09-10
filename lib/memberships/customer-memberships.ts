@@ -2,6 +2,7 @@ import { and, desc, eq, gt, lte, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type * as schema from '@/db/schema'
+import { addMonths } from '@/lib/utils/date'
 import {
   customerMemberships,
   customers,
@@ -84,25 +85,12 @@ export function benefitsOf(m: CustomerMembership): MembershipBenefits {
 }
 
 /**
- * Add whole months to an instant, clamping the day of month.
- *
- * 31 Jan + 1 month is 28 Feb, not 3 March: `setMonth` would roll over into the
- * next month and quietly hand the customer three extra days. Someone who buys
- * on the 31st should get the last day of the target month.
+ * Moved to lib/utils/date.ts when platform billing needed the same clamping
+ * (an admin-assigned subscription's period end has the identical 31st-of-the-
+ * month problem a membership expiry does). Re-exported so this module's
+ * contract is unchanged — one implementation, two callers, no drift.
  */
-export function addMonths(from: Date, months: number): Date {
-  const d = new Date(from.getTime())
-  const targetMonth = d.getUTCMonth() + months
-  const dayOfMonth = d.getUTCDate()
-
-  d.setUTCDate(1)
-  d.setUTCMonth(targetMonth)
-
-  // Last day of the month we landed in.
-  const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
-  d.setUTCDate(Math.min(dayOfMonth, lastDay))
-  return d
-}
+export { addMonths } from '@/lib/utils/date'
 
 /**
  * Move lapsed memberships out of 'active'.

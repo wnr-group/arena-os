@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isOwner } from '@/lib/auth/roles'
 import { listAdvances } from '@/lib/payroll/advances'
 import { listActiveMembers } from '@/lib/memberships/data'
@@ -12,6 +13,10 @@ export default async function AdvancesSettingsPage() {
   // themselves, and the employee_advances_owner_rw RLS policy is owner-only
   // on top of that, for both read and write.
   if (!isOwner(ctx.role)) redirect('/dashboard')
+  // Plan gate (M16 #2). PRESENTATION ONLY — the readers below and every
+  // action in this module call requireEntitlement() themselves and throw.
+  // This only turns that refusal into a redirect instead of an error page.
+  if (!(await hasEntitlement(ctx, 'module.payroll'))) redirect('/dashboard')
 
   const [advances, staff] = await Promise.all([listAdvances(ctx), listActiveMembers(ctx)])
 
