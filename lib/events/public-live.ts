@@ -118,14 +118,27 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * Everything the public live page renders, from ONE consistent snapshot.
  *
- * ── Why it is one transaction ───────────────────────────────────────────────
+ * ── Why it is one transaction, and what that does NOT buy ───────────────────
  *
  * The event, the matches and the names are read inside a single
- * withPublicTenant() transaction, so a result committed mid-render cannot
- * produce a page where the match says A won while the next match still shows
- * nobody. Standings are then derived from those same rows in memory rather than
- * re-queried, which is the second half of the same guarantee — and also why a
- * poll is one round trip rather than three.
+ * withPublicTenant() transaction: one round trip instead of three, and one
+ * pinned tenant GUC for every statement in it, so the tenant cannot be
+ * re-resolved halfway through a read.
+ *
+ * It is NOT a snapshot. withPublicTenant() opens the connection's default
+ * isolation level — READ COMMITTED — so each statement below sees its own
+ * snapshot and a commit landing between them is visible to the later ones.
+ * Raising this transaction to REPEATABLE READ is deliberately not done:
+ * withPublicTenant() also carries the public WRITE paths (booking creation,
+ * order placement), and a stricter level would buy them 40001 serialisation
+ * retries for a guarantee only this reader wants.
+ *
+ * So the reader TOLERATES the disagreement instead of forbidding it. Standings
+ * are derived in memory from the very `matchRows` array that gets rendered,
+ * never re-queried, so the table can never contradict the draw beside it; and
+ * the seed order below takes those same rows as the authority on who is in the
+ * bracket, so a draw reset committed mid-read degrades to unnamed entrants
+ * rather than to a leaderboard with competitors missing from it.
  *
  * `cache()` dedupes within a single render pass, so the page body and
  * generateMetadata() share one read instead of issuing two.
@@ -191,8 +204,10 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
 
     // Display names only, through the narrow projection. event_registrations is
     // never readable here.
-    const nameRows = await tx.execute<{ registration_id: string; display_name: string }>(
-      sql`select registration_id, display_name from public.public_event_participants(${eventId}::uuid)`,
+    const nameRows = await tx.execute<{ registration_id: string; display_name: string; seed: number }>(
+      sql`select registration_id, display_name, seed
+            from public.public_event_participants(${eventId}::uuid)
+           order by seed asc`,
     )
     const nameOf = new Map(nameRows.rows.map((r) => [r.registration_id, r.display_name]))
     const person = (id: string | null) =>
@@ -216,12 +231,39 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
     // ── standings, via the SHARED pure function ────────────────────────────
     let standings: PublicStanding[] = []
     if (format === 'round_robin' || format === 'points') {
-      // Seed order = the order participants appear in the draw, which the
-      // engine produced in seeded sequence. That is what makes the public
-      // tiebreak identical to the staff one.
-      const seedOrder = [...new Set(matchRows.flatMap((m) => [m.a, m.b]))].filter(
-        (x): x is string => x !== null,
+      // ORDER comes from the projection's own `seed` column (0101), which is
+      // arrival order — checked_in_at, ties on registration id — the same rule
+      // seedParticipants() applied when the draw was built. That is what makes
+      // the public tiebreak identical to the staff one AND to the rule
+      // computeStandings documents.
+      //
+      // It is NOT derived from the match rows. A round_robin draw does not
+      // preserve arrival order: generateRoundRobin pairs seed 0 with the last
+      // seed, seed 1 with the second-last, and so on, so walking the rows
+      // yields 0, last, 1, last-1, … — which ranked tied competitors
+      // arbitrarily. (A `points` draw is one card per participant in seed
+      // order, so walking THAT happened to come out right; the defect was
+      // round-robin's alone. Both are read the one way regardless, because a
+      // single rule is easier to keep true than two that agree by luck.)
+      //
+      // MEMBERSHIP, though, comes from the match rows — exactly as on the staff
+      // side. computeStandings() builds its table only from the list it is
+      // given, so an id missing here is gone from the leaderboard and every
+      // rank below it shifts up. The projection and the match read are two
+      // statements under READ COMMITTED (see the header), so a draw reset
+      // between them can empty one and not the other. Ordering by seed and then
+      // appending any drawn id the projection did not name — sorted by
+      // registration id, the seeding rule's own secondary key — keeps that case
+      // as stable 'Entrant' rows instead of a silently shortened table.
+      const drawn = new Set(
+        matchRows.flatMap((m) => [m.a, m.b]).filter((x): x is string => x !== null),
       )
+      const named = nameRows.rows.map((r) => r.registration_id)
+      const namedSet = new Set(named)
+      const seedOrder = [
+        ...named.filter((id) => drawn.has(id)),
+        ...[...drawn].filter((id) => !namedSet.has(id)).sort(),
+      ]
       standings = computeStandings(
         format,
         seedOrder,

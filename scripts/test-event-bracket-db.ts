@@ -331,6 +331,30 @@ async function main() {
       await owner.query<{ id: string }>('select id from event_registrations where event_id=$1', [ev])
     ).rows.map((r) => r.id)
     check('no invented participant exists', [...ids].every((i) => real.includes(i as string)))
+
+    // …and it is the SCHEMA that says so, not merely this code path (0102).
+    //
+    // Until 0102 the participant FKs carried (tenant_id, participant_x) only:
+    // real registration, right tenant, ANY event. A match of one event could
+    // therefore name an entrant of another, which both bracket readers resolve
+    // names and seeding for with a query filtered to THIS event — so the
+    // competitor would have shown up in the draw and been missing from the
+    // standings. Attempted as the OWNER, which is RLS-exempt, so what refuses
+    // this is the constraint and nothing above it.
+    const other = await makeEvent(A, 'Someone Else’s Event', 'single_elim', { capacity: 10 })
+    const [outsider] = await fillAndCheckIn(A, other, 1)
+    const target = ms.find((m) => m.participant_b !== null)!
+    const crossEvent = await refusal(() =>
+      owner.query('update event_matches set participant_b=$2 where id=$1', [
+        target.id as string,
+        outsider,
+      ]),
+    )
+    check('a participant from ANOTHER event is refused by the schema', crossEvent !== null)
+    check(
+      '…by the foreign key, naming the constraint',
+      (crossEvent ?? '').includes('event_matches_b_fk'),
+    )
   }
 
   // ════════════════════════════════════════════════════════════════════════
