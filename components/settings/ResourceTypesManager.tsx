@@ -8,6 +8,7 @@ import { upsertResourceType, deleteResourceType, uploadResourceTypeImage } from 
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -119,9 +120,9 @@ export function ResourceTypesManager({
   return (
     <div className="mt-8 space-y-6">
       <div className="grid grid-cols-3 gap-4">
-        <StatCard icon={Boxes} label="Total types" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="Active" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={Boxes} label="Total types" value={stats.total} tint="rose" />
+        <StatCard icon={CheckCircle2} label="Active" value={stats.active} tint="mint" />
+        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} tint="slate" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -229,19 +230,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )

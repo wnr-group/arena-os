@@ -47,6 +47,27 @@
 
   --destructive: #dc2626;
   --ring: rgba(139, 34, 66, 0.28);
+
+  /* Stat-card tints (rose/mint/amber/slate) — a dedicated four-tint family for
+   * dashboard/list-page stat cards, kept separate from success/warning/neutral
+   * above: those are reserved for status text (badges, toasts) where the AA
+   * darkening matters, while these sit on a WHITE icon tile inside a tinted
+   * card, so the un-adjusted design-spec hex is used as-is. Assign by meaning,
+   * not position: rose = totals/headline count, mint = available/active/
+   * confirmed/healthy, amber = needs attention, slate = hidden/inactive/
+   * archived/cancelled. */
+  --rose: #8b2242;
+  --rose-bg: #fceef1;
+  --rose-border: #f6dde3;
+  --mint: #2f8055;
+  --mint-bg: #e9f6ee;
+  --mint-border: #d8ecdf;
+  --amber: #d97b26;
+  --amber-bg: #fef2e4;
+  --amber-border: #f7e2c8;
+  --slate: #7a7370;
+  --slate-bg: #f3f1f0;
+  --slate-border: #e7e3e1;
 }
 
 /* Dark theme — defined for later; INACTIVE until data-theme="dark" is set.
@@ -87,6 +108,21 @@
 
   --destructive: #f87171;
   --ring: rgba(228, 137, 159, 0.35);
+
+  /* Stat-card tints — same lightened-icon-on-mixed-card approach as
+     success/warning/neutral above. */
+  --rose: #e4899f;
+  --rose-bg: color-mix(in srgb, #e4899f 18%, #211719);
+  --rose-border: color-mix(in srgb, #e4899f 30%, #211719);
+  --mint: #6cc191;
+  --mint-bg: color-mix(in srgb, #6cc191 18%, #211719);
+  --mint-border: color-mix(in srgb, #6cc191 30%, #211719);
+  --amber: #e8a45c;
+  --amber-bg: color-mix(in srgb, #e8a45c 18%, #211719);
+  --amber-border: color-mix(in srgb, #e8a45c 30%, #211719);
+  --slate: #a39d9a;
+  --slate-bg: color-mix(in srgb, #a39d9a 14%, #211719);
+  --slate-border: color-mix(in srgb, #a39d9a 26%, #211719);
 }
 
 @theme inline {
@@ -109,6 +145,18 @@
   --color-warning-bg: var(--warning-bg);
   --color-neutral: var(--neutral);
   --color-neutral-bg: var(--neutral-bg);
+  --color-rose: var(--rose);
+  --color-rose-bg: var(--rose-bg);
+  --color-rose-border: var(--rose-border);
+  --color-mint: var(--mint);
+  --color-mint-bg: var(--mint-bg);
+  --color-mint-border: var(--mint-border);
+  --color-amber: var(--amber);
+  --color-amber-bg: var(--amber-bg);
+  --color-amber-border: var(--amber-border);
+  --color-slate: var(--slate);
+  --color-slate-bg: var(--slate-bg);
+  --color-slate-border: var(--slate-border);
   --color-destructive: var(--destructive);
   --color-ring: var(--ring);
   /* Helvetica Neue is a system font (macOS/iOS only) — Arial covers every
