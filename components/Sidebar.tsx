@@ -273,7 +273,7 @@ export function Sidebar({
   }, [activeHref, items])
 
   return (
-    <nav className="flex flex-col gap-1 p-3 flex-1 overflow-y-auto">
+    <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3">
       {items.map((item) => {
         const Icon = item.icon
 

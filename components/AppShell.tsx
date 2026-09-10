@@ -55,11 +55,11 @@ export function AppShell({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground transition-colors duration-200">
+    <div className="fixed inset-0 flex overflow-hidden bg-background text-foreground transition-colors duration-200">
       {/* Desktop Sidebar */}
       <aside
         className={cn(
-          'no-print relative hidden shrink-0 flex-col border-r border-border bg-accent backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
+          'no-print relative hidden min-h-0 shrink-0 flex-col border-r border-border bg-accent backdrop-blur-md transition-all duration-300 ease-in-out sm:flex',
           collapsed ? 'w-[76px]' : 'w-64',
         )}
       >
@@ -173,7 +173,7 @@ export function AppShell({
       )}
 
       {/* Main Content Area */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Mobile Header */}
         <header className="no-print flex h-14 items-center justify-between border-b border-border bg-card/65 backdrop-blur-md px-4 sm:hidden">
           <div className="flex items-center gap-3">
