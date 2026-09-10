@@ -359,6 +359,58 @@ async function main() {
         JSON.stringify(rv.standings.map((s) => [s.registrationId, s.rank, s.won, s.pointsFor])),
     )
 
+    // ── THE TIEBREAK ITSELF ─────────────────────────────────────────────────
+    //
+    // The check above is an AGREEMENT test, and agreement is not correctness:
+    // both readers used to reconstruct seed order by walking the match rows,
+    // so they agreed on the same WRONG answer and this assertion still passed.
+    // What follows pins the answer instead of the agreement.
+    //
+    // Four players, no results at all: every row is 0 played, 0 won, 0 for and
+    // 0 against, so nothing but the seeded order can decide a rank. fillAndDraw
+    // stamps checked_in_at as now() + i seconds, so `tie` IS arrival order —
+    // seed 1 first. A round robin's circle method pairs seed 0 with the last
+    // seed, seed 1 with the second-last and so on, so the old row-walking
+    // derivation produced 1, 4, 2, 3 here; anything but 1, 2, 3, 4 is the bug
+    // back again.
+    const tieEv = await makeEvent(A, 'Dead Heat', 'round_robin')
+    const tie = await fillAndDraw(A, tieEv, 4)
+    const tv = (await getPublicEventLive(A.tenantId, tieEv))!
+    check(
+      'an unbroken tie ranks by ARRIVAL order, publicly',
+      tv.standings.map((s) => s.registrationId).join() === tie.join(),
+    )
+    const tieStaff = await getEventBracket(ctxFor(A), tieEv)
+    check(
+      '…and identically for staff',
+      tieStaff.standings.map((s) => s.registrationId).join() === tie.join(),
+    )
+
+    // The seed the projection hands out is that same order, 1-based. Asserted
+    // against the function directly, because the reader's ORDER BY is only as
+    // good as the column it sorts on.
+    const seedRows = await asPublic(A.tenantId, (tx) =>
+      tx.execute(
+        sql`select registration_id::text rid, seed
+              from public.public_event_participants(${tieEv}::uuid)
+             order by seed asc`,
+      ),
+    )
+    const seeds = seedRows.rows as { rid: string; seed: number }[]
+    check(
+      'the projection seeds in arrival order, 1-based',
+      seeds.map((r) => r.rid).join() === tie.join() && seeds.map((r) => r.seed).join() === '1,2,3,4',
+    )
+
+    // MEMBERSHIP, not just order: standings are built from the list the reader
+    // assembles, so a competitor dropped out of that list vanishes from the
+    // table and every rank below shifts up. Everyone the draw names must rank.
+    const drawnIds = new Set(
+      tv.matches.flatMap((m) => [m.a?.id, m.b?.id]).filter((x): x is string => !!x),
+    )
+    check('every drawn competitor has a standings row', tv.standings.length === drawnIds.size)
+    check('…and the staff reader lists the same field', tieStaff.participants.length === drawnIds.size)
+
     // Points.
     const pt = await makeEvent(A, 'Points Public', 'points')
     await fillAndDraw(A, pt, 3)
