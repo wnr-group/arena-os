@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { EventError } from '@/lib/events/lifecycle'
 import {
@@ -37,6 +38,9 @@ type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof EventError) return { error: e.message }
+  // The plan does not include Tournaments & Events — a refusal about what the
+  // business bought, not who is asking. Same shape as lib/actions/expenses.ts.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code } = pgError(e)
   // 23505 = the coordinate unique index: two generations raced and this one
@@ -71,6 +75,7 @@ export type GenerateBracketResult = Result & {
 export async function generateBracketAction(eventId: string): Promise<GenerateBracketResult> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(eventId)
 
     const result = await withUser(ctx.user.id, (tx) => generateEventBracket(tx, ctx, id))
@@ -94,6 +99,7 @@ export type ResetBracketResult = Result & { removed?: number }
 export async function resetBracketAction(eventId: string): Promise<ResetBracketResult> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(eventId)
 
     const removed = await withUser(ctx.user.id, (tx) => resetEventBracket(tx, ctx, id))
@@ -139,6 +145,7 @@ export async function recordMatchResultAction(
 ): Promise<RecordResultActionResult> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const v = resultInput.parse(input)
 
     const outcome = await withUser(ctx.user.id, (tx) =>

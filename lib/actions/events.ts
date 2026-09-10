@@ -1,11 +1,12 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { events } from '@/db/schema'
+import { auditLog, eventMatches, eventRegistrations, events } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { EventError, updateEventStatusCore, validateEventFields } from '@/lib/events/service'
@@ -18,6 +19,7 @@ import {
 } from '@/lib/events/check-in'
 import {
   cancelEventRegistrationAsStaff,
+  cancelRegistrationsForCancelledEvent,
   checkInEventRegistrationCore,
 } from '@/lib/events/registrations'
 import { refusalMessage } from '@/lib/events/registration'
@@ -35,6 +37,9 @@ type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError) return { error: e.message }
+  // The plan does not include Tournaments & Events — a refusal about what the
+  // business bought, not who is asking. Same shape as lib/actions/expenses.ts.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof EventError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
@@ -114,6 +119,7 @@ const eventInput = z.object({
 export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const v = eventInput.parse(input)
 
     const startsAt = new Date(v.startsAt)
@@ -154,6 +160,54 @@ export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Re
       }
 
       if (v.id) {
+        // ── the draw freezes the format and the entry mode ──────────────────
+        //
+        // Both readers branch on the event's CURRENT tournamentFormat while
+        // consuming matches the OLD format produced, and neither filters by
+        // side. Switching an in-progress single-elim event to round_robin
+        // therefore rendered a league table built from knockout matches — on
+        // the public spectator page — and resetEventBracket() then refuses
+        // (results exist), so it could not be undone from the UI.
+        //
+        // registrationMode/teamSize are frozen by the same read: a solo event
+        // switched to team once entrants hold solo registrations makes
+        // seedParticipants()'s "a team enters as ONE participant" assertion
+        // meaningless.
+        //
+        // `for update` on the event, so a manager saving while another clicks
+        // Generate cannot slip between the count and the write.
+        const [current] = await tx
+          .select({
+            format: events.tournamentFormat,
+            mode: events.registrationMode,
+            teamSize: events.teamSize,
+          })
+          .from(events)
+          .where(and(eq(events.id, v.id), eq(events.tenantId, ctx.tenant.id)))
+          .for('update')
+          .limit(1)
+        if (!current) throw new EventError('Event not found.')
+
+        const formatChanged = current.format !== values.tournamentFormat
+        const modeChanged =
+          current.mode !== values.registrationMode || current.teamSize !== values.teamSize
+
+        if (formatChanged || modeChanged) {
+          const [{ drawn }] = await tx
+            .select({ drawn: sql<number>`count(*)`.mapWith(Number) })
+            .from(eventMatches)
+            .where(
+              and(eq(eventMatches.tenantId, ctx.tenant.id), eq(eventMatches.eventId, v.id)),
+            )
+          if (drawn > 0) {
+            throw new EventError(
+              formatChanged
+                ? 'This event’s bracket is already drawn, so its format cannot be changed. Reset the bracket first.'
+                : 'This event’s bracket is already drawn, so its entry mode cannot be changed. Reset the bracket first.',
+            )
+          }
+        }
+
         // Status is deliberately NOT settable here — it moves only through
         // setEventStatus() so every change passes the transition table.
         await tx
@@ -200,6 +254,7 @@ export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Re
 export async function setEventStatus(eventId: string, status: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const parsed = z
       .object({ eventId: z.string().uuid(), status: z.enum(EVENT_STATUSES as [string, ...string[]]) })
       .parse({ eventId, status })
@@ -222,6 +277,23 @@ export async function setEventStatus(eventId: string, status: string): Promise<R
       // TRANSITION back too. The manager is told what is in the way rather than
       // ending up with a published event holding nothing.
       await syncEventBlocks(tx, ctx.tenant.id, parsed.eventId)
+
+      // ── cancelling the EVENT cancels the ENTRANTS ──────────────────────────
+      //
+      // Nothing did this. An event moved to `cancelled` released its stations
+      // and left every entrant sitting at `registered` / `checked_in` with
+      // paid_amount > 0 and refund_required = false — so the venue had no list
+      // of who it owed, and the events report's refund_due (which keys off a
+      // CANCELLED REGISTRATION) showed nothing.
+      //
+      // Same rule cancel_event_registration() applies to a single entrant:
+      // money in means a refund is owed. Only ACTIVE entries are touched, so
+      // re-running this is a no-op and an already-cancelled entrant keeps the
+      // flag their own cancellation gave them. In the SAME transaction as the
+      // status change, so the two can never disagree.
+      if (parsed.status === 'cancelled') {
+        await cancelRegistrationsForCancelledEvent(tx, ctx.tenant.id, parsed.eventId)
+      }
     })
 
     revalidateEventPaths()
@@ -234,16 +306,74 @@ export async function setEventStatus(eventId: string, status: string): Promise<R
 export async function deleteEvent(eventId: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(eventId)
 
     const bannerUrl = await withUser(ctx.user.id, async (tx) => {
       const [row] = await tx
-        .select({ bannerUrl: events.bannerUrl })
+        .select({ bannerUrl: events.bannerUrl, title: events.title, status: events.status })
         .from(events)
         .where(and(eq(events.id, id), eq(events.tenantId, ctx.tenant.id)))
         .limit(1)
       if (!row) throw new EventError('Event not found.')
+
+      // ── what a delete would take with it ──────────────────────────────────
+      //
+      // `events` cascades to event_registrations, which cascades to
+      // payment_intents. An event registration has NO invoice behind it — the
+      // webhook writes paid_amount and payment_reference onto the registration
+      // row and stops there — so those rows are the venue's only record that
+      // the money was ever taken. Deleting an event with settled entries
+      // destroys that record permanently, and until now nothing stopped it:
+      // the dialog said "This cannot be undone" and the action checked only
+      // that the event existed.
+      //
+      // Two refusals, deliberately different in kind:
+      //   * MONEY is absolute. A verified payment_reference means the row is
+      //     financial history, and history is not deletable at any status.
+      //   * PEOPLE are recoverable. Live entrants block the delete, but
+      //     cancelling the event first cancels them (see setEventStatus) and
+      //     then the delete is allowed — so this is a sequencing rule, not a
+      //     dead end.
+      const [{ paid, active }] = await tx
+        .select({
+          paid: sql<number>`count(*) filter (where ${eventRegistrations.paymentReference} is not null)`.mapWith(Number),
+          active: sql<number>`count(*) filter (where ${eventRegistrations.status} in ('pending_payment','registered','waitlisted','checked_in'))`.mapWith(Number),
+        })
+        .from(eventRegistrations)
+        .where(
+          and(eq(eventRegistrations.tenantId, ctx.tenant.id), eq(eventRegistrations.eventId, id)),
+        )
+
+      if (paid > 0) {
+        throw new EventError(
+          `This event has ${paid} paid registration${paid === 1 ? '' : 's'}, so it cannot be deleted — ` +
+            'that would erase the record of money the venue took. Cancel the event instead; ' +
+            'entrants are cancelled and flagged for refund, and the event stays in your reports.',
+        )
+      }
+      if (active > 0) {
+        throw new EventError(
+          `This event has ${active} live registration${active === 1 ? '' : 's'}. ` +
+            'Cancel the event first — that withdraws the entrants — then delete it.',
+        )
+      }
+
       await tx.delete(events).where(and(eq(events.id, id), eq(events.tenantId, ctx.tenant.id)))
+
+      // Audited like every other event mutation. Deleting is the one action
+      // whose evidence disappears with the row, so the entry is the only trace
+      // left that it happened at all.
+      await tx.insert(auditLog).values({
+        tenantId: ctx.tenant.id,
+        actorMembershipId: ctx.membershipId ?? null,
+        action: 'event.deleted',
+        entityType: 'event',
+        entityId: id,
+        before: { title: row.title, status: row.status, registrations: paid + active },
+        after: {},
+      })
+
       return row.bannerUrl
     })
 
@@ -266,6 +396,7 @@ export async function deleteEvent(eventId: string): Promise<Result> {
 export async function uploadEventBanner(formData: FormData): Promise<{ url?: string; error?: string }> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const file = formData.get('file')
     if (!(file instanceof File)) return { error: 'No file provided.' }
     const url = await uploadImage(file, `tenants/${ctx.tenant.id}/events`)
@@ -290,6 +421,7 @@ export async function uploadEventBanner(formData: FormData): Promise<{ url?: str
 export async function cancelEventRegistration(registrationId: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(registrationId)
 
     const outcome = await cancelEventRegistrationAsStaff(ctx.user.id, id)
@@ -313,6 +445,7 @@ export async function cancelEventRegistration(registrationId: string): Promise<R
 export async function checkInEventRegistration(registrationId: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(registrationId)
 
     const ok = await withUser(ctx.user.id, (tx) =>
@@ -368,6 +501,7 @@ export async function checkInEventRegistrationByToken(
 ): Promise<EventCheckInActionResult> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const scanned = z.string().min(1).max(500).parse(raw)
     const token = extractCheckInToken(scanned)
     if (!token) return { error: "That doesn't look like an event check-in code." }
@@ -404,6 +538,7 @@ export type PromoteActionResult = Result & { promoted?: number }
 export async function promoteEventWaitlist(eventId: string): Promise<PromoteActionResult> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(eventId)
 
     const promoted = await promoteEventWaitlistAsStaff(ctx, id)
