@@ -601,7 +601,7 @@ export async function getEventBracket(
         asc(eventMatches.position),
       )
 
-    const names = await participantNames(tx, ctx.tenant.id, eventId)
+    const { names, seeded } = await participantNames(tx, ctx.tenant.id, eventId)
     const nameOf = (id: string | null) => (id ? (names.get(id) ?? 'Entrant') : null)
 
     const matches: BracketMatchRow[] = rows.map((r) => ({
@@ -615,9 +615,39 @@ export async function getEventBracket(
 
     // Standings only mean something for the table formats.
     let standings: EventBracketView['standings'] = []
-    const seedOrder = [...new Set(rows.flatMap((r) => [r.participantA, r.participantB]))].filter(
-      (x): x is string => x !== null,
+
+    // Everyone actually drawn into this bracket, in seeded (arrival) order.
+    //
+    // THE SPLIT THAT MATTERS: `drawn` — the ids the match rows name — decides
+    // MEMBERSHIP; `seeded` only decides ORDER. computeStandings() builds its
+    // table solely from the list handed to it, so an id missing from that list
+    // is not merely unnamed, it is absent from the leaderboard and every rank
+    // below it silently shifts up. Membership therefore has to come from the
+    // same rows the board renders, never from a second query that might not
+    // agree with them.
+    //
+    // Two queries CAN disagree. `seeded` comes from participantNames(), which
+    // filters `r.event_id = eventId`, while nothing at the schema level pinned
+    // a match's participant to a registration of the same event until 0102 —
+    // event_matches_a_fk carried (tenant_id, participant_a) only. So the
+    // append below is what a drawn-but-unnamed id degrades to: an 'Entrant'
+    // row that ranks, rather than a competitor deleted from the table.
+    //
+    // It is sorted by registration id — the seeding rule's own secondary key —
+    // so the result stays a total order instead of depending on the order the
+    // match rows happened to come back in.
+    //
+    // Narrowing to `drawn` is also what keeps a LATE check-in out: they are on
+    // the event, so `seeded` has them, but the bracket was built without them.
+    const drawn = new Set(
+      rows.flatMap((r) => [r.participantA, r.participantB]).filter((x): x is string => x !== null),
     )
+    const named = new Set(seeded)
+    const seedOrder = [
+      ...seeded.filter((id) => drawn.has(id)),
+      ...[...drawn].filter((id) => !named.has(id)).sort(),
+    ]
+
     if (format === 'round_robin' || format === 'points') {
       standings = computeStandings(
         format,
@@ -642,12 +672,32 @@ export async function getEventBracket(
   })
 }
 
-/** registrationId → display name: the team's name for a team entry, else the customer's. */
+/**
+ * Display names, plus the registration ids IN SEEDED ORDER.
+ *
+ * The order is the one thing here that is not cosmetic. `computeStandings`
+ * takes seedOrder as its final total-order tiebreak and documents it as
+ * "whoever checked in first", so the sequence has to be the SAME rule
+ * seedParticipants() applied when the draw was built: `checked_in_at`
+ * ascending, ties broken on the registration id — see THE SEEDING RULE in
+ * lib/events/bracket.ts, and listCheckedInParticipants(), which orders
+ * identically.
+ *
+ * It is ordered here rather than reconstructed from the match rows because
+ * the draw does not preserve arrival order: generateRoundRobin's circle method
+ * pairs seed 0 against the LAST seed, seed 1 against the second-last, and so
+ * on, so walking the rows yields 0, last, 1, last-1, … Deriving the tiebreak
+ * from that ranked tied competitors in an order nobody could explain, and one
+ * that contradicted the documented rule.
+ *
+ * Name lookup is a Map; order is a separate array, because a Map keyed by id
+ * cannot express "and this is the sequence" for callers that need both.
+ */
 async function participantNames(
   tx: DB,
   tenantId: string,
   eventId: string,
-): Promise<Map<string, string>> {
+): Promise<{ names: Map<string, string>; seeded: string[] }> {
   const rows = await tx.execute<{ id: string; label: string }>(sql`
     select r.id,
            coalesce(t.name, c.name, 'Entrant') as label
@@ -655,6 +705,10 @@ async function participantNames(
       join public.customers c on c.id = r.customer_id
       left join public.event_teams t on t.id = r.team_id
      where r.tenant_id = ${tenantId} and r.event_id = ${eventId}
+     order by r.checked_in_at asc nulls last, r.id asc
   `)
-  return new Map(rows.rows.map((r) => [r.id, r.label]))
+  return {
+    names: new Map(rows.rows.map((r) => [r.id, r.label])),
+    seeded: rows.rows.map((r) => r.id),
+  }
 }
