@@ -111,7 +111,13 @@
   --color-neutral-bg: var(--neutral-bg);
   --color-destructive: var(--destructive);
   --color-ring: var(--ring);
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Helvetica Neue is a system font (macOS/iOS only) — Arial covers every
+   * other OS at zero load cost, and Inter (loaded via next/font in
+   * app/layout.tsx, see lib/fonts.ts) is the quality fallback for users on
+   * neither. Scoped to the staff dashboard; the public booking site sets its
+   * own font (publicSiteFont, lib/fonts.ts) directly on its root element,
+   * which overrides this by CSS specificity/inheritance order. */
+  --font-sans: 'Helvetica Neue', Arial, var(--font-inter), sans-serif;
 }
 
 * {

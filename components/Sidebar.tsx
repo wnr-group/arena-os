@@ -290,7 +290,7 @@ export function Sidebar({
                 href={visibleChildren[0].href}
                 title={item.label}
                 className={cn(
-                  'flex items-center justify-center rounded-lg px-2 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+                  'flex items-center justify-center rounded-xl px-2 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                   childActive
                     ? 'bg-primary text-primary-foreground shadow-md shadow-primary/10'
                     : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
@@ -307,7 +307,7 @@ export function Sidebar({
                 type="button"
                 onClick={() => setOpenLabel(open ? null : item.label)}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+                  'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                   childActive
                     ? 'text-foreground'
                     : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
@@ -330,7 +330,7 @@ export function Sidebar({
                         key={child.href}
                         href={child.href}
                         className={cn(
-                          'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+                          'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
                           active
                             ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/10'
                             : 'text-[#7c5b63] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',
@@ -354,7 +354,7 @@ export function Sidebar({
             href={item.href}
             title={collapsed ? item.label : undefined}
             className={cn(
-              'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+              'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-[background-color,color] duration-[160ms] ease-[ease] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
               active
                 ? 'bg-primary text-primary-foreground shadow-md shadow-primary/10'
                 : 'text-[#6b4a52] hover:bg-[rgba(139,34,66,0.07)] hover:text-primary',

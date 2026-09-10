@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
 import { ConfirmDialogProvider } from '@/components/ui/ConfirmDialog'
+import { dashboardFallbackFont } from '@/lib/fonts'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -15,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="en" className={dashboardFallbackFont.variable}>
       <body>
         <ConfirmDialogProvider>
           {children}
