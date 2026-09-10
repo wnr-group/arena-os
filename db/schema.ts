@@ -1095,6 +1095,14 @@ export const businessProfiles = pgTable('business_profiles', {
   /** Feeds invoice numbering. Capped at 4 chars — see the migration's CHECK. */
   invoicePrefix: text('invoice_prefix').notNull().default('INV'),
   placeOfSupply: text('place_of_supply'),
+  /**
+   * Canonical WhatsApp group invite, or null (migration 0103). Host-pinned by a
+   * CHECK because the public confirmation page redirects to it automatically —
+   * see lib/settings/whatsapp-group.ts for the one shared rule.
+   */
+  whatsappGroupUrl: text('whatsapp_group_url'),
+  /** Whether the confirmation page offers the group. Never true without a URL. */
+  whatsappGroupEnabled: boolean('whatsapp_group_enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

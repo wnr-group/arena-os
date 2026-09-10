@@ -4,6 +4,7 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingByToken } from '@/lib/booking/public-confirmation'
+import { getPublicWhatsappGroupUrl } from '@/lib/booking/public-whatsapp'
 import { publicTenantUrl } from '@/lib/tenant/subdomain'
 import { generateQrSvg } from '@/lib/utils/qr'
 import { getPublicMenu } from '@/lib/menu/public'
@@ -43,9 +44,22 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
  * for check-in, though the scan itself posts to a staff-only action
  * (checkInBookingByToken) rather than this page doing anything on load.
  */
-export default async function BookingConfirmationPage({ params }: { params: Promise<{ token: string }> }) {
+export default async function BookingConfirmationPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ token: string }>
+  searchParams: Promise<{ new?: string }>
+}) {
   const { token } = await params
   if (!UUID.test(token)) notFound()
+
+  // ?new=1 is the booking flow's hand-off, and the ONLY thing that arms the
+  // WhatsApp countdown. This page is also the check-in QR ("Show this code at
+  // the door") and is linked from My Bookings and the portal, so arriving here
+  // is not the same as having just booked — without this flag a customer at the
+  // counter would be redirected away from the QR they came to show.
+  const fromNewBooking = (await searchParams).new === '1'
 
   const slug = await currentTenantSlug()
   if (!slug) notFound()
@@ -60,6 +74,10 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
   const qrSvg = await generateQrSvg(confirmationUrl)
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
+  // Null whenever the venue has not enabled a group, has no link, or has one
+  // that no longer validates — the component is simply not rendered, and the
+  // booking flow is untouched either way.
+  const whatsappGroupUrl = await getPublicWhatsappGroupUrl(tenant.id)
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
@@ -79,6 +97,8 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
             tenant={tenant}
             qrSvg={qrSvg}
             hasMenu={hasMenu}
+            whatsappGroupUrl={whatsappGroupUrl}
+            fromNewBooking={fromNewBooking}
           />
         </main>
 

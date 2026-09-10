@@ -235,7 +235,11 @@ export function ResourceBookingPage({
         toast.success('Payment submitted — confirming with the venue.', {
           description: "We'll have everything ready for your visit.",
         })
-        router.push(`/b/${token}`)
+        // ?new=1: the booking flow completed as intended, so the confirmation
+        // page may arm the WhatsApp countdown. It still will not fire until the
+        // deposit is actually settled — this callback is client input, and the
+        // webhook is what proves payment (see PublicBookingConfirmation).
+        router.push(`/b/${token}?new=1`)
       },
       modal: {
         ondismiss: () => {
@@ -272,7 +276,10 @@ export function ResourceBookingPage({
         await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '')
         return
       }
-      router.push(`/b/${r.confirmationToken}`)
+      // ?new=1 marks the hand-off straight from a completed booking — the only
+      // arrival that arms the WhatsApp countdown. The unpaid exits inside
+      // payForBooking() deliberately omit it.
+      router.push(`/b/${r.confirmationToken}?new=1`)
     })
   }
 

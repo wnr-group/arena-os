@@ -29,6 +29,8 @@ export default async function BusinessSettingsPage() {
           logoUrl: profile?.logoUrl ?? '',
           invoicePrefix: profile?.invoicePrefix ?? DEFAULT_INVOICE_PREFIX,
           placeOfSupply: profile?.placeOfSupply ?? '',
+          whatsappGroupUrl: profile?.whatsappGroupUrl ?? '',
+          whatsappGroupEnabled: profile?.whatsappGroupEnabled ?? false,
         }}
         tenantName={ctx.tenant.name}
         configured={profile !== null}
