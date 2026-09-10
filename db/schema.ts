@@ -1380,6 +1380,14 @@ export const businessProfiles = pgTable('business_profiles', {
   // M22 #1 (0095): weekday numbers (0=Sun...6=Sat, JS getDay convention)
   // this tenant treats as weekend for pricing. Default {0,6} (Sat+Sun).
   weekendDays: smallint('weekend_days').array().notNull().default([0, 6]),
+  /**
+   * Canonical WhatsApp group invite, or null (migration 0103). Host-pinned by a
+   * CHECK because the public confirmation page redirects to it automatically —
+   * see lib/settings/whatsapp-group.ts for the one shared rule.
+   */
+  whatsappGroupUrl: text('whatsapp_group_url'),
+  /** Whether the confirmation page offers the group. Never true without a URL. */
+  whatsappGroupEnabled: boolean('whatsapp_group_enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
