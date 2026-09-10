@@ -3,7 +3,9 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { requireCustomer } from '@/lib/auth/customer-guard'
 import { customerSignOut } from '@/lib/actions/customer-auth'
+import { getReviewPrompt } from '@/lib/portal/review-prompt'
 import { PortalShell } from '@/components/portal/PortalShell'
+import { GoogleReviewPrompt } from '@/components/portal/GoogleReviewPrompt'
 
 /**
  * The AUTHENTICATED customer surface (AROS-88).
@@ -36,6 +38,16 @@ export default async function PortalLayout({ children }: { children: React.React
   // looks at whether a cookie is present.
   const customer = await requireCustomer()
 
+  // The Google review ask (0104), decided entirely on the server: null unless
+  // the venue enabled it, the link still validates, this customer has had a
+  // successful session or order, and they have not already answered.
+  //
+  // Mounted HERE rather than on the pages, because a layout does not remount as
+  // the customer moves between /account, /account/bookings and /account/wallet
+  // — so the prompt appears when they ENTER the portal, not on every navigation
+  // inside it, and every entry point gets it without knowing about it.
+  const reviewPrompt = await getReviewPrompt(tenant.name)
+
   return (
     <PortalShell
       venueName={tenant.name}
@@ -44,6 +56,9 @@ export default async function PortalLayout({ children }: { children: React.React
       signOutAction={customerSignOut}
     >
       {children}
+      {reviewPrompt && (
+        <GoogleReviewPrompt url={reviewPrompt.url} venueName={reviewPrompt.venueName} />
+      )}
     </PortalShell>
   )
 }

@@ -5,6 +5,8 @@ import { getBusinessProfile } from '@/lib/settings/business'
 import { DEFAULT_INVOICE_PREFIX } from '@/lib/settings/business-profile'
 import { listTaxRates } from '@/lib/tax-rates/data'
 import { BusinessProfileForm } from '@/components/settings/BusinessProfileForm'
+import { GoogleBusinessForm } from '@/components/settings/GoogleBusinessForm'
+import { getGoogleConnectionStatus } from '@/lib/reviews/google-credentials'
 
 export default async function BusinessSettingsPage() {
   const ctx = await getActiveContext()
@@ -22,6 +24,8 @@ export default async function BusinessSettingsPage() {
     getBusinessProfile(ctx),
     isRestaurant ? listTaxRates(ctx) : Promise.resolve([]),
   ])
+  // Never carries the client secret or refresh token — see the status type.
+  const googleConnection = await getGoogleConnectionStatus(ctx.tenant.id)
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-8">
@@ -42,11 +46,29 @@ export default async function BusinessSettingsPage() {
           serviceChargeTaxRateId: profile?.serviceChargeTaxRateId ?? '',
           whatsappGroupUrl: profile?.whatsappGroupUrl ?? '',
           whatsappGroupEnabled: profile?.whatsappGroupEnabled ?? false,
+          googleReviewUrl: profile?.googleReviewUrl ?? '',
+          googleReviewEnabled: profile?.googleReviewEnabled ?? false,
         }}
         tenantName={ctx.tenant.name}
         configured={profile !== null}
         taxRates={taxRates.map((t) => ({ id: t.id, name: t.name, percent: t.percent }))}
         isRestaurant={isRestaurant}
+      />
+
+      <GoogleBusinessForm
+        status={
+          googleConnection
+            ? {
+                accountId: googleConnection.accountId,
+                locationId: googleConnection.locationId,
+                clientId: googleConnection.clientId,
+                authorised: googleConnection.authorised,
+                connectedAt: googleConnection.connectedAt.toISOString(),
+                lastSyncedAt: googleConnection.lastSyncedAt?.toISOString() ?? null,
+                lastSyncError: googleConnection.lastSyncError,
+              }
+            : null
+        }
       />
     </div>
   )
