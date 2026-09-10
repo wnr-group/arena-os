@@ -13,6 +13,7 @@ import {
   CalendarDays,
   LayoutDashboard,
   Settings,
+  Trophy,
   Boxes,
   Clock,
   Users,
@@ -87,6 +88,9 @@ const NAV: NavItem[] = [
   { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  // Tournaments, classes, meetups and parties (M15) — manager-only, matching
+  // the events_manager_write policy in migration 0088.
+  { href: '/settings/events', label: 'Events', icon: Trophy, can: isManager },
   // The customer membership catalogue — manager-only, like Resources.
   { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
   {
@@ -157,6 +161,8 @@ const NAV: NavItem[] = [
       // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
       // and getPnlReport() throws for one; this entry only decides visibility.
       { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },
+      // M15 #8 — attendance and entry-fee revenue per event.
+      { href: '/reports/events', label: 'Events', icon: CalendarDays, can: isManager },
     ],
   },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },

@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
@@ -13,8 +14,12 @@ import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
 import { MenuHighlightsClient } from '@/components/public-booking/MenuHighlightsClient'
+import { EventCard } from '@/components/public-booking/EventCard'
+import { getUpcomingPublicEvents } from '@/lib/events/public'
 
 const MENU_HIGHLIGHT_LIMIT = 8
+/** The default homepage promotes a handful of events — one row on desktop. */
+const EVENT_PROMO_LIMIT = 3
 
 export const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -84,7 +89,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
 
   const branding = await getPublishedBranding(tenant.id)
 
-  const [menu, happyHourRules] = await Promise.all([getPublicMenu(tenant.id), getPublicActiveHappyHourRules(tenant.id)])
+  const [menu, happyHourRules, upcomingEvents] = await Promise.all([getPublicMenu(tenant.id), getPublicActiveHappyHourRules(tenant.id), getUpcomingPublicEvents(tenant.id, EVENT_PROMO_LIMIT)])
   const now = new Date()
   const menuHighlights = menu
     .flatMap((c) => c.items)
@@ -137,6 +142,44 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
               {branch?.address && <p className="mt-4 text-sm font-medium text-muted-foreground/80">{branch.address}</p>}
             </div>
           </section>
+
+          {/*
+            Upcoming events promotion (M15 #2), for tenants that have NOT
+            published a website builder homepage — the ones that have get the
+            'events' section instead (WebsiteSections), which renders the same
+            EventCard from the same reader.
+
+            Renders nothing at all when there is nothing upcoming, rather than
+            an empty heading: same behaviour as the menu block above and as
+            EventsContent in the builder.
+          */}
+          {upcomingEvents.length > 0 && (
+            <section id="events" className="scroll-mt-16">
+              <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+                <div className="mx-auto max-w-2xl text-center">
+                  <h2 className="text-3xl font-extrabold tracking-tight sm:text-4xl">What&apos;s On</h2>
+                  <p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-muted-foreground sm:text-lg">
+                    Tournaments, classes and one-off nights — book your place before they fill up.
+                  </p>
+                </div>
+                <ul className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {upcomingEvents.map((e) => (
+                    <li key={e.id} className="h-full">
+                      <EventCard event={e} currency={tenant.currency} timezone={tenant.timezone} />
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-8 text-center">
+                  <Link
+                    href="/events"
+                    className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-6 py-3 text-base font-semibold transition hover:border-primary/40 hover:text-primary"
+                  >
+                    See all events
+                  </Link>
+                </div>
+              </div>
+            </section>
+          )}
 
           {hasMenu && (
             <section id="menu" className="scroll-mt-16 bg-card/40">

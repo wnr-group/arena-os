@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
-import { CalendarDays, LogOut, User, Wallet } from 'lucide-react'
+import { CalendarDays, LogOut, Trophy, User, Wallet } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
 /**
@@ -25,6 +25,7 @@ type NavItem = { href: string; label: string; icon: typeof User; ready: boolean 
 const NAV: NavItem[] = [
   { href: '/account', label: 'Overview', icon: User, ready: true },
   { href: '/account/bookings', label: 'Bookings', icon: CalendarDays, ready: true },
+  { href: '/account/events', label: 'Events', icon: Trophy, ready: true },
   { href: '/account/wallet', label: 'Wallet & rewards', icon: Wallet, ready: true },
   { href: '/account/profile', label: 'Profile', icon: User, ready: true },
 ]

@@ -3,10 +3,23 @@ import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
 import type * as schema from '@/db/schema'
-import { bookings, invoices, orders, paymentIntents, tenants, webhookEvents } from '@/db/schema'
+import {
+  bookings,
+  eventRegistrations,
+  invoices,
+  orders,
+  paymentIntents,
+  tenants,
+  webhookEvents,
+} from '@/db/schema'
 import { issueInvoiceForOrder } from '@/lib/billing/invoice'
 import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
 import { applyPaidDepositsToInvoice, backfillDepositOrderIds } from './deposit-settlement'
+import {
+  REFUND_OUTCOMES,
+  confirmEventRegistrationPayment,
+  type ConfirmRegistrationOutcome,
+} from './event-registration-payment'
 import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
 /**
@@ -67,6 +80,24 @@ export type WebhookOutcome =
       orderId: string
       invoiceId: string
       invoicePaymentId: string
+    }
+  /**
+   * An event entry fee (M15 #3), applied for the first time.
+   *
+   * `registrationOutcome` is not decoration: a verified payment can arrive for
+   * a place that no longer exists (the hold expired and the last place went
+   * while the customer was at the payment page). Capacity is the invariant that
+   * does not bend, so the registration is cancelled and flagged
+   * refund_required — and the caller has to be told, because a payment that did
+   * NOT buy a place is the one case a human must look at.
+   */
+  | {
+      kind: 'processed'
+      purpose: 'event_registration'
+      intentId: string
+      registrationId: string
+      registrationOutcome: ConfirmRegistrationOutcome
+      refundRequired: boolean
     }
   /** Already applied — a retry, a redelivery, or a replay. A no-op. */
   | { kind: 'duplicate'; intentId: string | null; reason: string }
@@ -178,6 +209,7 @@ export async function applyVerifiedPaymentWebhook(
         purpose: paymentIntents.purpose,
         bookingId: paymentIntents.bookingId,
         orderId: paymentIntents.orderId,
+        eventRegistrationId: paymentIntents.eventRegistrationId,
         amount: paymentIntents.amount,
         currency: paymentIntents.currency,
         status: paymentIntents.status,
@@ -252,17 +284,69 @@ export async function applyVerifiedPaymentWebhook(
       return { kind: 'rejected', reason: `payment status is ${payment.status}` }
     }
 
-    // ── 5. the target — a booking or a standalone order — must exist, in the
-    //      same tenant ──────────────────────────────────────────────────────
+    // ── 5. the target — a booking, a standalone order, or an event
+    //      registration — must exist, in the same tenant ────────────────────
     // The composite FKs already guarantee this structurally; read the row
     // back so a deleted or cross-tenant target can never be settled against.
-    // Branches on `intent.purpose`: an intent is for exactly one of the two
-    // (payment_intents_exactly_one_target, migration 0058), so exactly one of
-    // `booking`/`order` below is ever looked up.
+    // Branches on `intent.purpose`: an intent is for exactly one of the three
+    // (payment_intents_exactly_one_target, migrations 0058/0092), so exactly
+    // one of `booking`/`order`/`registration` below is ever looked up.
     let booking: { id: string } | null = null
     let order: { id: string; branchId: string; customerId: string | null; orderNumber: string; status: string; acceptanceStatus: string } | null = null
+    let registration: { id: string } | null = null
 
-    if (intent.purpose === 'booking_deposit') {
+    if (intent.purpose === 'event_registration') {
+      // The registration must exist, in the verified tenant.
+      //
+      // Deliberately NOT `for update`. Every M15 capacity path takes the EVENT
+      // row first and the registration rows after it (claim, cancel, promotion,
+      // and confirm_event_registration_payment below all do). Locking a
+      // registration here would take them in the opposite order and give two
+      // concurrent transactions a way to deadlock — a cancellation holding the
+      // event and wanting this row, against this holding the row and wanting
+      // the event. This read is only a pre-check; the authoritative read
+      // happens inside the SQL function, under the event lock.
+      const [row] = await tx
+        .select({ id: eventRegistrations.id, paymentReference: eventRegistrations.paymentReference })
+        .from(eventRegistrations)
+        .where(
+          and(
+            eq(eventRegistrations.id, intent.eventRegistrationId!),
+            eq(eventRegistrations.tenantId, verifiedTenantId),
+          ),
+        )
+        .limit(1)
+      if (!row) {
+        await noteOutcome(tx, eventId, 'rejected')
+        return { kind: 'rejected', reason: 'event registration not found for this tenant' }
+      }
+      // A REDELIVERY of the payment already applied: checked before the intent
+      // is settled, so it leaves this transaction without writing anything.
+      if (row.paymentReference && row.paymentReference === payment.id) {
+        await noteOutcome(tx, eventId, 'duplicate')
+        return {
+          kind: 'duplicate',
+          intentId: intent.id,
+          reason: 'registration already confirmed by this payment',
+        }
+      }
+      // A DIFFERENT payment id is deliberately NOT short-circuited.
+      //
+      // It means a second, distinct, verified-and-CAPTURED payment landed on a
+      // place that is already paid for — the venue is holding money it owes
+      // back. Returning `rejected` here (which is what this used to do) left
+      // that money with no refund_required flag, no audit row and no console
+      // trail: the only trace was a webhook_events row marked rejected, and
+      // idx_event_registrations_refund_required — the list an operator works
+      // from — never saw it.
+      //
+      // So it falls through to confirm_event_registration_payment(), whose
+      // `already_paid` branch flags the registration and audits it, and which
+      // this file then reports through REFUND_OUTCOMES exactly as it already
+      // reports `unfulfillable` and `amount_mismatch`. The place itself is
+      // never granted twice — the SQL refuses that under the event lock.
+      registration = { id: row.id }
+    } else if (intent.purpose === 'booking_deposit') {
       const [row] = await tx
         .select({ id: bookings.id, tenantId: bookings.tenantId })
         .from(bookings)
@@ -324,6 +408,46 @@ export async function applyVerifiedPaymentWebhook(
     if (settled.length === 0) {
       await noteOutcome(tx, eventId, 'duplicate')
       return { kind: 'duplicate', intentId: intent.id, reason: 'intent settled concurrently' }
+    }
+
+    if (intent.purpose === 'event_registration') {
+      // ── 7c. confirm the place ────────────────────────────────────────────
+      // The amount handed over is the INTENT's stored figure — which step 4
+      // has just proved equals the paise Razorpay reported. The SQL function
+      // compares it against events.entry_fee a third time, under the event's
+      // own lock, before it grants anything. No number in this path ever came
+      // from a browser.
+      const outcome = await confirmEventRegistrationPayment(tx, {
+        registrationId: registration!.id,
+        paymentReference: payment.id,
+        amount: intent.amount,
+      })
+
+      if (outcome === 'not_found') {
+        // The row was read `for update` a few statements ago. Refuse loudly
+        // rather than reporting a confirmation that did not happen.
+        throw new Error(
+          `event_registration webhook: registration ${registration!.id} vanished mid-transaction`,
+        )
+      }
+
+      const refundRequired = REFUND_OUTCOMES.includes(outcome)
+      if (refundRequired) {
+        // Money the venue holds against no place. Logged with the ids a human
+        // needs and nothing else — no secret, no signature, no raw body.
+        console.error(
+          `[razorpay-webhook] event registration ${registration!.id} could not be honoured (${outcome}) — refund required for payment ${payment.id}`,
+        )
+      }
+
+      return {
+        kind: 'processed',
+        purpose: 'event_registration',
+        intentId: intent.id,
+        registrationId: registration!.id,
+        registrationOutcome: outcome,
+        refundRequired,
+      }
     }
 
     if (intent.purpose === 'booking_deposit') {
