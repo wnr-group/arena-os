@@ -32,6 +32,22 @@ export type PublicBookingConfirmation = {
   total: string
   createdAt: string
   slots: PublicBookingSlot[]
+  /**
+   * The venue is still owed a deposit on this booking.
+   *
+   * A booking is `confirmed` from the instant it is created — payment is a
+   * SEPARATE step, and every exit from the Razorpay flow (success, failure,
+   * script error, and the customer simply closing the modal) lands on this
+   * page. So `status` alone cannot answer "has this been paid for", and
+   * anything that should not greet an unpaid customer with a celebration has
+   * to consult this instead.
+   *
+   * Derived the same way lib/payments/deposit-settlement.ts derives it — a
+   * `paid` intent carrying a gateway payment id — so there is one definition
+   * of a settled deposit, not two. The frontend Razorpay callback is never
+   * consulted: only the verified webhook writes that row.
+   */
+  awaitingPayment: boolean
 }
 
 /**
@@ -58,6 +74,7 @@ export async function getPublicBookingByToken(
         customerName: bookings.customerName,
         total: bookings.total,
         createdAt: bookings.createdAt,
+        deposit: bookings.deposit,
       })
       .from(bookings)
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
@@ -103,6 +120,8 @@ export async function getPublicBookingByToken(
       customerName: booking.customerName,
       total: booking.total,
       createdAt: booking.createdAt.toISOString(),
+      // A verified paid intent is the only thing that writes paidOnline > 0.
+      awaitingPayment: Number(booking.deposit) > 0 && Number(paidOnline) === 0,
       // M21: a public/online booking never lands on an open-tab walk-in slot
       // (endsAt null) — this filter is a type-safety no-op today, not a
       // behavior change.

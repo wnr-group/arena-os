@@ -16,6 +16,7 @@ import { formatMoney } from '@/lib/format'
 import { PendingPaymentPanel } from './PendingPaymentPanel'
 import type { PublicBookingConfirmation } from '@/lib/booking/public-confirmation'
 import type { PublicTenant } from '@/lib/tenant/public'
+import { WhatsappGroupRedirect } from './WhatsappGroupRedirect'
 
 /** Booking statuses where offering food still makes sense — not a cancelled
  *  or no-show visit. */
@@ -68,6 +69,8 @@ export function BookingConfirmation({
   qrSvg,
   hasMenu,
   justPaid = false,
+  whatsappGroupUrl = null,
+  fromNewBooking = false,
 }: {
   booking: PublicBookingConfirmation
   /** The booking's own confirmation_token (the /b/[token] route param) —
@@ -83,6 +86,15 @@ export function BookingConfirmation({
   hasMenu: boolean
   /** Arrived from the payment window's success callback (?paid=1): wait for the webhook. */
   justPaid?: boolean
+  /** The venue's WhatsApp group invite, or null when the owner has not
+   *  enabled one (lib/booking/public-whatsapp.ts). Null is the ONLY thing
+   *  this component checks — disabled, unconfigured and invalid all arrive
+   *  as null, and all mean "render nothing extra". */
+  whatsappGroupUrl?: string | null
+  /** True only when the booking flow handed straight off to this page (?new=1).
+   *  Anything else — the check-in QR, a My Bookings link, a bookmark — renders
+   *  the join button without arming the countdown. */
+  fromNewBooking?: boolean
 }) {
   const slot = booking.slots[0] ?? null
   const StatusIcon = STATUS_ICON[booking.status] ?? CheckCircle2
@@ -90,6 +102,12 @@ export function BookingConfirmation({
   const statusLabel = booking.holdReleased ? 'Hold expired' : (STATUS_LABEL[booking.status] ?? booking.status)
   const showQr = booking.status === 'confirmed' || booking.status === 'checked_in'
   const canAddFood = hasMenu && CAN_ADD_FOOD_STATUSES.has(booking.status)
+  // Gated on the same active statuses the food nudge uses: a cancelled or
+  // no-show visit is not an occasion to push somebody into the venue's group.
+  // A local const rather than a `!` at the call site, so the narrowing is the
+  // type system's rather than an assertion that could outlive the check.
+  const whatsappUrl =
+    whatsappGroupUrl && CAN_ADD_FOOD_STATUSES.has(booking.status) ? whatsappGroupUrl : null
 
   return (
     <div className="mx-auto max-w-md px-4 py-12 sm:px-6 sm:py-16">
@@ -147,6 +165,18 @@ export function BookingConfirmation({
           <SummaryRow icon={Wallet} label="Balance due at venue (before tax)" value={formatMoney(booking.balanceDue, tenant.currency)} />
         )}
       </div>
+
+      {/* After the details, never before them: the customer sees what they
+          booked first, and the countdown starts from a page that has already
+          told them the booking succeeded. */}
+      {whatsappUrl && (
+        <WhatsappGroupRedirect
+          url={whatsappUrl}
+          storageKey={`wa-group:${confirmationToken}`}
+          fromNewBooking={fromNewBooking}
+          awaitingPayment={booking.awaitingPayment}
+        />
+      )}
 
       {canAddFood && (
         <Link

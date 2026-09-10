@@ -13,6 +13,11 @@ import { z } from 'zod'
 import type * as schema from '@/db/schema'
 import { businessProfiles, taxRates, tenants } from '@/db/schema'
 import type { ServiceChargeConfig } from '@/lib/billing/pricing'
+import {
+  normalizeWhatsappGroupUrl,
+  whatsappGroupFields,
+  WHATSAPP_GROUP_ENABLED_MESSAGE,
+} from './whatsapp-group'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -78,7 +83,19 @@ export const businessProfileSchema = z.object({
     .max(100, 'Service charge cannot exceed 100%.')
     .optional(),
   serviceChargeTaxRateId: z.string().uuid().optional().nullable(),
+  ...whatsappGroupFields,
 })
+  /**
+   * The one rule ABOUT the pair, which neither field can state alone: the
+   * invite cannot be switched on with nothing to point at. Mirrored by
+   * business_profiles_whatsapp_group_enabled in 0103 — this copy exists so the
+   * owner gets a sentence instead of a constraint violation, exactly as
+   * validateEventFields() does for the event CHECKs.
+   */
+  .refine((v) => !v.whatsappGroupEnabled || !!v.whatsappGroupUrl?.trim(), {
+    path: ['whatsappGroupUrl'],
+    message: WHATSAPP_GROUP_ENABLED_MESSAGE,
+  })
 
 export type BusinessProfileInput = z.infer<typeof businessProfileSchema>
 
@@ -155,6 +172,7 @@ export async function upsertBusinessProfile(
     if (!rate) throw new Error('That tax rate was not found.')
   }
 
+  const whatsappUrl = normalizeWhatsappGroupUrl(input.whatsappGroupUrl)
   const values = {
     legalName: blankToNull(input.legalName),
     gstin: blankToNull(input.gstin),
@@ -164,6 +182,17 @@ export async function upsertBusinessProfile(
     placeOfSupply: blankToNull(input.placeOfSupply),
     serviceChargePercent: (input.serviceChargePercent ?? 0).toFixed(2),
     serviceChargeTaxRateId: input.serviceChargeTaxRateId ?? null,
+    // Stored CANONICAL, never as typed: normalize drops the query and fragment,
+    // so the value the confirmation page redirects to can carry nothing that
+    // was not part of the invite. A link that does not validate is stored as
+    // null rather than rejected here — the schema above has already refused it
+    // for any caller that went through the action.
+    whatsappGroupUrl: whatsappUrl,
+    // `&& whatsappUrl !== null` is not belt-and-braces for the schema, it is
+    // what makes the 0103 CHECK unfireable from this writer even if a future
+    // caller skips the schema. The flag itself is REQUIRED on the input (see
+    // whatsappGroupFields), so this cannot quietly default to off.
+    whatsappGroupEnabled: input.whatsappGroupEnabled && whatsappUrl !== null,
   }
 
   const [row] = await tx

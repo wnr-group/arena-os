@@ -40,6 +40,8 @@ export default async function BusinessSettingsPage() {
           placeOfSupply: profile?.placeOfSupply ?? '',
           serviceChargePercent: profile?.serviceChargePercent ?? '0',
           serviceChargeTaxRateId: profile?.serviceChargeTaxRateId ?? '',
+          whatsappGroupUrl: profile?.whatsappGroupUrl ?? '',
+          whatsappGroupEnabled: profile?.whatsappGroupEnabled ?? false,
         }}
         tenantName={ctx.tenant.name}
         configured={profile !== null}
