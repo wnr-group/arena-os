@@ -228,6 +228,15 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
 
     const format = isFormat(row.format) ? row.format : null
 
+    // Everyone the DRAW names. The one definition of "who is in this
+    // bracket", used by the standings below and by participantCount — which
+    // used to count the name projection instead, so the two disagreed
+    // whenever the projection returned fewer rows than the draw. Hoisted
+    // above the format branch because knockout formats need the count too.
+    const drawn = new Set(
+      matchRows.flatMap((m) => [m.a, m.b]).filter((x): x is string => x !== null),
+    )
+
     // ── standings, via the SHARED pure function ────────────────────────────
     let standings: PublicStanding[] = []
     if (format === 'round_robin' || format === 'points') {
@@ -255,9 +264,6 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
       // appending any drawn id the projection did not name — sorted by
       // registration id, the seeding rule's own secondary key — keeps that case
       // as stable 'Entrant' rows instead of a silently shortened table.
-      const drawn = new Set(
-        matchRows.flatMap((m) => [m.a, m.b]).filter((x): x is string => x !== null),
-      )
       const named = nameRows.rows.map((r) => r.registration_id)
       const namedSet = new Set(named)
       const seedOrder = [
@@ -308,7 +314,7 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
         startsAt: row.startsAt,
         endsAt: row.endsAt,
         branchName: row.branchName,
-        participantCount: nameOf.size,
+        participantCount: drawn.size,
       },
       matches,
       standings,

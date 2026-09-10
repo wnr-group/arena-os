@@ -19,7 +19,7 @@
     "seed:demo": "tsx scripts/seed-demo.ts",
     "expenses:recurring": "tsx scripts/run-recurring-expenses.ts",
     "reports:refresh": "tsx scripts/refresh-reports.ts",
-    "events:recurring": "tsx scripts/run-recurring-events.ts",
+    "events:recurring": "tsx --import ./scripts/server-only-hook.mjs scripts/run-recurring-events.ts",
     "billing:dunning": "tsx --import ./scripts/server-only-hook.mjs scripts/run-dunning.ts",
     "_comment:m16": "The M16 suites need BOTH hooks. Two of them additionally drive server actions, which call cookies()/revalidatePath() and therefore need the Next request-runtime stub — run without it they fail 48/61 or die with 'cookies was called outside a request scope', which looks like a product bug and is not one.",
     "test:m16": "npm run test:m16:subscriptions && npm run test:m16:invoices && npm run test:m16:billing && npm run test:m16:dunning && npm run test:m16:authz && npm run test:m16:portal && npm run test:m16:limits && npm run test:m16:grandfather && npm run test:m16:createplan && npm run test:m16:period && npm run test:m16:payslip-downgrade",

@@ -320,14 +320,31 @@ export async function applyVerifiedPaymentWebhook(
         await noteOutcome(tx, eventId, 'rejected')
         return { kind: 'rejected', reason: 'event registration not found for this tenant' }
       }
-      // Checked BEFORE the intent is settled, so a redelivery that has already
-      // been applied leaves this transaction without writing anything.
-      if (row.paymentReference) {
-        await noteOutcome(tx, eventId, row.paymentReference === payment.id ? 'duplicate' : 'rejected')
-        return row.paymentReference === payment.id
-          ? { kind: 'duplicate', intentId: intent.id, reason: 'registration already confirmed by this payment' }
-          : { kind: 'rejected', reason: 'registration already settled by another payment' }
+      // A REDELIVERY of the payment already applied: checked before the intent
+      // is settled, so it leaves this transaction without writing anything.
+      if (row.paymentReference && row.paymentReference === payment.id) {
+        await noteOutcome(tx, eventId, 'duplicate')
+        return {
+          kind: 'duplicate',
+          intentId: intent.id,
+          reason: 'registration already confirmed by this payment',
+        }
       }
+      // A DIFFERENT payment id is deliberately NOT short-circuited.
+      //
+      // It means a second, distinct, verified-and-CAPTURED payment landed on a
+      // place that is already paid for — the venue is holding money it owes
+      // back. Returning `rejected` here (which is what this used to do) left
+      // that money with no refund_required flag, no audit row and no console
+      // trail: the only trace was a webhook_events row marked rejected, and
+      // idx_event_registrations_refund_required — the list an operator works
+      // from — never saw it.
+      //
+      // So it falls through to confirm_event_registration_payment(), whose
+      // `already_paid` branch flags the registration and audits it, and which
+      // this file then reports through REFUND_OUTCOMES exactly as it already
+      // reports `unfulfillable` and `amount_mismatch`. The place itself is
+      // never granted twice — the SQL refuses that under the event lock.
       registration = { id: row.id }
     } else if (intent.purpose === 'booking_deposit') {
       const [row] = await tx

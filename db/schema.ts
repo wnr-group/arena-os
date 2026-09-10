@@ -2723,6 +2723,16 @@ export const eventSeries = pgTable(
     /** Generation stops after this local date. Null = indefinite. */
     untilDate: date('until_date'),
     isActive: boolean('is_active').notNull().default(true),
+    /**
+     * What each generated occurrence RESERVES (migration 0103). Copied onto
+     * the occurrence, which then materialises booking_slots through the same
+     * syncEventBlocks() a hand-created event uses — one implementation of
+     * "what does this event hold", not a second one in the job.
+     *
+     * 'none' or 'branch' only, CHECK-enforced: 'specific' names individual
+     * stations and a template has nowhere to keep that list.
+     */
+    resourceScope: eventResourceScope('resource_scope').notNull().default('none'),
     // ── the snapshot copied onto each occurrence ──────────────────────────
     title: text('title').notNull(),
     type: eventType('type').notNull(),

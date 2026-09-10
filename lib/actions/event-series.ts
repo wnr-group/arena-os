@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { eventSeries } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
+import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { EventError, validateEventFields } from '@/lib/events/service'
 import { EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
@@ -41,6 +42,9 @@ type Result = { error?: string }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof EventError) return { error: e.message }
+  // The plan does not include Tournaments & Events — a refusal about what the
+  // business bought, not who is asking. Same shape as lib/actions/expenses.ts.
+  if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code } = pgError(e)
   if (code === '23503') return { error: 'That venue no longer exists.' }
@@ -77,11 +81,19 @@ const seriesInput = z.object({
   tournamentFormat: z.enum(TOURNAMENT_FORMATS as [string, ...string[]]).optional().or(z.literal('')),
   registrationMode: z.enum(['solo', 'team']).default('solo'),
   teamSize: z.coerce.number().int().min(2).max(20).nullable().optional(),
+  /**
+   * What every generated occurrence reserves (0103). 'specific' is absent on
+   * purpose — a template cannot name individual stations, because the ones it
+   * named may not exist by the time an occurrence is generated. Mirrored by
+   * event_series_resource_scope in the migration.
+   */
+  resourceScope: z.enum(['none', 'branch']).default('none'),
 })
 
 export async function upsertEventSeries(input: z.input<typeof seriesInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const v = seriesInput.parse(input)
 
     if (v.cadence === 'weekly' && (v.weekday === null || v.weekday === undefined)) {
@@ -150,6 +162,7 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
       tournamentFormat: (v.tournamentFormat || null) as (typeof TOURNAMENT_FORMATS)[number] | null,
       registrationMode: v.registrationMode,
       teamSize: v.registrationMode === 'team' ? (v.teamSize ?? null) : null,
+      resourceScope: v.resourceScope,
     }
 
     await withUser(ctx.user.id, async (tx) => {
@@ -181,6 +194,7 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
 export async function setEventSeriesActive(seriesId: string, active: boolean): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(seriesId)
     const isActive = z.boolean().parse(active)
 
@@ -208,6 +222,7 @@ export async function setEventSeriesActive(seriesId: string, active: boolean): P
 export async function deleteEventSeries(seriesId: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
     const id = z.string().uuid().parse(seriesId)
 
     await withUser(ctx.user.id, (tx) =>

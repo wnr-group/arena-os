@@ -43,7 +43,7 @@ async function refusal(fn: () => Promise<unknown>): Promise<string | null> {
 
 /** Run the real generator, the way cron would. */
 function runGenerator(): string {
-  return execFileSync('npx', ['tsx', 'scripts/run-recurring-events.ts'], {
+  return execFileSync('npx', ['tsx', '--import', './scripts/server-only-hook.mjs', 'scripts/run-recurring-events.ts'], {
     encoding: 'utf8',
     shell: true,
     stdio: 'pipe',
