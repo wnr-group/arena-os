@@ -448,3 +448,55 @@ export function isEventRegistrationMode(v: unknown): v is EventRegistrationMode 
 
 /** Every status that blocks a second entry — re-exported shape for readability. */
 export const ACTIVE_REGISTRATION_STATUSES: readonly EventRegistrationStatus[] = ACTIVE_STATUSES
+
+/**
+ * Cancel every active entry on an event the venue has just called off, and flag
+ * whoever paid.
+ *
+ * Called from setEventStatus() when an event moves to `cancelled`, inside that
+ * same transaction. It exists because cancelling an EVENT and cancelling a
+ * REGISTRATION were two unrelated code paths: the second flagged refunds, the
+ * first did not touch registrations at all.
+ *
+ * ── The refund rule is copied from cancel_event_registration(), not invented ─
+ *
+ * `refund_required = paid_amount > 0` is exactly what 0091's per-entrant
+ * cancellation does. Money received means money owed back; a free event owes
+ * nothing and is left unflagged, so the operator's refund list stays a list of
+ * actual refunds.
+ *
+ * ── Why ACTIVE_STATUSES and not "everything" ───────────────────────────────
+ *
+ * A row already `cancelled` carries whatever flag its own cancellation set, and
+ * must not have it recomputed — a customer who cancelled a paid entry and was
+ * refunded weeks ago should not be re-flagged because the venue later called
+ * the event off. Narrowing to the active set also makes this idempotent: run it
+ * twice and the second pass matches nothing.
+ *
+ * No capacity work and no waitlist promotion: the event is cancelled, so there
+ * is no place left to promote anybody into.
+ */
+export async function cancelRegistrationsForCancelledEvent(
+  tx: DB,
+  tenantId: string,
+  eventId: string,
+): Promise<number> {
+  const cancelled = await tx
+    .update(eventRegistrations)
+    .set({
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      paymentHoldExpiresAt: null,
+      refundRequired: sql`${eventRegistrations.paidAmount} > 0`,
+    })
+    .where(
+      and(
+        eq(eventRegistrations.tenantId, tenantId),
+        eq(eventRegistrations.eventId, eventId),
+        inArray(eventRegistrations.status, [...ACTIVE_STATUSES]),
+      ),
+    )
+    .returning({ id: eventRegistrations.id })
+
+  return cancelled.length
+}

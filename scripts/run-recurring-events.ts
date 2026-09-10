@@ -31,6 +31,9 @@
  * from wherever it stopped.
  */
 import { Client } from 'pg'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import * as schema from '../db/schema'
+import { syncEventBlocks } from '../lib/events/resource-blocks'
 import { loadEnv } from './env'
 
 /**
@@ -58,6 +61,18 @@ async function main() {
   if (!url) throw new Error('DATABASE_URL_OWNER is not set in .env.local')
 
   const client = new Client({ connectionString: url })
+  // A Drizzle handle over THIS SAME client — not a second connection.
+  //
+  // syncEventBlocks() is Drizzle-shaped, and wrapping the very client that
+  // holds the open transaction is what puts its writes INSIDE that
+  // transaction. The occurrence and the booking_slots it reserves therefore
+  // commit together or not at all: if the court is already booked, the insert
+  // is rolled back with it and next_run is not advanced, so the next run
+  // retries instead of leaving a class that exists but holds nothing.
+  //
+  // A separate pool would NOT work: it could not see this transaction's
+  // uncommitted event row.
+  const db = drizzle(client, { schema })
   await client.connect()
   const started = Date.now()
 
@@ -127,13 +142,13 @@ async function main() {
         //
         // `on conflict do nothing` against idx_events_series_occurrence is the
         // idempotency guarantee.
-        const { rowCount } = await client.query(
+        const { rowCount, rows: made_ } = await client.query<{ id: string }>(
           `insert into public.events
-             (tenant_id, branch_id, title, type, description, banner_url,
+             (tenant_id, branch_id, title, type, description, banner_url, resource_scope,
               starts_at, ends_at, capacity, entry_fee, tournament_format,
               registration_mode, team_size, status, created_by,
               series_id, occurrence_period)
-           select s.tenant_id, s.branch_id, s.title, s.type, s.description, s.banner_url,
+           select s.tenant_id, s.branch_id, s.title, s.type, s.description, s.banner_url, s.resource_scope,
                   ($2::date + s.start_time) at time zone t.timezone,
                   ($2::date + s.start_time) at time zone t.timezone
                     + make_interval(mins => s.duration_minutes),
@@ -149,12 +164,29 @@ async function main() {
              join public.tenants t on t.id = s.tenant_id
             where s.id = $1
            on conflict (series_id, occurrence_period) where series_id is not null
-           do nothing`,
+           do nothing
+           returning id`,
           [s.id, cursor],
         )
 
-        if (rowCount && rowCount > 0) made++
-        else skipped++
+        if (rowCount && rowCount > 0) {
+          made++
+          // ── the occurrence RESERVES what the series says it reserves ──────
+          //
+          // Without this an occurrence was created in 'registration_open' — a
+          // status that is supposed to hold its stations — while holding
+          // nothing, because the template had no scope to copy and the job
+          // never materialised a block. A weekly class left its court bookable
+          // by anyone, every week, forever.
+          //
+          // syncEventBlocks() is the SAME function the settings screen calls,
+          // not a SQL reimplementation: one definition of what an event holds,
+          // and the booking_slots exclusion constraint (0003/0094) is what
+          // actually enforces it. A conflict throws, which rolls this series'
+          // transaction back — the occurrence and its block are all-or-nothing,
+          // exactly as they are when a manager publishes by hand.
+          await syncEventBlocks(db as never, s.tenant_id, made_[0].id)
+        } else skipped++
 
         // Advance the cursor in SQL. The month-end rule REUSES
         // recurring_expense_due_day() from 0042 — the function that already
