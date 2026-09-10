@@ -17,6 +17,11 @@ import {
   whatsappGroupFields,
   WHATSAPP_GROUP_ENABLED_MESSAGE,
 } from './whatsapp-group'
+import {
+  normalizeGoogleReviewUrl,
+  googleReviewFields,
+  GOOGLE_REVIEW_ENABLED_MESSAGE,
+} from './google-review'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -72,6 +77,7 @@ export const businessProfileSchema = z.object({
     ),
   placeOfSupply: optionalText(100, 'Place of supply'),
   ...whatsappGroupFields,
+  ...googleReviewFields,
 })
   /**
    * The one rule ABOUT the pair, which neither field can state alone: the
@@ -80,6 +86,11 @@ export const businessProfileSchema = z.object({
    * owner gets a sentence instead of a constraint violation, exactly as
    * validateEventFields() does for the event CHECKs.
    */
+  /** Same pair rule as WhatsApp: the prompt cannot be on with nothing to point at. */
+  .refine((v) => !v.googleReviewEnabled || !!v.googleReviewUrl?.trim(), {
+    path: ['googleReviewUrl'],
+    message: GOOGLE_REVIEW_ENABLED_MESSAGE,
+  })
   .refine((v) => !v.whatsappGroupEnabled || !!v.whatsappGroupUrl?.trim(), {
     path: ['whatsappGroupUrl'],
     message: WHATSAPP_GROUP_ENABLED_MESSAGE,
@@ -128,6 +139,7 @@ export async function upsertBusinessProfile(
   input: BusinessProfileInput,
 ): Promise<BusinessProfile> {
   const whatsappUrl = normalizeWhatsappGroupUrl(input.whatsappGroupUrl)
+  const googleUrl = normalizeGoogleReviewUrl(input.googleReviewUrl)
   const values = {
     legalName: blankToNull(input.legalName),
     gstin: blankToNull(input.gstin),
@@ -146,6 +158,10 @@ export async function upsertBusinessProfile(
     // caller skips the schema. The flag itself is REQUIRED on the input (see
     // whatsappGroupFields), so this cannot quietly default to off.
     whatsappGroupEnabled: input.whatsappGroupEnabled && whatsappUrl !== null,
+    // Stored canonical, and enabled only alongside a real link — so the 0104
+    // CHECK is unfireable from this writer even if a caller skips the schema.
+    googleReviewUrl: googleUrl,
+    googleReviewEnabled: input.googleReviewEnabled && googleUrl !== null,
   }
 
   const [row] = await tx
