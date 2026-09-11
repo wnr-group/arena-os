@@ -6,7 +6,7 @@ import { requireCustomer } from '@/lib/auth/customer-guard'
 import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
 
 /**
- * THE Google review prompt decision, made once, on the server (0104).
+ * THE Google review prompt decision, made once, on the server (0105).
  *
  * Every condition the prompt depends on is answered here, so the client
  * component receives a URL or null and has no judgement of its own to make.
@@ -19,7 +19,7 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  *   1. Has this customer already answered?      customers.google_review_…
  *   2. Has the venue enabled a link?            public_google_review()
  *   3. Is the stored link still valid?          normalizeGoogleReviewUrl()
- *   4. Is the customer eligible?                a successful booking or order
+ *   4. Is the customer eligible?                a finished visit — see below
  *
  * Any "no" returns null and the portal renders nothing. The customer's own
  * answer is checked FIRST because it is a column on a row already being read,
@@ -28,27 +28,53 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  *
  * ── ELIGIBILITY IS DERIVED, NEVER STORED ───────────────────────────────────
  *
- * "Has a successful booking or order" is a question `bookings` and `orders`
- * already answer. Deriving it rather than maintaining an `eligible` flag is
- * what lets this feature touch neither the booking flow nor the order flow —
+ * "Has this customer finished a visit" is a question `bookings`, `orders` and
+ * `kots` already answer. Deriving it rather than maintaining an `eligible` flag
+ * is what lets this feature touch neither the booking flow nor the order flow —
  * and it is also why five bookings cannot produce five prompts: there is no
  * per-booking row to produce them from. One customer, one question, one answer.
  *
- * A cancelled booking or a rejected order stops counting the moment it changes,
- * with no reconciliation job, because nothing was copied.
+ * A cancelled booking or a cancelled order stops counting the moment it
+ * changes, with no reconciliation job, because nothing was copied.
  *
- * ── What counts as SUCCESSFUL ──────────────────────────────────────────────
+ * ── ONE RULE, EVERYWHERE IN THE PORTAL ─────────────────────────────────────
  *
- * BOOKINGS: confirmed, checked_in or completed. Not `cancelled`, not
- * `no_show` — someone who never turned up has no experience to rate.
- * `completed` is included even though ACTIVE_BOOKING_STATUSES omits it: that
- * constant answers "is this booking live right now", which is a different
- * question from "did this customer have a session".
+ * The prompt is mounted once, by the portal layout, and asks the same question
+ * on every portal page — /account, /account/bookings, /account/wallet and
+ * /account/profile alike. There is deliberately no per-route variation: a
+ * customer who is due the ask is due it wherever they happen to be, and a rule
+ * that changed between tabs of the same portal reads as a bug rather than as a
+ * design.
  *
- * ORDERS: accepted, and not cancelled. `acceptance_status` is the gate a human
- * or a payment passed (lib/orders/public-status.ts), so `pending` (nobody has
- * accepted it yet), `rejected` and `awaiting_payment` are all excluded — an
- * abandoned cart never reaches `accepted` at all.
+ * ── What counts as a QUALIFYING EXPERIENCE (0108) ──────────────────────────
+ *
+ * EITHER of these — one finished experience is enough to have something to
+ * review — but each now means something that actually ended:
+ *
+ *   BOOKING   status = 'completed'. Not `confirmed` and not `checked_in` —
+ *             both of those mean the visit is still ahead of or during the
+ *             customer, and `confirmed` is true from the instant a booking is
+ *             created. Not `cancelled` or `no_show`: somebody who never turned
+ *             up has no experience to rate.
+ *
+ *   FOOD      an `accepted`, non-cancelled order whose KITCHEN TICKET has been
+ *             served. Delivery is not on the order: `orders.status` is the
+ *             billing lifecycle (open / billed / cancelled) and has no
+ *             fulfilment value at all. `kots.status = 'served'` is the moment
+ *             food reached the customer, and is the same signal
+ *             deriveCustomerOrderStatus() shows them in the portal.
+ *
+ * OR rather than AND, because a venue need not sell food at all: a recording
+ * studio or a VR centre has no kitchen, so no KOT will ever exist for it and
+ * requiring both would mean its customers could never be asked. Equally,
+ * somebody who only ordered food still had an experience worth rating.
+ *
+ * Only the FOOD half moved in 0108. An `accepted` order used to qualify on its
+ * own, but accepted only means somebody let the order exist — the food may
+ * never have left the kitchen.
+ *
+ * The two are independent — `orders.booking_id` is nullable, so food ordered
+ * without a booking token counts on its own.
  */
 
 export type ReviewPrompt = {
@@ -56,6 +82,16 @@ export type ReviewPrompt = {
   url: string
   /** Names the venue in the copy, so the ask reads as the venue's, not ours. */
   venueName: string
+  /**
+   * Scopes the browser's "maybe later" memory to THIS customer (0107).
+   *
+   * The key used to be a constant, so two customers signing in from the same
+   * browser tab shared one dismissal: the second was never asked. Not a
+   * cross-tenant leak — subdomains are separate origins, so sessionStorage
+   * cannot cross venues — but it did silence a prompt for the wrong person.
+   * The WhatsApp countdown already scoped its key this way (per booking token).
+   */
+  customerId: string
 }
 
 
@@ -82,7 +118,7 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
 
     // 2 + 3. The venue's link. The function returns null when the owner has not
     //    enabled it; normalize re-validates because this value's next stop is
-    //    an href in a customer's browser, and a row written before the 0104
+    //    an href in a customer's browser, and a row written before the 0105
     //    CHECK existed must not be able to send anybody off-Google.
     const { rows } = await tx.execute<{ url: string | null }>(
       sql`select public.public_google_review(${customer.tenantId}::uuid) as url`,
@@ -90,19 +126,24 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
     const url = normalizeGoogleReviewUrl(rows[0]?.url ?? null)
     if (!url) return null
 
-    // 4. Eligibility, through customer_review_eligible() (0104).
+    // 4. Eligibility, through customer_review_eligible() (0105; its FOOD half
+    //    tightened to "actually delivered" in 0108, booking half unchanged).
     //
     //    NOT a query from here: a customer session has no policy on `orders`
-    //    at all — only staff and the public tenant GUC do — so an EXISTS
-    //    written in this file would silently answer "no" for every customer
-    //    who had only ordered food. The function reads past RLS by design,
-    //    confines itself to current_customer_id()'s own rows, and returns one
-    //    boolean, so no booking or order detail crosses the boundary.
+    //    or `kots` at all — only staff and the public tenant GUC do — so an
+    //    EXISTS written in this file would silently answer "no" for every
+    //    customer. The function reads past RLS by design, confines itself to
+    //    the caller's own tenant and customer GUCs, and returns one boolean, so
+    //    no booking or order detail crosses the boundary.
+    //
+    //    One round trip, two indexed EXISTS. Nothing is loaded and counted in
+    //    application code, so a customer with a hundred orders costs the same
+    //    as one with two.
     const { rows: elig } = await tx.execute<{ yes: boolean }>(
       sql`select public.customer_review_eligible() as yes`,
     )
     if (!elig[0]?.yes) return null
-    return { url, venueName }
+    return { url, venueName, customerId: customer.id }
   })
 }
 
@@ -128,7 +169,7 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
 export async function markReviewPromptCompleted(): Promise<boolean> {
   const customer = await requireCustomer()
   return withCustomer(customer.id, async (tx) => {
-    // customer_complete_review_prompt() (0104), not an UPDATE from here: a
+    // customer_complete_review_prompt() (0105), not an UPDATE from here: a
     // customer session has no permissive UPDATE policy on `customers` —
     // customers_customer_isolation is RESTRICTIVE, which narrows and never
     // grants — so a direct write silently affects nothing. The function names

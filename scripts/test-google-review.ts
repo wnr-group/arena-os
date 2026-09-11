@@ -1,5 +1,5 @@
 /**
- * Google review prompt (0104) — the URL rule, eligibility, completion and
+ * Google review prompt (0105) — the URL rule, eligibility, completion and
  * tenant isolation, against a real database.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-google-review.ts
@@ -138,6 +138,43 @@ async function main() {
         .then((r) => r.rows[0].yes),
     )
 
+  /**
+   * THE decision, exactly as lib/portal/review-prompt.ts makes it: the same
+   * three gates, in the same order, inside one customer transaction. Returns
+   * the URL the popup would be handed, or null when no popup shows.
+   *
+   * Worth having as well as the per-gate helpers above, because "does the
+   * popup appear" is a question about the gates TOGETHER — an eligible
+   * customer who has already answered must still get nothing, and that
+   * combination is not visible from either gate alone.
+   *
+   * Every rule it consults lives in SQL (public_google_review,
+   * customer_review_eligible, the completion column), so this mirrors the
+   * reader's ORDER without re-stating any of its logic.
+   */
+  const promptFor = (customerId: string, tenantId: string) =>
+    asCustomer(customerId, async (tx) => {
+      // 1. already answered?
+      const answered = await tx.execute<{ done: Date | null }>(
+        sql`select google_review_prompt_completed_at as done
+              from public.customers where id = ${customerId}::uuid`,
+      )
+      if (!answered.rows[0] || answered.rows[0].done !== null) return null
+
+      // 2 + 3. the venue's link, enabled and still valid
+      const link = await tx.execute<{ url: string | null }>(
+        sql`select public.public_google_review(${tenantId}::uuid) as url`,
+      )
+      const url = link.rows[0]?.url ?? null
+      if (!url) return null
+
+      // 4. eligibility
+      const elig = await tx.execute<{ yes: boolean }>(
+        sql`select public.customer_review_eligible() as yes`,
+      )
+      return elig.rows[0]?.yes === true ? url : null
+    })
+
   /** Completion exactly as the app does it — through the function. */
   const complete = (customerId: string) =>
     asCustomer(customerId, (tx) =>
@@ -229,61 +266,193 @@ async function main() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  section('4. eligibility comes from real bookings and orders')
+  // ── shared fixture builders ───────────────────────────────────────────────
+  //
+  // mkOrder returns the order id because delivery is not ON the order:
+  // orders.status is the BILLING lifecycle (open/billed/cancelled) and has no
+  // fulfilment value. Food reaching the customer is kots.status = 'served', and
+  // createOrderCore writes exactly one KOT per order in the same transaction —
+  // so these fixtures mirror the real shape.
+  const mkBooking = async (customerId: string, status: string, tenant = A) =>
+    owner.query(
+      `insert into bookings (tenant_id,branch_id,customer_id,booking_number,status,source,
+                             subtotal,discount,tax,total,deposit)
+       values ($1,$2,$3,'BK'||floor(random()*1e9)::text,$4::booking_status,'online',
+               '0','0','0','0','0')`,
+      [tenant.tenantId, tenant.branchId, customerId, status],
+    )
+
+  const mkOrder = async (customerId: string, status: string, acceptance: string, tenant = A) => {
+    const r = await owner.query<{ id: string }>(
+      `insert into orders (tenant_id,branch_id,customer_id,order_number,status,acceptance_status)
+       values ($1,$2,$3,'OD'||floor(random()*1e9)::text,$4::order_status,$5::order_acceptance_status)
+       returning id`,
+      [tenant.tenantId, tenant.branchId, customerId, status, acceptance],
+    )
+    return r.rows[0].id
+  }
+
+  const mkKot = async (orderId: string, status: string, tenant = A) =>
+    owner.query(
+      `insert into kots (tenant_id,branch_id,order_id,kot_number,status)
+       values ($1,$2,$3,'KOT'||floor(random()*1e9)::text,$4::kot_status)`,
+      [tenant.tenantId, tenant.branchId, orderId, status],
+    )
+
+  /** Food that reached the customer, and nothing else. */
+  const mkServedFood = async (customerId: string, tenant = A) =>
+    mkKot(await mkOrder(customerId, 'billed', 'accepted', tenant), 'served', tenant)
+
+  section('4. eligibility: an ACTIVE booking OR DELIVERED food (0108)')
   {
+    // Because the rule is OR, each half has to be exercised with the OTHER HALF
+    // ABSENT. A customer given a qualifying booking is eligible whatever their
+    // food looks like, so pairing bad food with a good booking would prove
+    // nothing about the food gate.
+
+    // ── 12. nothing finished at all ─────────────────────────────────────────
     const fresh = await makeCustomer(A.tenantId, 'Never Visited')
     check('a customer with no history is NOT eligible', (await eligible(fresh)) === false)
 
-    // A booking.
-    const booker = await makeCustomer(A.tenantId, 'Booker')
-    const mkBooking = async (customerId: string, status: string) =>
-      owner.query(
-        `insert into bookings (tenant_id,branch_id,customer_id,booking_number,status,source,
-                               subtotal,discount,tax,total,deposit)
-         values ($1,$2,$3,'BK'||floor(random()*1e9)::text,$4::booking_status,'online',
-                 '0','0','0','0','0')`,
-        [A.tenantId, A.branchId, customerId, status],
+    // ── the BOOKING half, with no food anywhere ─────────────────────────────
+    // The booking half is UNCHANGED from 0105: an existing booking that has not
+    // been called off qualifies on its own, whatever the kitchen is doing.
+    for (const st of ['confirmed', 'checked_in', 'completed']) {
+      const c = await makeCustomer(A.tenantId, `${st} booking only`)
+      await mkBooking(c, st)
+      check(`a '${st}' booking ALONE is eligible (no food needed)`, (await eligible(c)) === true)
+    }
+
+    for (const st of ['cancelled', 'no_show']) {
+      const c = await makeCustomer(A.tenantId, `${st} booking only`)
+      await mkBooking(c, st)
+      check(`a '${st}' booking alone is NOT eligible`, (await eligible(c)) === false)
+    }
+
+    // ── the FOOD half, with no booking anywhere ─────────────────────────────
+    const foodOnly = await makeCustomer(A.tenantId, 'Served Food Only')
+    await mkServedFood(foodOnly)
+    check('served food ALONE is eligible (no booking needed)', (await eligible(foodOnly)) === true)
+
+    for (const kot of ['pending', 'preparing', 'ready', 'cancelled']) {
+      const c = await makeCustomer(A.tenantId, `${kot} food only`)
+      await mkKot(await mkOrder(c, 'open', 'accepted'), kot)
+      check(`food still '${kot}' alone is NOT eligible`, (await eligible(c)) === false)
+    }
+
+    const noKot = await makeCustomer(A.tenantId, 'Order never ticketed')
+    await mkOrder(noKot, 'open', 'accepted')
+    check('an accepted order with no kitchen ticket is NOT eligible', (await eligible(noKot)) === false)
+
+    const cancelledOrder = await makeCustomer(A.tenantId, 'Cancelled order, served ticket')
+    await mkKot(await mkOrder(cancelledOrder, 'cancelled', 'accepted'), 'served')
+    check('a CANCELLED order is NOT eligible even once served', (await eligible(cancelledOrder)) === false)
+
+    for (const acc of ['pending', 'rejected', 'awaiting_payment']) {
+      const c = await makeCustomer(A.tenantId, `${acc} order, served ticket`)
+      await mkKot(await mkOrder(c, 'open', acc), 'served')
+      check(`an order still '${acc}' is NOT eligible, even served`, (await eligible(c)) === false)
+    }
+
+    // ── OR, not AND: one good half carries a bad other half ─────────────────
+    const goodBookingBadFood = await makeCustomer(A.tenantId, 'Confirmed booking, food pending')
+    await mkBooking(goodBookingBadFood, 'confirmed')
+    await mkKot(await mkOrder(goodBookingBadFood, 'open', 'accepted'), 'pending')
+    check(
+      'confirmed booking + undelivered food is eligible — the booking carries it',
+      (await eligible(goodBookingBadFood)) === true,
+    )
+
+    const badBookingGoodFood = await makeCustomer(A.tenantId, 'Cancelled booking, food served')
+    await mkBooking(badBookingGoodFood, 'cancelled')
+    await mkServedFood(badBookingGoodFood)
+    check(
+      'cancelled booking + served food is eligible — the food carries it',
+      (await eligible(badBookingGoodFood)) === true,
+    )
+
+    const both = await makeCustomer(A.tenantId, 'Both Halves')
+    await mkBooking(both, 'completed')
+    await mkServedFood(both)
+
+    check('completed booking + served food is eligible', (await eligible(both)) === true)
+
+    const neither = await makeCustomer(A.tenantId, 'Neither Half')
+    await mkBooking(neither, 'no_show')
+    await mkKot(await mkOrder(neither, 'open', 'accepted'), 'cancelled')
+    check('a no-show booking + a cancelled ticket is NOT eligible', (await eligible(neither)) === false)
+
+    // ── 9. one customer cannot borrow another's history ─────────────────────
+    const borrower = await makeCustomer(A.tenantId, 'Borrower')
+    await mkBooking(borrower, 'no_show')
+    check(
+      "another customer's booking and served food do not carry this one",
+      (await eligible(borrower)) === false,
+    )
+    check('…while the customers who earned it still are', (await eligible(both)) === true)
+
+    // ── 10. one tenant cannot make another tenant's customer eligible ───────
+    const bQualified = await makeCustomer(B.tenantId, 'B Qualified')
+    await mkBooking(bQualified, 'confirmed', B)
+    check("tenant B's own booking makes B's customer eligible", (await eligible(bQualified)) === true)
+
+    // The two halves are protected by DIFFERENT things, so they are asserted
+    // differently.
+    //
+    // BOOKINGS carry a composite FK — (tenant_id, customer_id) references
+    // customers(tenant_id, id) — so a booking for tenant A's customer under
+    // tenant B is not merely refused by the eligibility function, it cannot be
+    // WRITTEN. The strongest possible guarantee, so assert that instead of
+    // asserting a row that cannot exist.
+    const aUnderB = await makeCustomer(A.tenantId, 'A customer, B booking')
+    const refused = await refusal(() => mkBooking(aUnderB, 'completed', B))
+    check(
+      "a booking cannot even be written for another tenant's customer",
+      refused?.includes('bookings_customer_tenant_fkey') === true,
+      refused,
+    )
+
+    // ORDERS do NOT have that composite FK — orders_customer_id_fkey is
+    // customer_id alone — so the cross-tenant row IS writable. Here the ONLY
+    // thing standing between tenant B's kitchen and tenant A's customer is the
+    // function's own `o.tenant_id = current_customer_tenant_id()` predicate.
+    // That makes this the case actually worth testing.
+    const aFoodUnderB = await makeCustomer(A.tenantId, 'A customer, B food')
+    await mkServedFood(aFoodUnderB, B)
+    check(
+      "food served under tenant B cannot qualify tenant A's customer",
+      (await eligible(aFoodUnderB)) === false,
+    )
+    check(
+      '…even though the cross-tenant order row was accepted by the schema',
+      (
+        await owner.query(
+          `select 1 from orders where customer_id=$1 and tenant_id=$2`,
+          [aFoodUnderB, B.tenantId],
+        )
+      ).rowCount === 1,
+    )
+
+    // ── 8. an answered prompt stays answered ────────────────────────────────
+    const answered = await makeCustomer(A.tenantId, 'Already Reviewed')
+    await mkBooking(answered, 'confirmed')
+    check('…eligible before answering', (await eligible(answered)) === true)
+    await complete(answered)
+    check('…still eligible as a FACT after answering', (await eligible(answered)) === true)
+    const [{ done }] = (
+      await owner.query<{ done: string | null }>(
+        `select google_review_prompt_completed_at done from customers where id=$1`,
+        [answered],
       )
-    await mkBooking(booker, 'confirmed')
-    check('a confirmed booking makes the customer eligible', (await eligible(booker)) === true)
-
-    const cancelled = await makeCustomer(A.tenantId, 'Cancelled Only')
-    await mkBooking(cancelled, 'cancelled')
-    check('a CANCELLED booking does not', (await eligible(cancelled)) === false)
-
-    const noShow = await makeCustomer(A.tenantId, 'No Show')
-    await mkBooking(noShow, 'no_show')
-    check('a NO-SHOW booking does not', (await eligible(noShow)) === false)
-
-    // An order.
-    const mkOrder = async (customerId: string, status: string, acceptance: string) =>
-      owner.query(
-        `insert into orders (tenant_id,branch_id,customer_id,order_number,status,acceptance_status)
-         values ($1,$2,$3,'OD'||floor(random()*1e9)::text,$4::order_status,$5::order_acceptance_status)`,
-        [A.tenantId, A.branchId, customerId, status, acceptance],
-      )
-    const orderer = await makeCustomer(A.tenantId, 'Orderer')
-    await mkOrder(orderer, 'open', 'accepted')
-    check('an accepted order makes the customer eligible', (await eligible(orderer)) === true)
-
-    const pendingOrder = await makeCustomer(A.tenantId, 'Pending Order')
-    await mkOrder(pendingOrder, 'open', 'pending')
-    check('a PENDING (unaccepted) order does not', (await eligible(pendingOrder)) === false)
-
-    const rejected = await makeCustomer(A.tenantId, 'Rejected Order')
-    await mkOrder(rejected, 'open', 'rejected')
-    check('a REJECTED order does not', (await eligible(rejected)) === false)
-
-    const cancelledOrder = await makeCustomer(A.tenantId, 'Cancelled Order')
-    await mkOrder(cancelledOrder, 'cancelled', 'accepted')
-    check('a CANCELLED order does not', (await eligible(cancelledOrder)) === false)
+    ).rows
+    check('…but the prompt is recorded answered, which is what suppresses it', done !== null)
 
     // §12 — many transactions, still one prompt. The prompt is a QUESTION about
     // the customer, so there is nothing that could exist five times.
     const heavy = await makeCustomer(A.tenantId, 'Regular')
     for (let i = 0; i < 5; i++) await mkBooking(heavy, 'completed')
-    for (let i = 0; i < 5; i++) await mkOrder(heavy, 'billed', 'accepted')
-    check('5 bookings + 5 orders is still exactly one eligible answer', (await eligible(heavy)) === true)
+    for (let i = 0; i < 5; i++) await mkServedFood(heavy)
+    check('5 bookings + 5 delivered orders is still exactly one eligible answer', (await eligible(heavy)) === true)
     const [{ n }] = (
       await owner.query<{ n: string }>(
         `select count(*) n from customers where id=$1 and google_review_prompt_completed_at is null`,
@@ -293,7 +462,6 @@ async function main() {
     check('…and exactly one prompt row — the customer row itself', Number(n) === 1)
   }
 
-  // ════════════════════════════════════════════════════════════════════════
   section('5. completion, and what it does not claim')
   {
     const c = await makeCustomer(A.tenantId, 'Reviewer')
@@ -388,6 +556,118 @@ async function main() {
       'a venue with no profile row reads null, not an error',
       (await linkFor(cc, unconfigured.tenantId)) === null,
     )
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  // Sections 4–7 test each GATE. This one tests the POPUP: the whole decision
+  // getReviewPrompt() makes, for the surfaces a customer actually sees.
+  //
+  // The prompt is mounted once, in app/(portal)/layout.tsx, so it covers every
+  // portal page — /account and /account/bookings, /account/wallet,
+  // /account/profile alike. There is one rule, not one per page: an active
+  // booking OR delivered food. These assert that union end to end, and that
+  // answering it silences the popup EVERYWHERE rather than on the page it was
+  // answered from.
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  // Sections 4–7 test each GATE. This one tests the POPUP: the whole decision
+  // getReviewPrompt() makes, on the two surfaces a customer actually sees.
+  //
+  //   'portal'  every portal page except the home  → a LIVE booking
+  //   'home'    /account                           → that, OR a finished one
+  //
+  // One mounted component picks between them by route (GoogleReviewPrompt), so
+  // these assert the same union the client does — and that answering silences
+  // the popup on BOTH surfaces, not just the one it was answered from.
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  // Sections 4–7 test each GATE. This one tests the POPUP: the whole decision
+  // getReviewPrompt() makes.
+  //
+  // ONE rule, on every portal page. The prompt is mounted once by the portal
+  // layout and asks the same question from /account, /account/bookings,
+  // /account/wallet and /account/profile alike — there is deliberately no
+  // per-route variation, because a prompt that appeared on one tab of the
+  // portal and not another reads as a bug rather than as a design.
+  section('8. the popup itself, across the whole portal')
+  {
+    // ── every qualifying experience raises it ───────────────────────────────
+    const qualifying: [string, (c: string) => Promise<unknown>][] = [
+      ['a confirmed booking', (c) => mkBooking(c, 'confirmed')],
+      ['a checked-in booking', (c) => mkBooking(c, 'checked_in')],
+      ['a completed booking', (c) => mkBooking(c, 'completed')],
+      ['served food', (c) => mkServedFood(c)],
+    ]
+    for (const [label, seed] of qualifying) {
+      const c = await makeCustomer(A.tenantId, `Popup: ${label}`)
+      await seed(c)
+      check(`${label} shows the popup`, (await promptFor(c, A.tenantId)) === URL_A)
+    }
+
+    // ── and nothing else does ───────────────────────────────────────────────
+    const offCases: [string, (c: string) => Promise<unknown>][] = [
+      ['a cancelled booking', (c) => mkBooking(c, 'cancelled')],
+      ['a no-show booking', (c) => mkBooking(c, 'no_show')],
+      ['food still pending in the kitchen', async (c) => mkKot(await mkOrder(c, 'open', 'accepted'), 'pending')],
+      ['a cancelled kitchen ticket', async (c) => mkKot(await mkOrder(c, 'open', 'accepted'), 'cancelled')],
+      ['an order awaiting payment', async (c) => mkKot(await mkOrder(c, 'open', 'awaiting_payment'), 'served')],
+      ['no history at all', async () => undefined],
+    ]
+    for (const [label, seed] of offCases) {
+      const c = await makeCustomer(A.tenantId, `No popup: ${label}`)
+      await seed(c)
+      check(`${label} shows NO popup`, (await promptFor(c, A.tenantId)) === null)
+    }
+
+    // ── "Maybe later" is a BROWSER decision, never a server one ─────────────
+    //
+    // Dismissing is remembered in sessionStorage by GoogleReviewPrompt and
+    // reaches no action at all. What that means server-side is asserted here:
+    // nothing about the customer changed, so the next portal visit — a new tab,
+    // a refresh, tomorrow — asks again. Only the completion function stops it.
+    const later = await makeCustomer(A.tenantId, 'Maybe Later')
+    await mkBooking(later, 'completed')
+    check('…shown on the first visit', (await promptFor(later, A.tenantId)) === URL_A)
+    // (the customer taps "Maybe Later" — no server call happens at all)
+    check('…still pending on a later visit, because nothing was written', (await promptFor(later, A.tenantId)) === URL_A)
+    const untouched = (
+      await owner.query<{ done: string | null }>(
+        `select google_review_prompt_completed_at done from customers where id=$1`,
+        [later],
+      )
+    ).rows[0].done
+    check('…the completion column is untouched by a dismissal', untouched === null)
+
+    // ── "I've left my review" silences it everywhere ────────────────────────
+    const reviewed = await makeCustomer(A.tenantId, 'Says They Reviewed')
+    await mkBooking(reviewed, 'completed')
+    await mkServedFood(reviewed)
+    check('…shown while pending', (await promptFor(reviewed, A.tenantId)) === URL_A)
+    check('the customer confirms', (await complete(reviewed)) === true)
+    check('…no popup afterwards, anywhere in the portal', (await promptFor(reviewed, A.tenantId)) === null)
+    check(
+      '…even though they are still eligible — completion is what suppresses it',
+      (await eligible(reviewed)) === true,
+    )
+    check('…and a replay changes nothing', (await complete(reviewed)) === false)
+
+    // ── isolation, at the popup level ───────────────────────────────────────
+    const aCustomer = await makeCustomer(A.tenantId, 'Popup A')
+    await mkBooking(aCustomer, 'completed')
+    const bCustomer = await makeCustomer(B.tenantId, 'Popup B')
+    await mkBooking(bCustomer, 'completed', B)
+    check("A's customer gets A's link", (await promptFor(aCustomer, A.tenantId)) === URL_A)
+    check("B's customer gets B's link", (await promptFor(bCustomer, B.tenantId)) === URL_B)
+    check("A's customer cannot pull B's link by naming B", (await promptFor(aCustomer, B.tenantId)) === null)
+    check("B's customer cannot pull A's link by naming A", (await promptFor(bCustomer, A.tenantId)) === null)
+
+    // One customer answering must not silence another's prompt.
+    const twin = await makeCustomer(A.tenantId, 'Untouched Twin')
+    await mkBooking(twin, 'completed')
+    await complete(aCustomer)
+    check("…the twin's popup is unaffected by someone else answering", (await promptFor(twin, A.tenantId)) === URL_A)
+    check('…while the one who answered is silenced', (await promptFor(aCustomer, A.tenantId)) === null)
   }
 
   for (const t of [A, B]) {

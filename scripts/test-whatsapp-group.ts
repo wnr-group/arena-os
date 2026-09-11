@@ -1,5 +1,5 @@
 /**
- * WhatsApp group invite (0103) — the rule, the constraints, and the public read.
+ * WhatsApp group invite (0104) — the rule, the constraints, and the public read.
  *
  * Three layers, tested as three layers, because each one is a different
  * promise:
@@ -140,7 +140,7 @@ async function main() {
   // ════════════════════════════════════════════════════════════════════════
   section('2. the save contract')
   {
-    // googleReviewEnabled is required by the schema (0104) and stated here so
+    // googleReviewEnabled is required by the schema (0105) and stated here so
     // these assertions keep testing the WHATSAPP rule rather than passing or
     // failing because of a field they are not about.
     const base = { invoicePrefix: 'INV', whatsappGroupEnabled: false, googleReviewEnabled: false }
@@ -362,6 +362,115 @@ async function main() {
       'a venue with no profile row at all reads null (not an error)',
       (await read(unconfigured.tenantId, unconfigured.tenantId)) === null,
     )
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  // The gap that let H1 through: every arming test above feeds
+  // shouldAutoRedirectToWhatsapp() pre-set booleans, so all of them passed
+  // while `awaitingPayment` was in practice STUCK true for anyone paying
+  // online. Razorpay's browser callback navigates to the confirmation page the
+  // instant payment is submitted; only the verified webhook marks the deposit
+  // settled, and nothing re-asked. These exercise the real reader across the
+  // transition instead.
+  section('6. the deposit, as the page and the poller actually read it')
+  {
+    const { getPublicBookingByToken, getPublicBookingPaymentState } = await import(
+      '../lib/booking/public-confirmation'
+    )
+
+    const branch = await owner.query<{ id: string }>(
+      `insert into branches (tenant_id,name) values ($1,'Main') returning id`,
+      [A.tenantId],
+    )
+    const branchId = branch.rows[0].id
+
+    const mkBooking = async (deposit: string) => {
+      const r = await owner.query<{ id: string; confirmation_token: string }>(
+        `insert into bookings (tenant_id,branch_id,booking_number,status,deposit,total)
+         values ($1,$2,$3,'confirmed',$4,$4) returning id, confirmation_token`,
+        [A.tenantId, branchId, `WA-${Math.random().toString(36).slice(2, 9)}`, deposit],
+      )
+      return r.rows[0]
+    }
+
+    // Pay-at-venue: nothing is owed, so the countdown may arm immediately.
+    const free = await mkBooking('0.00')
+    check(
+      'a booking with no deposit is never awaiting payment',
+      (await getPublicBookingByToken(A.tenantId, free.confirmation_token))?.awaitingPayment === false,
+    )
+
+    // Paid online: the row exists the moment the booking does, but the webhook
+    // has not landed yet — this is the state the confirmation page renders in.
+    const owed = await mkBooking('500.00')
+    check(
+      'a deposit with no settled intent IS awaiting payment',
+      (await getPublicBookingByToken(A.tenantId, owed.confirmation_token))?.awaitingPayment === true,
+    )
+    check(
+      '…and the poller agrees with the page',
+      (await getPublicBookingPaymentState(A.tenantId, owed.confirmation_token))?.awaitingPayment === true,
+    )
+
+    // A pending intent is NOT payment. This is the customer who opened Razorpay
+    // and did not finish.
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,booking_id,gateway_order_id,amount,status)
+       values ($1,$2,$3,$4,'500.00','pending')`,
+      [A.tenantId, branchId, owed.id, `order_pending_${owed.id.slice(0, 8)}`],
+    )
+    check(
+      'a PENDING intent does not settle the deposit',
+      (await getPublicBookingPaymentState(A.tenantId, owed.confirmation_token))?.awaitingPayment === true,
+    )
+
+    // A paid intent with NO gateway payment id is not proof either — that is
+    // the shape a half-written row would have.
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,booking_id,gateway_order_id,amount,status)
+       values ($1,$2,$3,$4,'500.00','paid')`,
+      [A.tenantId, branchId, owed.id, `order_nogw_${owed.id.slice(0, 8)}`],
+    )
+    check(
+      'a paid intent with no gateway payment id does not settle it either',
+      (await getPublicBookingPaymentState(A.tenantId, owed.confirmation_token))?.awaitingPayment === true,
+    )
+
+    // THE TRANSITION — what the webhook does, and what the poll must notice.
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,booking_id,gateway_order_id,amount,status,gateway_payment_id)
+       values ($1,$2,$3,$4,'500.00','paid','pay_verified')`,
+      [A.tenantId, branchId, owed.id, `order_paid_${owed.id.slice(0, 8)}`],
+    )
+    check(
+      'once the webhook settles it, the poller says so',
+      (await getPublicBookingPaymentState(A.tenantId, owed.confirmation_token))?.awaitingPayment === false,
+    )
+    check(
+      '…and the countdown may finally arm',
+      shouldAutoRedirectToWhatsapp({
+        fromNewBooking: true,
+        awaitingPayment: false,
+        alreadySpent: false,
+        backForward: false,
+      }),
+    )
+
+    // Isolation: the poller is a public endpoint, so a token must not resolve
+    // against another venue.
+    check(
+      "another venue's id cannot resolve this booking",
+      (await getPublicBookingPaymentState(B.tenantId, owed.confirmation_token)) === null,
+    )
+    check(
+      'an unknown token reads null, not an error',
+      (await getPublicBookingPaymentState(A.tenantId, '00000000-0000-0000-0000-000000000000')) === null,
+    )
+
+    await owner.query('delete from payment_intents where booking_id=$1', [owed.id])
+    await owner.query('delete from bookings where id = any($1::uuid[])', [[free.id, owed.id]])
+    await owner.query('delete from branches where id=$1', [branchId])
   }
 
   for (const t of [A, B]) {

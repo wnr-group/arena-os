@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0103 WhatsApp group invite, per tenant.
+-- Arena OS — 0104 WhatsApp group invite, per tenant.
 --
 -- Two columns on `business_profiles` and one narrow public reader. No new
 -- table: business_profiles is already the tenant's one-row settings record
@@ -49,14 +49,29 @@
 -- Both columns are additive with safe defaults, so every existing tenant lands
 -- disabled with no link and nothing about the booking flow changes.
 --
--- ══ WHY 0103 AND NOT 0088, WHICH IS THE NEXT FREE NUMBER HERE ═══════════════
+-- ══ WHY 0104 AND NOT 0088, WHICH IS THE NEXT FREE NUMBER HERE ═══════════════
 --
--- The gap is deliberate, not a slip. The unmerged M15 events branch already
--- occupies 0088–0102, and scripts/migrate.ts tracks applied files by NAME: two
--- different migrations both called 0088_… would let whichever ran first mark
--- the other as done, silently skipping it. A numbering gap is cosmetic; a
--- filename collision is a corrupted schema. If M15 is dropped rather than
--- merged, renumber this to 0088 before it ships anywhere.
+-- The gap is deliberate, not a slip. The unmerged M15 events branch
+-- (feat/m15-tournaments-events) already occupies 0088 THROUGH 0103 —
+-- 0088_events.sql up to and including 0103_events_review_fixes.sql — so the
+-- first number free on BOTH branches is 0104.
+--
+-- What a duplicate number actually costs is ORDERING, not tracking.
+-- scripts/migrate.ts records applied files by full NAME, so two migrations
+-- numbered 0103 with different words after the number are two different rows
+-- in `_migrations` and both do run — nothing is silently skipped. But the
+-- runner sorts by that same full filename, so which of the two goes first is
+-- decided by the word after the number rather than by intent, and the sequence
+-- number stops being the unique identity every other part of this project
+-- treats it as. A numbering gap is cosmetic; a duplicate number is a schema
+-- whose apply order is an accident of spelling.
+--
+-- This file WAS 0103 and collided with 0103_events_review_fixes.sql for exactly
+-- that reason. Renumbering it also moved the two Google review migrations that
+-- followed it (0104→0105, 0105→0106), so the branch stays contiguous.
+--
+-- If M15 is dropped rather than merged, renumber this to 0088 before it ships
+-- anywhere.
 -- ============================================================================
 
 alter table public.business_profiles
@@ -79,9 +94,9 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 comment on column public.business_profiles.whatsapp_group_url is
-  'Canonical WhatsApp group invite (https://chat.whatsapp.com/<code>), or null. Host-pinned by CHECK because it drives an automatic redirect on the public confirmation page (0103).';
+  'Canonical WhatsApp group invite (https://chat.whatsapp.com/<code>), or null. Host-pinned by CHECK because it drives an automatic redirect on the public confirmation page (0104).';
 comment on column public.business_profiles.whatsapp_group_enabled is
-  'Whether the confirmation page offers the WhatsApp group. False for every tenant until an owner turns it on; cannot be true without a link (0103).';
+  'Whether the confirmation page offers the WhatsApp group. False for every tenant until an owner turns it on; cannot be true without a link (0104).';
 
 -- ── the public reader ───────────────────────────────────────────────────────
 --
@@ -105,4 +120,4 @@ revoke all on function public.public_whatsapp_group(uuid) from public;
 grant execute on function public.public_whatsapp_group(uuid) to arena_app;
 
 comment on function public.public_whatsapp_group(uuid) is
-  'The tenant''s WhatsApp group invite for the public booking confirmation page (0103). SECURITY DEFINER so the public path never reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only for the tenant pinned by withPublicTenant(), and only when the owner has enabled it.';
+  'The tenant''s WhatsApp group invite for the public booking confirmation page (0104). SECURITY DEFINER so the public path never reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only for the tenant pinned by withPublicTenant(), and only when the owner has enabled it.';

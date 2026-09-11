@@ -58,9 +58,14 @@ function toLocalInput(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** Format an ISO date as a short display date (e.g. "10 Aug 2026"). */
+/**
+ * `undefined` as the locale meant "whatever runtime this is", which in a
+ * SSR-ed client component is the SERVER on the first render and the BROWSER on
+ * hydration — 'Sep 8, 2026' against '8 Sep 2026'. Pinned to en-GB like every
+ * other date in this project (0107).
+ */
 const shortDate = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
 /** Settings page for creating/editing promo codes and toggling them active. */
 export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; currency: string }) {

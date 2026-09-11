@@ -12,7 +12,7 @@ import { googleBusinessCredentials } from '@/db/schema'
 import { eq } from 'drizzle-orm'
 
 /**
- * Step 2: Google sends the owner back here with a one-time code (0105).
+ * Step 2: Google sends the owner back here with a one-time code (0106).
  *
  * ══ THIS ROUTE CANNOT AUTHENTICATE ITS CALLER ═══════════════════════════════
  *
@@ -30,10 +30,10 @@ import { eq } from 'drizzle-orm'
  * venue owner, attaching the attacker's Business Profile to the victim's venue.
  * That is login-CSRF, and it is the specific attack this pair prevents.
  *
- * Note what is deliberately NOT here: requireManager(). A redirect back from
+ * Note what is deliberately NOT here: an owner check. A redirect back from
  * Google is not a place to demand a session — the owner may have been bounced
  * through an account chooser — so the signed state carries the authorisation
- * that requireManager() established in /start.
+ * that requireOwner() established in /start.
  */
 export async function GET(req: NextRequest) {
   const settings = new URL('/settings/business', req.nextUrl.origin)

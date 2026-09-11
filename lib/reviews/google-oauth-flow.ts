@@ -4,7 +4,7 @@ import { BUSINESS_SCOPE } from './google-oauth'
 
 /**
  * The consent-flow plumbing: where we send an owner, and how we trust what
- * comes back (0105).
+ * comes back (0106).
  *
  * ══ THE STATE PARAMETER IS THE WHOLE SECURITY STORY ═════════════════════════
  *
@@ -37,12 +37,28 @@ const STATE_TTL_MS = 10 * 60_000
 /** The cookie that pairs with the signed state. Short-lived, httpOnly. */
 export const OAUTH_STATE_COOKIE = 'g_oauth_state'
 
+/**
+ * The state-signing key, DERIVED from the app's master key rather than being it
+ * (0107).
+ *
+ * Still one secret to configure and rotate — introducing a second env var buys
+ * nothing here. But the raw value was previously handed straight to HMAC while
+ * lib/security/encryption.ts decodes the same variable into a 32-byte AES key,
+ * so one secret was feeding two different primitives in two different forms.
+ * That is the kind of reuse that is harmless until the day it is not, and it
+ * costs one hash to remove.
+ *
+ * The label is what separates them: this output is a key for signing OAuth
+ * state and cannot coincide with the AES key, no matter how the variable is
+ * encoded. Changing the label invalidates every in-flight state, which is
+ * survivable — they live ten minutes.
+ */
+const STATE_KEY_LABEL = 'arena-os/google-oauth-state/v1'
+
 function secret(): Buffer {
-  // Reuses the app's configured master key rather than introducing another —
-  // one key to rotate, one place to get wrong.
   const raw = process.env.PAYMENT_SETTINGS_ENCRYPTION_KEY
   if (!raw) throw new Error('PAYMENT_SETTINGS_ENCRYPTION_KEY is not set; cannot sign OAuth state.')
-  return Buffer.from(raw, 'utf8')
+  return createHmac('sha256', Buffer.from(raw, 'utf8')).update(STATE_KEY_LABEL).digest()
 }
 
 function sign(payload: string): string {

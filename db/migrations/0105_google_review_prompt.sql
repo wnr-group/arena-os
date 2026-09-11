@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0104 Google review prompt, per tenant and per customer.
+-- Arena OS — 0105 Google review prompt, per tenant and per customer.
 --
 -- Two columns on `business_profiles` (the venue's link), ONE column on
 -- `customers` (that customer's answer), and one narrow reader. No new table.
@@ -79,7 +79,7 @@ exception when duplicate_object then null; end $$;
 
 -- Enabled implies a link. Stated as an implication so "switched on with nothing
 -- to point at" is unrepresentable — the same device event_registrations_hold
--- (0091) and business_profiles_whatsapp_group_enabled (0103) use.
+-- (0091) and business_profiles_whatsapp_group_enabled (0104) use.
 do $$ begin
   alter table public.business_profiles
     add constraint business_profiles_google_review_enabled check (
@@ -88,17 +88,17 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 comment on column public.business_profiles.google_review_url is
-  'Canonical Google review link. Host-pinned by CHECK because every eligible customer is offered it (0104).';
+  'Canonical Google review link. Host-pinned by CHECK because every eligible customer is offered it (0105).';
 
 comment on column public.business_profiles.google_review_enabled is
-  'Whether eligible customers see the review prompt. Disabling HIDES the prompt and preserves every completion state, so re-enabling resumes rather than restarts (0104).';
+  'Whether eligible customers see the review prompt. Disabling HIDES the prompt and preserves every completion state, so re-enabling resumes rather than restarts (0105).';
 
 -- ── 2. the customer's answer ────────────────────────────────────────────────
 alter table public.customers
   add column if not exists google_review_prompt_completed_at timestamptz;
 
 comment on column public.customers.google_review_prompt_completed_at is
-  'When this customer said they had left a Google review — SELF-DECLARED, never confirmed by Google, which provides no per-customer submission signal for a review-link flow. Null means the prompt is still pending. Set only by the customer''s own explicit confirmation, never by the click that opens Google (0104).';
+  'When this customer said they had left a Google review — SELF-DECLARED, never confirmed by Google, which provides no per-customer submission signal for a review-link flow. Null means the prompt is still pending. Set only by the customer''s own explicit confirmation, never by the click that opens Google (0105).';
 
 -- Only the pending, and only this tenant's: the prompt reader's exact question.
 -- Partial, because a customer who has answered is never asked again and a row
@@ -112,7 +112,7 @@ create index if not exists idx_customers_review_prompt_pending
 -- business_profiles is owner-only (business_select). The customer portal and
 -- the public site both need the URL and neither has that access, so this is the
 -- same SECURITY DEFINER projection public_tenant_by_slug (0022) and
--- public_whatsapp_group (0103) use: one scalar out, the GSTIN and registered
+-- public_whatsapp_group (0104) use: one scalar out, the GSTIN and registered
 -- address stay closed.
 --
 -- The tenant is pinned to the CALLER'S OWN session — the public GUC that
@@ -139,7 +139,7 @@ revoke all on function public.public_google_review(uuid) from public;
 grant execute on function public.public_google_review(uuid) to arena_app;
 
 comment on function public.public_google_review(uuid) is
-  'The tenant''s Google review link for the customer portal and the public site (0104). SECURITY DEFINER so neither path reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only when the owner has enabled it, and only for the tenant the caller''s own session is pinned to.';
+  'The tenant''s Google review link for the customer portal and the public site (0105). SECURITY DEFINER so neither path reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only when the owner has enabled it, and only for the tenant the caller''s own session is pinned to.';
 
 -- ── 4. the two things a customer session cannot do directly ─────────────────
 --
@@ -189,7 +189,7 @@ revoke all on function public.customer_review_eligible() from public;
 grant execute on function public.customer_review_eligible() to arena_app;
 
 comment on function public.customer_review_eligible() is
-  'Whether the current customer has a successful booking or order, and is therefore due the Google review prompt (0104). SECURITY DEFINER because a customer session has no policy on `orders`. Returns one boolean — no booking or order detail crosses the boundary. Derived, never stored, so five bookings cannot become five prompts.';
+  'Whether the current customer has a successful booking or order, and is therefore due the Google review prompt (0105). SECURITY DEFINER because a customer session has no policy on `orders`. Returns one boolean — no booking or order detail crosses the boundary. Derived, never stored, so five bookings cannot become five prompts.';
 
 -- Record the customer's OWN statement that they left a review. Names the single
 -- column it may write, so this cannot become a general customer-write door.
@@ -223,4 +223,4 @@ revoke all on function public.customer_complete_review_prompt() from public;
 grant execute on function public.customer_complete_review_prompt() to arena_app;
 
 comment on function public.customer_complete_review_prompt() is
-  'Marks the current customer''s Google review prompt answered (0104). SELF-DECLARED — Google provides no per-customer submission signal, so this records what the customer said and nothing stronger. SECURITY DEFINER and column-named because a customer session has no UPDATE policy on `customers`, and widening one would expose name, phone and tags to buy one timestamp. Idempotent.';
+  'Marks the current customer''s Google review prompt answered (0105). SELF-DECLARED — Google provides no per-customer submission signal, so this records what the customer said and nothing stronger. SECURITY DEFINER and column-named because a customer session has no UPDATE policy on `customers`, and widening one would expose name, phone and tags to buy one timestamp. Idempotent.';

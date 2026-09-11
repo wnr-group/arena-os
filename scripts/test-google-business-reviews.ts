@@ -1,5 +1,5 @@
 /**
- * Google Business Profile connection + review cache (0105) — Feature B.
+ * Google Business Profile connection + review cache (0106) — Feature B.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-google-business-reviews.ts
  *
@@ -104,7 +104,13 @@ async function main() {
     // Anonymity is Google's own flag and must survive into our copy.
     const anon = toGoogleReview(review('r7', 'FOUR', { reviewer: { isAnonymous: true, displayName: 'Leaked' } }))
     check('an anonymous reviewer keeps no name', anon?.reviewerName === null)
-    check('…and no photo either', anon?.reviewerPhotoUrl === null)
+    // The photo IS carried (optional, 0107) — but never for someone who asked
+    // to be anonymous: that URL would identify exactly the person who opted out.
+    check('…and no photo either, for an anonymous reviewer', anon?.reviewerPhotoUrl === null)
+    check(
+      '…while a named reviewer keeps theirs',
+      toGoogleReview(review('r7b', 'FIVE'))?.reviewerPhotoUrl === 'https://lh3.example/p.jpg',
+    )
 
     check('a rating with no words is fine', toGoogleReview(review('r8', 'FIVE', { comment: undefined }))?.comment === null)
   }
@@ -151,8 +157,9 @@ async function main() {
 
     const fetcher = createGoogleReviewFetcher(stubFetch, async () => 'access-token')
     const paged = await fetcher({ accountId: '123', locationId: '456', clientId: 'cid', clientSecret: 'csec', refreshToken: 'r' })
-    check('the loop follows nextPageToken', calls === 2 && paged.length === 2)
-    check('…and stops when there is none', paged.map((r) => r.googleReviewId).join() === 'p1,p2')
+    check('the loop follows nextPageToken', calls === 2 && paged.reviews.length === 2)
+    check('…and stops when there is none', paged.reviews.map((r) => r.googleReviewId).join() === 'p1,p2')
+    check('…reporting nothing skipped when every entry maps', paged.skipped === 0, paged.skipped)
 
     // A bad status must surface as a classified error, never an empty array:
     // empty would be indistinguishable from a venue that has no reviews yet,
@@ -317,10 +324,18 @@ async function main() {
   // ════════════════════════════════════════════════════════════════════════
   section('3. the sync (fake fetcher — the real one needs Google approval)')
   {
+    // Mirrors the real fetcher's contract (0107): it maps, drops what it
+    // cannot store, and REPORTS how many it dropped — so SyncResult.skipped
+    // carries a real number instead of a structural zero.
     const fake =
       (rows: ReturnType<typeof review>[]): FetchGoogleReviews =>
-      async () =>
-        rows.map(toGoogleReview).flatMap((r) => (r ? [r] : []))
+      async () => {
+        const mapped = rows.map(toGoogleReview)
+        return {
+          reviews: mapped.flatMap((r) => (r ? [r] : [])),
+          skipped: mapped.filter((r) => r === null).length,
+        }
+      }
 
     const first = await syncGoogleReviewsForTenant(A, fake([review('g1', 'FIVE'), review('g2', 'FOUR')]), ownerDrizzle)
     check('a first sync writes both reviews', first.synced === 2 && first.error === null)
