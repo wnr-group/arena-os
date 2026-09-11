@@ -7,6 +7,8 @@ import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
 import { WebsiteSections } from './WebsiteSections'
+import { getPublicGoogleReviews } from '@/lib/reviews/public'
+import { GoogleReviewsSection } from '@/components/public-booking/GoogleReviewsSection'
 
 /**
  * The branding + section-stack shell shared by the live public homepage
@@ -97,8 +99,45 @@ export function WebsitePage({
           timezone={timezone}
           isRestaurant={isRestaurant}
         />
+        {/* After the operator's own sections and before the footer — the same
+            place the default homepage puts it (TenantHome). NOT a builder
+            section: there is nothing for an operator to compose or reorder, and
+            making it one would mean a venue had to discover and add it before
+            its Google reviews appeared at all. */}
+        <GoogleReviewsBlock tenantId={tenantId} />
         {footer}
       </OrderCartProvider>
     </div>
   )
+}
+
+/**
+ * The cached Google reviews, for a builder-published homepage (0107).
+ *
+ * ── Why this fetches instead of taking a prop ──────────────────────────────
+ *
+ * `footer` is a slot because it genuinely differs per caller. This does not:
+ * every render of this shell wants the same tenant's reviews. Making it a prop
+ * would mean each caller had to remember to pass it — and forgetting exactly
+ * that is the bug being fixed here. TenantHome rendered
+ * <GoogleReviewsSection> only on its DEFAULT homepage path and returned early
+ * into WebsitePage before reaching it, so every venue that published through
+ * the website builder silently lost the section.
+ *
+ * Fetching inside the shell makes it structural: a third caller cannot omit it.
+ * That is also why this is an async child of a sync parent rather than making
+ * WebsitePage itself async — the same shape WebsiteSectionBlock uses for the
+ * resources, menu, hours and map sections, which fetch their own live data
+ * from the `tenantId` this shell already receives for that purpose.
+ *
+ * ── Cost ───────────────────────────────────────────────────────────────────
+ *
+ * One indexed, LIMIT 6 read of a local cache — never a call to Google
+ * (lib/reviews/public.ts). `cache()` dedupes it within a render pass, and a
+ * venue with no connected Business Profile gets [] and renders nothing, so the
+ * page is byte-identical to before for everyone who has not connected.
+ */
+async function GoogleReviewsBlock({ tenantId }: { tenantId: string }) {
+  const reviews = await getPublicGoogleReviews(tenantId)
+  return <GoogleReviewsSection data={reviews} />
 }

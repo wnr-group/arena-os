@@ -1,7 +1,7 @@
 import 'server-only'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { bookings, bookingSlots } from '@/db/schema'
+import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 
 export type PublicBookingSlot = {
@@ -18,6 +18,22 @@ export type PublicBookingConfirmation = {
   total: string
   createdAt: string
   slots: PublicBookingSlot[]
+  /**
+   * The venue is still owed a deposit on this booking.
+   *
+   * A booking is `confirmed` from the instant it is created — payment is a
+   * SEPARATE step, and every exit from the Razorpay flow (success, failure,
+   * script error, and the customer simply closing the modal) lands on this
+   * page. So `status` alone cannot answer "has this been paid for", and
+   * anything that should not greet an unpaid customer with a celebration has
+   * to consult this instead.
+   *
+   * Derived the same way lib/payments/deposit-settlement.ts derives it — a
+   * `paid` intent carrying a gateway payment id — so there is one definition
+   * of a settled deposit, not two. The frontend Razorpay callback is never
+   * consulted: only the verified webhook writes that row.
+   */
+  awaitingPayment: boolean
 }
 
 /**
@@ -41,11 +57,31 @@ export async function getPublicBookingByToken(
         customerName: bookings.customerName,
         total: bookings.total,
         createdAt: bookings.createdAt,
+        deposit: bookings.deposit,
       })
       .from(bookings)
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
       .limit(1)
     if (!booking) return null
+
+    // Only asked when a deposit was actually required, so a venue that takes no
+    // deposits pays for no extra query. payment_intents_public_select scopes
+    // this to the pinned tenant, the same policy the rest of this read relies on.
+    const depositDue = Number(booking.deposit) > 0
+    const paidDeposits = depositDue
+      ? await tx
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, tenantId),
+              eq(paymentIntents.bookingId, booking.id),
+              eq(paymentIntents.status, 'paid'),
+              isNotNull(paymentIntents.gatewayPaymentId),
+            ),
+          )
+          .limit(1)
+      : []
 
     const slots = await tx
       .select({
@@ -64,6 +100,7 @@ export async function getPublicBookingByToken(
       customerName: booking.customerName,
       total: booking.total,
       createdAt: booking.createdAt.toISOString(),
+      awaitingPayment: depositDue && paidDeposits.length === 0,
       slots: slots.map((s) => ({
         resourceName: s.resourceName,
         resourceTypeName: s.resourceTypeName,
@@ -71,6 +108,62 @@ export async function getPublicBookingByToken(
         endsAt: s.endsAt.toISOString(),
       })),
     }
+  })
+}
+
+/**
+ * Just the deposit question, for polling (0107).
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ *
+ * `awaitingPayment` is answered ONCE, while the confirmation page renders. For
+ * a customer paying online that render happens too early to be useful: Razorpay's
+ * browser callback navigates here the instant payment is SUBMITTED, while the
+ * only thing that marks a deposit settled is the verified webhook arriving
+ * server-to-server moments later (lib/payments/webhook.ts). So the first render
+ * almost always says "still owed", and nothing re-asked — leaving the WhatsApp
+ * countdown permanently unarmed for every online payment, which is exactly the
+ * case the feature exists for.
+ *
+ * This is the re-ask. Deliberately the NARROWEST possible read — one boolean,
+ * no booking number, no customer name, no slots — because it is reachable from
+ * a public action and polled. The definition of "settled" is not duplicated:
+ * both this and getPublicBookingByToken() ask for a `paid` intent carrying a
+ * gateway payment id, which is the same thing deposit-settlement.ts means.
+ *
+ * Null when the token matches no booking of this tenant, so a caller cannot
+ * tell "wrong token" from "wrong tenant".
+ */
+export async function getPublicBookingPaymentState(
+  tenantId: string,
+  token: string,
+): Promise<{ awaitingPayment: boolean } | null> {
+  return withPublicTenant(tenantId, async (tx) => {
+    const [booking] = await tx
+      .select({ id: bookings.id, deposit: bookings.deposit })
+      .from(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
+      .limit(1)
+    if (!booking) return null
+
+    // No deposit was ever owed, so nothing can be outstanding — and no second
+    // query is spent asking.
+    if (!(Number(booking.deposit) > 0)) return { awaitingPayment: false }
+
+    const paid = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.bookingId, booking.id),
+          eq(paymentIntents.status, 'paid'),
+          isNotNull(paymentIntents.gatewayPaymentId),
+        ),
+      )
+      .limit(1)
+
+    return { awaitingPayment: paid.length === 0 }
   })
 }
 

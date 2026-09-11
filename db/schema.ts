@@ -946,6 +946,14 @@ export const customers = pgTable(
      */
     smsOptIn: boolean('sms_opt_in').notNull().default(true),
     emailOptIn: boolean('email_opt_in').notNull().default(true),
+  /**
+   * When this customer said they had left a Google review (0105).
+   *
+   * SELF-DECLARED. Google provides no per-customer submission signal for a
+   * review-link flow, so this records the customer's own confirmation and
+   * nothing stronger. Null = the prompt is still pending.
+   */
+  googleReviewPromptCompletedAt: timestamp('google_review_prompt_completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1095,6 +1103,18 @@ export const businessProfiles = pgTable('business_profiles', {
   /** Feeds invoice numbering. Capped at 4 chars — see the migration's CHECK. */
   invoicePrefix: text('invoice_prefix').notNull().default('INV'),
   placeOfSupply: text('place_of_supply'),
+  /**
+   * Canonical WhatsApp group invite, or null (migration 0104). Host-pinned by a
+   * CHECK because the public confirmation page redirects to it automatically —
+   * see lib/settings/whatsapp-group.ts for the one shared rule.
+   */
+  whatsappGroupUrl: text('whatsapp_group_url'),
+  /** Whether the confirmation page offers the group. Never true without a URL. */
+  whatsappGroupEnabled: boolean('whatsapp_group_enabled').notNull().default(false),
+  /** Canonical Google review link, or null (0105). Host-pinned by CHECK. */
+  googleReviewUrl: text('google_review_url'),
+  /** Whether eligible customers see the review prompt. Never true without a URL. */
+  googleReviewEnabled: boolean('google_review_enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -2594,4 +2614,78 @@ export const planEntitlementsRelations = relations(planEntitlements, ({ one }) =
 export const tenantSubscriptionsRelations = relations(tenantSubscriptions, ({ one }) => ({
   tenant: one(tenants, { fields: [tenantSubscriptions.tenantId], references: [tenants.id] }),
   plan: one(plans, { fields: [tenantSubscriptions.planId], references: [plans.id] }),
+}))
+
+// ── Google Business Profile: connection + review cache (migration 0106) ──────
+//
+// FEATURE B, and unrelated to the customer review prompt on business_profiles
+// (0105). That one is a link we send a customer TO; this is reading what
+// Google already holds. Separate tables because they have opposite exposure:
+// the credentials are never public, the reviews are public by design.
+
+export const googleBusinessCredentials = pgTable('google_business_credentials', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** Google's own ids. The API parent is accounts/{a}/locations/{l}. Opaque. */
+  googleAccountId: text('google_account_id').notNull(),
+  googleLocationId: text('google_location_id').notNull(),
+  /** The VENUE'S OWN OAuth client. Its Cloud project, its quota, its verification. */
+  oauthClientId: text('oauth_client_id').notNull(),
+  /** SECRET. Sealed with the same tenant-id AAD as the refresh token. */
+  oauthClientSecretEncrypted: text('oauth_client_secret_encrypted').notNull(),
+  /**
+   * SECRET. AES-256-GCM sealed with the TENANT ID as AAD, so a row copied
+   * between tenants fails to decrypt rather than authorising as the wrong
+   * venue. Read ONLY by lib/reviews/google-credentials.ts.
+   */
+  /** Null until the owner completes Google's consent flow. See migration 0106. */
+  refreshTokenEncrypted: text('refresh_token_encrypted'),
+  connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastSyncError: text('last_sync_error'),
+  lastSyncAttempt: timestamp('last_sync_attempt', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const googleReviews = pgTable(
+  'google_reviews',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** Google's review id — THE idempotency key a re-sync updates on. */
+    googleReviewId: text('google_review_id').notNull(),
+    /** Null when the reviewer chose anonymity; Google really returns this. */
+    reviewerName: text('reviewer_name'),
+    /**
+     * OPTIONAL (0107). Stored when Google supplies one, rendered by nothing:
+     * the homepage draws initials, because an <img> here would hotlink
+     * googleusercontent on every render and leak each visitor's IP to Google.
+     * Kept so an avatar UI stays a rendering decision rather than a re-sync.
+     */
+    reviewerPhotoUrl: text('reviewer_photo_url'),
+    /** 1–5. Google's ONE..FIVE enum is mapped at the API edge. CHECKed in SQL. */
+    rating: smallint('rating').notNull(),
+    /** Null for a rating with no words. */
+    comment: text('comment'),
+    /** Google's createTime, not our sync time — ordering must not reshuffle. */
+    reviewCreatedAt: timestamp('review_created_at', { withTimezone: true }).notNull(),
+    syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('google_reviews_tenant_review_key').on(t.tenantId, t.googleReviewId),
+    index('idx_google_reviews_tenant_recent').on(t.tenantId, t.reviewCreatedAt.desc()),
+  ],
+)
+
+export const googleBusinessCredentialsRelations = relations(googleBusinessCredentials, ({ one }) => ({
+  tenant: one(tenants, { fields: [googleBusinessCredentials.tenantId], references: [tenants.id] }),
+}))
+
+export const googleReviewsRelations = relations(googleReviews, ({ one }) => ({
+  tenant: one(tenants, { fields: [googleReviews.tenantId], references: [tenants.id] }),
 }))

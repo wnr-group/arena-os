@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useTransition } from 'react'
+import { dateTimeInZone } from '@/lib/format'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -44,11 +45,15 @@ export function WebsiteEditor({
   settings,
   publishStatus,
   publishedAt,
+  timeZone,
 }: {
   sections: SectionRow[]
   settings: Branding | null
   publishStatus: PublishStatus
   publishedAt: string | null
+  /** The venue's clock, for the published-at stamp. Threaded from the page
+   *  rather than read in the browser, so the SSR and hydration renders agree. */
+  timeZone: string
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -119,7 +124,13 @@ export function WebsiteEditor({
 
   return (
     <div className="mt-8 space-y-8">
-      <PublishBar status={publishStatus} publishedAt={publishedAt} publishing={publishing} onPublish={handlePublish} />
+      <PublishBar
+        status={publishStatus}
+        publishedAt={publishedAt}
+        publishing={publishing}
+        onPublish={handlePublish}
+        timeZone={timeZone}
+      />
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -254,11 +265,14 @@ function PublishBar({
   publishedAt,
   publishing,
   onPublish,
+  timeZone,
 }: {
   status: PublishStatus
   publishedAt: string | null
   publishing: boolean
   onPublish: () => void
+  /** The venue's clock — see dateTimeInZone() for why this cannot be implicit. */
+  timeZone: string
 }) {
   const badge = {
     unpublished: { icon: CircleDashed, text: 'Not published yet', cls: 'bg-muted text-muted-foreground' },
@@ -273,7 +287,15 @@ function PublishBar({
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium ${badge.cls}`}>
           <Badge size={14} /> {badge.text}
         </span>
-        {publishedAt && <span className="text-xs text-muted-foreground">Last published {new Date(publishedAt).toLocaleString()}</span>}
+        {/* dateTimeInZone, NOT toLocaleString(): this component is SSR-ed and
+            then hydrated, and an unpinned format gives the server's locale and
+            timezone on one render and the browser's on the other — which is a
+            hydration error, not a cosmetic difference. */}
+        {publishedAt && (
+          <span className="text-xs text-muted-foreground">
+            Last published {dateTimeInZone(publishedAt, timeZone)}
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <Link

@@ -52,8 +52,14 @@ export type PlanOption = {
 
 const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
 const trimZeros = (v: string) => String(Number(v))
+/**
+ * `undefined` as the locale meant "whatever runtime this is", which in a
+ * SSR-ed client component is the SERVER on the first render and the BROWSER on
+ * hydration — 'Sep 8, 2026' against '8 Sep 2026'. Pinned to en-GB like every
+ * other date in this project (0107).
+ */
 const shortDate = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
 const STATUS_STYLE: Record<string, string> = {
   active: 'bg-emerald-500/10 text-emerald-600',

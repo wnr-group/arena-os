@@ -121,8 +121,13 @@ async function main() {
     const cols = (await ownerPool.query<{ column_name: string; is_nullable: string; column_default: string }>(
       `select column_name,is_nullable,column_default from information_schema.columns
         where table_schema='public' and table_name='business_profiles' order by ordinal_position`)).rows
-    check('table has exactly the 9 specified columns', cols.map((c) => c.column_name).join(',') ===
-      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at')
+    // The WhatsApp pair (0104) and the Google review pair (0105) are appended — the venue's group invite lives on
+    // the profile rather than in a table of its own.
+    check('table has exactly the 13 specified columns', cols.map((c) => c.column_name).join(',') ===
+      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at,whatsapp_group_url,whatsapp_group_enabled,google_review_url,google_review_enabled')
+    check('whatsapp_group_enabled is NOT NULL default false',
+      cols.find((c) => c.column_name === 'whatsapp_group_enabled')?.is_nullable === 'NO' &&
+      String(cols.find((c) => c.column_name === 'whatsapp_group_enabled')?.column_default).includes('false'))
     check('invoice_prefix is NOT NULL default INV', cols.find((c) => c.column_name === 'invoice_prefix')?.is_nullable === 'NO' &&
       String(cols.find((c) => c.column_name === 'invoice_prefix')?.column_default).includes('INV'))
 
@@ -216,6 +221,7 @@ async function main() {
       upsertBusinessProfile(tx, A.tenantId, {
         legalName: 'Renamed Pvt Ltd', gstin: '33BBBBB1111B1Z5', address: '1 New Road',
         logoUrl: 'https://cdn.example.com/logo.png', invoicePrefix: 'TC', placeOfSupply: 'Tamil Nadu',
+        whatsappGroupEnabled: false, googleReviewEnabled: false,
       }))
     check('upsert updates the existing row rather than inserting', upserted.legalName === 'Renamed Pvt Ltd')
     const count = (await ownerPool.query('select count(*)::int n from business_profiles where tenant_id=$1', [A.tenantId])).rows[0].n
@@ -226,16 +232,19 @@ async function main() {
 
     // Blank optional fields normalise to null, not ''.
     const blanked = await withUser(A.users.owner, (tx) =>
-      upsertBusinessProfile(tx, A.tenantId, { legalName: '  ', gstin: '', address: null, logoUrl: '', invoicePrefix: 'TC', placeOfSupply: undefined }))
+      upsertBusinessProfile(tx, A.tenantId, { legalName: '  ', gstin: '', address: null, logoUrl: '', invoicePrefix: 'TC', placeOfSupply: undefined, whatsappGroupEnabled: false, googleReviewEnabled: false }))
     check('blank optional fields are stored as null, not empty strings', blanked.legalName === null && blanked.gstin === null && blanked.logoUrl === null)
   }
 
   // ── 5. the prefix contract ────────────────────────────────────────────────
   {
-    check('Zod accepts a 1–4 character prefix', businessProfileSchema.safeParse({ invoicePrefix: 'ABCD' }).success)
-    check('Zod rejects a blank prefix', !businessProfileSchema.safeParse({ invoicePrefix: '   ' }).success)
-    check(`Zod rejects a prefix over ${MAX_INVOICE_PREFIX_LENGTH} characters`, !businessProfileSchema.safeParse({ invoicePrefix: 'TOOLONG' }).success)
-    check('Zod rejects a non-URL logo', !businessProfileSchema.safeParse({ invoicePrefix: 'INV', logoUrl: 'not-a-url' }).success)
+    // whatsappGroupEnabled is required by the schema (0104) — stated in each
+    // fixture so these keep failing for the PREFIX reason rather than passing
+    // or failing because of a field they are not about.
+    check('Zod accepts a 1–4 character prefix', businessProfileSchema.safeParse({ invoicePrefix: 'ABCD', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)
+    check('Zod rejects a blank prefix', !businessProfileSchema.safeParse({ invoicePrefix: '   ', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)
+    check(`Zod rejects a prefix over ${MAX_INVOICE_PREFIX_LENGTH} characters`, !businessProfileSchema.safeParse({ invoicePrefix: 'TOOLONG', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)
+    check('Zod rejects a non-URL logo', !businessProfileSchema.safeParse({ invoicePrefix: 'INV', logoUrl: 'not-a-url', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)
 
     const dbBlank = await tryAs(A.users.owner, `update business_profiles set invoice_prefix='   ' where tenant_id=$1`, [A.tenantId])
     check('the DB CHECK also rejects a blank prefix', !dbBlank.ok)
@@ -271,7 +280,7 @@ async function main() {
 
     // Changing the prefix affects only invoices raised afterwards.
     await withUser(A.users.owner, (tx) =>
-      upsertBusinessProfile(tx, A.tenantId, { legalName: 'Renamed Pvt Ltd', gstin: '33BBBBB1111B1Z5', address: '1 New Road', logoUrl: 'https://cdn.example.com/logo.png', invoicePrefix: 'ARN', placeOfSupply: 'Tamil Nadu' }))
+      upsertBusinessProfile(tx, A.tenantId, { legalName: 'Renamed Pvt Ltd', gstin: '33BBBBB1111B1Z5', address: '1 New Road', logoUrl: 'https://cdn.example.com/logo.png', invoicePrefix: 'ARN', placeOfSupply: 'Tamil Nadu', whatsappGroupEnabled: false, googleReviewEnabled: false }))
     const invA2 = await makeInvoice(A, 3)
     check('changing the prefix applies to the NEXT invoice', invA2.invoiceNumber.startsWith('ARN/'))
     const oldStill = (await ownerPool.query('select invoice_number from invoices where id=$1', [invA.invoiceId])).rows[0].invoice_number

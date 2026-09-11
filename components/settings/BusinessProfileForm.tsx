@@ -5,6 +5,12 @@ import { useRouter } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import { saveBusinessProfile } from '@/lib/actions/business-profile'
 import { DEFAULT_INVOICE_PREFIX, MAX_INVOICE_PREFIX_LENGTH } from '@/lib/settings/business-profile'
+import {
+  isWhatsappGroupUrl,
+  WHATSAPP_GROUP_URL_MESSAGE,
+  WHATSAPP_REDIRECT_SECONDS,
+} from '@/lib/settings/whatsapp-group'
+import { isGoogleReviewUrl, GOOGLE_REVIEW_URL_MESSAGE } from '@/lib/settings/google-review'
 
 /**
  * Owner-only business profile form.
@@ -21,6 +27,10 @@ type Fields = {
   logoUrl: string
   invoicePrefix: string
   placeOfSupply: string
+  whatsappGroupUrl: string
+  whatsappGroupEnabled: boolean
+  googleReviewUrl: string
+  googleReviewEnabled: boolean
 }
 
 const input =
@@ -54,8 +64,31 @@ export function BusinessProfileForm({
       ? `Keep it to ${MAX_INVOICE_PREFIX_LENGTH} characters.`
       : null
 
+  // The SAME predicate the action and the column CHECK use, so the field cannot
+  // say "fine" about something the save will refuse.
+  // Same three-state shape as the WhatsApp field below: blank+off is fine,
+  // blank+on is refused, and a non-blank value must pass the SAME predicate
+  // the save action and the column CHECK use.
+  const googleUrl = fields.googleReviewUrl.trim()
+  const googleError = !googleUrl
+    ? fields.googleReviewEnabled
+      ? 'Add a Google review link before turning the prompt on.'
+      : null
+    : isGoogleReviewUrl(googleUrl)
+      ? null
+      : GOOGLE_REVIEW_URL_MESSAGE
+
+  const whatsappUrl = fields.whatsappGroupUrl.trim()
+  const whatsappError = !whatsappUrl
+    ? fields.whatsappGroupEnabled
+      ? 'Add a WhatsApp group link before turning the invite on.'
+      : null
+    : isWhatsappGroupUrl(whatsappUrl)
+      ? null
+      : WHATSAPP_GROUP_URL_MESSAGE
+
   function submit() {
-    if (pending || prefixError) return
+    if (pending || prefixError || whatsappError || googleError) return
     setError(null)
     start(async () => {
       const r = await saveBusinessProfile(fields)
@@ -154,6 +187,64 @@ export function BusinessProfileForm({
       </Field>
 
       <Field
+        id="googleReviewUrl"
+        label="Google review link"
+        hint="Paste your Google review or Maps link. When this is on, customers who have had a session or an order are asked to rate you the next time they open their account."
+      >
+        <input
+          id="googleReviewUrl"
+          type="url"
+          value={fields.googleReviewUrl}
+          onChange={(e) => set({ googleReviewUrl: e.target.value })}
+          disabled={pending}
+          placeholder="https://g.page/r/AbC123DeF456/review"
+          autoCorrect="off"
+          spellCheck={false}
+          className={input}
+        />
+        <label className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={fields.googleReviewEnabled}
+            onChange={(e) => set({ googleReviewEnabled: e.target.checked })}
+            disabled={pending}
+            className="size-4 rounded border-input accent-primary"
+          />
+          Ask customers to review us on Google
+        </label>
+        {googleError && <p className="mt-1 text-xs text-destructive">{googleError}</p>}
+      </Field>
+
+      <Field
+        id="whatsappGroupUrl"
+        label="WhatsApp group invite"
+        hint={`Paste your group's invite link. When this is on, customers see a "Join WhatsApp Group" button on their booking confirmation and are taken there automatically after ${WHATSAPP_REDIRECT_SECONDS} seconds. Leave it off to change nothing about the booking page.`}
+      >
+        <input
+          id="whatsappGroupUrl"
+          type="url"
+          value={fields.whatsappGroupUrl}
+          onChange={(e) => set({ whatsappGroupUrl: e.target.value })}
+          disabled={pending}
+          placeholder="https://chat.whatsapp.com/AbC123DeF456"
+          autoCorrect="off"
+          spellCheck={false}
+          className={input}
+        />
+        <label className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={fields.whatsappGroupEnabled}
+            onChange={(e) => set({ whatsappGroupEnabled: e.target.checked })}
+            disabled={pending}
+            className="size-4 rounded border-input accent-primary"
+          />
+          Show the group invite after a booking
+        </label>
+        {whatsappError && <p className="mt-1 text-xs text-destructive">{whatsappError}</p>}
+      </Field>
+
+      <Field
         id="logoUrl"
         label="Logo URL"
         hint="Paste a link to your logo. Direct file upload arrives with the storage module."
@@ -178,7 +269,7 @@ export function BusinessProfileForm({
       <div className="flex items-center gap-3">
         <button
           onClick={submit}
-          disabled={pending || Boolean(prefixError)}
+          disabled={pending || Boolean(prefixError) || Boolean(whatsappError) || Boolean(googleError)}
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           {pending && <Loader2 size={14} className="animate-spin" />}

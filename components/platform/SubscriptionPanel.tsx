@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { CreditCard } from 'lucide-react'
 import { assignPlan } from '@/lib/actions/plans'
+import { dateInZone } from '@/lib/format'
 
 /**
  * Which plan a company is on, and the control to change it (M16).
@@ -75,7 +76,13 @@ export function SubscriptionPanel({
               {subscription.status.replace('_', ' ')}
             </span>
             <span className="text-muted-foreground">
-              {lapsed ? 'ended' : 'renews'} {subscription.currentPeriodEnd.toLocaleDateString()}
+              {/* UTC, and pinned: this component is SSR-ed then hydrated, so an
+                  unpinned toLocaleDateString() renders the server's locale and
+                  timezone on one pass and the viewer's on the other. UTC rather
+                  than a venue clock because this is a PLATFORM admin screen —
+                  a billing period belongs to the subscription, not to whichever
+                  venue is being inspected. */}
+              {lapsed ? 'ended' : 'renews'} {dateInZone(subscription.currentPeriodEnd, 'UTC')}
             </span>
             {/* Stated plainly because the status alone does not say it: past the
                 period end, getEntitlements() grants nothing regardless of what

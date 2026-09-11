@@ -10,6 +10,8 @@ import { publicSiteFont } from '@/lib/fonts'
 import { WebsitePage } from '@/components/public-booking/website/WebsitePage'
 import { PublicNavbar } from '@/components/public-booking/PublicNavbar'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
+import { getPublicGoogleReviews } from '@/lib/reviews/public'
+import { GoogleReviewsSection } from '@/components/public-booking/GoogleReviewsSection'
 import { OrderCartProvider } from '@/components/public-booking/OrderCartProvider'
 import { OrderNavbar } from '@/components/public-booking/OrderNavbar'
 import { MenuHighlightsClient } from '@/components/public-booking/MenuHighlightsClient'
@@ -84,7 +86,14 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
 
   const branding = await getPublishedBranding(tenant.id)
 
-  const [menu, happyHourRules] = await Promise.all([getPublicMenu(tenant.id), getPublicActiveHappyHourRules(tenant.id)])
+  // Cached rows only — never a call to Google from a page render. Empty for
+  // every tenant that has not connected a Business Profile, which is most of
+  // them, and the section then renders nothing at all (0106).
+  const [menu, happyHourRules, googleReviews] = await Promise.all([
+    getPublicMenu(tenant.id),
+    getPublicActiveHappyHourRules(tenant.id),
+    getPublicGoogleReviews(tenant.id),
+  ])
   const now = new Date()
   const menuHighlights = menu
     .flatMap((c) => c.items)
@@ -158,6 +167,8 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
               </div>
             </section>
           )}
+
+          <GoogleReviewsSection data={googleReviews} />
         </main>
 
         <PublicFooter
