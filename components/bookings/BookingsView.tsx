@@ -226,7 +226,29 @@ export function BookingsView({
         if (s.endsAt > existing.endsAt) existing.endsAt = s.endsAt
       }
     }
-    return [...byId.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+    // Two tiers: the day's LIVE work first, everything already closed under it.
+    //
+    // Closed means the row needs nothing more from the floor — the session
+    // finished, the customer called off, or they never arrived. Whichever it
+    // was, it is not what staff are looking at the screen to find.
+    //
+    // Within each tier the order is still chronological, which is what a floor
+    // screen actually needs — the next session to prepare for sits at the top,
+    // not the latest one of the day. Sinking the closed rows rather than
+    // reversing the whole list is what "recent at the top" means here: this is
+    // a single-day view, so "recent" is the work still ahead, not the newest
+    // clock time.
+    //
+    // One tier for all three rather than three tiers: a cancelled booking and a
+    // completed one are equally done, and ranking them against each other would
+    // be inventing a priority nobody asked for. They stay in time order among
+    // themselves, so the day still reads as a day.
+    const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'no_show'])
+    const finished = (status: string) => (CLOSED_STATUSES.has(status) ? 1 : 0)
+    return [...byId.values()].sort(
+      (a, b) =>
+        finished(a.status) - finished(b.status) || a.startsAt.localeCompare(b.startsAt),
+    )
   }, [slots, resources])
 
   const bookingStats = useMemo(() => {
