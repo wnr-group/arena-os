@@ -163,7 +163,7 @@ export function PublicNavbar({
           <button
             type="button"
             onClick={() => router.push('/resources')}
-            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-white/90 px-4 py-2.5 text-base font-semibold text-primary shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
+            className="relative overflow-hidden hidden md:inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-white/90 px-4 py-2.5 text-base font-semibold text-primary shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
           >
             {/* Shimmer overlay effect */}
             <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-primary/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
@@ -207,6 +207,17 @@ export function PublicNavbar({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              router.push('/resources')
+            }}
+            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white hover:bg-white/90 px-4 py-3 text-sm font-semibold text-primary shadow-md shadow-primary/20 transition-all duration-200 active:scale-[0.98]"
+          >
+            <span>Book Now</span>
+            <ArrowRight size={15} />
+          </button>
         </nav>
       )}
     </header>
