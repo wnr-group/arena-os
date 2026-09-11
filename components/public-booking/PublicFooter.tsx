@@ -128,12 +128,17 @@ export function PublicFooter({
           <p className="text-xs text-primary-foreground/70">
             &copy; {year} {tenantName}. All rights reserved.
           </p>
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-1 text-xs text-primary-foreground/80 shadow-sm">
+          <a
+            href="https://www.wnradvisory.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-1 text-xs text-primary-foreground/80 shadow-sm transition-colors duration-200 hover:text-primary-foreground"
+          >
             <span>Powered by</span>
             <span className="font-semibold text-primary-foreground">
-              Arena OS
+              WnR Group
             </span>
-          </div>
+          </a>
         </div>
       </div>
     </footer>
