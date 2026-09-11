@@ -136,7 +136,7 @@ export function PublicNavbar({
               key={link.id}
               type="button"
               onClick={() => goTo(link.id)}
-              className="group relative whitespace-nowrap px-2.5 py-2.5 text-base font-semibold tracking-wide text-primary-foreground/75 rounded-xl transition-all duration-200 hover:text-primary-foreground hover:bg-white/10 active:scale-95 lg:px-3.5 lg:text-lg"
+              className="group relative whitespace-nowrap px-2.5 py-2.5 text-sm font-semibold text-primary-foreground/75 rounded-xl transition-all duration-200 hover:text-primary-foreground hover:bg-white/10 active:scale-95 lg:px-3.5 lg:text-base"
             >
               {link.label}
               <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-white transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
@@ -198,7 +198,7 @@ export function PublicNavbar({
                   setOpen(false)
                   goTo(link.id)
                 }}
-                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-base font-semibold text-primary-foreground/80 transition-all duration-150 hover:bg-white/10 hover:text-primary-foreground active:scale-[0.98]"
+                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold text-primary-foreground/80 transition-all duration-150 hover:bg-white/10 hover:text-primary-foreground active:scale-[0.98]"
               >
                 <span>{link.label}</span>
                 <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary-foreground">
