@@ -43,6 +43,7 @@ export default async function BusinessSettingsPage() {
       />
 
       <GoogleBusinessForm
+        timeZone={ctx.tenant.timezone}
         status={
           googleConnection
             ? {

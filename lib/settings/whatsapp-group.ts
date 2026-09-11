@@ -17,7 +17,7 @@
  * unrepresentable rather than merely unlikely, and it costs nothing: there is
  * exactly one shape a WhatsApp group invite comes in.
  *
- * The same regex is a CHECK constraint in migration 0103, so a row that could
+ * The same regex is a CHECK constraint in migration 0104, so a row that could
  * drive an off-host redirect cannot be written even by SQL.
  *
  * ══ NORMALISATION IS PART OF THE SAFETY, NOT TIDINESS ══════════════════════

@@ -82,7 +82,7 @@ export const businessProfileSchema = z.object({
   /**
    * The one rule ABOUT the pair, which neither field can state alone: the
    * invite cannot be switched on with nothing to point at. Mirrored by
-   * business_profiles_whatsapp_group_enabled in 0103 — this copy exists so the
+   * business_profiles_whatsapp_group_enabled in 0104 — this copy exists so the
    * owner gets a sentence instead of a constraint violation, exactly as
    * validateEventFields() does for the event CHECKs.
    */
@@ -154,11 +154,11 @@ export async function upsertBusinessProfile(
     // for any caller that went through the action.
     whatsappGroupUrl: whatsappUrl,
     // `&& whatsappUrl !== null` is not belt-and-braces for the schema, it is
-    // what makes the 0103 CHECK unfireable from this writer even if a future
+    // what makes the 0104 CHECK unfireable from this writer even if a future
     // caller skips the schema. The flag itself is REQUIRED on the input (see
     // whatsappGroupFields), so this cannot quietly default to off.
     whatsappGroupEnabled: input.whatsappGroupEnabled && whatsappUrl !== null,
-    // Stored canonical, and enabled only alongside a real link — so the 0104
+    // Stored canonical, and enabled only alongside a real link — so the 0105
     // CHECK is unfireable from this writer even if a caller skips the schema.
     googleReviewUrl: googleUrl,
     googleReviewEnabled: input.googleReviewEnabled && googleUrl !== null,

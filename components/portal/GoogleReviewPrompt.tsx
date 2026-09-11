@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { Star, X } from 'lucide-react'
 import { confirmGoogleReviewLeft } from '@/lib/actions/customer-review'
 
@@ -41,13 +41,30 @@ import { confirmGoogleReviewLeft } from '@/lib/actions/customer-review'
  * customer who opens Google and never reviews keeps being asked; a customer who
  * says they reviewed is believed and never asked again.
  */
-export function GoogleReviewPrompt({ url, venueName }: { url: string; venueName: string }) {
+export function GoogleReviewPrompt({
+  url,
+  venueName,
+  customerId,
+}: {
+  url: string
+  venueName: string
+  /** Scopes the dismissal memory to this customer — see the key below. */
+  customerId: string
+}) {
   const [open, setOpen] = useState(false)
   // Set once they have been sent to Google, so the ask becomes "did you?"
   const [returned, setReturned] = useState(false)
   const [pending, start] = useTransition()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // Restored when the dialog closes, so focus does not jump to the top of the
+  // page for a keyboard user who was part-way down it.
+  const openerRef = useRef<Element | null>(null)
 
-  const key = 'google-review-prompt-dismissed'
+  // Per CUSTOMER, not a constant (0107). Two people signing in from the same
+  // browser tab used to share one dismissal, so the second was never asked.
+  // Not a cross-tenant leak — subdomains are separate origins — but it did
+  // silence the prompt for the wrong person.
+  const key = `google-review-prompt-dismissed:${customerId}`
 
   // Opened from an effect, not from initial state: sessionStorage does not
   // exist during server rendering, and reading it in an initialiser would make
@@ -62,16 +79,74 @@ export function GoogleReviewPrompt({ url, venueName }: { url: string; venueName:
       dismissed = false
     }
     if (!dismissed) setOpen(true)
-  }, [])
+  }, [key])
 
-  function dismissForThisVisit() {
+  const dismissForThisVisit = useCallback(() => {
     try {
       sessionStorage.setItem(key, '1')
     } catch {
       /* nothing to do — see above */
     }
     setOpen(false)
-  }
+  }, [key])
+
+  // ── what aria-modal promises, actually delivered (0107) ───────────────────
+  //
+  // This dialog already declared role="dialog" aria-modal="true", which tells a
+  // screen reader the rest of the page is inert. Nothing enforced it: Escape
+  // did nothing, Tab walked straight out into the page behind the overlay, and
+  // closing dropped focus back to the top of the document. Those are the
+  // behaviours a keyboard or screen-reader user is entitled to assume from that
+  // markup, so they are implemented rather than the markup weakened.
+  useEffect(() => {
+    if (!open) return
+    openerRef.current = document.activeElement
+
+    const focusables = () =>
+      Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      )
+
+    // Move focus INTO the dialog, so the next Tab is trapped rather than
+    // continuing from wherever the customer happened to be on the page.
+    focusables()[0]?.focus()
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        // Escape is "maybe later", not "I reviewed": it must leave the prompt
+        // pending for the next visit, exactly like the button does.
+        dismissForThisVisit()
+        return
+      }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (items.length === 0) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      // Only if focus is still inside the dialog — if the customer clicked
+      // through to Google the browser has already moved on, and restoring
+      // focus here would fight it.
+      const opener = openerRef.current
+      if (opener instanceof HTMLElement && dialogRef.current?.contains(document.activeElement)) {
+        opener.focus()
+      }
+    }
+  }, [open, returned, dismissForThisVisit])
 
   if (!open) return null
 
@@ -82,7 +157,15 @@ export function GoogleReviewPrompt({ url, venueName }: { url: string; venueName:
       aria-modal="true"
       aria-labelledby="google-review-title"
     >
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 text-center shadow-xl">
+      {/* `relative` (0107): the close button is positioned `absolute`, and
+          without a positioned ancestor here it resolved against the fixed
+          overlay instead — so on mobile, where the card is bottom-aligned, the
+          ✕ rendered at the top-right of the VIEWPORT, detached from the box it
+          closes. */}
+      <div
+        ref={dialogRef}
+        className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-6 text-center shadow-xl"
+      >
         <button
           type="button"
           onClick={dismissForThisVisit}

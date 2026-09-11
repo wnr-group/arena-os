@@ -6,7 +6,7 @@ import { loadGoogleConnection } from './google-credentials'
 import type { FetchGoogleReviews } from './google-business-api'
 
 /**
- * Pull one tenant's Google reviews into the cache (0105).
+ * Pull one tenant's Google reviews into the cache (0106).
  *
  * ── The fetcher is INJECTED ────────────────────────────────────────────────
  *
@@ -43,7 +43,11 @@ export type SyncResult = {
   connected: boolean
   /** Rows written (inserted or updated). */
   synced: number
-  /** Entries Google returned that this project could not store. */
+  /**
+   * Entries Google returned that this project could not store — reported by
+   * the fetcher, which is where the dropping happens (0107). Previously this
+   * was structurally always 0.
+   */
   skipped: number
   error: string | null
 }
@@ -86,18 +90,19 @@ export async function syncGoogleReviewsForTenant(
   }
 
   let synced = 0
-  for (const r of fetched) {
+  for (const r of fetched.reviews) {
     await db
       .insert(googleReviews)
       .values({
         tenantId,
         googleReviewId: r.googleReviewId,
         reviewerName: r.reviewerName,
-        reviewerPhotoUrl: r.reviewerPhotoUrl,
+        // ?? null because the field is optional: a fetcher that omits it must
+        // write a null, not leave the column at its previous value.
+        reviewerPhotoUrl: r.reviewerPhotoUrl ?? null,
         rating: r.rating,
         comment: r.comment,
         reviewCreatedAt: r.reviewCreatedAt,
-        reviewUrl: r.reviewUrl,
         syncedAt: new Date(),
       })
       // The unique constraint turns a re-sync into an update. `tenant_id` is
@@ -107,11 +112,10 @@ export async function syncGoogleReviewsForTenant(
         target: [googleReviews.tenantId, googleReviews.googleReviewId],
         set: {
           reviewerName: r.reviewerName,
-          reviewerPhotoUrl: r.reviewerPhotoUrl,
+          reviewerPhotoUrl: r.reviewerPhotoUrl ?? null,
           rating: r.rating,
           comment: r.comment,
           reviewCreatedAt: r.reviewCreatedAt,
-          reviewUrl: r.reviewUrl,
           syncedAt: new Date(),
         },
       })
@@ -123,7 +127,7 @@ export async function syncGoogleReviewsForTenant(
     .set({ lastSyncedAt: new Date(), lastSyncError: null })
     .where(eq(googleBusinessCredentials.tenantId, tenantId))
 
-  return { tenantId, connected: true, synced, skipped: 0, error: null }
+  return { tenantId, connected: true, synced, skipped: fetched.skipped, error: null }
 }
 
 /**
@@ -136,6 +140,26 @@ export async function syncGoogleReviewsForTenant(
  *
  * One tenant's failure never stops the loop — that is the reason
  * syncGoogleReviewsForTenant records errors instead of throwing.
+ *
+ * ── Overlap is the CALLER's problem, deliberately (0107) ────────────────────
+ *
+ * Sequential also means this gets slower as venues connect, so once the sweep
+ * outlasts the cron interval two runs overlap. The database survives that — the
+ * unique constraint plus ON CONFLICT DO UPDATE cannot duplicate a row — but
+ * both runs spend the same per-project Google quota on the same reviews and
+ * interleave the sync bookkeeping, so a failure can look like it recovered.
+ *
+ * The guard is deliberately NOT here, because `db` is a connection POOL. A
+ * session-level advisory lock taken by one statement would be released on a
+ * different connection than the one the next statement borrows, so the lock
+ * would not mean what it says. Wrapping the whole sweep in one transaction to
+ * get a transaction-scoped lock would be worse: it would hold a snapshot open
+ * across every HTTP call to Google.
+ *
+ * So serialisation belongs to the process that runs the sweep, on a connection
+ * it owns for its whole lifetime — see scripts/sync-google-reviews.ts, which
+ * takes pg_try_advisory_lock on a dedicated client and exits quietly when a
+ * previous run is still going.
  */
 export async function syncAllGoogleReviews(
   fetchReviews: FetchGoogleReviews,

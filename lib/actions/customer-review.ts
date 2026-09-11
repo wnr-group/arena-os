@@ -6,7 +6,7 @@ import { markReviewPromptCompleted } from '@/lib/portal/review-prompt'
 type Result = { error?: string }
 
 /**
- * The customer's own statement that they have left a Google review (0104).
+ * The customer's own statement that they have left a Google review (0105).
  *
  * ── What this action does NOT mean ─────────────────────────────────────────
  *

@@ -121,7 +121,7 @@ async function main() {
     const cols = (await ownerPool.query<{ column_name: string; is_nullable: string; column_default: string }>(
       `select column_name,is_nullable,column_default from information_schema.columns
         where table_schema='public' and table_name='business_profiles' order by ordinal_position`)).rows
-    // The WhatsApp pair (0103) and the Google review pair (0104) are appended — the venue's group invite lives on
+    // The WhatsApp pair (0104) and the Google review pair (0105) are appended — the venue's group invite lives on
     // the profile rather than in a table of its own.
     check('table has exactly the 13 specified columns', cols.map((c) => c.column_name).join(',') ===
       'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at,whatsapp_group_url,whatsapp_group_enabled,google_review_url,google_review_enabled')
@@ -238,7 +238,7 @@ async function main() {
 
   // ── 5. the prefix contract ────────────────────────────────────────────────
   {
-    // whatsappGroupEnabled is required by the schema (0103) — stated in each
+    // whatsappGroupEnabled is required by the schema (0104) — stated in each
     // fixture so these keep failing for the PREFIX reason rather than passing
     // or failing because of a field they are not about.
     check('Zod accepts a 1–4 character prefix', businessProfileSchema.safeParse({ invoicePrefix: 'ABCD', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)

@@ -1,16 +1,18 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { dateInZone, dateTimeInZone } from '@/lib/format'
 import { useRouter } from 'next/navigation'
 import { Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
 import {
   saveGoogleOAuthClientAction,
   disconnectGoogleBusiness,
+  syncGoogleReviewsNow,
 } from '@/lib/actions/google-business'
 
 /**
  * Connect a venue's own Google Business Profile, so its reviews can be shown on
- * its homepage (0105).
+ * its homepage (0106).
  *
  * Sits beside the Google review LINK on the same settings page, because an
  * owner thinks of both as "our Google stuff" — but they are two independent
@@ -38,7 +40,17 @@ export type ConnectionStatus = {
 const input =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60'
 
-export function GoogleBusinessForm({ status }: { status: ConnectionStatus | null }) {
+export function GoogleBusinessForm({
+  status,
+  timeZone,
+}: {
+  status: ConnectionStatus | null
+  /** The venue's clock. Required because these stamps are SSR-ed and then
+   *  hydrated: 'en-GB' pinned the LOCALE but left the timezone to the runtime,
+   *  so the time rendered on the server and the time rendered in the browser
+   *  disagreed whenever the two were in different zones. */
+  timeZone: string
+}) {
   const router = useRouter()
   const [fields, setFields] = useState({
     accountId: status?.accountId ?? '',
@@ -48,6 +60,7 @@ export function GoogleBusinessForm({ status }: { status: ConnectionStatus | null
   })
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [syncNote, setSyncNote] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
   const set = (patch: Partial<typeof fields>) => {
@@ -81,11 +94,11 @@ export function GoogleBusinessForm({ status }: { status: ConnectionStatus | null
         <div className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2.5 text-sm">
           <p className="flex items-center gap-1.5 font-medium">
             <CheckCircle2 size={14} className="text-emerald-500" aria-hidden />
-            Connected {new Date(status.connectedAt).toLocaleDateString('en-GB')}
+            Connected {dateInZone(status.connectedAt, timeZone)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {status.lastSyncedAt
-              ? `Last synced ${new Date(status.lastSyncedAt).toLocaleString('en-GB')}`
+              ? `Last synced ${dateTimeInZone(status.lastSyncedAt, timeZone)}`
               : 'Not synced yet.'}
           </p>
           {/* A failing connection must be visible here rather than only in logs
@@ -142,6 +155,31 @@ export function GoogleBusinessForm({ status }: { status: ConnectionStatus | null
           {pending ? 'Saving…' : status ? 'Update connection' : 'Connect'}
         </button>
 
+        {/* Only once there is a token to sync WITH — before that the answer is
+            always "authorise first", which the status line already says. */}
+        {status?.authorised && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() =>
+              start(async () => {
+                setError(null)
+                setSyncNote(null)
+                const r = await syncGoogleReviewsNow()
+                if (r.error) return setError(r.error)
+                setSyncNote(
+                  `Synced ${r.synced ?? 0} review${r.synced === 1 ? '' : 's'}` +
+                    (r.skipped ? `, skipped ${r.skipped} Google could not be stored` : ''),
+                )
+                router.refresh()
+              })
+            }
+            className="rounded-md border border-border px-4 py-2 text-sm transition hover:bg-muted disabled:opacity-50"
+          >
+            Sync now
+          </button>
+        )}
+
         {status && (
           <button
             type="button"
@@ -177,6 +215,7 @@ export function GoogleBusinessForm({ status }: { status: ConnectionStatus | null
         )}
 
         {saved && !pending && <span className="text-sm text-muted-foreground">Saved.</span>}
+        {syncNote && !pending && <span className="text-sm text-muted-foreground">{syncNote}</span>}
       </div>
     </div>
   )

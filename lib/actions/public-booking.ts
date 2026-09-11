@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withPublicTenant } from '@/db'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
+import { getPublicBookingPaymentState } from '@/lib/booking/public-confirmation'
 import { createBookingCore, priceBookingSlots, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
@@ -364,5 +365,55 @@ export async function createBookingPaymentIntent(
     return { checkout }
   } catch (e) {
     return failBookingPayment(e)
+  }
+}
+
+/**
+ * Has this booking's deposit settled yet? (0107)
+ *
+ * Polled by WhatsappGroupRedirect while a just-paid booking waits for
+ * Razorpay's webhook. See getPublicBookingPaymentState() for why a second look
+ * is needed at all: the confirmation page renders before the webhook lands, so
+ * the answer it computed is almost always stale for an online payment.
+ *
+ * ── What a caller can learn from this ──────────────────────────────────────
+ *
+ * One boolean, about a booking they already hold the confirmation token for —
+ * the same token that renders the whole confirmation page, so this exposes
+ * strictly less than the page it sits on. The token is a capability: unguessable
+ * (a v4 uuid, see 0026) and never derived from the sequential booking number.
+ *
+ * Tenant comes from the subdomain via resolvePublicTenant(), never from the
+ * caller, and the read is pinned to it — so a token from venue A cannot be
+ * resolved against venue B.
+ *
+ * Rate-limited per IP because it is polled and public. The budget is generous
+ * enough for the real client (one call every 2.5s for at most a minute) and far
+ * too small to enumerate anything — which it could not do anyway, the token
+ * space being what it is.
+ */
+export async function getBookingPaymentState(
+  token: string,
+): Promise<{ awaitingPayment: boolean } | { error: string }> {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+      return { error: 'Unknown booking.' }
+    }
+    if (!rateLimit(`paystate:ip:${await callerIp()}`, 60, 5 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+
+    const state = await getPublicBookingPaymentState(tenant.id, token)
+    // Same answer for "no such booking" and "not this venue's booking".
+    if (!state) return { error: 'Unknown booking.' }
+    return state
+  } catch {
+    // Never surfaces a driver message to a public caller. The client treats any
+    // error as "still waiting", which is the safe direction: it means the
+    // countdown stays unarmed rather than firing on a guess.
+    return { error: 'Could not check the payment status.' }
   }
 }

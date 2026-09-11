@@ -88,7 +88,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
 
   // Cached rows only — never a call to Google from a page render. Empty for
   // every tenant that has not connected a Business Profile, which is most of
-  // them, and the section then renders nothing at all (0105).
+  // them, and the section then renders nothing at all (0106).
   const [menu, happyHourRules, googleReviews] = await Promise.all([
     getPublicMenu(tenant.id),
     getPublicActiveHappyHourRules(tenant.id),

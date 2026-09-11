@@ -7,7 +7,7 @@ import { normalizeWhatsappGroupUrl } from '@/lib/settings/whatsapp-group'
 /**
  * The venue's WhatsApp group invite, for the public confirmation page.
  *
- * Reads through public_whatsapp_group() (migration 0103), a SECURITY DEFINER
+ * Reads through public_whatsapp_group() (migration 0104), a SECURITY DEFINER
  * projection returning one scalar — the same device getPublicTenantBySlug()
  * uses, and for the same reason: business_profiles holds the GSTIN, legal name
  * and registered address, none of which may cross onto a public page just to
@@ -23,7 +23,7 @@ import { normalizeWhatsappGroupUrl } from '@/lib/settings/whatsapp-group'
  * It was validated by the settings schema on the way in and is pinned to
  * chat.whatsapp.com by a CHECK constraint. This third pass exists because the
  * value's next stop is `window.location.href` on a page every booking customer
- * lands on: a row written before 0103's CHECK existed, by a future migration,
+ * lands on: a row written before 0104's CHECK existed, by a future migration,
  * or by a direct SQL edit, must not be able to redirect anybody off-host.
  * Re-normalising also means the browser only ever receives the canonical form,
  * with no query string for anything to be appended to.

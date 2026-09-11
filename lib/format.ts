@@ -42,6 +42,58 @@ export function timeInZone(iso: string | Date, timeZone: string): string {
   }).format(d)
 }
 
+/**
+ * An instant → a date, and → a date with a time. Both pinned (0107).
+ *
+ * ── Why these exist ────────────────────────────────────────────────────────
+ *
+ * `Date.toLocaleString()` and `toLocaleDateString()` format in the RUNTIME's
+ * locale and timezone. In a 'use client' component that is rendered twice —
+ * once on the server during SSR, once in the browser on hydration — and the two
+ * runtimes rarely agree:
+ *
+ *   server (en-GB, UTC)      8/9/2026, 5:01:12 pm
+ *   browser (en-US, IST)     9/8/2026, 5:01:12 PM
+ *
+ * React sees different text and throws a hydration error, discarding the
+ * server's tree for that subtree. Passing only a LOCALE is not enough either:
+ * the timezone still comes from the runtime, so any format carrying a time
+ * mismatches whenever the server and the viewer are in different zones, and a
+ * date-only format mismatches whenever they fall on different calendar days.
+ *
+ * Pinning BOTH is what makes the output a pure function of its input, so the
+ * two renders agree by construction. Same rule prettyDate() and timeInZone()
+ * already follow; these two just cover the shapes those did not.
+ *
+ * The timezone is REQUIRED rather than defaulted, because "which clock is this
+ * timestamp on" is a question the caller has to answer — the venue's, for
+ * anything an operator reads; UTC for platform-level facts that belong to no
+ * venue. A default would let a caller skip the question and get UTC silently.
+ */
+export function dateInZone(at: string | Date, timeZone: string): string {
+  const d = typeof at === 'string' ? new Date(at) : at
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(d)
+}
+
+/** The same instant, with the time of day. 24-hour, like timeInZone(). */
+export function dateTimeInZone(at: string | Date, timeZone: string): string {
+  const d = typeof at === 'string' ? new Date(at) : at
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(d)
+}
+
 /** 'YYYY-MM' → 'August 2026'. UTC throughout — a calendar month has no timezone of its own. */
 export function formatPayrollPeriod(period: string): string {
   const [year, month] = period.split('-').map(Number)

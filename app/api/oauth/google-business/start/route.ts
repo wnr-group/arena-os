@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { requireManager } from '@/lib/auth/guard'
+import { requireOwner } from '@/lib/auth/guard'
 import { getGoogleConnectionStatus } from '@/lib/reviews/google-credentials'
 import {
   consentUrl,
@@ -9,17 +9,21 @@ import {
 } from '@/lib/reviews/google-oauth-flow'
 
 /**
- * Step 1 of the consent flow: send a manager to Google (0105).
+ * Step 1 of the consent flow: send a manager to Google (0106).
  *
  * A GET route rather than a server action, because the outcome is a
  * cross-origin REDIRECT and an action cannot produce one to a third party.
  *
  * ── Authorisation happens HERE, not on the way back ────────────────────────
  *
- * requireManager() runs before anything else, so only a signed-in manager of
- * this venue can start a flow — and the tenant is taken from that session and
- * sealed into the state. The callback then trusts the SIGNED STATE rather than
+ * requireOwner() runs before anything else, so only the signed-in OWNER of this
+ * venue can start a flow — and the tenant is taken from that session and sealed
+ * into the state. The callback then trusts the SIGNED STATE rather than
  * re-deriving a tenant from a request it cannot authenticate.
+ *
+ * Owner rather than manager (0107): this is the entry point to the same
+ * connection saveGoogleOAuthClientAction() writes, so a looser gate here would
+ * have re-opened exactly the hole that tightened.
  *
  * ── The client id comes from the venue's own stored config ─────────────────
  *
@@ -28,7 +32,7 @@ import {
  * than to a Google error page that would not explain itself.
  */
 export async function GET(req: NextRequest) {
-  const ctx = await requireManager()
+  const ctx = await requireOwner()
 
   const status = await getGoogleConnectionStatus(ctx.tenant.id)
   const settings = new URL('/settings/business', req.nextUrl.origin)
