@@ -56,7 +56,7 @@ const STATUS_BADGE: Record<TableStatus, string> = {
   seated: 'bg-blue-500/10 text-blue-600',
   ordered: 'bg-amber-500/10 text-amber-600',
   served: 'bg-emerald-500/10 text-emerald-600',
-  bill_requested: 'bg-violet-500/10 text-violet-600',
+  bill_requested: 'bg-accent text-primary',
   needs_cleaning: 'bg-rose-500/10 text-rose-600',
 }
 
@@ -65,7 +65,7 @@ const STATUS_TILE: Record<TableStatus, string> = {
   seated: 'border-blue-500/30 bg-gradient-to-b from-blue-500/[0.07] to-transparent hover:border-blue-500/50',
   ordered: 'border-amber-500/30 bg-gradient-to-b from-amber-500/[0.07] to-transparent hover:border-amber-500/50',
   served: 'border-emerald-500/30 bg-gradient-to-b from-emerald-500/[0.07] to-transparent hover:border-emerald-500/50',
-  bill_requested: 'border-violet-500/30 bg-gradient-to-b from-violet-500/[0.07] to-transparent hover:border-violet-500/50',
+  bill_requested: 'border-primary/30 bg-gradient-to-b from-primary/[0.07] to-transparent hover:border-primary/50',
   needs_cleaning: 'border-rose-500/30 bg-gradient-to-b from-rose-500/[0.07] to-transparent hover:border-rose-500/50',
 }
 
@@ -78,7 +78,7 @@ const STATUS_ACCENT: Record<TableStatus, string> = {
   seated: 'bg-blue-500',
   ordered: 'bg-amber-500',
   served: 'bg-emerald-500',
-  bill_requested: 'bg-violet-500',
+  bill_requested: 'bg-primary',
   needs_cleaning: 'bg-rose-500',
 }
 
@@ -444,7 +444,7 @@ export function FloorView({
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                                     it.voidStatus === 'comped'
-                                      ? 'bg-violet-500/10 text-violet-600'
+                                      ? 'bg-accent text-primary'
                                       : 'bg-destructive/10 text-destructive'
                                   }`}
                                   title={it.voidReason ?? undefined}

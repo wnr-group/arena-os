@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { CheckCircle2, ChevronDown, Circle, Clock, ListTodo, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { createTask, updateTask, updateTaskStatus, deleteTask } from '@/lib/actions/tasks'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 type TaskStatus = 'open' | 'in_progress' | 'done'
 type TaskRow = {
@@ -107,10 +108,10 @@ export function TasksView({
       )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={ListTodo} label="Total tasks" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={Circle} label="Open" value={stats.open} accent="bg-amber-500/10 text-amber-600" />
-        <StatCard icon={Clock} label="In progress" value={stats.inProgress} accent="bg-blue-500/10 text-blue-600" />
-        <StatCard icon={CheckCircle2} label="Done" value={stats.done} accent="bg-emerald-500/10 text-emerald-600" />
+        <StatCard icon={ListTodo} label="Total tasks" value={stats.total} tint="rose" />
+        <StatCard icon={Circle} label="Open" value={stats.open} tint="amber" />
+        <StatCard icon={Clock} label="In progress" value={stats.inProgress} tint="mint" />
+        <StatCard icon={CheckCircle2} label="Done" value={stats.done} tint="slate" />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -254,19 +255,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )

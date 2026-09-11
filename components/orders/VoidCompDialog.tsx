@@ -82,7 +82,7 @@ export function VoidCompDialog({
             onClick={() => setMode('comp')}
             aria-pressed={mode === 'comp'}
             className={`flex-1 rounded-lg border px-3 py-2 text-left text-sm font-medium transition disabled:opacity-50 ${
-              mode === 'comp' ? 'border-violet-500 bg-violet-500/10 text-violet-600' : 'border-border hover:bg-muted'
+              mode === 'comp' ? 'border-primary bg-accent text-primary' : 'border-border hover:bg-muted'
             }`}
           >
             Comp

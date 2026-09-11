@@ -37,7 +37,7 @@ type PublishStatus = 'unpublished' | 'live' | 'changed'
 type Modal = { mode: 'add'; type: WebsiteSectionType } | { mode: 'edit'; section: SectionRow } | null
 
 const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/
-const DEFAULT_ACCENT = '#7c3aed'
+const DEFAULT_ACCENT = '#8b2242'
 
 export function WebsiteEditor({
   sections,
@@ -128,7 +128,7 @@ export function WebsiteEditor({
           </h2>
           <div className="relative">
             <button
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md"
               onClick={() => setTypePicker((v) => !v)}
             >
               <Plus size={16} /> Add Section
@@ -280,12 +280,12 @@ function PublishBar({
           href="/settings/website/preview"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted"
         >
           Preview <ExternalLink size={14} />
         </Link>
         <button
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
           disabled={publishing}
           onClick={onPublish}
         >
@@ -316,7 +316,7 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
 
   async function save() {
     if (!accentValid) {
-      toast.error('Accent colour must be a hex value like #7c3aed.')
+      toast.error('Accent colour must be a hex value like #8b2242.')
       return
     }
     if (ctaMismatch) {
@@ -358,11 +358,11 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
               }`}
               value={accentColor}
               onChange={(e) => setAccentColor(e.target.value)}
-              placeholder="#7c3aed"
+              placeholder="#8b2242"
               maxLength={7}
             />
           </div>
-          {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #7c3aed.</p>}
+          {accentColor && !accentValid && <p className="mt-1 text-sm text-destructive">Must be a hex colour like #8b2242.</p>}
         </div>
       </div>
 
@@ -426,7 +426,7 @@ function BrandingPanel({ settings }: { settings: Branding | null }) {
       </div>
 
       <button
-        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-base font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
         disabled={pending}
         onClick={save}
       >

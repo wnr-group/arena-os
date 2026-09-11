@@ -8,7 +8,7 @@
  * so a theme toggle can enable them later by setting `data-theme="dark"` on
  * <html>; until then everything renders light.
  *
- * Brand colour: purple / violet.
+ * Brand colour: deep wine + blush ("Warm & Modern").
  *
  * All components consume these tokens via Tailwind (`bg-primary`, `text-primary`,
  * `bg-muted`, `border`, …), so restyling happens here, not per component.
@@ -19,21 +19,55 @@
   color-scheme: light;
 
   --background: #ffffff;
-  --foreground: #1b1524; /* near-black with a faint purple tint */
-  --muted: #f6f4fb; /* very light purple-grey */
-  --muted-foreground: #6c6580;
-  --border: #e9e4f4;
+  --foreground: #2c1b21; /* near-black with a warm wine tint */
+  --muted: #faf7f7;
+  /* Darkened from the #8b7a80 design spec to clear 4.5:1 (WCAG AA) as body text. */
+  --muted-foreground: #7d6d73;
+  --subtle-foreground: #a99ba0; /* decorative only — placeholders, disabled text; not AA-checked */
+  --border: #f2e3e6;
+  --border-strong: #e6d3d8;
   --card: #ffffff;
 
-  --primary: #7c3aed; /* violet-600 — brand */
-  --primary-hover: #6d28d9; /* violet-700 */
+  --primary: #8b2242; /* deep wine — brand */
+  --primary-hover: #6f1a34;
   --primary-foreground: #ffffff;
 
-  --accent: #f3e8ff; /* purple-100, subtle fills */
-  --accent-foreground: #6d28d9;
+  --accent: #fceef1; /* blush — sidebar surface, thumbnails, soft fills */
+  --accent-foreground: #6f1a34;
+
+  /* Darkened from the #2f8055 design spec to clear 4.5:1 on --success-bg. */
+  --success: #2a734c;
+  --success-bg: #e9f6ee;
+  /* Darkened from the #d97b26 design spec to clear 4.5:1 on --warning-bg. */
+  --warning: #a25c1c;
+  --warning-bg: #fef2e4;
+  /* Darkened from the #7a7370 design spec to clear 4.5:1 on --neutral-bg. */
+  --neutral: #6d6764;
+  --neutral-bg: #f3f1f0;
 
   --destructive: #dc2626;
-  --ring: #7c3aed;
+  --ring: rgba(139, 34, 66, 0.28);
+
+  /* Stat-card tints (rose/mint/amber/slate) — a dedicated four-tint family for
+   * dashboard/list-page stat cards, kept separate from success/warning/neutral
+   * above: those are reserved for status text (badges, toasts) where the AA
+   * darkening matters, while these sit on a WHITE icon tile inside a tinted
+   * card, so the un-adjusted design-spec hex is used as-is. Assign by meaning,
+   * not position: rose = totals/headline count, mint = available/active/
+   * confirmed/healthy, amber = needs attention, slate = hidden/inactive/
+   * archived/cancelled. */
+  --rose: #8b2242;
+  --rose-bg: #fceef1;
+  --rose-border: #f6dde3;
+  --mint: #2f8055;
+  --mint-bg: #e9f6ee;
+  --mint-border: #d8ecdf;
+  --amber: #d97b26;
+  --amber-bg: #fef2e4;
+  --amber-border: #f7e2c8;
+  --slate: #7a7370;
+  --slate-bg: #f3f1f0;
+  --slate-border: #e7e3e1;
 }
 
 /* Dark theme — defined for later; INACTIVE until data-theme="dark" is set.
@@ -46,22 +80,49 @@
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --background: #140f1c;
-  --foreground: #f5f2fb;
-  --muted: #1f1830;
-  --muted-foreground: #a99fc0;
-  --border: #2a2140;
-  --card: #1a1428;
+  --background: #16100f;
+  --foreground: #f5ebed;
+  --muted: #241a1d;
+  --muted-foreground: #b9a5aa;
+  --subtle-foreground: #8f7b81; /* decorative only — placeholders, disabled text; not AA-checked */
+  --border: #3a2a2e;
+  --border-strong: #4a363b;
+  --card: #211719;
 
-  --primary: #a78bfa; /* violet-400 — lighter on dark */
-  --primary-hover: #c4b5fd;
-  --primary-foreground: #1b1524;
+  --primary: #e4899f; /* lighter wine on dark */
+  --primary-hover: #f0a3b5;
+  --primary-foreground: #2c1b21;
 
-  --accent: #2a2140;
-  --accent-foreground: #ddd6fe;
+  --accent: #2e1a20;
+  --accent-foreground: #e4899f;
 
-  --destructive: #ef4444;
-  --ring: #a78bfa;
+  /* -bg tints aren't in the design spec (only the lightened text colours are);
+     derived by mixing each status colour into --card so badges stay legible
+     without floating a bare new hex. */
+  --success: #6cc191;
+  --success-bg: color-mix(in srgb, #6cc191 18%, #211719);
+  --warning: #e8a45c;
+  --warning-bg: color-mix(in srgb, #e8a45c 18%, #211719);
+  --neutral: #a39d9a;
+  --neutral-bg: color-mix(in srgb, #a39d9a 14%, #211719);
+
+  --destructive: #f87171;
+  --ring: rgba(228, 137, 159, 0.35);
+
+  /* Stat-card tints — same lightened-icon-on-mixed-card approach as
+     success/warning/neutral above. */
+  --rose: #e4899f;
+  --rose-bg: color-mix(in srgb, #e4899f 18%, #211719);
+  --rose-border: color-mix(in srgb, #e4899f 30%, #211719);
+  --mint: #6cc191;
+  --mint-bg: color-mix(in srgb, #6cc191 18%, #211719);
+  --mint-border: color-mix(in srgb, #6cc191 30%, #211719);
+  --amber: #e8a45c;
+  --amber-bg: color-mix(in srgb, #e8a45c 18%, #211719);
+  --amber-border: color-mix(in srgb, #e8a45c 30%, #211719);
+  --slate: #a39d9a;
+  --slate-bg: color-mix(in srgb, #a39d9a 14%, #211719);
+  --slate-border: color-mix(in srgb, #a39d9a 26%, #211719);
 }
 
 @theme inline {
@@ -69,15 +130,42 @@
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-card: var(--card);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-neutral: var(--neutral);
+  --color-neutral-bg: var(--neutral-bg);
+  --color-rose: var(--rose);
+  --color-rose-bg: var(--rose-bg);
+  --color-rose-border: var(--rose-border);
+  --color-mint: var(--mint);
+  --color-mint-bg: var(--mint-bg);
+  --color-mint-border: var(--mint-border);
+  --color-amber: var(--amber);
+  --color-amber-bg: var(--amber-bg);
+  --color-amber-border: var(--amber-border);
+  --color-slate: var(--slate);
+  --color-slate-bg: var(--slate-bg);
+  --color-slate-border: var(--slate-border);
   --color-destructive: var(--destructive);
   --color-ring: var(--ring);
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Helvetica Neue is a system font (macOS/iOS only) — Arial covers every
+   * other OS at zero load cost, and Inter (loaded via next/font in
+   * app/layout.tsx, see lib/fonts.ts) is the quality fallback for users on
+   * neither. Scoped to the staff dashboard; the public booking site sets its
+   * own font (publicSiteFont, lib/fonts.ts) directly on its root element,
+   * which overrides this by CSS specificity/inheritance order. */
+  --font-sans: 'Helvetica Neue', Arial, var(--font-inter), sans-serif;
 }
 
 * {

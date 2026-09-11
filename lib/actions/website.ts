@@ -106,16 +106,17 @@ export async function reorderWebsiteSections(orderedIds: string[]): Promise<Resu
   try {
     const ctx = await requireManager()
     const ids = reorderInput.parse(orderedIds)
-    await withUser(ctx.user.id, (tx) =>
-      Promise.all(
-        ids.map((id, index) =>
-          tx
-            .update(websiteSections)
-            .set({ position: index })
-            .where(and(eq(websiteSections.id, id), eq(websiteSections.tenantId, ctx.tenant.id))),
-        ),
-      ),
-    )
+    await withUser(ctx.user.id, async (tx) => {
+      // Sequential, not Promise.all: these share ONE transaction client, and a
+      // Postgres connection cannot run two queries at once (pg deprecates it and
+      // removes it in v9).
+      for (const [index, id] of ids.entries()) {
+        await tx
+          .update(websiteSections)
+          .set({ position: index })
+          .where(and(eq(websiteSections.id, id), eq(websiteSections.tenantId, ctx.tenant.id)))
+      }
+    })
     revalidateWebsitePaths()
     return {}
   } catch (e) {

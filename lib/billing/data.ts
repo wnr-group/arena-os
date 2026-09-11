@@ -234,40 +234,41 @@ export async function listBookingBillingStates(
 ): Promise<Record<string, BookingBillingState>> {
   if (bookingIds.length === 0) return {}
   return withUser(ctx.user.id, async (tx) => {
-    const [foodRows, invoiceRows] = await Promise.all([
-      // Same shape/filter as loadFoodLines, batched across every booking.
-      tx
-        .select({
-          bookingId: orders.bookingId,
-          itemId: orderItems.id,
-          itemName: orderItems.itemName,
-          unitPrice: orderItems.unitPrice,
-          taxRate: orderItems.taxRate,
-          qty: orderItems.qty,
-        })
-        .from(orderItems)
-        .innerJoin(orders, eq(orders.id, orderItems.orderId))
-        .where(
-          and(
-            eq(orders.tenantId, ctx.tenant.id),
-            inArray(orders.bookingId, bookingIds),
-            eq(orders.status, 'open'),
-            eq(orders.acceptanceStatus, 'accepted'),
-            eq(orderItems.voidStatus, 'active'),
-          ),
+    // Sequential, not Promise.all: these share ONE transaction client, and a
+    // Postgres connection cannot run two queries at once (pg deprecates it and
+    // removes it in v9).
+    // Same shape/filter as loadFoodLines, batched across every booking.
+    const foodRows = await tx
+      .select({
+        bookingId: orders.bookingId,
+        itemId: orderItems.id,
+        itemName: orderItems.itemName,
+        unitPrice: orderItems.unitPrice,
+        taxRate: orderItems.taxRate,
+        qty: orderItems.qty,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(
+        and(
+          eq(orders.tenantId, ctx.tenant.id),
+          inArray(orders.bookingId, bookingIds),
+          eq(orders.status, 'open'),
+          eq(orders.acceptanceStatus, 'accepted'),
+          eq(orderItems.voidStatus, 'active'),
         ),
-      // Same shape/filter as findLiveInvoice, batched across every booking.
-      tx
-        .select({ bookingId: invoices.bookingId })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.tenantId, ctx.tenant.id),
-            inArray(invoices.bookingId, bookingIds),
-            ne(invoices.status, 'void'),
-          ),
+      )
+    // Same shape/filter as findLiveInvoice, batched across every booking.
+    const invoiceRows = await tx
+      .select({ bookingId: invoices.bookingId })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.tenantId, ctx.tenant.id),
+          inArray(invoices.bookingId, bookingIds),
+          ne(invoices.status, 'void'),
         ),
-    ])
+      )
 
     const linesByBooking = new Map<string, BillLine[]>()
     for (const r of foodRows) {

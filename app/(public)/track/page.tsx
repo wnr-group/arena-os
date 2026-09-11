@@ -50,7 +50,7 @@ export default async function MyBookingsPage() {
   return (
     <div className="flex min-h-screen flex-col" style={accentColorStyle(branding.accentColor)}>
       <SitePageShell tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} hasMenu={hasMenu}>
-        <main className="flex-1 bg-background">
+        <main className="flex-1 bg-gradient-to-b from-accent/60 via-background to-background">
           <MyBookingsClient timezone={tenant.timezone} />
         </main>
 

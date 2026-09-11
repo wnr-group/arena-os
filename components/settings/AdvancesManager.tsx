@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Plus, Trash2, X, HandCoins, Users, Wallet, Loader2 } from 'lucide-react'
 import { recordAdvance, deleteAdvance } from '@/lib/actions/payroll'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { formatMoney } from '@/lib/format'
 
@@ -106,13 +107,13 @@ export function AdvancesManager({
       )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard icon={Users} label="Employees with advances" value={stats.staffWithAdvances} accent="bg-primary/10 text-primary" />
-        <StatCard icon={HandCoins} label="Advances on record" value={stats.count} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={Users} label="Employees with advances" value={stats.staffWithAdvances} tint="rose" />
+        <StatCard icon={HandCoins} label="Advances on record" value={stats.count} tint="slate" />
         <StatCard
           icon={Wallet}
           label="Total outstanding"
           value={money(stats.totalOutstanding)}
-          accent="bg-amber-500/10 text-amber-600"
+          tint="amber"
         />
       </div>
 
@@ -210,19 +211,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
     </div>
   )

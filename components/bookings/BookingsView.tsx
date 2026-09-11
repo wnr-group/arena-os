@@ -24,6 +24,7 @@ import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -93,7 +94,7 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: 'No-show',
 }
 const SOURCE_BADGE: Record<string, string> = {
-  online: 'bg-violet-500/10 text-violet-600',
+  online: 'bg-accent text-primary',
   walk_in: 'bg-muted text-muted-foreground',
   staff: 'bg-muted text-muted-foreground',
 }
@@ -445,10 +446,10 @@ export function BookingsView({
       {view === 'bookings' && (
         <div className="mt-6 space-y-6">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <StatCard icon={CalendarDays} label="Total bookings" value={bookingStats.total} accent="bg-primary/10 text-primary" />
-            <StatCard icon={Clock} label="Confirmed" value={bookingStats.confirmed} accent="bg-blue-500/10 text-blue-600" />
-            <StatCard icon={UserCheck} label="Checked in" value={bookingStats.checkedIn} accent="bg-emerald-500/10 text-emerald-600" />
-            <StatCard icon={CheckCircle2} label="Completed" value={bookingStats.completed} accent="bg-muted text-muted-foreground" />
+            <StatCard icon={CalendarDays} label="Total bookings" value={bookingStats.total} tint="rose" />
+            <StatCard icon={Clock} label="Confirmed" value={bookingStats.confirmed} tint="mint" />
+            <StatCard icon={UserCheck} label="Checked in" value={bookingStats.checkedIn} tint="mint" />
+            <StatCard icon={CheckCircle2} label="Completed" value={bookingStats.completed} tint="slate" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -712,7 +713,7 @@ export function BookingsView({
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                                     it.voidStatus === 'comped'
-                                      ? 'bg-violet-500/10 text-violet-600'
+                                      ? 'bg-accent text-primary'
                                       : 'bg-destructive/10 text-destructive'
                                   }`}
                                   title={it.voidReason ?? undefined}
@@ -822,19 +823,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )

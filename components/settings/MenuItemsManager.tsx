@@ -28,6 +28,7 @@ import { upsertMenuItem, deleteMenuItem, uploadMenuItemImage, setMenuItemAvailab
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -63,7 +64,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 const DESCRIPTION_PATTERN = /^[\p{L}\p{N}\s&'".,()!?/-]+$/u
 
@@ -194,10 +195,10 @@ export function MenuItemsManager({
   return (
     <div className="mt-8 space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={UtensilsCrossed} label="Total items" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="Available" value={stats.available} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={PackageX} label="Out of stock" value={stats.outOfStock} accent="bg-amber-500/10 text-amber-600" />
-        <StatCard icon={EyeOff} label="Hidden" value={stats.hidden} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={UtensilsCrossed} label="Total items" value={stats.total} tint="rose" />
+        <StatCard icon={CheckCircle2} label="Available" value={stats.available} tint="mint" />
+        <StatCard icon={PackageX} label="Out of stock" value={stats.outOfStock} tint="amber" />
+        <StatCard icon={EyeOff} label="Hidden" value={stats.hidden} tint="slate" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -271,7 +272,7 @@ export function MenuItemsManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
                 Clear Filters
               </button>
             )}
@@ -305,7 +306,7 @@ export function MenuItemsManager({
       ) : filteredItems.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No items match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
             Clear Filters
           </button>
         </p>
@@ -428,19 +429,22 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div
+      className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}
+    >
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )
@@ -460,7 +464,7 @@ function CategoryTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -910,7 +914,7 @@ function ItemModal({
               {fileName && !uploading && (
                 <button
                   type="button"
-                  className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
+                  className="mt-1 text-xs text-muted-foreground hover:text-destructive"
                   onClick={() => {
                     setImageUrl('')
                     setFileName(null)
@@ -943,14 +947,14 @@ function ItemModal({
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <button
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending}
               onClick={onClose}
             >
               Cancel
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pending || uploading}
               onClick={submit}
             >

@@ -74,7 +74,7 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
         logoUrl={branding.logoUrl}
         hasMenu={hasMenu}
       >
-        <main className="flex-1 bg-background">
+        <main className="flex-1 bg-gradient-to-b from-accent/60 via-background to-background">
           <ResourceBookingPage
             tenant={tenant}
             resource={resource}

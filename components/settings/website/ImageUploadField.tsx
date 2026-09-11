@@ -82,7 +82,7 @@ export function ImageUploadField({
       {fileName && !uploading && (
         <button
           type="button"
-          className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
+          className="mt-1 text-xs text-muted-foreground hover:text-destructive"
           onClick={() => onChange('')}
         >
           Remove Image

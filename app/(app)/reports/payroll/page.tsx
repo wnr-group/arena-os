@@ -8,6 +8,7 @@ import { formatMoney, formatPayrollPeriod, shiftPayrollPeriod } from '@/lib/form
 import { todayInZone } from '@/lib/booking/time'
 import { PeriodRangeFilter } from '@/components/reports/PeriodRangeFilter'
 import { ExportCsvButton } from '@/components/reports/ExportCsvButton'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 type Search = { from?: string; to?: string }
 
@@ -55,19 +56,19 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
       </p>
 
       <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={Users} label="Employees paid" value={String(report.rows.length)} accent="bg-muted text-muted-foreground" />
-        <StatCard icon={TrendingUp} label="Total gross" value={money(report.totals.totalGross)} accent="bg-primary/10 text-primary" />
+        <StatCard icon={Users} label="Employees paid" value={String(report.rows.length)} tint="slate" />
+        <StatCard icon={TrendingUp} label="Total gross" value={money(report.totals.totalGross)} tint="rose" />
         <StatCard
           icon={TrendingDown}
           label="Deductions + advances recovered"
           value={money(report.totals.totalDeductions + report.totals.totalAdvanceRecovered)}
-          accent="bg-amber-500/10 text-amber-600"
+          tint="amber"
         />
         <StatCard
           icon={Wallet}
           label="Total net pay — the wage bill"
           value={money(report.totals.totalNetPay)}
-          accent="bg-emerald-500/10 text-emerald-600"
+          tint="mint"
         />
       </div>
 
@@ -149,19 +150,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
   icon: LucideIcon
   label: string
   value: string
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )

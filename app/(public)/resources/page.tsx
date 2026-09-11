@@ -58,8 +58,8 @@ export default async function ResourcesPage() {
         logoUrl={branding.logoUrl}
         hasMenu={hasMenu}
       >
-        <main className="flex-1 bg-background">
-          <section className="relative overflow-hidden border-b border-border bg-gradient-to-b from-primary/5 to-transparent">
+        <main className="flex-1 bg-gradient-to-b from-accent/60 via-background to-background">
+          <section className="relative overflow-hidden border-b border-border-strong bg-gradient-to-b from-primary/20 via-accent to-accent">
             <div
               aria-hidden
               className="pointer-events-none absolute left-1/2 top-0 h-72 w-[640px] -translate-x-1/2 -translate-y-1/3 rounded-full bg-primary/10 blur-[110px]"
@@ -72,7 +72,7 @@ export default async function ResourcesPage() {
                 <span className="bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent">
                   Explore our{' '}
                 </span>
-                <span className="bg-gradient-to-r from-primary to-violet-500 bg-clip-text text-transparent">spaces</span>
+                <span className="bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">spaces</span>
               </h1>
               <p className="mx-auto mt-4 max-w-xl text-lg leading-relaxed text-muted-foreground sm:text-xl">
                 Browse everything <span className="font-semibold text-foreground">{tenant.name}</span> has to book —

@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, Receipt, CheckCircle2, XCircle, Percent } from 'lucide-react'
 import { upsertTaxRate, deleteTaxRate } from '@/lib/actions/tax-rates'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 type TaxRateRow = { id: string; name: string; percent: string; isActive: boolean }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TaxRateRow }
@@ -17,7 +18,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
@@ -61,19 +62,19 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
   return (
     <div className="mt-8 space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={Receipt} label="Total rates" value={stats.total} accent="bg-primary/10 text-primary" />
+        <StatCard icon={Receipt} label="Total rates" value={stats.total} tint="rose" />
         <StatCard
           icon={CheckCircle2}
           label="Active"
           value={stats.active}
-          accent="bg-emerald-500/10 text-emerald-600"
+          tint="mint"
         />
-        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} tint="slate" />
         <StatCard
           icon={Percent}
           label="Average rate"
           value={`${stats.avgPercent.toFixed(2)}%`}
-          accent="bg-primary/10 text-primary"
+          tint="rose"
         />
       </div>
 
@@ -152,19 +153,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
     </div>
   )
@@ -265,7 +267,7 @@ function TaxRateModal({
 
         <div className="mt-5 flex gap-2">
           <button
-            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             onClick={onClose}
           >
             Cancel
