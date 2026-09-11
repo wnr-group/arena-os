@@ -1,7 +1,7 @@
 -- ============================================================================
--- Arena OS — 0105 Google Business Profile: connection + review cache.
+-- Arena OS — 0106 Google Business Profile: connection + review cache.
 --
--- FEATURE B, and deliberately nothing to do with 0104. That one is a LINK we
+-- FEATURE B, and deliberately nothing to do with 0105. That one is a LINK we
 -- send a customer to; this one is READING what Google already holds. They share
 -- the word "review" and nothing else — different direction, different auth,
 -- different failure modes — so they get different tables and neither can break
@@ -38,7 +38,7 @@
 -- The columns below are exactly that and no more. Note what is NOT here: there
 -- is no customer_id, because Google does not tell us which of OUR customers
 -- wrote a review — the reviewer is a display name on a Google account. That
--- absence is the same limitation 0104 documents, showing up in the schema.
+-- absence is the same limitation 0105 documents, showing up in the schema.
 --
 -- ══ ACCESS IS NOT ASSUMED ══════════════════════════════════════════════════
 --
@@ -148,7 +148,7 @@ create trigger trg_google_business_credentials_updated
   for each row execute function public.set_updated_at();
 
 comment on table public.google_business_credentials is
-  'One tenant''s connected Google Business Profile location and its encrypted refresh token (0105). Manager-only, never public, never customer-readable. The token is AES-256-GCM sealed with the tenant id as AAD, so a ciphertext moved between rows cannot decrypt.';
+  'One tenant''s connected Google Business Profile location and its encrypted refresh token (0106). Manager-only, never public, never customer-readable. The token is AES-256-GCM sealed with the tenant id as AAD, so a ciphertext moved between rows cannot decrypt.';
 
 -- ── 2. the cache ────────────────────────────────────────────────────────────
 create table if not exists public.google_reviews (
@@ -202,7 +202,7 @@ create policy google_reviews_select on public.google_reviews
 -- ── and the public one ──────────────────────────────────────────────────────
 --
 -- A plain policy rather than a SECURITY DEFINER projection — the opposite of
--- the choice 0104 made for business_profiles, and worth saying why:
+-- the choice 0105 made for business_profiles, and worth saying why:
 --
 --   business_profiles holds the GSTIN, legal name and registered address beside
 --   the review URL, so a row-level policy would expose all of it. THIS table
@@ -221,7 +221,7 @@ create policy google_reviews_public_select on public.google_reviews
 -- connection; nothing reachable from a browser can write a review row.
 
 comment on table public.google_reviews is
-  'Cached Google Business Profile reviews for one tenant (0105). Written only by the sync; read by the public homepage. Every column here is already public on Google, which is why this has a plain public SELECT policy rather than the projection function business_profiles needs. No customer_id: Google does not say which of our customers wrote a review.';
+  'Cached Google Business Profile reviews for one tenant (0106). Written only by the sync; read by the public homepage. Every column here is already public on Google, which is why this has a plain public SELECT policy rather than the projection function business_profiles needs. No customer_id: Google does not say which of our customers wrote a review.';
 
 -- ── 3. grants ───────────────────────────────────────────────────────────────
 --

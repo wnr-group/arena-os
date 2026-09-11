@@ -238,7 +238,7 @@ async function main() {
 
   // ── 5. the prefix contract ────────────────────────────────────────────────
   {
-    // whatsappGroupEnabled is required by the schema (0103) — stated in each
+    // whatsappGroupEnabled is required by the schema (0104) — stated in each
     // fixture so these keep failing for the PREFIX reason rather than passing
     // or failing because of a field they are not about.
     check('Zod accepts a 1–4 character prefix', businessProfileSchema.safeParse({ invoicePrefix: 'ABCD', whatsappGroupEnabled: false, googleReviewEnabled: false }).success)

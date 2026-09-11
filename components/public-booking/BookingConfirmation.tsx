@@ -20,6 +20,20 @@ import { WhatsappGroupRedirect } from './WhatsappGroupRedirect'
  *  or no-show visit. */
 const CAN_ADD_FOOD_STATUSES = new Set(['confirmed', 'checked_in'])
 
+/**
+ * Which statuses may be offered the WhatsApp group (0107).
+ *
+ * A SUPERSET of CAN_ADD_FOOD_STATUSES, and separate from it because the two
+ * answer different questions. Adding food to a finished visit is meaningless,
+ * so `completed` is rightly absent there — but a customer who has just played
+ * is an excellent person to invite into the venue's group, and reusing the food
+ * set silently denied them the button.
+ *
+ * `cancelled` and `no_show` stay out of both: somebody who never turned up is
+ * not an occasion to push into a community.
+ */
+const CAN_JOIN_GROUP_STATUSES = new Set(['confirmed', 'checked_in', 'completed'])
+
 const STATUS_LABEL: Record<string, string> = {
   confirmed: 'Booking confirmed',
   checked_in: "You're checked in!",
@@ -99,7 +113,7 @@ export function BookingConfirmation({
   // A local const rather than a `!` at the call site, so the narrowing is the
   // type system's rather than an assertion that could outlive the check.
   const whatsappUrl =
-    whatsappGroupUrl && CAN_ADD_FOOD_STATUSES.has(booking.status) ? whatsappGroupUrl : null
+    whatsappGroupUrl && CAN_JOIN_GROUP_STATUSES.has(booking.status) ? whatsappGroupUrl : null
 
   return (
     <div className="mx-auto max-w-md px-4 py-12 sm:px-6 sm:py-16">
@@ -144,8 +158,19 @@ export function BookingConfirmation({
         <WhatsappGroupRedirect
           url={whatsappUrl}
           storageKey={`wa-group:${confirmationToken}`}
+          confirmationToken={confirmationToken}
           fromNewBooking={fromNewBooking}
           awaitingPayment={booking.awaitingPayment}
+          // Status-appropriate, because this card now also shows on a finished
+          // visit (0107) where "confirmed successfully" would be stale, and on
+          // an unpaid one where it would be wrong.
+          headline={
+            booking.status === 'completed'
+              ? 'Thanks for visiting!'
+              : booking.awaitingPayment
+                ? 'Your booking is confirmed.'
+                : 'Your booking is confirmed successfully.'
+          }
         />
       )}
 

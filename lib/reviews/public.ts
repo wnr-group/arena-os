@@ -5,7 +5,7 @@ import { withPublicTenant } from '@/db'
 import { googleReviews } from '@/db/schema'
 
 /**
- * The homepage's read of the Google review cache (0105).
+ * The homepage's read of the Google review cache (0106).
  *
  * ── It never calls Google ──────────────────────────────────────────────────
  *
@@ -17,7 +17,7 @@ import { googleReviews } from '@/db/schema'
  * ── Tenant isolation ───────────────────────────────────────────────────────
  *
  * Two layers, as everywhere else on the public path: withPublicTenant() pins
- * the tenant GUC from the subdomain, `google_reviews_public_select` (0105)
+ * the tenant GUC from the subdomain, `google_reviews_public_select` (0106)
  * scopes every row to it, and the explicit tenantId filter here means a
  * loosened policy still could not cross a venue boundary.
  *
@@ -33,11 +33,17 @@ export type PublicGoogleReview = {
   id: string
   /** Null when the reviewer chose anonymity — the UI says "A Google user". */
   reviewerName: string | null
-  reviewerPhotoUrl: string | null
+  /**
+   * OPTIONAL, and deliberately NOT rendered today (0107). Projected so an
+   * avatar UI is a component change rather than a re-sync — but read the note
+   * in GoogleReviewsSection before using it: hotlinking googleusercontent from
+   * a public page leaks every visitor's IP to Google, so showing it is a
+   * privacy decision, not a styling one.
+   */
+  reviewerPhotoUrl?: string | null
   rating: number
   comment: string | null
   reviewCreatedAt: string
-  reviewUrl: string | null
 }
 
 export type PublicGoogleReviews = {
@@ -75,7 +81,6 @@ export const getPublicGoogleReviews = cache(async function getPublicGoogleReview
         rating: googleReviews.rating,
         comment: googleReviews.comment,
         reviewCreatedAt: googleReviews.reviewCreatedAt,
-        reviewUrl: googleReviews.reviewUrl,
       })
       .from(googleReviews)
       .where(eq(googleReviews.tenantId, tenantId))

@@ -16,7 +16,7 @@
  *
  * The Review resource has exactly four methods: `list`, `get`, `updateReply`
  * and `deleteReply`. There is NO create — a business can only reply. That is
- * why this module reads and never writes, and why the customer prompt (0104)
+ * why this module reads and never writes, and why the customer prompt (0105)
  * has to send people to Google rather than collecting a review here.
  *
  * ══ WHAT IS WIRED, AND WHAT IS UNVERIFIED ═══════════════════════════════════
@@ -50,13 +50,34 @@ export type GoogleReviewFromApi = {
   googleReviewId: string
   /** Null when the reviewer chose to stay anonymous — Google really returns this. */
   reviewerName: string | null
-  reviewerPhotoUrl: string | null
+  /**
+   * OPTIONAL — present when Google supplies one and the reviewer is not
+   * anonymous, absent otherwise. Optional rather than `string | null` because
+   * nothing downstream requires it: the homepage renders initials, and a caller
+   * that does not care never has to mention it.
+   */
+  reviewerPhotoUrl?: string | null
   /** 1–5. Google's ONE..FIVE enum is mapped here so nothing downstream sees it. */
   rating: number
   /** Null when the reviewer left stars and no words. */
   comment: string | null
   reviewCreatedAt: Date
-  reviewUrl: string | null
+}
+
+/**
+ * One fetch's result: the usable reviews, and how many entries were dropped.
+ *
+ * `skipped` is here because the DROPPING happens behind this boundary — the
+ * pagination loop maps and discards unusable entries so a single malformed one
+ * cannot fail a page of fifty. Before this was reported, SyncResult.skipped was
+ * structurally always 0: the sync counted something it could not see, and a
+ * venue silently losing every review to a mapping change looked identical to a
+ * venue with no reviews.
+ */
+export type GoogleReviewsPage = {
+  reviews: GoogleReviewFromApi[]
+  /** Entries Google returned that this project could not store. */
+  skipped: number
 }
 
 /**
@@ -75,7 +96,7 @@ export type FetchGoogleReviews = (params: {
   clientSecret: string
   /** Plaintext, in memory, for the life of one call. Never logged, never stored. */
   refreshToken: string
-}) => Promise<GoogleReviewFromApi[]>
+}) => Promise<GoogleReviewsPage>
 
 /** Google's star enum, and the only place it is understood. */
 const STAR_RATING: Record<string, number> = {
@@ -130,20 +151,20 @@ export function toGoogleReview(raw: RawGoogleReview): GoogleReviewFromApi | null
   const anonymous = raw.reviewer?.isAnonymous === true
   const name = anonymous ? null : raw.reviewer?.displayName?.trim() || null
 
+  // A review permalink is deliberately absent: the Review resource carries
+  // none (reviewReplyUrl is for the OWNER to reply, not for a visitor to read),
+  // so there was never a value to store and the column went in 0107.
   return {
     googleReviewId,
     reviewerName: name,
-    // Not shown for an anonymous reviewer either — the photo would identify
-    // exactly the person who asked not to be identified.
+    // Not carried for an anonymous reviewer either — the photo would identify
+    // exactly the person who asked not to be identified. Stored but not
+    // rendered; see the column comment in 0107 for why the homepage uses
+    // initials instead of hotlinking this.
     reviewerPhotoUrl: anonymous ? null : raw.reviewer?.profilePhotoUrl?.trim() || null,
     rating,
     comment: raw.comment?.trim() || null,
     reviewCreatedAt: new Date(createdMs),
-    // Google does not return a public permalink on the Review resource
-    // (reviewReplyUrl is for the OWNER to reply, not for a visitor to read), so
-    // this stays null until there is a documented field for it. Null is honest;
-    // a guessed URL would 404 for visitors.
-    reviewUrl: null,
   }
 }
 
@@ -269,6 +290,7 @@ export function createGoogleReviewFetcher(
     const accessToken = await exchange(refreshToken, clientId, clientSecret)
 
     const out: GoogleReviewFromApi[] = []
+    let skipped = 0
     let pageToken: string | undefined
     // A bound, not a `while (true)`: a server that kept returning the same
     // nextPageToken would otherwise spin forever against a shared quota. 40
@@ -298,13 +320,14 @@ export function createGoogleReviewFetcher(
         // homepage stale, so unusable ones are dropped rather than thrown on.
         const mapped = toGoogleReview(raw)
         if (mapped) out.push(mapped)
+        else skipped++
       }
 
       if (!json.nextPageToken) break
       pageToken = json.nextPageToken
     }
 
-    return out
+    return { reviews: out, skipped }
   }
 }
 

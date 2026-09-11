@@ -3,14 +3,16 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { requireManager, AuthError } from '@/lib/auth/guard'
+import { requireOwner, AuthError } from '@/lib/auth/guard'
 import { zodErrorMessage } from '@/lib/utils/errors'
 import { saveGoogleOAuthClient, deleteGoogleConnection } from '@/lib/reviews/google-credentials'
+import { syncGoogleReviewsForTenant } from '@/lib/reviews/sync'
+import { createGoogleReviewFetcher } from '@/lib/reviews/google-business-api'
 
 type Result = { error?: string; success?: true }
 
 /**
- * Connect or disconnect a venue's Google Business Profile (0105).
+ * Connect or disconnect a venue's Google Business Profile (0106).
  *
  * ── Why the venue supplies its own OAuth client ────────────────────────────
  *
@@ -26,10 +28,20 @@ type Result = { error?: string; success?: true }
  *
  * ── Authorisation ──────────────────────────────────────────────────────────
  *
- * requireManager() first, then the write runs inside withUser() so
- * `google_business_credentials_rw` (0105) is the second gate — the same two
- * layers every settings action uses. Nothing about identity or tenant comes
- * from the browser: `tenant_id` is taken from the authenticated context.
+ * requireOwner() first, then the write runs inside withUser() so
+ * `google_business_credentials_rw` (0106, tightened 0107) is the second gate —
+ * the same two layers every settings action uses. Nothing about identity or
+ * tenant comes from the browser: `tenant_id` is taken from the authenticated
+ * context.
+ *
+ * OWNER, not manager (0107). This used to be requireManager() while the only
+ * screen that reaches it — /settings/business — redirects anybody who is not
+ * the owner. A server action is a public POST endpoint, so that gap let a
+ * manager who could not SEE the form still call it: binding their own Google
+ * Business Profile to the venue, or disconnecting the owner's. Resolved towards
+ * the stricter of the two, matching business_profiles, which holds the very
+ * settings this sits beside and has been owner-only since 0020 — connecting an
+ * external identity to the business belongs with its legal identity.
  *
  * The client secret and refresh token are encrypted before they reach the
  * database (lib/reviews/google-credentials.ts) with the tenant id as AAD, and
@@ -52,7 +64,7 @@ export async function saveGoogleOAuthClientAction(
   input: z.input<typeof connectionInput>,
 ): Promise<Result> {
   try {
-    const ctx = await requireManager()
+    const ctx = await requireOwner()
     const v = connectionInput.parse(input)
 
     await withUser(ctx.user.id, (tx) => saveGoogleOAuthClient(ctx.tenant.id, v, tx))
@@ -74,7 +86,7 @@ export async function saveGoogleOAuthClientAction(
  */
 export async function disconnectGoogleBusiness(): Promise<Result> {
   try {
-    const ctx = await requireManager()
+    const ctx = await requireOwner()
     await withUser(ctx.user.id, (tx) => deleteGoogleConnection(ctx.tenant.id, tx))
     revalidatePath('/settings/business')
     return { success: true }
@@ -90,4 +102,52 @@ function fail(e: unknown): Result {
   // failed encryption or a driver error quoting the statement.
   console.error('[google-business] save failed:', e instanceof Error ? e.name : 'unknown')
   return { error: 'Could not save the Google connection. Please try again.' }
+}
+
+/**
+ * Pull this venue's reviews from Google right now (0107).
+ *
+ * ── Why a button was needed ────────────────────────────────────────────────
+ *
+ * The only thing that filled the cache was a cron job nobody had installed:
+ * syncAllGoogleReviews() was referenced by the runner script and the tests and
+ * by nothing else, so a venue could finish the consent flow, see "Connected",
+ * and watch its homepage stay empty forever with no way to tell whether the
+ * connection or the schedule was at fault.
+ *
+ * This gives the owner an answer in one click, and makes the first sync part of
+ * connecting rather than something that silently happens later — or never.
+ *
+ * ── Scope ──────────────────────────────────────────────────────────────────
+ *
+ * ONE tenant, the caller's own, taken from the authenticated context. It is not
+ * the sweep: a settings screen must never be able to start platform-wide work,
+ * and the sweep's serialisation belongs to the cron process that owns its own
+ * connection (see scripts/sync-google-reviews.ts).
+ *
+ * Racing the cron is harmless — the unique constraint plus ON CONFLICT DO
+ * UPDATE means the worst case is the same rows written twice.
+ *
+ * Runs on the OWNER database connection inside syncGoogleReviewsForTenant, not
+ * withUser(), because it reads the encrypted refresh token — which is exactly
+ * why this action is owner-gated and takes no parameters.
+ */
+export async function syncGoogleReviewsNow(): Promise<
+  Result & { synced?: number; skipped?: number }
+> {
+  try {
+    const ctx = await requireOwner()
+    const r = await syncGoogleReviewsForTenant(ctx.tenant.id, createGoogleReviewFetcher())
+
+    revalidatePath('/settings/business')
+    if (!r.connected) {
+      return { error: 'Authorise with Google before syncing.' }
+    }
+    // The sync records its own failure in last_sync_error; this surfaces the
+    // same message immediately rather than making the owner reload to find it.
+    if (r.error) return { error: r.error }
+    return { success: true, synced: r.synced, skipped: r.skipped }
+  } catch (e) {
+    return fail(e)
+  }
 }
