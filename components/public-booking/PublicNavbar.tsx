@@ -34,6 +34,17 @@ function scrollToId(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+/** The nav link id for the current route — "menu"/"resources"/"my-booking"
+ *  live at their own route, so the active one is a straight pathname match.
+ *  Anchor links (home/about/contact) only exist on "/" and are tracked by
+ *  scroll position instead (see the IntersectionObserver below), so this
+ *  returns null for them. */
+function routeActiveId(pathname: string, myBookingHref?: string): string | null {
+  if (myBookingHref && pathname === myBookingHref) return 'my-booking'
+  const entry = Object.entries(ROUTES).find(([, route]) => route === pathname)
+  return entry ? entry[0] : null
+}
+
 /** Sticky top nav for the tenant's public site — glass backdrop, a gradient
  * brand mark, animated-underline links, and an always-visible gradient
  * "Book Now" CTA. Links collapse behind a hamburger below `md`; the CTA
@@ -67,9 +78,11 @@ export function PublicNavbar({
 }) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
+  const [activeSection, setActiveSection] = useState('home')
   const router = useRouter()
   const pathname = usePathname()
   const navLinks = buildNavLinks(myBookingHref, showMenuLink)
+  const activeId = routeActiveId(pathname, myBookingHref) ?? (pathname === '/' ? activeSection : null)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
@@ -77,6 +90,30 @@ export function PublicNavbar({
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
+
+  // Scroll-spy for the homepage's anchor sections (home/about/contact) —
+  // route-based links (menu/resources/my-booking) are highlighted from
+  // routeActiveId() above instead, since they never scroll into view here.
+  useEffect(() => {
+    if (pathname !== '/') return
+    const ids = ['home', 'about', 'contact']
+    const elements = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null)
+    if (elements.length === 0) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting)
+        if (visible.length === 0) return
+        const topmost = visible.reduce((a, b) => (a.boundingClientRect.top <= b.boundingClientRect.top ? a : b))
+        setActiveSection(topmost.target.id)
+      },
+      { rootMargin: '-45% 0px -50% 0px', threshold: 0 },
+    )
+    elements.forEach((el) => observer.observe(el))
+    return () => observer.disconnect()
+  }, [pathname])
 
   // "My Booking" goes straight to the phone-lookup hub. "Menu" and
   // "Resources" always live at their own route. Every other link is a
@@ -131,17 +168,27 @@ export function PublicNavbar({
         </div>
 
         <nav className="hidden md:flex justify-center items-center">
-          {navLinks.map((link) => (
-            <button
-              key={link.id}
-              type="button"
-              onClick={() => goTo(link.id)}
-              className="group relative whitespace-nowrap px-2.5 py-2.5 text-sm font-semibold text-primary-foreground/75 rounded-xl transition-all duration-200 hover:text-primary-foreground hover:bg-white/10 active:scale-95 lg:px-3.5 lg:text-base"
-            >
-              {link.label}
-              <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-white transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
-            </button>
-          ))}
+          {navLinks.map((link) => {
+            const isActive = link.id === activeId
+            return (
+              <button
+                key={link.id}
+                type="button"
+                onClick={() => goTo(link.id)}
+                aria-current={isActive ? 'page' : undefined}
+                className={`group relative whitespace-nowrap px-2.5 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 hover:text-primary-foreground hover:bg-white/10 active:scale-95 lg:px-3.5 lg:text-base ${
+                  isActive ? 'text-primary-foreground bg-white/10' : 'text-primary-foreground/75'
+                }`}
+              >
+                {link.label}
+                <span
+                  className={`absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left rounded-full bg-white transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5 ${
+                    isActive ? 'scale-x-100' : 'scale-x-0'
+                  }`}
+                />
+              </button>
+            )
+          })}
         </nav>
 
         <div className="flex flex-1 justify-end items-center gap-2 shrink-0">
@@ -190,22 +237,32 @@ export function PublicNavbar({
       {open && (
         <nav className="border-t border-white/15 bg-primary px-4 pb-5 pt-3 shadow-[0_15px_30px_-10px_rgba(0,0,0,0.25)] md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex flex-col gap-1.5">
-            {navLinks.map((link) => (
-              <button
-                key={link.id}
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  goTo(link.id)
-                }}
-                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold text-primary-foreground/80 transition-all duration-150 hover:bg-white/10 hover:text-primary-foreground active:scale-[0.98]"
-              >
-                <span>{link.label}</span>
-                <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary-foreground">
-                  &rarr;
-                </span>
-              </button>
-            ))}
+            {navLinks.map((link) => {
+              const isActive = link.id === activeId
+              return (
+                <button
+                  key={link.id}
+                  type="button"
+                  onClick={() => {
+                    setOpen(false)
+                    goTo(link.id)
+                  }}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`group flex items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold transition-all duration-150 hover:bg-white/10 hover:text-primary-foreground active:scale-[0.98] ${
+                    isActive ? 'bg-white/10 text-primary-foreground' : 'text-primary-foreground/80'
+                  }`}
+                >
+                  <span>{link.label}</span>
+                  <span
+                    className={`transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary-foreground ${
+                      isActive ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
+                    }`}
+                  >
+                    &rarr;
+                  </span>
+                </button>
+              )
+            })}
           </div>
           <button
             type="button"
