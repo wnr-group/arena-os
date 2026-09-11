@@ -58,8 +58,8 @@ export default async function ResourcesPage() {
         logoUrl={branding.logoUrl}
         hasMenu={hasMenu}
       >
-        <main className="flex-1 bg-background">
-          <section className="relative overflow-hidden border-b border-border bg-gradient-to-b from-primary/5 to-transparent">
+        <main className="flex-1 bg-gradient-to-b from-accent/60 via-background to-background">
+          <section className="relative overflow-hidden border-b border-border-strong bg-gradient-to-b from-primary/20 via-accent to-accent">
             <div
               aria-hidden
               className="pointer-events-none absolute left-1/2 top-0 h-72 w-[640px] -translate-x-1/2 -translate-y-1/3 rounded-full bg-primary/10 blur-[110px]"

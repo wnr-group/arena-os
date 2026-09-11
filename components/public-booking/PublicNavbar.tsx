@@ -101,10 +101,8 @@ export function PublicNavbar({
   return (
     <header
       style={{ top: topOffset }}
-      className={`sticky z-40 border-b transition-all duration-300 ${
-        scrolled
-          ? 'border-border/80 bg-background/85 backdrop-blur-md shadow-[0_2px_20px_-8px_color-mix(in_srgb,var(--primary)_8%,transparent),0_8px_30px_-12px_rgba(0,0,0,0.05)]'
-          : 'border-transparent bg-background/60 backdrop-blur-sm'
+      className={`sticky z-40 bg-primary text-primary-foreground transition-shadow duration-300 ${
+        scrolled ? 'shadow-md shadow-primary/25' : 'shadow-sm shadow-primary/10'
       }`}
     >
       <div
@@ -122,11 +120,11 @@ export function PublicNavbar({
                 className="size-10 shrink-0 rounded-xl object-cover shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105"
               />
             ) : (
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-primary/10 transition-all duration-300 group-hover:scale-105 group-hover:shadow-primary/30 group-hover:rotate-3">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-primary-foreground shadow-lg shadow-primary/20 ring-2 ring-white/20 transition-all duration-300 group-hover:scale-105 group-hover:bg-white/20 group-hover:rotate-3">
                 {icon}
               </span>
             )}
-            <span className="truncate text-xl font-extrabold tracking-tight bg-gradient-to-r from-foreground to-muted-foreground/80 bg-clip-text text-transparent transition-all duration-300 group-hover:from-primary group-hover:to-primary-hover">
+            <span className="truncate text-xl font-extrabold tracking-tight text-primary-foreground transition-opacity duration-300 group-hover:opacity-90">
               {tenantName}
             </span>
           </button>
@@ -138,10 +136,10 @@ export function PublicNavbar({
               key={link.id}
               type="button"
               onClick={() => goTo(link.id)}
-              className="group relative whitespace-nowrap px-2.5 py-2.5 text-base font-semibold tracking-wide text-muted-foreground rounded-xl transition-all duration-200 hover:text-primary hover:bg-primary/5 active:scale-95 lg:px-3.5 lg:text-lg"
+              className="group relative whitespace-nowrap px-2.5 py-2.5 text-base font-semibold tracking-wide text-primary-foreground/75 rounded-xl transition-all duration-200 hover:text-primary-foreground hover:bg-white/10 active:scale-95 lg:px-3.5 lg:text-lg"
             >
               {link.label}
-              <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-primary transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
+              <span className="absolute bottom-1.5 left-2.5 right-2.5 h-[2px] origin-left scale-x-0 rounded-full bg-white transition-transform duration-300 group-hover:scale-x-100 lg:left-3.5 lg:right-3.5" />
             </button>
           ))}
         </nav>
@@ -152,11 +150,11 @@ export function PublicNavbar({
               type="button"
               onClick={onCartClick}
               aria-label="View cart"
-              className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background/50 text-foreground transition-all duration-200 hover:border-primary/40 hover:bg-primary/5 hover:text-primary active:scale-95"
+              className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-primary-foreground transition-all duration-200 hover:border-white/30 hover:bg-white/20 active:scale-95"
             >
               <ShoppingBag size={18} />
               {!!cartCount && cartCount > 0 && (
-                <span className="absolute -right-1.5 -top-1.5 flex min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground shadow">
+                <span className="absolute -right-1.5 -top-1.5 flex min-w-[18px] items-center justify-center rounded-full bg-white px-1 text-[10px] font-bold text-primary shadow">
                   {cartCount > 99 ? '99+' : cartCount}
                 </span>
               )}
@@ -165,11 +163,11 @@ export function PublicNavbar({
           <button
             type="button"
             onClick={() => router.push('/resources')}
-            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-primary hover:bg-primary-hover px-4 py-2.5 text-base font-semibold text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
+            className="relative overflow-hidden inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-white/90 px-4 py-2.5 text-base font-semibold text-primary shadow-md shadow-primary/20 transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 sm:px-6 group"
           >
             {/* Shimmer overlay effect */}
-            <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
-            
+            <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-primary/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out" />
+
             <span>Book Now</span>
             <ArrowRight size={15} className="hidden sm:inline transition-transform duration-300 group-hover:translate-x-1" />
           </button>
@@ -178,7 +176,7 @@ export function PublicNavbar({
             onClick={() => setOpen((o) => !o)}
             aria-label={open ? 'Close menu' : 'Open menu'}
             aria-expanded={open}
-            className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl text-foreground border border-border/60 bg-background/50 hover:bg-muted hover:text-primary transition-all duration-200 active:scale-95 md:hidden"
+            className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl text-primary-foreground border border-white/20 bg-white/10 hover:bg-white/20 transition-all duration-200 active:scale-95 md:hidden"
           >
             {open ? (
               <X size={18} className="transition-transform duration-300 rotate-90" />
@@ -190,7 +188,7 @@ export function PublicNavbar({
       </div>
 
       {open && (
-        <nav className="border-t border-border/80 bg-background/95 px-4 pb-5 pt-3 shadow-[0_15px_30px_-10px_rgba(0,0,0,0.1)] backdrop-blur-xl md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
+        <nav className="border-t border-white/15 bg-primary px-4 pb-5 pt-3 shadow-[0_15px_30px_-10px_rgba(0,0,0,0.25)] md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex flex-col gap-1.5">
             {navLinks.map((link) => (
               <button
@@ -200,10 +198,10 @@ export function PublicNavbar({
                   setOpen(false)
                   goTo(link.id)
                 }}
-                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-base font-semibold text-muted-foreground transition-all duration-150 hover:bg-primary/5 hover:text-primary active:scale-[0.98]"
+                className="group flex items-center justify-between rounded-xl px-4 py-3 text-left text-base font-semibold text-primary-foreground/80 transition-all duration-150 hover:bg-white/10 hover:text-primary-foreground active:scale-[0.98]"
               >
                 <span>{link.label}</span>
-                <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary">
+                <span className="opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 text-primary-foreground">
                   &rarr;
                 </span>
               </button>

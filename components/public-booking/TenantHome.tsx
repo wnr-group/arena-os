@@ -105,9 +105,14 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
         )}
 
         <main className="flex-1">
-          <section id="home" className="scroll-mt-16 bg-gradient-to-b from-primary/5 to-transparent">
-            <div className="mx-auto max-w-5xl px-4 py-14 text-center sm:px-6 sm:py-20">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3.5 py-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <section
+            id="home"
+            className="relative scroll-mt-16 overflow-hidden border-b border-border-strong bg-gradient-to-b from-primary/20 via-accent to-accent"
+          >
+            <div className="pointer-events-none absolute -right-16 -top-16 size-72 rounded-full bg-primary/20 blur-3xl" />
+            <div className="pointer-events-none absolute -left-16 top-24 size-72 rounded-full bg-accent-foreground/15 blur-3xl" />
+            <div className="relative mx-auto max-w-5xl px-4 py-14 text-center sm:px-6 sm:py-20">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border-strong bg-background/70 backdrop-blur-sm px-3.5 py-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                 <Icon size={13} className="text-primary" /> {industryLabel}
               </span>
               <h1 className="mt-5 text-4xl font-extrabold tracking-tight sm:text-6xl">{tenant.name}</h1>
@@ -127,7 +132,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
             </div>
           </section>
 
-          <section id="about" className="scroll-mt-16 bg-card/40">
+          <section id="about" className={`scroll-mt-16 bg-background ${hasMenu ? 'border-b border-border-strong' : ''}`}>
             <div className="mx-auto max-w-3xl px-4 py-14 text-center sm:px-6">
               <h2 className="text-3xl font-extrabold tracking-tight sm:text-4xl">About {tenant.name}</h2>
               <p className="mx-auto mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg leading-relaxed">
@@ -139,7 +144,7 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
           </section>
 
           {hasMenu && (
-            <section id="menu" className="scroll-mt-16 bg-card/40">
+            <section id="menu" className="scroll-mt-16 bg-accent/30">
               <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
                 <div className="mx-auto max-w-2xl text-center">
                   <h2 className="text-3xl font-extrabold tracking-tight sm:text-4xl">From the Menu</h2>
