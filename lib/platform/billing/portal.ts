@@ -302,11 +302,12 @@ export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPorta
     // Usage, counted in THIS transaction, by the same functions and the same
     // RLS scoping as the checkLimitIn() calls that enforce the cap — so the
     // number shown is the number that gets compared against.
-    const [branchCount, staffCount, resourceCount] = await Promise.all([
-      countBranches(tx, tenantId),
-      countActiveStaff(tx, tenantId),
-      countResources(tx, tenantId),
-    ])
+    // Sequential, not Promise.all: these share ONE transaction client, and a
+    // Postgres connection cannot run two queries at once (pg deprecates it and
+    // removes it in v9).
+    const branchCount = await countBranches(tx, tenantId)
+    const staffCount = await countActiveStaff(tx, tenantId)
+    const resourceCount = await countResources(tx, tenantId)
     const used: Record<string, number> = {
       max_branches: branchCount,
       max_staff: staffCount,
