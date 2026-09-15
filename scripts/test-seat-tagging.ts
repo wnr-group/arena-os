@@ -202,9 +202,15 @@ async function main() {
   {
     const session = await seat(A, A.tables[0], 4)
     const zero = await attempt(() => order(A, session.id, [{ qty: 1, seatNo: 0 }]))
-    check('seatNo = 0 is refused', !zero.ok && zero.orderError && /positive whole number/i.test(zero.message))
+    check('seatNo = 0 is refused', !zero.ok && zero.orderError && /whole number between/i.test(zero.message))
     const frac = await attempt(() => order(A, session.id, [{ qty: 1, seatNo: 1.5 }]))
-    check('a fractional seatNo is refused', !frac.ok && frac.orderError && /positive whole number/i.test(frac.message))
+    check('a fractional seatNo is refused', !frac.ok && frac.orderError && /whole number between/i.test(frac.message))
+    // Regression: order_items.seat_no is a Postgres smallint (max 32767) —
+    // a value the Zod schema also fails to cap must still be refused HERE,
+    // with a clear message, rather than reaching the INSERT and failing on
+    // Postgres' own smallint range check (a raw, confusing DB error).
+    const huge = await attempt(() => order(A, session.id, [{ qty: 1, seatNo: 40000 }]))
+    check('a seatNo beyond the smallint range is refused with a clear message', !huge.ok && huge.orderError && /whole number between 1 and 32767/i.test(huge.message))
     await complete(A, session.id)
   }
 

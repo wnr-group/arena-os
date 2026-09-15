@@ -14,6 +14,7 @@ import {
   rejectOrderCore,
   requestVoidOrderItemCore,
   decideVoidRequestCore,
+  MAX_SEAT_NO,
 } from '@/lib/orders/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -49,8 +50,11 @@ const createInput = z.object({
         modifierOptionIds: z.array(z.string().uuid()).optional(),
         // Seat/guest tagging (migration 0088, M18 #1) — see
         // CreateOrderItemInput's doc comment for why this is unbounded
-        // against cover_count here.
-        seatNo: z.coerce.number().int().min(1).optional(),
+        // against cover_count here. The upper bound matches MAX_SEAT_NO —
+        // order_items.seat_no's actual smallint range in Postgres — so an
+        // oversized value is refused here with a clear message instead of
+        // reaching the INSERT and failing on the DB's own range check.
+        seatNo: z.coerce.number().int().min(1).max(MAX_SEAT_NO, `Seat number cannot exceed ${MAX_SEAT_NO}.`).optional(),
       }),
     )
     .min(1, 'Add at least one item'),

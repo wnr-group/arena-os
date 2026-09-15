@@ -38,6 +38,12 @@ type Db = NodePgDatabase<typeof schema>
 /** Order rule violations the caller is allowed to show verbatim. */
 export class OrderError extends Error {}
 
+/** order_items.seat_no is a `smallint` (migration 0088) — its Postgres range
+ *  is the actual constraint being validated against here, so both this core
+ *  and the Zod schema in lib/actions/orders.ts bound against the SAME
+ *  number, not two independently-guessed ones that could drift apart. */
+export const MAX_SEAT_NO = 32767
+
 export type CreateOrderItemInput = {
   menuItemId: string
   qty: number
@@ -370,11 +376,16 @@ export async function createOrderCore(
   // without a second round trip (RETURNING doesn't promise to preserve
   // input order for a multi-row INSERT ... VALUES).
   // seat_no is a plain smallint with no seats table to check against (see
-  // migration 0088) — only shape-validated here (a real positive integer),
-  // same "trust nothing from the browser but shape" discipline as qty.
+  // migration 0088) — only shape-validated here (a real positive integer
+  // within the seat_no column's own smallint range), same "trust nothing
+  // from the browser but shape" discipline as qty. The upper bound matters:
+  // without it, a value the Zod schema also failed to cap (or a caller that
+  // bypasses it entirely, e.g. a test or another server action) reaches the
+  // INSERT and fails on Postgres' smallint range check instead — a raw DB
+  // error instead of this clear one.
   for (const i of input.items) {
-    if (i.seatNo !== undefined && (!Number.isInteger(i.seatNo) || i.seatNo < 1)) {
-      throw new OrderError('Seat number must be a positive whole number.')
+    if (i.seatNo !== undefined && (!Number.isInteger(i.seatNo) || i.seatNo < 1 || i.seatNo > MAX_SEAT_NO)) {
+      throw new OrderError(`Seat number must be a whole number between 1 and ${MAX_SEAT_NO}.`)
     }
   }
 
