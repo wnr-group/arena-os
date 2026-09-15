@@ -434,6 +434,62 @@ export async function findLiveInvoice(
   return row ?? null
 }
 
+/** One booking's live billing state — either a normal single invoice, or every
+ *  check of a split bill (M18 #2), sharing one bill_group_id. */
+export type LiveBilling =
+  | { kind: 'single'; invoice: ExistingInvoice }
+  | { kind: 'split'; billGroupId: string; checks: (ExistingInvoice & { billGroupSeq: number })[] }
+
+/**
+ * The booking's full live billing state, generalising findLiveInvoice to also
+ * recognise a split bill (migration 0089): a booking may still only ever have
+ * ONE live billing episode, but that episode is now either a single invoice
+ * (bill_group_id null, exactly today's shape) or every check of a split
+ * (several invoices sharing one bill_group_id). Used wherever code must
+ * refuse a second bill/split against an already-billed booking — see
+ * issueInvoiceForBooking, issueSplitBillForBooking (lib/billing/split.ts) and
+ * requireNoLiveInvoice (lib/booking/service.ts).
+ *
+ * Ordered by bill_group_seq so a split's checks always come back "Check 1,
+ * Check 2, …" — the order the UI and every caller expects.
+ */
+export async function findLiveBilling(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<LiveBilling | null> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      billGroupId: invoices.billGroupId,
+      billGroupSeq: invoices.billGroupSeq,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.tenantId, tenantId),
+        eq(invoices.bookingId, bookingId),
+        ne(invoices.status, 'void'),
+      ),
+    )
+    .orderBy(invoices.billGroupSeq)
+
+  if (rows.length === 0) return null
+  if (rows[0].billGroupId === null) {
+    // Invariant (enforced by every writer): a booking is never both a plain
+    // invoice AND a split at once, so a null bill_group_id here means every
+    // row is — there is only ever one.
+    return { kind: 'single', invoice: rows[0] }
+  }
+  return {
+    kind: 'split',
+    billGroupId: rows[0].billGroupId,
+    checks: rows.map((r) => ({ id: r.id, invoiceNumber: r.invoiceNumber, status: r.status, billGroupSeq: r.billGroupSeq! })),
+  }
+}
+
 /**
  * Next invoice number for the tenant, atomically.
  *
@@ -492,16 +548,39 @@ export type IssuedInvoice = {
   deposits: DepositCarryResult
 }
 
+/** What prepareBookingBill hands both issueInvoiceForBooking and
+ *  issueSplitBillForBooking (lib/billing/split.ts) — everything the two
+ *  paths share before they diverge on promo/loyalty (normal bill only) vs.
+ *  splitting (no promo/loyalty in v1 — see lib/billing/split.ts's header). */
+export type PreparedBill = {
+  booking: { id: string; bookingNumber: string; branchId: string; customerId: string | null; status: string }
+  billedOrderIds: string[]
+  lines: BillLine[]
+  /** priced with NO discount — the base subtotal a membership % applies against. */
+  gross: PricingResult
+  membership: AppliedMembershipBenefit | null
+  membershipDiscount: number
+}
+
 /**
- * Raise the invoice for a booking. Everything below runs in the caller's
- * transaction, so a failure at any step leaves no invoice, no items and no
- * consumed sequence number.
+ * Steps 1–4a of raising a bill, shared verbatim by issueInvoiceForBooking and
+ * issueSplitBillForBooking: lock the booking, refuse a second live bill
+ * (plain OR split — see findLiveBilling), capture+load the billable lines,
+ * and resolve the automatic membership benefit. Promo codes and loyalty
+ * redemption are NOT here — they stay in issueInvoiceForBooking only, since
+ * a split bill applies membership (automatic) but not a manually-chosen
+ * discount (v1 scope decision, see lib/billing/split.ts).
+ *
+ * Pure extraction from what used to be issueInvoiceForBooking's own steps
+ * 1–4a: same locking, same order of operations, same error messages for the
+ * single-invoice case — verified against scripts/test-billing-flow.ts and
+ * friends with zero behaviour change.
  */
-export async function issueInvoiceForBooking(
+export async function prepareBookingBill(
   tx: Db,
   tenant: { id: string; timezone: string },
-  input: IssueInvoiceInput,
-): Promise<IssuedInvoice> {
+  bookingId: string,
+): Promise<PreparedBill> {
   // ── 1. lock the booking ───────────────────────────────────────────────────
   // SELECT … FOR UPDATE is what makes double-billing impossible: a second
   // cashier's transaction blocks here until the first commits, and then sees the
@@ -516,7 +595,7 @@ export async function issueInvoiceForBooking(
       status: bookings.status,
     })
     .from(bookings)
-    .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, tenant.id)))
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenant.id)))
     .for('update')
     .limit(1)
 
@@ -527,9 +606,14 @@ export async function issueInvoiceForBooking(
   }
 
   // ── 2. already billed? ────────────────────────────────────────────────────
-  const existing = await findLiveInvoice(tx, tenant.id, booking.id)
-  if (existing) {
-    throw new BillingError(`This booking has already been billed (${existing.invoiceNumber}).`)
+  const existing = await findLiveBilling(tx, tenant.id, booking.id)
+  if (existing?.kind === 'single') {
+    throw new BillingError(`This booking has already been billed (${existing.invoice.invoiceNumber}).`)
+  }
+  if (existing?.kind === 'split') {
+    throw new BillingError(
+      `This booking's bill has already been split into ${existing.checks.length} checks — settle them individually.`,
+    )
   }
 
   // ── 3. lines, entirely from server-side data ──────────────────────────────
@@ -580,6 +664,22 @@ export async function issueInvoiceForBooking(
     gross.subtotal,
   )
   const membershipDiscount = membership?.discountAmount ?? 0
+
+  return { booking, billedOrderIds, lines, gross, membership, membershipDiscount }
+}
+
+/**
+ * Raise the invoice for a booking. Everything below runs in the caller's
+ * transaction, so a failure at any step leaves no invoice, no items and no
+ * consumed sequence number.
+ */
+export async function issueInvoiceForBooking(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  input: IssueInvoiceInput,
+): Promise<IssuedInvoice> {
+  const { booking, billedOrderIds, lines, gross, membership, membershipDiscount } =
+    await prepareBookingBill(tx, tenant, input.bookingId)
 
   // What a promo or a keyed-in discount may still take off. A membership that
   // covers the whole bill leaves nothing for either.

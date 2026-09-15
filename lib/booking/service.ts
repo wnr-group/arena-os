@@ -13,7 +13,8 @@ import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog } fr
 import { durationHours } from './availability'
 import { todayInZone } from './time'
 import { resolveBookingCustomer } from './customer'
-import { findLiveInvoice } from '@/lib/billing/invoice'
+import { findLiveBilling } from '@/lib/billing/invoice'
+import { getInvoiceSettlement } from '@/lib/billing/payments'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -361,9 +362,39 @@ export async function requestBillCore(tx: Db, ctx: { tenantId: string }, booking
 }
 
 async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string): Promise<void> {
-  const existing = await findLiveInvoice(tx, tenantId, bookingId)
-  if (existing) {
-    throw new BookingError(`This table has already been billed as invoice ${existing.invoiceNumber} — nothing to move.`)
+  const existing = await findLiveBilling(tx, tenantId, bookingId)
+  if (existing?.kind === 'single') {
+    throw new BookingError(`This table has already been billed as invoice ${existing.invoice.invoiceNumber} — nothing to move.`)
+  }
+  if (existing?.kind === 'split') {
+    throw new BookingError(
+      `This table's bill has already been split into ${existing.checks.length} checks — nothing to move.`,
+    )
+  }
+}
+
+/**
+ * Refuse to complete a booking with money still owing (M18 #2). Covers both
+ * a normal single invoice and every check of a split bill — findLiveBilling
+ * already generalises the two, same as requireNoLiveInvoice above. A booking
+ * with no invoice at all (nothing was ever billed) is unaffected: this only
+ * blocks completion against a KNOWN, outstanding balance, never a booking
+ * that was simply never billed (e.g. a no-charge walk-through).
+ */
+export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId: string): Promise<void> {
+  const billing = await findLiveBilling(tx, tenantId, bookingId)
+  if (!billing) return
+
+  const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
+  for (const invoiceId of invoiceIds) {
+    const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
+    if (settlement?.payable) {
+      throw new BookingError(
+        billing.kind === 'split'
+          ? "This table's bill has been split — settle every check before completing."
+          : 'This booking still has an outstanding balance — settle it before completing.',
+      )
+    }
   }
 }
 

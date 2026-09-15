@@ -13,6 +13,7 @@ import {
   transferTableCore,
   mergeTablesCore,
   splitTableCore,
+  assertBookingFullyPaid,
   BookingError,
 } from '@/lib/booking/service'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
@@ -256,6 +257,10 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
     else if (status === 'cancelled') set.cancelledAt = now
 
     await withUser(ctx.user.id, async (tx) => {
+      if (status === 'completed') {
+        await assertBookingFullyPaid(tx, ctx.tenant.id, id)
+      }
+
       await tx.update(bookings).set(set).where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
 
       // Cancelling a booking must not leave the kitchen cooking for it, or a

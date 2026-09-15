@@ -3,11 +3,12 @@
 import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Loader2, ReceiptText } from 'lucide-react'
+import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
 import { createInvoiceForBooking } from '@/lib/actions/billing'
 import { priceBill, type BillLine } from '@/lib/billing/pricing'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { PaymentPanel, type SettlementView } from './PaymentPanel'
+import { SplitBillDialog } from './SplitBillDialog'
 
 type BookingHeader = {
   id: string
@@ -22,6 +23,17 @@ type BookingHeader = {
   resourceNames: string[]
 }
 type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
+
+/** One check of a split bill (M18 #2) — mirrors lib/billing/data.ts's
+ *  CheckView, with Dates already serialised the same way `settlement` is. */
+export type SplitCheckView = {
+  invoiceId: string
+  invoiceNumber: string
+  seq: number
+  label: string
+  settlement: SettlementView
+  wallet: { balance: number; maxSpendable: number } | null
+}
 
 const input =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
@@ -38,6 +50,7 @@ export function BillScreen({
   lines,
   existingInvoice,
   settlement,
+  splitChecks,
   membership,
   wallet,
   loyalty,
@@ -49,6 +62,10 @@ export function BillScreen({
   existingInvoice: ExistingInvoice | null
   /** Present once a bill exists — drives the payment panel. */
   settlement: SettlementView | null
+  /** Present once the bill has been SPLIT (M18 #2) — one entry per check,
+   *  each with its own independent payment panel. Mutually exclusive with
+   *  `existingInvoice`/`settlement`. */
+  splitChecks: SplitCheckView[] | null
   /**
    * The membership benefit this bill is entitled to (AROS-61), resolved
    * server-side from the customer's purchased snapshot. DISPLAY ONLY — the
@@ -72,6 +89,7 @@ export function BillScreen({
   const [redeemText, setRedeemText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [splitOpen, setSplitOpen] = useState(false)
 
   const discount = Number(discountText)
   const discountValid = discountText === '' || (Number.isFinite(discount) && discount >= 0)
@@ -120,8 +138,20 @@ export function BillScreen({
     { cgst: 0, sgst: 0 },
   )
 
-  const blocked = Boolean(existingInvoice) || !booking.billable || lines.length === 0
+  const blocked = Boolean(existingInvoice) || Boolean(splitChecks) || !booking.billable || lines.length === 0
+  const canSplit = !existingInvoice && !splitChecks && booking.billable && lines.length > 0
   const money = (n: number) => formatMoney(n, currency)
+
+  // The by-item split picker's source list — same gross per-item value the
+  // split math itself reads (priceBill's items are priced BEFORE any
+  // discount, so this is identical regardless of what's typed above).
+  const itemsForSplit = useMemo(
+    () =>
+      preview.items
+        .filter((i) => i.kind === 'food' && i.sourceId)
+        .map((i) => ({ sourceId: i.sourceId as string, description: i.description, qty: i.qty, unitPrice: i.unitPrice, lineTotal: i.lineTotal })),
+    [preview.items],
+  )
 
   function generate() {
     if (blocked || pending) return
@@ -199,14 +229,46 @@ export function BillScreen({
           </Link>
         </Notice>
       )}
-      {!existingInvoice && !booking.billable && (
+      {splitChecks && (
+        <Notice tone="info">
+          Split into {splitChecks.length} checks. Each is settled independently below — the table
+          closes once every check is paid.
+        </Notice>
+      )}
+      {!existingInvoice && !splitChecks && !booking.billable && (
         <Notice tone="warn">This booking cannot be billed in its current status.</Notice>
       )}
-      {!existingInvoice && booking.billable && lines.length === 0 && (
+      {!existingInvoice && !splitChecks && booking.billable && lines.length === 0 && (
         <Notice tone="warn">This booking has nothing to bill.</Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
 
+      {splitChecks ? (
+        <div className="mt-6 space-y-6">
+          <LineTable title="Booking charges" items={bookingItems} money={money} />
+          {foodItems.length > 0 && <LineTable title="Food & beverage" items={foodItems} money={money} />}
+
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Checks ({splitChecks.length})
+            </p>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {splitChecks.map((c) => (
+                <div key={c.invoiceId}>
+                  <p className="mb-1.5 text-sm font-medium">{c.label}</p>
+                  <PaymentPanel
+                    key={c.settlement.paid}
+                    settlement={c.settlement}
+                    wallet={c.wallet}
+                    timeZone={timeZone}
+                    currency={currency}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_20rem]">
         {/* ── lines ── */}
         <div className="space-y-6">
@@ -348,12 +410,36 @@ export function BillScreen({
             {pending ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
             {pending ? 'Generating…' : 'Generate bill'}
           </button>
+          {canSplit && (
+            <button
+              type="button"
+              onClick={() => setSplitOpen(true)}
+              disabled={pending}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            >
+              <Split size={16} /> Split bill
+            </button>
+          )}
           <p className="text-center text-xs text-muted-foreground">
             Totals are recalculated on the server when the bill is raised.
           </p>
         </aside>
         )}
       </div>
+      )}
+
+      {splitOpen && (
+        <SplitBillDialog
+          bookingId={booking.id}
+          items={itemsForSplit}
+          currency={currency}
+          onClose={() => setSplitOpen(false)}
+          onSplit={() => {
+            setSplitOpen(false)
+            router.refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

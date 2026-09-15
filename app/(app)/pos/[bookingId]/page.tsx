@@ -43,6 +43,19 @@ export default async function PosBillPage({
   const settlement = data.settlement
     ? { ...data.settlement, payments: data.settlement.payments.map((p) => ({ ...p, createdAt: p.createdAt.toISOString() })) }
     : null
+  const splitChecks = data.splitChecks
+    ? data.splitChecks.map((c) => ({
+        invoiceId: c.invoiceId,
+        invoiceNumber: c.invoiceNumber,
+        seq: c.seq,
+        label: `Check ${c.seq} of ${data.splitChecks!.length}`,
+        settlement: {
+          ...c.settlement,
+          payments: c.settlement.payments.map((p) => ({ ...p, createdAt: p.createdAt.toISOString() })),
+        },
+        wallet: c.wallet,
+      }))
+    : null
 
   return (
     <BillScreen
@@ -50,6 +63,7 @@ export default async function PosBillPage({
       lines={data.lines}
       existingInvoice={data.existingInvoice}
       settlement={settlement}
+      splitChecks={splitChecks}
       // Display only: every wallet limit is re-checked under a lock by the
       // action, which reads the balance from the ledger itself.
       wallet={data.wallet}

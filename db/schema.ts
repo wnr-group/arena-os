@@ -1559,6 +1559,13 @@ export const invoices = pgTable(
     status: invoiceStatus('status').notNull().default('draft'),
     placeOfSupply: text('place_of_supply'),
     issuedAt: timestamp('issued_at', { withTimezone: true }),
+    // Bill splitting (migration 0089, M18 #2). Null for every normal, unsplit
+    // invoice. When set, all invoices sharing a billGroupId together cover a
+    // booking's billable lines exactly once each — see lib/billing/split.ts.
+    billGroupId: uuid('bill_group_id'),
+    // 1-based position within billGroupId, for display ordering only
+    // ("Check 2 of 3") — invoiceNumber is still assigned normally per check.
+    billGroupSeq: smallint('bill_group_seq'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1566,6 +1573,7 @@ export const invoices = pgTable(
     unique('invoices_tenant_number_key').on(t.tenantId, t.invoiceNumber),
     // Target of the composite FKs on invoice_items and payments.
     unique('invoices_tenant_id_key').on(t.tenantId, t.id),
+    index('idx_invoices_bill_group').on(t.tenantId, t.billGroupId).where(sql`${t.billGroupId} is not null`),
     foreignKey({
       name: 'invoices_booking_tenant_fkey',
       columns: [t.tenantId, t.bookingId],

@@ -72,7 +72,114 @@ export type PricingResult = {
   items: PricedItem[]
 }
 
-// ── the calculation 
+/**
+ * One tax-rate group's full breakdown — the richer, internal-use shape
+ * `priceBill` computes on its way to the public `taxBreakup` (which only
+ * exposes `percent`/`cgst`/`sgst`). Exported so bill-splitting (M18 #2) can
+ * read the same subtotal/discount/tax figures `priceBill` already derived,
+ * instead of re-deriving them a second, potentially divergent way.
+ */
+export type TaxGroup = {
+  percent: number
+  subtotal: number
+  discount: number
+  taxable: number
+  tax: number
+  cgst: number
+  sgst: number
+}
+
+/**
+ * Group already-priced items by tax rate and allocate `discount` across the
+ * groups pro-rata by cumulative subtotal — the exact computation `priceBill`
+ * needs for its own `taxBreakup`/`taxTotal`, factored out so a caller that
+ * already HAS a `PricingResult` (bill-splitting) can rebuild the same
+ * per-group figures deterministically, without re-pricing a single line.
+ * Calling this twice with the same `(items, discount)` always reproduces
+ * identical groups — it is a pure function of already-rounded inputs.
+ */
+export function groupByTaxRate(items: PricedItem[], discount: number): TaxGroup[] {
+  // Group by distinct rate. The percent is rounded first, so 18 and
+  // 18.000000000000004 are the same group and no rate can appear twice.
+  // Insertion order is irrelevant: the groups are sorted by percent below.
+  const groups = new Map<number, number>()
+  for (const item of items) {
+    groups.set(item.taxPercent, round2((groups.get(item.taxPercent) ?? 0) + item.lineTotal))
+  }
+  const percents = [...groups.keys()].sort((a, b) => a - b)
+
+  const subtotal = round2([...groups.values()].reduce((sum, v) => sum + v, 0))
+
+  const result: TaxGroup[] = []
+  let cumulativeSubtotal = 0
+  let allocatedDiscount = 0
+
+  for (const percent of percents) {
+    const groupSubtotal = groups.get(percent) ?? 0
+    cumulativeSubtotal = round2(cumulativeSubtotal + groupSubtotal)
+
+    // subtotal === 0 only when every line is zero, in which case there is
+    // nothing to discount and the ratio is undefined — allocate nothing.
+    const cumulativeDiscount =
+      subtotal > 0 ? round2((discount * cumulativeSubtotal) / subtotal) : 0
+    const groupDiscount = round2(cumulativeDiscount - allocatedDiscount)
+    allocatedDiscount = cumulativeDiscount
+
+    const groupTaxable = atLeastZero(round2(groupSubtotal - groupDiscount))
+    const tax = round2((groupTaxable * percent) / 100)
+
+    result.push({
+      percent,
+      subtotal: groupSubtotal,
+      discount: groupDiscount,
+      taxable: groupTaxable,
+      tax,
+      cgst: round2(tax / 2),
+      sgst: round2(tax / 2),
+    })
+  }
+
+  return result
+}
+
+/**
+ * Split a fixed `total` into `weights.length` paise-exact shares, in
+ * proportion to `weights`. The defining guarantee — the one bill-splitting
+ * (M18 #2) depends on — is that `sum(shares) === round2(total)` ALWAYS,
+ * including odd/prime amounts and zero weights: each share but the last is
+ * `round2(total × cumulativeWeight / totalWeight)` minus what was already
+ * allocated (the same telescoping trick `groupByTaxRate` uses to allocate
+ * discount across tax groups); the LAST share is whatever remains, by
+ * construction, rather than independently rounded. Equal weights ⇒ an even
+ * N-way split; item-value weights ⇒ a proportional split. Never used to
+ * recompute a price — only to divide an already-priced figure.
+ */
+export function splitProportional(total: number, weights: number[]): number[] {
+  const fixedTotal = round2(finite(total))
+  const safeWeights = weights.map((w) => atLeastZero(finite(w)))
+  const totalWeight = safeWeights.reduce((sum, w) => sum + w, 0)
+  if (safeWeights.length === 0) return []
+  // No signal to split by (everyone weighted zero) — put it all on the last
+  // share deterministically, same "remainder goes to one bucket" rule.
+  if (totalWeight <= 0) {
+    return safeWeights.map((_, i) => (i === safeWeights.length - 1 ? fixedTotal : 0))
+  }
+
+  const shares: number[] = []
+  let cumulativeWeight = 0
+  let allocated = 0
+  for (let i = 0; i < safeWeights.length; i++) {
+    cumulativeWeight += safeWeights[i]
+    const isLast = i === safeWeights.length - 1
+    const cumulativeShare = isLast ? fixedTotal : round2((fixedTotal * cumulativeWeight) / totalWeight)
+    const share = round2(cumulativeShare - allocated)
+    shares.push(share)
+    allocated = cumulativeShare
+  }
+  return shares
+}
+
+// ── the calculation
 
 /**
  * Price a bill.
@@ -103,37 +210,16 @@ export function priceBill(input: PricingInput): PricingResult {
   const discount = Math.min(round2(atLeastZero(finite(input.discount ?? 0))), subtotal)
   const taxableValue = round2(subtotal - discount)
 
-  // Step 3 — group by distinct rate. The percent is rounded first, so 18 and
-  // 18.000000000000004 are the same group and no rate can appear twice.
-  // Insertion order is irrelevant: the groups are sorted by percent below.
-  const groups = new Map<number, number>()
-  for (const item of items) {
-    groups.set(item.taxPercent, round2((groups.get(item.taxPercent) ?? 0) + item.lineTotal))
-  }
-  const percents = [...groups.keys()].sort((a, b) => a - b)
-
-  const taxBreakup: PricingResult['taxBreakup'] = []
-  let cumulativeSubtotal = 0
-  let allocatedDiscount = 0
-  let taxTotal = 0
-
-  for (const percent of percents) {
-    const groupSubtotal = groups.get(percent) ?? 0
-    cumulativeSubtotal = round2(cumulativeSubtotal + groupSubtotal)
-
-    // subtotal === 0 only when every line is zero, in which case there is
-    // nothing to discount and the ratio is undefined — allocate nothing.
-    const cumulativeDiscount =
-      subtotal > 0 ? round2((discount * cumulativeSubtotal) / subtotal) : 0
-    const groupDiscount = round2(cumulativeDiscount - allocatedDiscount)
-    allocatedDiscount = cumulativeDiscount
-
-    const groupTaxable = atLeastZero(round2(groupSubtotal - groupDiscount))
-    const tax = round2((groupTaxable * percent) / 100)
-
-    taxBreakup.push({ percent, cgst: round2(tax / 2), sgst: round2(tax / 2) })
-    taxTotal = round2(taxTotal + tax)
-  }
+  // Step 3 — per-rate grouping and discount allocation, factored out into
+  // groupByTaxRate (above) so bill-splitting can reproduce these exact same
+  // per-group figures later without re-deriving them differently.
+  const groups = groupByTaxRate(items, discount)
+  const taxBreakup: PricingResult['taxBreakup'] = groups.map((g) => ({
+    percent: g.percent,
+    cgst: g.cgst,
+    sgst: g.sgst,
+  }))
+  const taxTotal = round2(groups.reduce((sum, g) => sum + g.tax, 0))
 
   const total = round2(taxableValue + taxTotal)
 
