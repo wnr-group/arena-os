@@ -3,6 +3,7 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { isOwner } from '@/lib/auth/roles'
 import { getBusinessProfile } from '@/lib/settings/business'
 import { DEFAULT_INVOICE_PREFIX } from '@/lib/settings/business-profile'
+import { listTaxRates } from '@/lib/tax-rates/data'
 import { BusinessProfileForm } from '@/components/settings/BusinessProfileForm'
 
 export default async function BusinessSettingsPage() {
@@ -12,7 +13,15 @@ export default async function BusinessSettingsPage() {
   // the business_write RLS policy is owner-only on top of that.
   if (!isOwner(ctx.role)) redirect('/dashboard')
 
-  const profile = await getBusinessProfile(ctx)
+  // M18's service charge is restaurant-only (see
+  // lib/settings/business-profile.ts's loadServiceChargeConfig, the actual
+  // enforcement point) — not fetching tax rates for a non-restaurant tenant
+  // is just avoiding a pointless query, the form itself hides the section.
+  const isRestaurant = ctx.tenant.industry === 'restaurant'
+  const [profile, taxRates] = await Promise.all([
+    getBusinessProfile(ctx),
+    isRestaurant ? listTaxRates(ctx) : Promise.resolve([]),
+  ])
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-8">
@@ -29,9 +38,13 @@ export default async function BusinessSettingsPage() {
           logoUrl: profile?.logoUrl ?? '',
           invoicePrefix: profile?.invoicePrefix ?? DEFAULT_INVOICE_PREFIX,
           placeOfSupply: profile?.placeOfSupply ?? '',
+          serviceChargePercent: profile?.serviceChargePercent ?? '0',
+          serviceChargeTaxRateId: profile?.serviceChargeTaxRateId ?? '',
         }}
         tenantName={ctx.tenant.name}
         configured={profile !== null}
+        taxRates={taxRates.map((t) => ({ id: t.id, name: t.name, percent: t.percent }))}
+        isRestaurant={isRestaurant}
       />
     </div>
   )

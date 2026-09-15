@@ -121,8 +121,8 @@ async function main() {
     const cols = (await ownerPool.query<{ column_name: string; is_nullable: string; column_default: string }>(
       `select column_name,is_nullable,column_default from information_schema.columns
         where table_schema='public' and table_name='business_profiles' order by ordinal_position`)).rows
-    check('table has exactly the 9 specified columns', cols.map((c) => c.column_name).join(',') ===
-      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at')
+    check('table has exactly the 11 specified columns', cols.map((c) => c.column_name).join(',') ===
+      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at,service_charge_percent,service_charge_tax_rate_id')
     check('invoice_prefix is NOT NULL default INV', cols.find((c) => c.column_name === 'invoice_prefix')?.is_nullable === 'NO' &&
       String(cols.find((c) => c.column_name === 'invoice_prefix')?.column_default).includes('INV'))
 

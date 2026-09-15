@@ -9,7 +9,8 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill } from '@/lib/auth/roles'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
-import { priceBill } from '@/lib/billing/pricing'
+import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
+import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
 import {
   issueSplitBillForBooking,
   loadSeatByOrderItemId,
@@ -118,6 +119,9 @@ type PreviewSplitResult = { error?: string; checks?: CheckPricing[] }
 export async function previewSplitBill(input: z.input<typeof splitBillInput>): Promise<PreviewSplitResult> {
   try {
     const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Splitting a bill is only available for restaurant tenants.')
+    }
     if (!canBill(ctx.role)) {
       throw new AuthError('You do not have permission to raise a bill.')
     }
@@ -137,10 +141,12 @@ export async function previewSplitBill(input: z.input<typeof splitBillInput>): P
       if (!booking) throw new BillingError('Booking not found.')
 
       const membership = await resolveMembershipBenefit(tx, ctx.tenant.id, booking.customerId, gross.subtotal)
+      const serviceChargeConfig = await loadServiceChargeConfig(tx, ctx.tenant.id)
+      const serviceCharge = computeServiceCharge(gross.subtotal, serviceChargeConfig)
       const seatByOrderItemId =
         splitInput.mode === 'seat' ? await loadSeatByOrderItemId(tx, ctx.tenant.id, v.bookingId) : new Map()
 
-      return previewSplitChecks(gross, membership?.discountAmount ?? 0, seatByOrderItemId, splitInput)
+      return previewSplitChecks(gross, membership?.discountAmount ?? 0, serviceCharge, seatByOrderItemId, splitInput)
     })
 
     return { checks }
@@ -161,6 +167,9 @@ type IssueSplitResult = { error?: string; billGroupId?: string; checkCount?: num
 export async function issueSplitBill(input: z.input<typeof splitBillInput>): Promise<IssueSplitResult> {
   try {
     const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') {
+      throw new AuthError('Splitting a bill is only available for restaurant tenants.')
+    }
     if (!canBill(ctx.role)) {
       throw new AuthError('You do not have permission to raise a bill.')
     }

@@ -13,6 +13,11 @@ type SaveResult = { error?: string; success?: true }
 function fail(e: unknown): SaveResult {
   if (e instanceof AuthError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
+  // upsertBusinessProfile's own tax-rate-ownership check (M18 #3) — its
+  // message is already cashier/owner-safe, unlike an arbitrary driver error.
+  if (e instanceof Error && e.message === 'That tax rate was not found.') {
+    return { error: e.message }
+  }
   console.error('[business-profile] save failed:', e)
   return { error: 'Could not save the business profile. Please try again.' }
 }

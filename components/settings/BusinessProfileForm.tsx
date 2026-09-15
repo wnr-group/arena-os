@@ -21,6 +21,8 @@ type Fields = {
   logoUrl: string
   invoicePrefix: string
   placeOfSupply: string
+  serviceChargePercent: string
+  serviceChargeTaxRateId: string
 }
 
 const input =
@@ -30,10 +32,22 @@ export function BusinessProfileForm({
   initial,
   tenantName,
   configured,
+  taxRates,
+  isRestaurant,
 }: {
   initial: Fields
   tenantName: string
   configured: boolean
+  /** The tenant's own tax_rates (M18 #3) — the service charge's GST rate is
+   *  picked from these, never free-typed, so it can't drift from a slab the
+   *  tenant doesn't actually file under. */
+  taxRates: { id: string; name: string; percent: string }[]
+  /** M18 (split bill / service charge / tips) is restaurant-only — the
+   *  service charge section below is hidden entirely for every other
+   *  tenant type. The actual enforcement lives server-side
+   *  (loadServiceChargeConfig always returns 0 for a non-restaurant
+   *  tenant); this is just keeping a meaningless control off the screen. */
+  isRestaurant: boolean
 }) {
   const router = useRouter()
   const [fields, setFields] = useState<Fields>(initial)
@@ -54,11 +68,21 @@ export function BusinessProfileForm({
       ? `Keep it to ${MAX_INVOICE_PREFIX_LENGTH} characters.`
       : null
 
+  const serviceChargePercent = Number(fields.serviceChargePercent || '0')
+  const serviceChargeError =
+    isRestaurant && (!Number.isFinite(serviceChargePercent) || serviceChargePercent < 0 || serviceChargePercent > 100)
+      ? 'Enter a percentage between 0 and 100.'
+      : null
+
   function submit() {
-    if (pending || prefixError) return
+    if (pending || prefixError || serviceChargeError) return
     setError(null)
     start(async () => {
-      const r = await saveBusinessProfile(fields)
+      const r = await saveBusinessProfile({
+        ...fields,
+        serviceChargePercent,
+        serviceChargeTaxRateId: fields.serviceChargeTaxRateId || undefined,
+      })
       if (r.error) {
         setError(r.error)
         return
@@ -168,6 +192,55 @@ export function BusinessProfileForm({
           className={input}
         />
       </Field>
+
+      {isRestaurant && (
+        <div className="border-t pt-5">
+          <h2 className="text-sm font-semibold">Service charge</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Applied to every bill&apos;s subtotal, before GST. 0% leaves it off.
+          </p>
+
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <Field id="serviceChargePercent" label="Percentage">
+              <input
+                id="serviceChargePercent"
+                type="number"
+                min={0}
+                max={100}
+                step="0.01"
+                inputMode="decimal"
+                value={fields.serviceChargePercent}
+                onChange={(e) => set({ serviceChargePercent: e.target.value })}
+                disabled={pending}
+                placeholder="0.00"
+                className={input}
+              />
+              {serviceChargeError && <p className="mt-1 text-xs text-destructive">{serviceChargeError}</p>}
+            </Field>
+
+            <Field
+              id="serviceChargeTaxRateId"
+              label="GST rate"
+              hint="Picked from your own tax rates, not typed in — so it can never drift from a slab you actually file under."
+            >
+              <select
+                id="serviceChargeTaxRateId"
+                value={fields.serviceChargeTaxRateId}
+                onChange={(e) => set({ serviceChargeTaxRateId: e.target.value })}
+                disabled={pending}
+                className={input}
+              >
+                <option value="">Not taxable</option>
+                {taxRates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.percent}%)
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+      )}
 
       {error && (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
 import { createInvoiceForBooking } from '@/lib/actions/billing'
-import { priceBill, type BillLine } from '@/lib/billing/pricing'
+import { computeServiceCharge, priceBill, round2, type BillLine, type ServiceChargeConfig } from '@/lib/billing/pricing'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { PaymentPanel, type SettlementView } from './PaymentPanel'
 import { SplitBillDialog } from './SplitBillDialog'
@@ -43,6 +43,7 @@ const KIND_LABEL: Record<string, string> = {
   membership: 'Membership',
   adjustment: 'Adjustment',
   wallet_topup: 'Wallet top-up',
+  service_charge: 'Service charge',
 }
 
 export function BillScreen({
@@ -54,6 +55,9 @@ export function BillScreen({
   membership,
   wallet,
   loyalty,
+  serviceChargeConfig,
+  staff,
+  isRestaurant,
   timeZone,
   currency,
 }: {
@@ -80,6 +84,17 @@ export function BillScreen({
    * what is still owed and takes the debit.
    */
   loyalty: { balance: number; pointValue: number; minRedeemPoints: number } | null
+  /** The tenant's service charge config (M18 #3), for the pre-bill preview
+   *  only — meaningless once a bill/split exists (the frozen amount is
+   *  already part of `lines` then). */
+  serviceChargeConfig: ServiceChargeConfig
+  /** Active staff, for the tip-recipient picker on each payment panel. */
+  staff: { id: string; name: string }[]
+  /** M18 (split bill / service charge / tips) is restaurant-only. The Split
+   *  bill button and every payment panel's tip input are hidden for every
+   *  other tenant type — actual enforcement is server-side (the split
+   *  actions check this, and service charge always computes to zero). */
+  isRestaurant: boolean
   timeZone: string
   currency: string
 }) {
@@ -133,13 +148,25 @@ export function BillScreen({
 
   const bookingItems = preview.items.filter((i) => i.kind === 'booking')
   const foodItems = preview.items.filter((i) => i.kind === 'food')
+  // Present only once a bill/split already exists — `lines` then came from
+  // the frozen invoice_items, which include the service-charge line that
+  // was written at issue time (see lib/billing/invoice.ts). Pre-bill,
+  // `lines` never has one yet — see serviceChargePreview below instead.
+  const serviceChargeItems = preview.items.filter((i) => i.kind === 'service_charge')
   const gst = preview.taxBreakup.reduce(
     (acc, g) => ({ cgst: acc.cgst + g.cgst, sgst: acc.sgst + g.sgst }),
     { cgst: 0, sgst: 0 },
   )
 
+  // PRE-BILL preview only (M18 #3) — computed client-side purely so the
+  // cashier sees the line and the grand total move before raising the
+  // bill; issueInvoiceForBooking re-resolves the config and recomputes this
+  // server-side, same trust model as the discount preview above.
+  const serviceChargePreview = computeServiceCharge(preview.subtotal, serviceChargeConfig)
+  const grandTotal = round2(preview.taxableValue + serviceChargePreview.amount + preview.taxTotal + serviceChargePreview.tax)
+
   const blocked = Boolean(existingInvoice) || Boolean(splitChecks) || !booking.billable || lines.length === 0
-  const canSplit = !existingInvoice && !splitChecks && booking.billable && lines.length > 0
+  const canSplit = isRestaurant && !existingInvoice && !splitChecks && booking.billable && lines.length > 0
   const money = (n: number) => formatMoney(n, currency)
 
   // The by-item split picker's source list — same gross per-item value the
@@ -247,6 +274,9 @@ export function BillScreen({
         <div className="mt-6 space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
           {foodItems.length > 0 && <LineTable title="Food & beverage" items={foodItems} money={money} />}
+          {serviceChargeItems.length > 0 && (
+            <LineTable title="Service charge" items={serviceChargeItems} money={money} />
+          )}
 
           <div>
             <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -260,6 +290,8 @@ export function BillScreen({
                     key={c.settlement.paid}
                     settlement={c.settlement}
                     wallet={c.wallet}
+                    staff={staff}
+                    isRestaurant={isRestaurant}
                     timeZone={timeZone}
                     currency={currency}
                   />
@@ -276,6 +308,9 @@ export function BillScreen({
           {foodItems.length > 0 && (
             <LineTable title="Food & beverage" items={foodItems} money={money} />
           )}
+          {serviceChargeItems.length > 0 && (
+            <LineTable title="Service charge" items={serviceChargeItems} money={money} />
+          )}
         </div>
 
         {/* ── settle: once a bill exists the pricing is frozen, so the discount
@@ -287,6 +322,8 @@ export function BillScreen({
             key={settlement.paid}
             settlement={settlement}
             wallet={wallet}
+            staff={staff}
+            isRestaurant={isRestaurant}
             timeZone={timeZone}
             currency={currency}
           />
@@ -396,9 +433,16 @@ export function BillScreen({
             <Total k="CGST" v={money(gst.cgst)} muted />
             <Total k="SGST" v={money(gst.sgst)} muted />
             <Total k="GST total" v={money(preview.taxTotal)} />
+            {serviceChargePreview.amount > 0 && (
+              <Total
+                k={`Service charge (${serviceChargePreview.percent}%)`}
+                v={money(serviceChargePreview.amount + serviceChargePreview.tax)}
+                muted
+              />
+            )}
             <div className="flex justify-between gap-4 border-t pt-2 text-base font-semibold">
               <dt>Grand total</dt>
-              <dd>{money(preview.total)}</dd>
+              <dd>{money(grandTotal)}</dd>
             </div>
           </dl>
 

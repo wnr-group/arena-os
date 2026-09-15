@@ -1100,6 +1100,12 @@ export const businessProfiles = pgTable('business_profiles', {
   /** Feeds invoice numbering. Capped at 4 chars — see the migration's CHECK. */
   invoicePrefix: text('invoice_prefix').notNull().default('INV'),
   placeOfSupply: text('place_of_supply'),
+  // Service charge (migration 0090, M18 #3). 0 = off. serviceChargeTaxRateId
+  // ties the rate to one of the tenant's OWN tax_rates rather than a
+  // free-typed number — null means the service charge is deliberately
+  // untaxed, not unconfigured.
+  serviceChargePercent: numeric('service_charge_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+  serviceChargeTaxRateId: uuid('service_charge_tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -1566,6 +1572,20 @@ export const invoices = pgTable(
     // 1-based position within billGroupId, for display ordering only
     // ("Check 2 of 3") — invoiceNumber is still assigned normally per check.
     billGroupSeq: smallint('bill_group_seq'),
+    // Service charge (migration 0090, M18 #3) — a frozen snapshot of the
+    // business_profiles config as it was when this bill was raised, same
+    // discipline as membershipDiscount/membershipDiscountPercent. Already
+    // folded into taxTotal/taxBreakup/total above, never a separate figure
+    // to add on top — see lib/billing/invoice.ts.
+    serviceChargePercent: numeric('service_charge_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    serviceChargeAmount: numeric('service_charge_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    serviceChargeTaxPercent: numeric('service_charge_tax_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    // Running aggregate of tipAmount across this invoice's own captured
+    // payments (M18 #3) — incremented transactionally alongside each
+    // tip-bearing payment insert, never independently computed. NOT part of
+    // total/balance: a tip is extra money on top, never counted toward
+    // settling the bill. See lib/billing/payments.ts.
+    tipAmount: numeric('tip_amount', { precision: 10, scale: 2 }).notNull().default('0'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1607,9 +1627,11 @@ export const invoiceItems = pgTable(
     invoiceId: uuid('invoice_id').notNull(),
     // Mirrors invoice_items_kind_check. 'wallet_topup' (migration 0028) is money
     // received in ADVANCE, not revenue — kept distinct so reporting can exclude
-    // it from sales.
+    // it from sales. 'service_charge' (migration 0090, M18 #3) is the venue's
+    // own add-on, kept distinct from 'adjustment' so reporting can separate
+    // "what did we sell" from "what did we add on top".
     kind: text('kind')
-      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup'>()
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge'>()
       .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),
@@ -1651,6 +1673,15 @@ export const payments = pgTable(
     gatewayPaymentId: text('gateway_payment_id'),
     gatewaySignature: text('gateway_signature'),
     collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+
+    // Tip (migration 0090, M18 #3) — collected alongside this ONE tender,
+    // deliberately separate from `amount`: never counted toward the invoice
+    // balance. tipRecipientMembershipId is nullable — an unattributed/pooled
+    // tip is still valid, still traceable to the table via invoiceId.
+    tipAmount: numeric('tip_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    tipRecipientMembershipId: uuid('tip_recipient_membership_id').references(() => memberships.id, {
+      onDelete: 'set null',
+    }),
 
     /**
 

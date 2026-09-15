@@ -100,6 +100,17 @@ export type InvoiceReceipt = {
     placeOfSupply: string | null
     issuedAt: Date | null
     createdAt: Date
+    /**
+     * Service charge (M18 #3), frozen at issue — already folded into
+     * taxTotal/taxBreakup/total above, never a separate figure to add on
+     * top. serviceChargeAmount is '0.00' when the tenant had it off.
+     */
+    serviceChargePercent: string
+    serviceChargeAmount: string
+    serviceChargeTaxPercent: string
+    /** Running aggregate of every captured payment's tip (M18 #3) — NOT
+     *  part of total/balanceDue, extra money on top of the bill. */
+    tipAmount: string
   }
   items: ReceiptItem[]
   payments: ReceiptPayment[]
@@ -156,6 +167,10 @@ export async function loadInvoiceReceipt(
       placeOfSupply: invoices.placeOfSupply,
       issuedAt: invoices.issuedAt,
       createdAt: invoices.createdAt,
+      serviceChargePercent: invoices.serviceChargePercent,
+      serviceChargeAmount: invoices.serviceChargeAmount,
+      serviceChargeTaxPercent: invoices.serviceChargeTaxPercent,
+      tipAmount: invoices.tipAmount,
       tenantName: tenants.name,
       branchName: branches.name,
       branchAddress: branches.address,
@@ -247,6 +262,10 @@ export async function loadInvoiceReceipt(
       placeOfSupply: row.placeOfSupply,
       issuedAt: row.issuedAt,
       createdAt: row.createdAt,
+      serviceChargePercent: row.serviceChargePercent,
+      serviceChargeAmount: row.serviceChargeAmount,
+      serviceChargeTaxPercent: row.serviceChargeTaxPercent,
+      tipAmount: row.tipAmount,
     },
     items,
     payments,

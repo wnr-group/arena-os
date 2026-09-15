@@ -42,7 +42,7 @@ function atLeastZero(value: number): number {
 
 export type BillLine = {
   description: string
-  kind: 'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup'
+  kind: 'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge'
   sourceId?: string
   qty: number
   unitPrice: number
@@ -177,6 +177,72 @@ export function splitProportional(total: number, weights: number[]): number[] {
     allocated = cumulativeShare
   }
   return shares
+}
+
+/** Tenant-configured service charge inputs (M18 #3) — resolved server-side
+ *  from business_profiles + tax_rates, never from the browser. `taxPercent`
+ *  is 0 when the tenant hasn't tied the service charge to a tax rate (a
+ *  legitimate, deliberately non-default configuration: an untaxed service
+ *  charge). */
+export type ServiceChargeConfig = { percent: number; taxPercent: number }
+
+export type ServiceChargeResult = {
+  percent: number
+  amount: number
+  taxPercent: number
+  tax: number
+  cgst: number
+  sgst: number
+}
+
+/**
+ * A restaurant's service charge — a tenant-configured % of the bill,
+ * optionally taxed at its own configured GST rate. `subtotal <= 0` or
+ * `config.percent <= 0` (the off switch — 0 is the column default) yields an
+ * all-zero result, so a caller never needs to special-case "service charge
+ * disabled" — it just folds in as zero everywhere.
+ *
+ * Computed on the PRE-DISCOUNT subtotal (a deliberate choice, documented at
+ * the call site in lib/billing/invoice.ts): a discount is a concession on
+ * the food, not on the venue's own service charge.
+ */
+export function computeServiceCharge(subtotal: number, config: ServiceChargeConfig): ServiceChargeResult {
+  const percent = atLeastZero(finite(config.percent))
+  if (percent <= 0 || atLeastZero(finite(subtotal)) <= 0) {
+    return { percent: 0, amount: 0, taxPercent: 0, tax: 0, cgst: 0, sgst: 0 }
+  }
+  const amount = round2(atLeastZero(finite(subtotal)) * (percent / 100))
+  const taxPercent = round2(atLeastZero(finite(config.taxPercent)))
+  const tax = taxPercent > 0 ? round2(amount * (taxPercent / 100)) : 0
+  return { percent, amount, taxPercent: tax > 0 ? taxPercent : 0, tax, cgst: round2(tax / 2), sgst: round2(tax / 2) }
+}
+
+/**
+ * Fold one more {percent, cgst, sgst} group into a `taxBreakup` array — used
+ * to add the service charge's own tax (M18 #3) onto a bill's/check's
+ * existing food taxBreakup. Merges into the matching-rate group when one
+ * already exists (a real invoice can otherwise end up with two "5%" rows,
+ * which is confusing on a GST receipt and wrong for reporting "tax by
+ * rate"), otherwise appends a new group and keeps the array sorted by rate,
+ * matching priceBill's own ascending-percent ordering. A zero addition is a
+ * no-op — the common case, since most bills have no service charge.
+ */
+export function mergeTaxBreakup(
+  breakup: { percent: number; cgst: number; sgst: number }[],
+  addition: { percent: number; cgst: number; sgst: number },
+): { percent: number; cgst: number; sgst: number }[] {
+  if (paise(addition.cgst) === 0 && paise(addition.sgst) === 0) return breakup
+  const idx = breakup.findIndex((g) => g.percent === addition.percent)
+  if (idx === -1) {
+    return [...breakup, addition].sort((a, b) => a.percent - b.percent)
+  }
+  const merged = [...breakup]
+  merged[idx] = {
+    percent: addition.percent,
+    cgst: round2(merged[idx].cgst + addition.cgst),
+    sgst: round2(merged[idx].sgst + addition.sgst),
+  }
+  return merged
 }
 
 // ── the calculation

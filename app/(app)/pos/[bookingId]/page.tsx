@@ -87,6 +87,13 @@ export default async function PosBillPage({
             }
           : null
       }
+      serviceChargeConfig={data.serviceChargeConfig}
+      staff={data.staff}
+      // M18 (split bill / service charge / tips) is restaurant-only — see
+      // lib/settings/business-profile.ts's loadServiceChargeConfig for the
+      // actual enforcement; this just keeps the Split-bill button and tip
+      // input off the screen for every other tenant type.
+      isRestaurant={ctx.tenant.industry === 'restaurant'}
       timeZone={ctx.tenant.timezone}
       currency={ctx.tenant.currency}
     />

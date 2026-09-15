@@ -7,11 +7,12 @@
  *
  * lib/settings/business.ts is the ctx-taking reader on top of it.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type * as schema from '@/db/schema'
-import { businessProfiles } from '@/db/schema'
+import { businessProfiles, taxRates, tenants } from '@/db/schema'
+import type { ServiceChargeConfig } from '@/lib/billing/pricing'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -66,6 +67,16 @@ export const businessProfileSchema = z.object({
       `Keep the prefix to ${MAX_INVOICE_PREFIX_LENGTH} characters — a GST invoice number cannot exceed 16.`,
     ),
   placeOfSupply: optionalText(100, 'Place of supply'),
+  // Service charge (migration 0090, M18 #3). 0 disables it — the column
+  // default. serviceChargeTaxRateId ties the GST rate to one of the
+  // tenant's OWN tax_rates (validated in upsertBusinessProfile below)
+  // rather than a free-typed number; null means deliberately untaxed.
+  serviceChargePercent: z.coerce
+    .number()
+    .min(0, 'Service charge cannot be negative.')
+    .max(100, 'Service charge cannot exceed 100%.')
+    .optional(),
+  serviceChargeTaxRateId: z.string().uuid().optional().nullable(),
 })
 
 export type BusinessProfileInput = z.infer<typeof businessProfileSchema>
@@ -110,6 +121,19 @@ export async function upsertBusinessProfile(
   tenantId: string,
   input: BusinessProfileInput,
 ): Promise<BusinessProfile> {
+  // The chosen tax rate must belong to THIS tenant — an id alone is not
+  // security-enforcing, so re-check it here rather than trusting the
+  // browser sent one of the tenant's own rows. A stale/foreign id is
+  // refused outright (not silently cleared) so the owner notices.
+  if (input.serviceChargeTaxRateId) {
+    const [rate] = await tx
+      .select({ id: taxRates.id })
+      .from(taxRates)
+      .where(and(eq(taxRates.id, input.serviceChargeTaxRateId), eq(taxRates.tenantId, tenantId)))
+      .limit(1)
+    if (!rate) throw new Error('That tax rate was not found.')
+  }
+
   const values = {
     legalName: blankToNull(input.legalName),
     gstin: blankToNull(input.gstin),
@@ -117,6 +141,8 @@ export async function upsertBusinessProfile(
     logoUrl: blankToNull(input.logoUrl),
     invoicePrefix: input.invoicePrefix.trim(),
     placeOfSupply: blankToNull(input.placeOfSupply),
+    serviceChargePercent: (input.serviceChargePercent ?? 0).toFixed(2),
+    serviceChargeTaxRateId: input.serviceChargeTaxRateId ?? null,
   }
 
   const [row] = await tx
@@ -126,4 +152,39 @@ export async function upsertBusinessProfile(
     .returning()
 
   return row
+}
+
+/**
+ * The service-charge config a bill should use, resolved server-side inside
+ * the billing transaction (never from the browser) — mirrors
+ * loadInvoicePrefix's shape. The join is on BOTH tenant_id columns
+ * matching, not just the FK id, so a stale/foreign
+ * service_charge_tax_rate_id can never resolve to another tenant's rate —
+ * it just falls back to "not taxable" rather than leaking anything.
+ */
+export async function loadServiceChargeConfig(tx: Db, tenantId: string): Promise<ServiceChargeConfig> {
+  const [row] = await tx
+    .select({
+      industry: tenants.industry,
+      percent: businessProfiles.serviceChargePercent,
+      taxPercent: taxRates.percent,
+    })
+    .from(tenants)
+    .leftJoin(businessProfiles, eq(businessProfiles.tenantId, tenants.id))
+    .leftJoin(
+      taxRates,
+      and(eq(taxRates.id, businessProfiles.serviceChargeTaxRateId), eq(taxRates.tenantId, businessProfiles.tenantId)),
+    )
+    .where(eq(tenants.id, tenantId))
+    .limit(1)
+
+  // M18 is a restaurant-only epic — a service charge only ever applies for a
+  // restaurant tenant, regardless of what business_profiles happens to hold
+  // (e.g. a tenant that was once a restaurant and switched industries). This
+  // is the ONE place that rule lives: every billing path (a normal invoice
+  // AND a split) reads its config through here, so nothing else needs its
+  // own industry check to stay correct.
+  if (row?.industry !== 'restaurant') return { percent: 0, taxPercent: 0 }
+
+  return { percent: Number(row?.percent ?? 0), taxPercent: Number(row?.taxPercent ?? 0) }
 }

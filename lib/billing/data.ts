@@ -1,7 +1,7 @@
 import 'server-only'
-import { and, eq, inArray, max, min, ne } from 'drizzle-orm'
+import { and, asc, eq, inArray, max, min, ne } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { bookings, bookingSlots, branches, customers, invoices, orderItems, orders, resources } from '@/db/schema'
+import { bookings, bookingSlots, branches, customers, invoices, memberships, orderItems, orders, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import {
   findLiveBilling,
@@ -19,7 +19,8 @@ import { loyaltyTenderState, type LoyaltyRule } from './loyalty'
 import { getInvoiceSettlement, type InvoiceSettlement } from './payments'
 import { walletTenderState } from './wallet-payments'
 import { loadInvoiceReceipt, type InvoiceReceipt } from './receipt'
-import { priceBill, type BillLine, type PricingResult } from './pricing'
+import { priceBill, type BillLine, type PricingResult, type ServiceChargeConfig } from './pricing'
+import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
 
 /**
  * Everything the POS bill screen renders, loaded in ONE RLS-scoped transaction
@@ -99,6 +100,16 @@ export type BillableBooking = {
    * server-side when the bill is raised.
    */
   loyalty: { balance: number; rule: LoyaltyRule } | null
+  /**
+   * The tenant's service charge config (M18 #3), for the pre-bill live
+   * preview only — DISPLAY ONLY, same trust model as `membership` above.
+   * Once a bill exists (single or split), the FROZEN serviceChargePercent
+   * on that invoice/check is what actually applied; this is meaningless at
+   * that point and the screen doesn't read it.
+   */
+  serviceChargeConfig: ServiceChargeConfig
+  /** Active staff, for the tip-recipient picker on the payment panel(s). */
+  staff: { id: string; name: string }[]
 }
 
 /**
@@ -212,6 +223,20 @@ export async function getBillableForBooking(
       ? await walletTenderState(tx, ctx.tenant.id, existingInvoice.id)
       : null
 
+    // Live config for the pre-bill preview (M18 #3) — meaningless once a
+    // bill exists, see the field's own doc comment.
+    const serviceChargeConfig = await loadServiceChargeConfig(tx, ctx.tenant.id)
+
+    // Every active staff member, for the tip-recipient picker — not
+    // branch-filtered, since an owner/manager (often branchId=null) should
+    // still be a valid recipient at a single-branch tenant.
+    const staffRows = await tx
+      .select({ id: memberships.id, name: memberships.fullName })
+      .from(memberships)
+      .where(and(eq(memberships.tenantId, ctx.tenant.id), eq(memberships.status, 'active')))
+      .orderBy(asc(memberships.fullName))
+    const staff = staffRows.map((s) => ({ id: s.id, name: s.name ?? 'Unnamed staff' }))
+
     return {
       booking: {
         id: row.id,
@@ -240,6 +265,8 @@ export async function getBillableForBooking(
       membership,
       wallet,
       loyalty,
+      serviceChargeConfig,
+      staff,
     }
   })
 }

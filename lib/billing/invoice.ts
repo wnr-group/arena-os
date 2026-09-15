@@ -25,7 +25,7 @@ import {
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
 import { cancelPendingOrdersForBilledBooking } from '@/lib/orders/service'
-import { loadInvoicePrefix } from '@/lib/settings/business-profile'
+import { loadInvoicePrefix, loadServiceChargeConfig } from '@/lib/settings/business-profile'
 import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
 import {
   commitRedemption,
@@ -35,7 +35,15 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
-import { priceBill, round2, type BillLine, type PricingResult } from './pricing'
+import {
+  computeServiceCharge,
+  mergeTaxBreakup,
+  priceBill,
+  round2,
+  type BillLine,
+  type PricingResult,
+  type ServiceChargeResult,
+} from './pricing'
 import { consumePromoUse, normalizePromoCode, validatePromo } from './promo'
 
 type Db = NodePgDatabase<typeof schema>
@@ -560,6 +568,9 @@ export type PreparedBill = {
   gross: PricingResult
   membership: AppliedMembershipBenefit | null
   membershipDiscount: number
+  /** M18 #3 — computed on gross.subtotal (pre-discount), the tenant's
+   *  business_profiles config resolved fresh inside this transaction. */
+  serviceCharge: ServiceChargeResult
 }
 
 /**
@@ -665,7 +676,16 @@ export async function prepareBookingBill(
   )
   const membershipDiscount = membership?.discountAmount ?? 0
 
-  return { booking, billedOrderIds, lines, gross, membership, membershipDiscount }
+  // ── 4b. service charge (M18 #3) ───────────────────────────────────────────
+  // Computed on gross.subtotal — the PRE-DISCOUNT figure — deliberately: a
+  // membership/promo/loyalty discount is a concession on the food, not on
+  // the venue's own service charge. Config is read fresh inside this same
+  // transaction, never cached, so a mid-service change to the % or its tax
+  // rate can never apply to a bill already in flight.
+  const serviceChargeConfig = await loadServiceChargeConfig(tx, tenant.id)
+  const serviceCharge = computeServiceCharge(gross.subtotal, serviceChargeConfig)
+
+  return { booking, billedOrderIds, lines, gross, membership, membershipDiscount, serviceCharge }
 }
 
 /**
@@ -678,7 +698,7 @@ export async function issueInvoiceForBooking(
   tenant: { id: string; timezone: string },
   input: IssueInvoiceInput,
 ): Promise<IssuedInvoice> {
-  const { booking, billedOrderIds, lines, gross, membership, membershipDiscount } =
+  const { booking, billedOrderIds, lines, gross, membership, membershipDiscount, serviceCharge } =
     await prepareBookingBill(tx, tenant, input.bookingId)
 
   // What a promo or a keyed-in discount may still take off. A membership that
@@ -753,6 +773,22 @@ export async function issueInvoiceForBooking(
   // per-rate CGST/SGST split and the total. Nothing is recomputed here.
   const pricing = priceBill({ lines, discount: totalDiscount })
 
+  // ── 4d. fold the service charge in (M18 #3) ───────────────────────────────
+  // subtotal/discount/taxableValue stay FOOD-ONLY (unchanged meaning, zero
+  // risk to every existing reader of those columns). Service charge is
+  // additive: its own amount and its own tax (already computed on gross
+  // subtotal by prepareBookingBill) are folded into taxTotal/taxBreakup/
+  // total, exactly the numbers a printed GST receipt needs to already
+  // include — a customer should see ONE "GST total", not a food one plus a
+  // separate service-charge one to add by hand.
+  const taxTotal = round2(pricing.taxTotal + serviceCharge.tax)
+  const taxBreakup = mergeTaxBreakup(pricing.taxBreakup, {
+    percent: serviceCharge.taxPercent,
+    cgst: serviceCharge.cgst,
+    sgst: serviceCharge.sgst,
+  })
+  const total = round2(pricing.taxableValue + serviceCharge.amount + taxTotal)
+
   // Take the use only now, with the bill certain to be written. It is one
   // statement and it re-checks the limit under a row lock, so the last use of a
   // limited promo can go to only one of two simultaneous cashiers. Everything
@@ -775,7 +811,7 @@ export async function issueInvoiceForBooking(
   // would sit at 'issued' forever while the receipt — which derives its PAID
   // badge from total-minus-captured — printed PAID, and the two would disagree.
   // Any non-zero total still starts at 'issued'.
-  const settledOnIssue = paise(pricing.total) === 0
+  const settledOnIssue = paise(total) === 0
 
   const [invoice] = await tx
     .insert(invoices)
@@ -801,36 +837,58 @@ export async function issueInvoiceForBooking(
       loyaltyPointValue: (loyalty?.pointValue ?? 0).toFixed(2),
       subtotal: pricing.subtotal.toFixed(2),
       discount: pricing.discount.toFixed(2),
-      taxTotal: pricing.taxTotal.toFixed(2),
-      // Mapped straight from priceBill onto the stored TaxBreakupLine shape —
-      // `percent` is the column's `rate`. No `taxable`: see TaxBreakupLine.
-      taxBreakup: pricing.taxBreakup.map((g) => ({
+      taxTotal: taxTotal.toFixed(2),
+      // Mapped straight from priceBill (plus the service charge's own group,
+      // folded in above) onto the stored TaxBreakupLine shape — `percent` is
+      // the column's `rate`. No `taxable`: see TaxBreakupLine.
+      taxBreakup: taxBreakup.map((g) => ({
         rate: g.percent,
         cgst: g.cgst.toFixed(2),
         sgst: g.sgst.toFixed(2),
       })),
-      total: pricing.total.toFixed(2),
+      total: total.toFixed(2),
       status: settledOnIssue ? 'paid' : 'issued',
       issuedAt: new Date(),
+      // Frozen snapshot of the config as it was when this bill was raised
+      // (M18 #3) — never re-read from live settings on a reprint, same
+      // discipline as membershipDiscount/membershipDiscountPercent above.
+      serviceChargePercent: serviceCharge.percent.toFixed(2),
+      serviceChargeAmount: serviceCharge.amount.toFixed(2),
+      serviceChargeTaxPercent: serviceCharge.taxPercent.toFixed(2),
     })
     .returning({ id: invoices.id })
 
   // ── 6. items — the historical snapshot ────────────────────────────────────
   // Every number the invoice was built from is frozen onto the row, so a later
   // price change can never move a past bill.
-  await tx.insert(invoiceItems).values(
-    pricing.items.map((item) => ({
+  const itemRows = pricing.items.map((item) => ({
+    tenantId: tenant.id,
+    invoiceId: invoice.id,
+    kind: item.kind,
+    sourceId: item.sourceId ?? null,
+    description: item.description,
+    qty: item.qty.toFixed(2),
+    unitPrice: item.unitPrice.toFixed(2),
+    taxRate: item.taxPercent.toFixed(2),
+    lineTotal: item.lineTotal.toFixed(2),
+  }))
+  // Service charge (M18 #3) has no single order_items/booking_slots row to
+  // point sourceId at — it's derived from the whole bill's subtotal, not
+  // ordered — so it's its own synthetic line, same shape a food line has.
+  if (paise(serviceCharge.amount) > 0) {
+    itemRows.push({
       tenantId: tenant.id,
       invoiceId: invoice.id,
-      kind: item.kind,
-      sourceId: item.sourceId ?? null,
-      description: item.description,
-      qty: item.qty.toFixed(2),
-      unitPrice: item.unitPrice.toFixed(2),
-      taxRate: item.taxPercent.toFixed(2),
-      lineTotal: item.lineTotal.toFixed(2),
-    })),
-  )
+      kind: 'service_charge',
+      sourceId: null,
+      description: `Service charge (${serviceCharge.percent}%)`,
+      qty: '1.00',
+      unitPrice: serviceCharge.amount.toFixed(2),
+      taxRate: serviceCharge.taxPercent.toFixed(2),
+      lineTotal: serviceCharge.amount.toFixed(2),
+    })
+  }
+  await tx.insert(invoiceItems).values(itemRows)
 
   // ── 7. mark the food orders billed ────────────────────────────────────────
   // The other half of double-billing prevention: loadFoodLines only reads

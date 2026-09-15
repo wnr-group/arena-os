@@ -29,7 +29,16 @@ import {
   nextInvoiceNumber,
   prepareBookingBill,
 } from './invoice'
-import { groupByTaxRate, paise, round2, splitProportional, type PricedItem, type PricingResult } from './pricing'
+import {
+  groupByTaxRate,
+  mergeTaxBreakup,
+  paise,
+  round2,
+  splitProportional,
+  type PricedItem,
+  type PricingResult,
+  type ServiceChargeResult,
+} from './pricing'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -60,6 +69,12 @@ export type CheckPricing = {
   taxTotal: number
   total: number
   items: CheckLine[]
+  /** M18 #3 — this check's own proportional share of the whole bill's
+   *  service charge (0 when the tenant has it off). Already folded into
+   *  taxTotal/taxBreakup/total above; not a separate figure to add on top. */
+  serviceChargePercent: number
+  serviceChargeAmount: number
+  serviceChargeTaxPercent: number
 }
 
 type Bucket = { seq: number; label: string; itemIndexes: number[] }
@@ -298,6 +313,67 @@ export function computeSplitChecks(
       taxTotal,
       total,
       items: [...realItems, ...checkExtraLines[bIdx]],
+      // Service charge (M18 #3) is applied afterward by
+      // applyServiceChargeToChecks — computeSplitChecks itself stays
+      // food-only, zero risk to this already-tested math.
+      serviceChargePercent: 0,
+      serviceChargeAmount: 0,
+      serviceChargeTaxPercent: 0,
+    }
+  })
+}
+
+/**
+ * Apportion the whole bill's service charge (M18 #3) across already-split
+ * checks, proportional to each check's own (already-exact) food subtotal —
+ * "each check pays service charge on what it actually ordered", not an
+ * even split. Reuses splitProportional, so `sum(check.serviceChargeAmount)
+ * === serviceCharge.amount` and `sum(check.serviceChargeTaxAmount) ===
+ * serviceCharge.tax` exactly, by the same construction computeSplitChecks
+ * itself relies on. A no-op when service charge is off (amount 0).
+ *
+ * Deliberately NOT folded into computeSplitChecks/resolveBuckets: service
+ * charge has no item to assign or share evenly — it is derived FROM each
+ * check's own subtotal after splitting, not distributed WITH the food.
+ */
+function applyServiceChargeToChecks(checks: CheckPricing[], serviceCharge: ServiceChargeResult): CheckPricing[] {
+  if (paise(serviceCharge.amount) <= 0) return checks
+
+  const weights = checks.map((c) => c.subtotal)
+  const amountShares = splitProportional(serviceCharge.amount, weights)
+  const taxShares = splitProportional(serviceCharge.tax, weights)
+
+  return checks.map((check, i) => {
+    const amount = amountShares[i]
+    const tax = taxShares[i]
+    const taxTotal = round2(check.taxTotal + tax)
+    const taxBreakup = mergeTaxBreakup(check.taxBreakup, {
+      percent: serviceCharge.taxPercent,
+      cgst: round2(tax / 2),
+      sgst: round2(tax / 2),
+    })
+    const total = round2(check.taxableValue + amount + taxTotal)
+    const items = [...check.items]
+    if (paise(amount) > 0) {
+      items.push({
+        kind: 'service_charge',
+        sourceId: null,
+        description: `Service charge (${serviceCharge.percent}%) — ${check.label}`,
+        qty: 1,
+        unitPrice: amount,
+        taxPercent: serviceCharge.taxPercent,
+        lineTotal: amount,
+      })
+    }
+    return {
+      ...check,
+      taxTotal,
+      taxBreakup,
+      total,
+      items,
+      serviceChargePercent: serviceCharge.percent,
+      serviceChargeAmount: amount,
+      serviceChargeTaxPercent: serviceCharge.taxPercent,
     }
   })
 }
@@ -334,7 +410,7 @@ export async function issueSplitBillForBooking(
   tenant: { id: string; timezone: string },
   input: IssueSplitBillInput,
 ): Promise<IssuedSplitBill> {
-  const { booking, billedOrderIds, gross, membership, membershipDiscount } = await prepareBookingBill(
+  const { booking, billedOrderIds, gross, membership, membershipDiscount, serviceCharge } = await prepareBookingBill(
     tx,
     tenant,
     input.bookingId,
@@ -346,7 +422,7 @@ export async function issueSplitBillForBooking(
   const seatByOrderItemId =
     input.mode === 'seat' ? await loadSeatByOrderItemId(tx, tenant.id, booking.id) : new Map<string, number | null>()
 
-  const checks = computeSplitChecks(pricing, seatByOrderItemId, input)
+  const checks = applyServiceChargeToChecks(computeSplitChecks(pricing, seatByOrderItemId, input), serviceCharge)
 
   const period = financialYearPeriod(todayInZone(tenant.timezone))
   const prefix = await loadInvoicePrefix(tx, tenant.id)
@@ -382,6 +458,11 @@ export async function issueSplitBillForBooking(
         issuedAt: new Date(),
         billGroupId,
         billGroupSeq: check.seq,
+        // This check's own proportional share (M18 #3) — see
+        // applyServiceChargeToChecks for how it's apportioned.
+        serviceChargePercent: check.serviceChargePercent.toFixed(2),
+        serviceChargeAmount: check.serviceChargeAmount.toFixed(2),
+        serviceChargeTaxPercent: check.serviceChargeTaxPercent.toFixed(2),
       })
       .returning({ id: invoices.id })
 
@@ -441,15 +522,17 @@ function priceWithDiscount(gross: PricingResult, discount: number): PricingResul
 
 /**
  * Read-only preview of what a split would produce, for the UI to show before
- * committing. Uses the SAME computeSplitChecks the real issuer calls, so the
- * preview can never diverge from what actually gets billed.
+ * committing. Uses the SAME computeSplitChecks/applyServiceChargeToChecks
+ * the real issuer calls, so the preview can never diverge from what
+ * actually gets billed.
  */
 export function previewSplitChecks(
   gross: PricingResult,
   membershipDiscount: number,
+  serviceCharge: ServiceChargeResult,
   seatByOrderItemId: Map<string, number | null>,
   input: SplitInput,
 ): CheckPricing[] {
   const pricing = priceWithDiscount(gross, membershipDiscount)
-  return computeSplitChecks(pricing, seatByOrderItemId, input)
+  return applyServiceChargeToChecks(computeSplitChecks(pricing, seatByOrderItemId, input), serviceCharge)
 }

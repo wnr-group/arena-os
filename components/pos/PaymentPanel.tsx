@@ -26,6 +26,9 @@ export type PaymentRow = {
   status: string
   collectedByName: string | null
   createdAt: string
+  /** M18 #3 — '0.00' when this tender carried no tip. */
+  tipAmount: string
+  tipRecipientName: string | null
 }
 
 export type SettlementView = {
@@ -37,6 +40,9 @@ export type SettlementView = {
   balance: number
   payments: PaymentRow[]
   payable: boolean
+  /** Sum of every captured payment's tip (M18 #3) — display only, never
+   *  part of total/paid/balance. */
+  tipTotal: number
 }
 
 /**
@@ -64,6 +70,8 @@ const paise = (n: number) => Math.round(round2(n) * 100)
 export function PaymentPanel({
   settlement,
   wallet,
+  staff,
+  isRestaurant,
   timeZone,
   currency,
 }: {
@@ -75,6 +83,11 @@ export function PaymentPanel({
    * re-checked under a lock by the action.
    */
   wallet: { balance: number; maxSpendable: number } | null
+  /** Active staff, for the optional tip-recipient picker (M18 #3). */
+  staff: { id: string; name: string }[]
+  /** M18's tip is restaurant-only, same as split bill and service charge —
+   *  hides the tip input entirely for every other tenant type. */
+  isRestaurant: boolean
   timeZone: string
   currency: string
 }) {
@@ -82,6 +95,12 @@ export function PaymentPanel({
   const [method, setMethod] = useState<(typeof METHODS)[number]['value']>('cash')
   // Defaults to the outstanding balance; the cashier can type a smaller amount.
   const [amountText, setAmountText] = useState(settlement.balance.toFixed(2))
+  // Tip (M18 #3) — a counter-tender-only extra, kept separate from `amount`
+  // (never validated against the balance). Not offered for the wallet
+  // tender, which takes a separate ledger-aware action that doesn't accept
+  // one — see submit() below.
+  const [tipText, setTipText] = useState('')
+  const [tipRecipientId, setTipRecipientId] = useState('')
   /**
    * One retry token per ATTEMPT, minted lazily on submit — see
    * lib/utils/idempotency-key.ts for why not crypto.randomUUID(), and why not
@@ -122,14 +141,23 @@ export function PaymentPanel({
             ? `Not enough wallet balance — ${money(walletBalance)} available.`
             : null
 
+  // Tip is entirely separate from the balance check above — it can never
+  // make `amountError` fire, since the server never compares it to the
+  // invoice total either.
+  const tip = tipText.trim() === '' ? 0 : Number(tipText)
+  const tipError =
+    tipText.trim() === '' || (Number.isFinite(tip) && paise(tip) >= 0) ? null : 'Enter a valid tip amount.'
+
   function submit() {
-    if (settled || pending || amountError) return
+    if (settled || pending || amountError || tipError) return
     setError(null)
     start(async () => {
       keyRef.current ??= newIdempotencyKey()
       const idempotencyKey = keyRef.current
       // Wallet takes the ledger-aware path; the counter tenders take the
-      // existing one. Neither receives a balance from this component.
+      // existing one. Neither receives a balance from this component. Tip
+      // is a counter-tender-only extra — payInvoiceFromWallet doesn't accept
+      // one (see lib/billing/wallet-payments.ts, untouched by M18 #3).
       const r = usingWallet
         ? await payInvoiceFromWallet({ invoiceId: settlement.invoiceId, amount, idempotencyKey })
         : await recordPayment({
@@ -137,6 +165,8 @@ export function PaymentPanel({
             method: method as 'cash' | 'card' | 'upi',
             amount,
             idempotencyKey,
+            tipAmount: isRestaurant && tip > 0 ? tip : undefined,
+            tipRecipientMembershipId: isRestaurant && tip > 0 && tipRecipientId ? tipRecipientId : undefined,
           })
       if (r.error) {
         setError(r.error)
@@ -145,6 +175,8 @@ export function PaymentPanel({
       // Cleared, so a DELIBERATE second tender mints a fresh token instead of
       // being mistaken for a retry of the one that just succeeded.
       keyRef.current = null
+      setTipText('')
+      setTipRecipientId('')
       // Server-recomputed figures land via the refreshed page props.
       router.refresh()
     })
@@ -181,6 +213,14 @@ export function PaymentPanel({
           <dt>Balance</dt>
           <dd className="tabular-nums">{money(settlement.balance)}</dd>
         </div>
+        {/* Tips are extra money on top — never part of Total/Paid/Balance
+            above, shown separately so it's never mistaken for revenue. */}
+        {settlement.tipTotal > 0 && (
+          <div className="flex justify-between gap-4 pt-1 text-muted-foreground">
+            <dt>Tips collected</dt>
+            <dd className="tabular-nums">{money(settlement.tipTotal)}</dd>
+          </div>
+        )}
       </dl>
 
       {/* ── recorded payments ── */}
@@ -198,6 +238,8 @@ export function PaymentPanel({
                     {timeInZone(p.createdAt, timeZone)}
                     {p.collectedByName && ` · ${p.collectedByName}`}
                     {p.status !== 'captured' && ` · ${p.status}`}
+                    {Number(p.tipAmount) > 0 &&
+                      ` · +${money(p.tipAmount)} tip${p.tipRecipientName ? ` for ${p.tipRecipientName}` : ''}`}
                   </span>
                 </span>
                 <span
@@ -286,9 +328,48 @@ export function PaymentPanel({
             {amountError && <p className="mt-1 text-xs text-destructive">{amountError}</p>}
           </div>
 
+          {/* Tip (M18 #3) — restaurant-only, and a counter-tender-only extra
+              hidden for the wallet tender (payInvoiceFromWallet doesn't
+              accept one). */}
+          {isRestaurant && !usingWallet && (
+            <div>
+              <label htmlFor="tip" className="text-sm font-medium">
+                Tip <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <input
+                id="tip"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={tipText}
+                onChange={(e) => setTipText(e.target.value)}
+                disabled={pending}
+                placeholder="0.00"
+                className={`mt-1 ${inputCls}`}
+              />
+              {tipError && <p className="mt-1 text-xs text-destructive">{tipError}</p>}
+              {tip > 0 && staff.length > 0 && (
+                <select
+                  value={tipRecipientId}
+                  onChange={(e) => setTipRecipientId(e.target.value)}
+                  disabled={pending}
+                  className={`mt-1.5 ${inputCls}`}
+                >
+                  <option value="">Unattributed / pooled</option>
+                  {staff.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
           <button
             onClick={submit}
-            disabled={pending || Boolean(amountError)}
+            disabled={pending || Boolean(amountError) || Boolean(tipError)}
             className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending && <Loader2 size={14} className="animate-spin" />}
