@@ -47,6 +47,10 @@ const createInput = z.object({
         // comment (lib/orders/service.ts) for what createOrderCore does
         // with these.
         modifierOptionIds: z.array(z.string().uuid()).optional(),
+        // Seat/guest tagging (migration 0088, M18 #1) — see
+        // CreateOrderItemInput's doc comment for why this is unbounded
+        // against cover_count here.
+        seatNo: z.coerce.number().int().min(1).optional(),
       }),
     )
     .min(1, 'Add at least one item'),

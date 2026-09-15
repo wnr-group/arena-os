@@ -793,6 +793,11 @@ export const orderItems = pgTable(
     voidReason: text('void_reason'),
     voidedBy: uuid('voided_by').references(() => memberships.id, { onDelete: 'set null' }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
+    // Seat/guest tagging (migration 0088, M18 #1) — optional 1-based seat
+    // number within the booking's cover_count, set by the waiter at order
+    // time so a bill can later be split "by who ordered what". Null =
+    // unassigned/shared. Snapshot only; never read by pricing.
+    seatNo: smallint('seat_no'),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )

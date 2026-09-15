@@ -36,10 +36,10 @@ export type MenuItemOption = {
 }
 type CartModifier = { groupName: string; optionId: string; optionName: string; priceDelta: string }
 type CartLine = {
-  /** Cart identity — menuItemId alone for an unmodified line, or menuItemId
-   *  plus the sorted chosen option ids for a modified one, so "burger, no
-   *  onions" and "burger, extra cheese" stay separate lines instead of
-   *  merging into one qty. See cartLineKey below. */
+  /** Cart identity — menuItemId plus the sorted chosen option ids plus the
+   *  seat it was added for, so "burger, no onions", "burger, extra cheese"
+   *  and "burger for seat 2" all stay separate lines instead of merging into
+   *  one qty. See cartLineKey below. */
   key: string
   menuItemId: string
   name: string
@@ -48,10 +48,14 @@ type CartLine = {
   qty: number
   specialInstructions: string
   modifiers: CartModifier[]
+  /** Seat/guest tag (M18 #1) — null means unassigned/shared. Set from
+   *  whichever seat was active when the line was added; bookkeeping only,
+   *  never affects price. */
+  seatNo: number | null
 }
 
-function cartLineKey(menuItemId: string, optionIds: string[]): string {
-  return [menuItemId, ...[...optionIds].sort()].join('::')
+function cartLineKey(menuItemId: string, optionIds: string[], seatNo: number | null): string {
+  return [menuItemId, ...[...optionIds].sort(), seatNo ?? 'shared'].join('::')
 }
 
 const input =
@@ -69,6 +73,7 @@ export function TakeOrderDialog({
   timeZone,
   popularItemIds,
   canToggle86,
+  seatCount,
   onClose,
   onCreated,
 }: {
@@ -88,6 +93,12 @@ export function TakeOrderDialog({
    *  setMenuItemAvailability re-checks canManageKitchen() server-side
    *  regardless (M17 #7). */
   canToggle86?: boolean
+  /** The table session's guest count (bookings.cover_count, M17 #1) — shows
+   *  a "Seat 1 / Seat 2 / … / Shared" picker (M18 #1) so a waiter can tag
+   *  each item to a guest for later by-seat bill splitting. Omitted (or < 2)
+   *  hides the picker entirely: every non-restaurant caller of this dialog
+   *  passes nothing, so seat tagging never appears outside a table session. */
+  seatCount?: number | null
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -103,6 +114,11 @@ export function TakeOrderDialog({
   // Set only while the modifier picker is open for an item that has groups —
   // addToCart is called directly for anything without them.
   const [pickerItem, setPickerItem] = useState<MenuItemOption | null>(null)
+  // Which seat newly-added items are tagged with (M18 #1) — null = shared.
+  // Tap a seat chip, then tap items as usual; nothing here blocks ordering
+  // when it's left at "Shared" (the default), so tagging stays fully optional.
+  const [activeSeat, setActiveSeat] = useState<number | null>(null)
+  const showSeatPicker = Boolean(seatCount && seatCount >= 2)
 
   function handleTap(item: MenuItemOption) {
     if (item.status && item.status !== 'available') return
@@ -200,26 +216,26 @@ export function TakeOrderDialog({
   function addToCart(item: MenuItemOption) {
     if (item.status && item.status !== 'available') return
     setError(null)
-    const key = cartLineKey(item.id, [])
+    const key = cartLineKey(item.id, [], activeSeat)
     setCart((lines) => {
       const existing = lines.find((l) => l.key === key)
       if (existing) return lines.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l))
       return [
         ...lines,
-        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers: [] },
+        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers: [], seatNo: activeSeat },
       ]
     })
   }
 
   function addToCartWithModifiers(item: MenuItemOption, modifiers: CartModifier[]) {
     setError(null)
-    const key = cartLineKey(item.id, modifiers.map((m) => m.optionId))
+    const key = cartLineKey(item.id, modifiers.map((m) => m.optionId), activeSeat)
     setCart((lines) => {
       const existing = lines.find((l) => l.key === key)
       if (existing) return lines.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l))
       return [
         ...lines,
-        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers },
+        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers, seatNo: activeSeat },
       ]
     })
   }
@@ -252,6 +268,7 @@ export function TakeOrderDialog({
           qty: l.qty,
           specialInstructions: l.specialInstructions || undefined,
           modifierOptionIds: l.modifiers.map((m) => m.optionId),
+          seatNo: l.seatNo ?? undefined,
         })),
       })
       if (r.error) setError(r.error)
@@ -279,6 +296,24 @@ export function TakeOrderDialog({
           <p className="mt-0.5 text-sm text-muted-foreground">
             {bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.'}
           </p>
+
+          {showSeatPicker && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Ordering for
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <CategoryChip active={activeSeat === null} onClick={() => setActiveSeat(null)}>
+                  Shared
+                </CategoryChip>
+                {Array.from({ length: seatCount! }, (_, i) => i + 1).map((seat) => (
+                  <CategoryChip key={seat} active={activeSeat === seat} onClick={() => setActiveSeat(seat)}>
+                    Seat {seat}
+                  </CategoryChip>
+                ))}
+              </div>
+            </div>
+          )}
 
           {liveRules.length > 0 && (
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-400">
@@ -434,7 +469,14 @@ export function TakeOrderDialog({
                 <div key={line.key} className="rounded-lg border border-border bg-card p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-base font-medium">{line.name}</p>
+                      <p className="truncate text-base font-medium">
+                        {line.name}
+                        {line.seatNo !== null && (
+                          <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                            Seat {line.seatNo}
+                          </span>
+                        )}
+                      </p>
                       {line.modifiers.length > 0 && (
                         <p className="truncate text-sm text-muted-foreground">
                           {line.modifiers.map((m) => m.optionName).join(', ')}

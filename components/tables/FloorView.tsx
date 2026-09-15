@@ -126,7 +126,9 @@ export function FloorView({
   const [now, setNow] = useState(() => Date.now())
   const [seatTarget, setSeatTarget] = useState<TableRow | null>(null)
   const [selected, setSelected] = useState<TableRow | null>(null)
-  const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string } | null>(null)
+  const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string; coverCount: number | null } | null>(
+    null,
+  )
   const [transferTarget, setTransferTarget] = useState<TableRow | null>(null)
   const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null)
   const [splitTarget, setSplitTarget] = useState<TableRow | null>(null)
@@ -280,11 +282,11 @@ export function FloorView({
           tableId={seatTarget.id}
           tableName={seatTarget.name}
           onClose={() => setSeatTarget(null)}
-          onSeated={(bookingId) => {
+          onSeated={(bookingId, coverCount) => {
             setSeatTarget(null)
             router.refresh()
             toast.success(`${seatTarget.name} seated.`)
-            setOrderDialog({ bookingId, bookingLabel: seatTarget.name })
+            setOrderDialog({ bookingId, bookingLabel: seatTarget.name, coverCount })
           }}
         />
       )}
@@ -344,7 +346,13 @@ export function FloorView({
 
             <div className="mt-4 flex flex-wrap gap-2">
               <button
-                onClick={() => setOrderDialog({ bookingId: liveSelected.bookingId!, bookingLabel: liveSelected.name })}
+                onClick={() =>
+                  setOrderDialog({
+                    bookingId: liveSelected.bookingId!,
+                    bookingLabel: liveSelected.name,
+                    coverCount: liveSelected.coverCount,
+                  })
+                }
                 disabled={menuItems.length === 0}
                 className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
@@ -549,6 +557,7 @@ export function FloorView({
           happyHours={happyHours}
           popularItemIds={popularItemIds}
           canToggle86={canToggle86}
+          seatCount={orderDialog.coverCount}
           timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={() => {

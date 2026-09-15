@@ -49,6 +49,12 @@ export type CreateOrderItemInput = {
   // both that and every attached group's min/max, and snapshots the chosen
   // options' name + price delta onto order_item_modifiers.
   modifierOptionIds?: string[]
+  // Seat/guest tagging (migration 0088, M18 #1) — which guest this line
+  // belongs to, for later by-seat bill splitting. Optional and unvalidated
+  // against cover_count here: a waiter may tag a seat before the table's
+  // guest count is finalised, and a stale/absent cover_count must never
+  // block placing food. Pure bookkeeping — never affects pricing.
+  seatNo?: number
 }
 
 export type CreateOrderInput = {
@@ -363,6 +369,15 @@ export async function createOrderCore(
   // transaction can attach order_item_modifiers rows to the right parent
   // without a second round trip (RETURNING doesn't promise to preserve
   // input order for a multi-row INSERT ... VALUES).
+  // seat_no is a plain smallint with no seats table to check against (see
+  // migration 0088) — only shape-validated here (a real positive integer),
+  // same "trust nothing from the browser but shape" discipline as qty.
+  for (const i of input.items) {
+    if (i.seatNo !== undefined && (!Number.isInteger(i.seatNo) || i.seatNo < 1)) {
+      throw new OrderError('Seat number must be a positive whole number.')
+    }
+  }
+
   const preparedItems = input.items.map((i) => {
     const m = byId.get(i.menuItemId)!
     const basePrice = Number(m.price)
@@ -398,6 +413,7 @@ export async function createOrderCore(
         originalUnitPrice: applied ? basePrice.toFixed(2) : null,
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
+        seatNo: i.seatNo ?? null,
       },
       modifiers: selected.map((o) => ({
         tenantId: ctx.tenantId,
