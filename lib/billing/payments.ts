@@ -84,6 +84,12 @@ export type InvoiceSettlement = {
    *  NOT part of total/paid/balance: a tip is extra money on top, never
    *  counted toward settling the bill. */
   tipTotal: number
+  /** Bill-level comp/discount (M18 #5), if any — display only. Already
+   *  folded into `total` at issue time (it's one component of the invoice's
+   *  `discount`, same as membership/loyalty), never a separate deduction to
+   *  apply here. '0.00'/null when this bill was never comped. */
+  compAmount: number
+  compReason: string | null
 }
 
 /** Every payment recorded against an invoice, newest last. */
@@ -148,6 +154,8 @@ export async function getInvoiceSettlement(
       status: invoices.status,
       total: invoices.total,
       bookingId: invoices.bookingId,
+      compAmount: invoices.compAmount,
+      compReason: invoices.compReason,
     })
     .from(invoices)
     .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId)))
@@ -180,6 +188,8 @@ export async function getInvoiceSettlement(
     payments: rows,
     payable: invoice.status === PAYABLE_INVOICE_STATUS && paise(balance) > 0,
     tipTotal,
+    compAmount: round2(Number(invoice.compAmount)),
+    compReason: invoice.compReason,
   }
 }
 

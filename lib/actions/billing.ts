@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { canBill } from '@/lib/auth/roles'
+import { canBill, isManager, type MemberRole } from '@/lib/auth/roles'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
 import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
@@ -54,7 +54,39 @@ const createInvoiceInput = z.object({
     .nonnegative('Points cannot be negative.')
     .finite()
     .optional(),
+  // Bill-level comp/discount (M18 #5) — gated below, restaurant + manager
+  // only. priceBill/issueInvoiceForBooking still cap it at the subtotal even
+  // if this were bypassed, same belt-and-braces as `discount` above.
+  compAmount: z.coerce.number().min(0, 'Comp amount cannot be negative.').finite().optional(),
+  compReason: z.string().trim().max(500).optional(),
 })
+
+/**
+ * Bill-level comp/discount (M18 #5) — shared gate for both the unsplit and
+ * split-bill actions below. Restaurant tenants only, manager/owner only (no
+ * "cashier + override" flow exists in this codebase — see the manager
+ * acting in their OWN session, same precedent as refundPayment/voidInvoice
+ * in lib/actions/refunds.ts), and a reason is mandatory whenever an amount
+ * is actually given. Returns undefined for an ordinary bill with no comp,
+ * so every other tenant/role is entirely unaffected.
+ */
+function resolveCompInput(
+  ctx: { tenant: { industry: string }; role: MemberRole | null; membershipId: string },
+  compAmount: number | undefined,
+  compReason: string | undefined,
+): { amount: number; reason: string; membershipId: string } | undefined {
+  if (!compAmount || compAmount <= 0) return undefined
+  if (ctx.tenant.industry !== 'restaurant') {
+    throw new AuthError('Bill comps are only available for restaurant tenants.')
+  }
+  if (!isManager(ctx.role)) {
+    throw new AuthError('Only owners and managers can comp or discount a bill.')
+  }
+  if (!compReason || compReason.trim() === '') {
+    throw new BillingError('A reason is required to comp or discount a bill.')
+  }
+  return { amount: compAmount, reason: compReason.trim(), membershipId: ctx.membershipId }
+}
 
 /**
  * Raise the invoice for a booking.
@@ -72,9 +104,10 @@ export async function createInvoiceForBooking(
       throw new AuthError('You do not have permission to raise a bill.')
     }
     const v = createInvoiceInput.parse(input)
+    const comp = resolveCompInput(ctx, v.compAmount, v.compReason)
 
     const issued = await withUser(ctx.user.id, (tx) =>
-      issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+      issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { ...v, comp }),
     )
 
     revalidatePath('/bookings')
@@ -97,6 +130,10 @@ const splitBillInput = z.object({
   checkCount: z.coerce.number().int().min(2).max(20).optional(),
   // order_items.id (sourceId) → 0-based check index, 'item' mode only.
   assignments: z.record(z.string().uuid(), z.coerce.number().int().min(0)).optional(),
+  // Bill-level comp/discount (M18 #5) — see resolveCompInput above. Applied
+  // to the whole bill BEFORE splitting, same as the membership discount.
+  compAmount: z.coerce.number().min(0, 'Comp amount cannot be negative.').finite().optional(),
+  compReason: z.string().trim().max(500).optional(),
 })
 
 function toSplitInput(v: z.infer<typeof splitBillInput>): SplitInput {
@@ -127,6 +164,7 @@ export async function previewSplitBill(input: z.input<typeof splitBillInput>): P
     }
     const v = splitBillInput.parse(input)
     const splitInput = toSplitInput(v)
+    const comp = resolveCompInput(ctx, v.compAmount, v.compReason)
 
     const checks = await withUser(ctx.user.id, async (tx) => {
       const lines = await loadBillLines(tx, ctx.tenant.id, v.bookingId, ctx.tenant.timezone)
@@ -146,7 +184,14 @@ export async function previewSplitBill(input: z.input<typeof splitBillInput>): P
       const seatByOrderItemId =
         splitInput.mode === 'seat' ? await loadSeatByOrderItemId(tx, ctx.tenant.id, v.bookingId) : new Map()
 
-      return previewSplitChecks(gross, membership?.discountAmount ?? 0, serviceCharge, seatByOrderItemId, splitInput)
+      return previewSplitChecks(
+        gross,
+        membership?.discountAmount ?? 0,
+        serviceCharge,
+        seatByOrderItemId,
+        splitInput,
+        comp?.amount ?? 0,
+      )
     })
 
     return { checks }
@@ -175,9 +220,14 @@ export async function issueSplitBill(input: z.input<typeof splitBillInput>): Pro
     }
     const v = splitBillInput.parse(input)
     const splitInput = toSplitInput(v)
+    const comp = resolveCompInput(ctx, v.compAmount, v.compReason)
 
     const result = await withUser(ctx.user.id, (tx) =>
-      issueSplitBillForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { bookingId: v.bookingId, ...splitInput }),
+      issueSplitBillForBooking(
+        tx,
+        { id: ctx.tenant.id, timezone: ctx.tenant.timezone },
+        { bookingId: v.bookingId, comp, ...splitInput },
+      ),
     )
 
     revalidatePath('/bookings')

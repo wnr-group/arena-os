@@ -1586,6 +1586,16 @@ export const invoices = pgTable(
     // total/balance: a tip is extra money on top, never counted toward
     // settling the bill. See lib/billing/payments.ts.
     tipAmount: numeric('tip_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    // Bill-level comp/discount (migration 0091, M18 #5) — a manager-
+    // authorised write-off on top of the whole bill. One component of
+    // `discount` above (like membershipDiscount/loyaltyDiscount), never an
+    // extra amount alongside it. Restaurant tenants only — 0 for every other
+    // industry. See lib/billing/invoice.ts.
+    compAmount: numeric('comp_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    compReason: text('comp_reason'),
+    compedByMembershipId: uuid('comped_by_membership_id').references(() => memberships.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

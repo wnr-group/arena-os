@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canBill } from '@/lib/auth/roles'
+import { canBill, isManager } from '@/lib/auth/roles'
 import { getBillableForBooking } from '@/lib/billing/data'
 import { BillScreen } from '@/components/pos/BillScreen'
 
@@ -94,6 +94,11 @@ export default async function PosBillPage({
       // actual enforcement; this just keeps the Split-bill button and tip
       // input off the screen for every other tenant type.
       isRestaurant={ctx.tenant.industry === 'restaurant'}
+      // Bill-level comp (M18 #5) is manager/owner only — see
+      // lib/actions/billing.ts's resolveCompInput for the actual
+      // enforcement; this just keeps the comp control off a cashier's
+      // screen. Combined with isRestaurant above to gate the control itself.
+      isManager={isManager(ctx.role)}
       timeZone={ctx.tenant.timezone}
       currency={ctx.tenant.currency}
     />

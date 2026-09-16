@@ -22,6 +22,7 @@ export function SplitBillDialog({
   bookingId,
   items,
   currency,
+  canComp,
   onClose,
   onSplit,
 }: {
@@ -29,12 +30,22 @@ export function SplitBillDialog({
   /** Every billable food line, for the "by item" tap-to-assign picker. */
   items: SplitLineItem[]
   currency: string
+  /** Bill-level comp/discount (M18 #5) is restaurant + manager/owner only —
+   *  the server re-checks both regardless (lib/actions/billing.ts's
+   *  resolveCompInput), this just keeps the control off an ineligible
+   *  cashier's screen. */
+  canComp: boolean
   onClose: () => void
   onSplit: (checkCount: number) => void
 }) {
   const [mode, setMode] = useState<Mode>('even')
   const [evenCount, setEvenCount] = useState(2)
   const [itemCheckCount, setItemCheckCount] = useState(2)
+  // Applied to the whole bill BEFORE splitting, apportioned pro-rata across
+  // every check (v1 scope, see lib/billing/split.ts's module header) — same
+  // as the membership discount already works.
+  const [compText, setCompText] = useState('')
+  const [compReason, setCompReason] = useState('')
   // sourceId -> 0-based check index. Reset whenever the check count shrinks
   // below an already-assigned index, so a stale assignment can never point
   // at a check that no longer exists.
@@ -71,15 +82,25 @@ export function SplitBillDialog({
 
   const allAssigned = items.length > 0 && items.every((i) => assignments[i.sourceId] !== undefined)
 
+  const compAmount = Number(compText)
+  const compValid = compText.trim() === '' || (Number.isFinite(compAmount) && compAmount >= 0)
+  const compReasonMissing = canComp && compValid && compAmount > 0 && compReason.trim() === ''
+  // Only travels when the manager actually typed a positive, valid amount —
+  // an empty/zero comp field must behave exactly like it does not exist.
+  const compInput =
+    canComp && compValid && compText.trim() !== '' && compAmount > 0
+      ? { compAmount, compReason: compReason.trim() }
+      : {}
+
   function runPreview() {
     setPreviewError(null)
     setPreview(null)
     const input =
       mode === 'even'
-        ? { bookingId, mode: 'even' as const, checkCount: evenCount }
+        ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
         : mode === 'seat'
-          ? { bookingId, mode: 'seat' as const }
-          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments }
+          ? { bookingId, mode: 'seat' as const, ...compInput }
+          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
     startPreview(async () => {
       const r = await previewSplitBill(input)
       if (r.error || !r.checks) {
@@ -101,13 +122,17 @@ export function SplitBillDialog({
 
   function confirm() {
     if (pending) return
+    if (compReasonMissing) {
+      setError('Enter a reason for the comp or discount.')
+      return
+    }
     setError(null)
     const input =
       mode === 'even'
-        ? { bookingId, mode: 'even' as const, checkCount: evenCount }
+        ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
         : mode === 'seat'
-          ? { bookingId, mode: 'seat' as const }
-          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments }
+          ? { bookingId, mode: 'seat' as const, ...compInput }
+          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
     start(async () => {
       const r = await issueSplitBill(input)
       if (r.error || !r.checkCount) {
@@ -119,7 +144,10 @@ export function SplitBillDialog({
   }
 
   const canConfirm =
-    !pending && ((mode === 'even' && evenCount >= 2) || mode === 'seat' || (mode === 'item' && allAssigned))
+    !pending &&
+    !compReasonMissing &&
+    compValid &&
+    ((mode === 'even' && evenCount >= 2) || mode === 'seat' || (mode === 'item' && allAssigned))
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
@@ -147,6 +175,49 @@ export function SplitBillDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
+          {/* ── bill-level comp/discount (M18 #5) ──
+              Restaurant + manager/owner only, applied to the whole bill
+              BEFORE splitting and apportioned pro-rata across every check —
+              same as the membership discount already works. The server
+              re-checks isManager(ctx.role) and the restaurant gate
+              regardless of canComp. */}
+          {canComp && (
+            <div className="mb-4 rounded-md border border-dashed p-3">
+              <label htmlFor="split-comp" className="text-sm font-medium">
+                Comp / discount whole bill
+              </label>
+              <input
+                id="split-comp"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={compText}
+                onChange={(e) => setCompText(e.target.value)}
+                placeholder="0.00"
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {!compValid && <p className="mt-1 text-xs text-destructive">Enter zero or more.</p>}
+              {compAmount > 0 && (
+                <>
+                  <textarea
+                    value={compReason}
+                    onChange={(e) => setCompReason(e.target.value)}
+                    placeholder="Reason (required) — e.g. service recovery, VIP, staff meal"
+                    rows={2}
+                    className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  {compReasonMissing && (
+                    <p className="mt-1 text-xs text-destructive">A reason is required to comp or discount a bill.</p>
+                  )}
+                </>
+              )}
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Applied to the whole bill before splitting, apportioned across every check. Logged to the audit trail.
+              </p>
+            </div>
+          )}
+
           {mode === 'even' && (
             <div>
               <p className="text-sm text-muted-foreground">Divide the whole bill evenly.</p>

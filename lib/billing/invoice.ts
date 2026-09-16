@@ -15,7 +15,7 @@ import { and, eq, inArray, ne } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
+import { auditLog, bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
@@ -50,6 +50,39 @@ type Db = NodePgDatabase<typeof schema>
 
 /** Billing rule violations the cashier should see verbatim. */
 export class BillingError extends Error {}
+
+/**
+ * Bill-level comp/discount audit trail (M18 #5).
+ *
+ * No shared audit module exists in this codebase (see lib/orders/service.ts's
+ * writeAudit for the same note) — each domain keeps its own private copy.
+ * Exported (unlike the others) because lib/billing/split.ts's split-bill
+ * comp path is the same feature, same transaction shape, same table, and
+ * genuinely the same domain — not a cross-cutting reuse.
+ */
+export type AuditActor = { tenantId: string; membershipId: string }
+
+export async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: {
+    action: string
+    entityType: string
+    entityId: string
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
 
 /**
  * Booking states a bill may be raised for — "confirmed/checked-in" from the
@@ -533,6 +566,16 @@ export type IssueInvoiceInput = {
    * decided server-side from the tenant's rule and the ledger balance.
    */
   redeemPoints?: number
+  /**
+   * Bill-level comp/discount (M18 #5) — a manager-authorised write-off on
+   * top of everything else. `membershipId` is who authorised it (frozen onto
+   * the invoice and the audit_log row), NOT re-derived here — the caller
+   * (lib/actions/billing.ts) has already checked isManager(ctx.role) and
+   * ctx.tenant.industry === 'restaurant' before this ever arrives; this
+   * function does not re-gate, only re-caps the amount and requires the
+   * reason, same trust boundary as every other input here.
+   */
+  comp?: { amount: number; reason: string; membershipId: string }
 }
 
 export type IssuedInvoice = {
@@ -761,11 +804,32 @@ export async function issueInvoiceForBooking(
   }
   const loyaltyDiscount = loyalty?.discount ?? 0
 
-  // The combined figure. Membership + (promo | keyed-in) + loyalty — capped once
-  // more at the subtotal so no combination can drive the bill negative, belt and
-  // braces with priceBill's own cap.
+  // ── 4d. bill-level comp (M18 #5) ──────────────────────────────────────────
+  // LAST in precedence — on top of membership, promo/keyed discount AND
+  // loyalty redemption. A comp is a deliberate final write-off ("waive
+  // what's left"), not a discount the customer qualified for, so it takes
+  // whatever the other three left rather than competing with them. Capped at
+  // the remainder for the same reason every discount above is: the combined
+  // total must never exceed the subtotal even before priceBill's own cap.
+  // Authorization (manager + restaurant tenant) already happened in the
+  // caller (lib/actions/billing.ts) — this only re-validates the reason and
+  // re-caps the amount, the same trust boundary as `discount` above.
+  const remainingAfterLoyalty = round2(gross.subtotal - membershipDiscount - discount - loyaltyDiscount)
+  let compAmount = 0
+  let compReason: string | null = null
+  if (input.comp && input.comp.amount > 0) {
+    if (!input.comp.reason || input.comp.reason.trim() === '') {
+      throw new BillingError('A reason is required to comp or discount a bill.')
+    }
+    compAmount = Math.min(round2(input.comp.amount), Math.max(0, remainingAfterLoyalty))
+    compReason = input.comp.reason.trim()
+  }
+
+  // The combined figure. Membership + (promo | keyed-in) + loyalty + comp —
+  // capped once more at the subtotal so no combination can drive the bill
+  // negative, belt and braces with priceBill's own cap.
   const totalDiscount = Math.min(
-    round2(membershipDiscount + discount + loyaltyDiscount),
+    round2(membershipDiscount + discount + loyaltyDiscount + compAmount),
     gross.subtotal,
   )
 
@@ -855,8 +919,31 @@ export async function issueInvoiceForBooking(
       serviceChargePercent: serviceCharge.percent.toFixed(2),
       serviceChargeAmount: serviceCharge.amount.toFixed(2),
       serviceChargeTaxPercent: serviceCharge.taxPercent.toFixed(2),
+      // Bill-level comp (M18 #5) — one component of `discount` above, never
+      // an extra amount alongside it. See the audit_log write below.
+      compAmount: compAmount.toFixed(2),
+      compReason,
+      compedByMembershipId: compAmount > 0 ? (input.comp?.membershipId ?? null) : null,
     })
     .returning({ id: invoices.id })
+
+  // Durable, append-only record of who comped this bill, how much, and why —
+  // written in the SAME transaction as the invoice, so a comp can never exist
+  // without its audit row (or the reverse). See writeAudit's own doc comment.
+  if (compAmount > 0 && input.comp) {
+    await writeAudit(tx, { tenantId: tenant.id, membershipId: input.comp.membershipId }, {
+      action: 'invoice.comp',
+      entityType: 'invoice',
+      entityId: invoice.id,
+      before: { invoice_number: invoiceNumber, subtotal: gross.subtotal.toFixed(2) },
+      after: {
+        invoice_number: invoiceNumber,
+        amount: compAmount.toFixed(2),
+        reason: compReason,
+        booking_id: booking.id,
+      },
+    })
+  }
 
   // ── 6. items — the historical snapshot ────────────────────────────────────
   // Every number the invoice was built from is frozen onto the row, so a later

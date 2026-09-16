@@ -28,6 +28,7 @@ import {
   financialYearPeriod,
   nextInvoiceNumber,
   prepareBookingBill,
+  writeAudit,
 } from './invoice'
 import {
   groupByTaxRate,
@@ -392,7 +393,15 @@ export async function loadSeatByOrderItemId(tx: Db, tenantId: string, bookingId:
   return new Map(rows.map((r) => [r.id, r.seatNo]))
 }
 
-export type IssueSplitBillInput = { bookingId: string } & SplitInput
+export type IssueSplitBillInput = {
+  bookingId: string
+  /** Bill-level comp/discount (M18 #5) — see lib/billing/invoice.ts's
+   *  IssueInvoiceInput.comp for the trust model (already gated by the caller,
+   *  re-validated/re-capped here). Applied BEFORE splitting, same as the
+   *  membership discount, and apportioned pro-rata across every check
+   *  (v1 scope — see this module's header). */
+  comp?: { amount: number; reason: string; membershipId: string }
+} & SplitInput
 
 export type IssuedCheck = { invoiceId: string; invoiceNumber: string; seq: number; label: string; pricing: CheckPricing }
 
@@ -416,20 +425,68 @@ export async function issueSplitBillForBooking(
     input.bookingId,
   )
 
-  // v1 scope: membership only (see module header) — no promo/loyalty input.
-  const pricing = priceWithDiscount(gross, membershipDiscount)
+  // Bill-level comp (M18 #5) — LAST in precedence, same as the unsplit path
+  // (lib/billing/invoice.ts): applied on top of membership, capped at what
+  // remains. Authorization already happened in the caller
+  // (lib/actions/billing.ts); this only re-validates the reason and re-caps.
+  const afterMembership = round2(gross.subtotal - membershipDiscount)
+  let compAmount = 0
+  let compReason: string | null = null
+  if (input.comp && input.comp.amount > 0) {
+    if (!input.comp.reason || input.comp.reason.trim() === '') {
+      throw new BillingError('A reason is required to comp or discount a bill.')
+    }
+    compAmount = Math.min(round2(input.comp.amount), Math.max(0, afterMembership))
+    compReason = input.comp.reason.trim()
+  }
+
+  // v1 scope: membership + comp only (see module header) — no promo/loyalty
+  // input for a split bill.
+  const pricing = priceWithDiscount(gross, round2(membershipDiscount + compAmount))
 
   const seatByOrderItemId =
     input.mode === 'seat' ? await loadSeatByOrderItemId(tx, tenant.id, booking.id) : new Map<string, number | null>()
 
   const checks = applyServiceChargeToChecks(computeSplitChecks(pricing, seatByOrderItemId, input), serviceCharge)
 
+  // Attribute each check's OWN share of the combined discount to membership
+  // vs. comp, for the frozen columns below. Only bother when a comp was
+  // actually requested: when it wasn't (the overwhelming common case),
+  // membershipShares must equal check.discount EXACTLY, unchanged from
+  // before this feature existed — no test covers the exact paisa this
+  // column carries per check, so this is deliberately zero-risk rather than
+  // "probably still right".
+  //
+  // When a comp WAS requested: membershipShares sums exactly to
+  // membershipDiscount (splitProportional's own guarantee), and each
+  // check's compShare is simply what its total discount has left over, so
+  // membershipShare + compShare === check.discount for every check, and
+  // compShares sums exactly to compAmount in aggregate. Clamped at zero:
+  // membershipShares is a single flat proportional split by check.subtotal,
+  // while check.discount comes from a nested per-tax-rate-group split
+  // (computeSplitChecks) that can place a stray paisa's remainder on a
+  // different check when there is more than one GST rate — without the
+  // clamp that could theoretically show as a hairline negative comp share,
+  // which the invoices_comp_amount_check constraint would reject outright.
+  // Harmless either way: this is a descriptive attribution only,
+  // check.discount/total (the actual money) are unaffected either way.
+  const membershipShares =
+    compAmount > 0
+      ? splitProportional(
+          membershipDiscount,
+          checks.map((c) => c.subtotal),
+        )
+      : checks.map((c) => c.discount)
+  const compShares =
+    compAmount > 0 ? checks.map((c, i) => Math.max(0, round2(c.discount - membershipShares[i]))) : checks.map(() => 0)
+
   const period = financialYearPeriod(todayInZone(tenant.timezone))
   const prefix = await loadInvoicePrefix(tx, tenant.id)
   const billGroupId = randomUUID()
 
   const issued: IssuedCheck[] = []
-  for (const check of checks) {
+  for (let i = 0; i < checks.length; i++) {
+    const check = checks[i]
     const invoiceNumber = await nextInvoiceNumber(tx, tenant.id, period, prefix)
     const settledOnIssue = paise(check.total) === 0
 
@@ -441,12 +498,12 @@ export async function issueSplitBillForBooking(
         invoiceNumber,
         bookingId: booking.id,
         customerId: booking.customerId,
-        // Descriptive fields (not additive money) — the same membership
-        // applies to every check, unapportioned; check.discount (below) IS
-        // that check's own share of the money, since v1 splits apply no
-        // other discount (see module header).
+        // Descriptive fields (not additive money) — membershipShares/
+        // compShares split check.discount's money between the two causes
+        // (see the comment above where they're computed); membershipDiscount
+        // + compAmount === check.discount for every check, exactly.
         customerMembershipId: membership?.membershipId ?? null,
-        membershipDiscount: check.discount.toFixed(2),
+        membershipDiscount: membershipShares[i].toFixed(2),
         membershipDiscountPercent: (membership?.discountPercent ?? 0).toFixed(2),
         membershipPlanName: membership?.planName ?? null,
         subtotal: check.subtotal.toFixed(2),
@@ -463,8 +520,29 @@ export async function issueSplitBillForBooking(
         serviceChargePercent: check.serviceChargePercent.toFixed(2),
         serviceChargeAmount: check.serviceChargeAmount.toFixed(2),
         serviceChargeTaxPercent: check.serviceChargeTaxPercent.toFixed(2),
+        // Bill-level comp (M18 #5) — this check's own share; see
+        // audit_log write below for the durable who/why record.
+        compAmount: compShares[i].toFixed(2),
+        compReason: compShares[i] > 0 ? compReason : null,
+        compedByMembershipId: compShares[i] > 0 ? (input.comp?.membershipId ?? null) : null,
       })
       .returning({ id: invoices.id })
+
+    if (compShares[i] > 0 && input.comp) {
+      await writeAudit(tx, { tenantId: tenant.id, membershipId: input.comp.membershipId }, {
+        action: 'invoice.comp',
+        entityType: 'invoice',
+        entityId: invoice.id,
+        before: { invoice_number: invoiceNumber, subtotal: check.subtotal.toFixed(2), bill_group_id: billGroupId },
+        after: {
+          invoice_number: invoiceNumber,
+          amount: compShares[i].toFixed(2),
+          reason: compReason,
+          booking_id: booking.id,
+          bill_group_id: billGroupId,
+        },
+      })
+    }
 
     await tx.insert(invoiceItems).values(
       check.items.map((item) => ({
@@ -532,7 +610,11 @@ export function previewSplitChecks(
   serviceCharge: ServiceChargeResult,
   seatByOrderItemId: Map<string, number | null>,
   input: SplitInput,
+  /** Bill-level comp (M18 #5) preview, already capped by the caller against
+   *  what remains after membership — see issueSplitBillForBooking's own
+   *  computation, mirrored here read-only. 0 when no comp is being tried. */
+  compAmount = 0,
 ): CheckPricing[] {
-  const pricing = priceWithDiscount(gross, membershipDiscount)
+  const pricing = priceWithDiscount(gross, round2(membershipDiscount + compAmount))
   return applyServiceChargeToChecks(computeSplitChecks(pricing, seatByOrderItemId, input), serviceCharge)
 }

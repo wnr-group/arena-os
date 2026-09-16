@@ -43,6 +43,10 @@ export type SettlementView = {
   /** Sum of every captured payment's tip (M18 #3) — display only, never
    *  part of total/paid/balance. */
   tipTotal: number
+  /** Bill-level comp/discount (M18 #5), if any — display only. Already
+   *  folded into `total` at issue time, never a separate deduction here. */
+  compAmount: number
+  compReason: string | null
 }
 
 /**
@@ -243,6 +247,15 @@ export function PaymentPanel({
           <div className="flex justify-between gap-4 pt-1 text-muted-foreground">
             <dt>Tips collected</dt>
             <dd className="tabular-nums">{money(settlement.tipTotal)}</dd>
+          </div>
+        )}
+        {/* Bill-level comp (M18 #5) — already folded into `total` above (it's
+            one component of the invoice's own discount), shown here only so
+            the reason/amount stays visible after the bill is frozen. */}
+        {settlement.compAmount > 0 && (
+          <div className="flex justify-between gap-4 pt-1 text-muted-foreground">
+            <dt>Comped{settlement.compReason ? ` · ${settlement.compReason}` : ''}</dt>
+            <dd className="tabular-nums">− {money(settlement.compAmount)}</dd>
           </div>
         )}
       </dl>

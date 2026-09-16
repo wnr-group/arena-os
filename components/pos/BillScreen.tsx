@@ -58,6 +58,7 @@ export function BillScreen({
   serviceChargeConfig,
   staff,
   isRestaurant,
+  isManager,
   timeZone,
   currency,
 }: {
@@ -95,6 +96,10 @@ export function BillScreen({
    *  other tenant type — actual enforcement is server-side (the split
    *  actions check this, and service charge always computes to zero). */
   isRestaurant: boolean
+  /** Bill-level comp/discount (M18 #5) is manager/owner only. Hides the
+   *  control for a cashier — the server re-checks isManager(ctx.role)
+   *  regardless, this is UX only, same discipline as isRestaurant above. */
+  isManager: boolean
   timeZone: string
   currency: string
 }) {
@@ -102,9 +107,17 @@ export function BillScreen({
   const [discountText, setDiscountText] = useState('')
   const [promoCode, setPromoCode] = useState('')
   const [redeemText, setRedeemText] = useState('')
+  // Bill-level comp/discount (M18 #5) — restaurant + manager only (see
+  // canComp below). Deliberately separate from `discountText`: a comp is a
+  // manager-authorised write-off with a mandatory reason and an audit
+  // trail, not an ordinary keyed-in discount.
+  const [compText, setCompText] = useState('')
+  const [compReason, setCompReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [splitOpen, setSplitOpen] = useState(false)
+
+  const canComp = isRestaurant && isManager
 
   const discount = Number(discountText)
   const discountValid = discountText === '' || (Number.isFinite(discount) && discount >= 0)
@@ -129,8 +142,31 @@ export function BillScreen({
         ? 'Enter a whole number of points.'
         : `Only ${loyalty?.balance ?? 0} points available.`
 
-  // Mirrors the server precedence exactly (lib/billing/loyalty.ts):
-  // membership → promo/keyed-in → loyalty, all before GST.
+  // What membership + the keyed-in discount + loyalty leave for a comp to
+  // take (M18 #5) — comp is LAST in precedence, same as the server
+  // (lib/billing/invoice.ts). Used both for the preview below and to cap
+  // the "Full comp" convenience button.
+  const remainingBeforeComp = useMemo(() => {
+    const gross = priceBill({ lines })
+    const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
+    const typed = discountValid ? Math.min(discount || 0, afterMembership) : 0
+    const afterTyped = Math.max(0, afterMembership - typed)
+    const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
+    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
+    return Math.max(0, round2(afterTyped - loyaltyOff))
+  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+
+  const compAmount = Number(compText)
+  const compValid = compText.trim() === '' || (Number.isFinite(compAmount) && compAmount >= 0)
+  // Only restaurant managers can comp at all — a cashier's or another
+  // industry's typed figure here (impossible via the hidden UI, but belt and
+  // braces for the preview) never reduces the preview.
+  const compCapped = canComp && compValid ? Math.min(compAmount || 0, remainingBeforeComp) : 0
+  const compReasonMissing = compCapped > 0 && compReason.trim() === ''
+
+  // Mirrors the server precedence exactly (lib/billing/loyalty.ts and, last,
+  // lib/billing/invoice.ts's M18 #5 step): membership → promo/keyed-in →
+  // loyalty → comp, all before GST.
   const preview = useMemo(() => {
     const gross = priceBill({ lines })
     const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
@@ -138,12 +174,15 @@ export function BillScreen({
     const afterTyped = Math.max(0, afterMembership - typed)
     const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
     const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
-    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff })
-  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff + compCapped })
+  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty, compCapped])
 
   const loyaltyPreviewDiscount = Math.max(
     0,
-    preview.discount - membershipDiscount - (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0),
+    preview.discount -
+      membershipDiscount -
+      (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0) -
+      compCapped,
   )
 
   const bookingItems = preview.items.filter((i) => i.kind === 'booking')
@@ -190,6 +229,14 @@ export function BillScreen({
       setError(redeemError ?? 'Check the points to redeem.')
       return
     }
+    if (canComp && compText.trim() !== '' && !compValid) {
+      setError('Enter a comp amount of zero or more.')
+      return
+    }
+    if (compReasonMissing) {
+      setError('Enter a reason for the comp or discount.')
+      return
+    }
     setError(null)
     start(async () => {
       const r = await createInvoiceForBooking({
@@ -199,6 +246,10 @@ export function BillScreen({
         promoCode: promoCode.trim() || undefined,
         // Only a COUNT of points travels. No rupee value, no balance.
         redeemPoints: redeemText.trim() === '' ? undefined : redeemPoints,
+        // Bill-level comp (M18 #5) — the server re-checks isManager(ctx.role)
+        // and the restaurant gate regardless of what canComp shows here.
+        compAmount: canComp && compText.trim() !== '' ? compAmount : undefined,
+        compReason: canComp && compText.trim() !== '' ? compReason.trim() : undefined,
       })
       if (r.error || !r.invoiceId) {
         setError(r.error ?? 'Could not raise the bill.')
@@ -410,6 +461,60 @@ export function BillScreen({
             </div>
           )}
 
+          {/* ── bill-level comp/discount (M18 #5) ──
+              Restaurant + manager/owner only. The server re-checks both
+              (lib/actions/billing.ts's resolveCompInput) regardless of what
+              canComp hides here, and writes an audit_log row with the
+              actor, amount and reason whenever this is used. */}
+          {canComp && (
+            <div className="rounded-md border border-dashed p-3">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="comp" className="text-sm font-medium">
+                  Comp / discount whole bill
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setCompText(remainingBeforeComp.toFixed(2))}
+                  disabled={blocked || pending || remainingBeforeComp <= 0}
+                  className="text-xs font-medium text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Full comp
+                </button>
+              </div>
+              <input
+                id="comp"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={compText}
+                onChange={(e) => setCompText(e.target.value)}
+                disabled={blocked || pending}
+                placeholder="0.00"
+                className={`mt-1 ${input}`}
+              />
+              {!compValid && <p className="mt-1 text-xs text-destructive">Enter zero or more.</p>}
+              {compCapped > 0 && (
+                <>
+                  <textarea
+                    value={compReason}
+                    onChange={(e) => setCompReason(e.target.value)}
+                    disabled={blocked || pending}
+                    placeholder="Reason (required) — e.g. service recovery, VIP, staff meal"
+                    rows={2}
+                    className={`mt-2 ${input}`}
+                  />
+                  {compReasonMissing && (
+                    <p className="mt-1 text-xs text-destructive">A reason is required to comp or discount a bill.</p>
+                  )}
+                </>
+              )}
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Applied last, on top of the discount above — capped at what remains and logged to the audit trail.
+              </p>
+            </div>
+          )}
+
           <dl className="space-y-1.5 border-t pt-4 text-sm">
             <Total k="Subtotal" v={money(preview.subtotal)} />
             <Total k="Discount" v={`− ${money(preview.discount)}`} />
@@ -429,6 +534,7 @@ export function BillScreen({
                 muted
               />
             )}
+            {compCapped > 0 && <Total k="Comp / discount" v={`− ${money(compCapped)}`} muted />}
             <Total k="Taxable value" v={money(preview.taxableValue)} muted />
             <Total k="CGST" v={money(gst.cgst)} muted />
             <Total k="SGST" v={money(gst.sgst)} muted />
@@ -448,7 +554,7 @@ export function BillScreen({
 
           <button
             onClick={generate}
-            disabled={blocked || pending || !discountValid}
+            disabled={blocked || pending || !discountValid || !compValid || compReasonMissing}
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
@@ -477,6 +583,7 @@ export function BillScreen({
           bookingId={booking.id}
           items={itemsForSplit}
           currency={currency}
+          canComp={canComp}
           onClose={() => setSplitOpen(false)}
           onSplit={() => {
             setSplitOpen(false)
