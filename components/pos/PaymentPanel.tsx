@@ -85,8 +85,9 @@ export function PaymentPanel({
   wallet: { balance: number; maxSpendable: number } | null
   /** Active staff, for the optional tip-recipient picker (M18 #3). */
   staff: { id: string; name: string }[]
-  /** M18's tip is restaurant-only, same as split bill and service charge —
-   *  hides the tip input entirely for every other tenant type. */
+  /** M18's tip (and the cash-tendered/change-due flow, M18 #4) is
+   *  restaurant-only, same as split bill and service charge — hides both
+   *  inputs entirely for every other tenant type. */
   isRestaurant: boolean
   timeZone: string
   currency: string
@@ -101,6 +102,15 @@ export function PaymentPanel({
   // one — see submit() below.
   const [tipText, setTipText] = useState('')
   const [tipRecipientId, setTipRecipientId] = useState('')
+  /**
+   * Cash tendered (M18 #4) — what the customer physically handed over, for
+   * change-due only. This is the one sanctioned way an amount here can
+   * exceed the balance: `amount` (below) still never does, still gets
+   * clamped/rechecked exactly as before, and change is never written to
+   * `payments` — it's display-only, computed client-side, same treatment as
+   * the tip in that it never perturbs the balance arithmetic.
+   */
+  const [tenderedText, setTenderedText] = useState('')
   /**
    * One retry token per ATTEMPT, minted lazily on submit — see
    * lib/utils/idempotency-key.ts for why not crypto.randomUUID(), and why not
@@ -148,8 +158,21 @@ export function PaymentPanel({
   const tipError =
     tipText.trim() === '' || (Number.isFinite(tip) && paise(tip) >= 0) ? null : 'Enter a valid tip amount.'
 
+  // Cash tendered (M18 #4) — restaurant + cash only. Optional: an empty
+  // field means "exact amount", same as today. When filled, it must cover
+  // `amount`; the difference is change handed back, never captured.
+  const showTendered = isRestaurant && method === 'cash'
+  const tendered = tenderedText.trim() === '' ? null : Number(tenderedText)
+  const tenderedError =
+    showTendered && tenderedText.trim() !== '' && !amountError
+      ? !Number.isFinite(tendered) || paise(tendered as number) < paise(amount)
+        ? 'Cash tendered must cover the amount being recorded.'
+        : null
+      : null
+  const changeDue = showTendered && tendered !== null && !tenderedError ? round2(tendered - amount) : 0
+
   function submit() {
-    if (settled || pending || amountError || tipError) return
+    if (settled || pending || amountError || tipError || tenderedError) return
     setError(null)
     start(async () => {
       keyRef.current ??= newIdempotencyKey()
@@ -177,6 +200,7 @@ export function PaymentPanel({
       keyRef.current = null
       setTipText('')
       setTipRecipientId('')
+      setTenderedText('')
       // Server-recomputed figures land via the refreshed page props.
       router.refresh()
     })
@@ -273,7 +297,10 @@ export function PaymentPanel({
             <select
               id="method"
               value={method}
-              onChange={(e) => setMethod(e.target.value as typeof method)}
+              onChange={(e) => {
+                setMethod(e.target.value as typeof method)
+                setTenderedText('')
+              }}
               disabled={pending}
               className={`mt-1 ${inputCls}`}
             >
@@ -328,6 +355,36 @@ export function PaymentPanel({
             {amountError && <p className="mt-1 text-xs text-destructive">{amountError}</p>}
           </div>
 
+          {/* Cash tendered / change due (M18 #4) — restaurant-only, cash-only.
+              The only sanctioned way to take more than the balance: `amount`
+              above is still clamped, this is purely "what did they hand you"
+              so the panel can tell the cashier what to hand back. */}
+          {showTendered && (
+            <div>
+              <label htmlFor="tendered" className="text-sm font-medium">
+                Cash tendered <span className="font-normal text-muted-foreground">(optional, for change)</span>
+              </label>
+              <input
+                id="tendered"
+                type="number"
+                min={amount || 0}
+                step="0.01"
+                inputMode="decimal"
+                value={tenderedText}
+                onChange={(e) => setTenderedText(e.target.value)}
+                disabled={pending}
+                placeholder="0.00"
+                className={`mt-1 ${inputCls}`}
+              />
+              {tenderedError && <p className="mt-1 text-xs text-destructive">{tenderedError}</p>}
+              {changeDue > 0 && (
+                <p className="mt-1 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                  Change due: {money(changeDue)}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Tip (M18 #3) — restaurant-only, and a counter-tender-only extra
               hidden for the wallet tender (payInvoiceFromWallet doesn't
               accept one). */}
@@ -369,7 +426,7 @@ export function PaymentPanel({
 
           <button
             onClick={submit}
-            disabled={pending || Boolean(amountError) || Boolean(tipError)}
+            disabled={pending || Boolean(amountError) || Boolean(tipError) || Boolean(tenderedError)}
             className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending && <Loader2 size={14} className="animate-spin" />}
