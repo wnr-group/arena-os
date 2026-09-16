@@ -257,12 +257,16 @@ export function computeSplitChecks(
 
     buckets.forEach((b, bIdx) => {
       const tax = taxShares[bIdx]
+      // Rounded ONCE; sgst takes the remainder, so cgst + sgst === tax
+      // exactly even for an odd paisa (e.g. tax 0.01 must not become 0.02).
+      const cgst = round2(tax / 2)
+      const sgst = round2(tax - cgst)
       checkGroupTotals[bIdx][gIdx] = {
         subtotal: bucketGroupSubtotal[bIdx],
         discount: discountShares[bIdx],
         tax,
-        cgst: round2(tax / 2),
-        sgst: round2(tax / 2),
+        cgst,
+        sgst,
       }
       if (paise(sharedShares[bIdx]) !== 0) {
         checkExtraLines[bIdx].push({
@@ -348,10 +352,14 @@ function applyServiceChargeToChecks(checks: CheckPricing[], serviceCharge: Servi
     const amount = amountShares[i]
     const tax = taxShares[i]
     const taxTotal = round2(check.taxTotal + tax)
+    // Rounded ONCE; sgst takes the remainder, so cgst + sgst === tax exactly
+    // even for an odd paisa.
+    const scCgst = round2(tax / 2)
+    const scSgst = round2(tax - scCgst)
     const taxBreakup = mergeTaxBreakup(check.taxBreakup, {
       percent: serviceCharge.taxPercent,
-      cgst: round2(tax / 2),
-      sgst: round2(tax / 2),
+      cgst: scCgst,
+      sgst: scSgst,
     })
     const total = round2(check.taxableValue + amount + taxTotal)
     const items = [...check.items]

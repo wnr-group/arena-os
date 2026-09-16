@@ -129,6 +129,10 @@ export function groupByTaxRate(items: PricedItem[], discount: number): TaxGroup[
 
     const groupTaxable = atLeastZero(round2(groupSubtotal - groupDiscount))
     const tax = round2((groupTaxable * percent) / 100)
+    // Rounded ONCE; sgst takes the remainder, so cgst + sgst === tax exactly
+    // even for an odd paisa (e.g. tax 0.01 must not become 0.01 + 0.01).
+    const cgst = round2(tax / 2)
+    const sgst = round2(tax - cgst)
 
     result.push({
       percent,
@@ -136,8 +140,8 @@ export function groupByTaxRate(items: PricedItem[], discount: number): TaxGroup[
       discount: groupDiscount,
       taxable: groupTaxable,
       tax,
-      cgst: round2(tax / 2),
-      sgst: round2(tax / 2),
+      cgst,
+      sgst,
     })
   }
 
@@ -216,7 +220,11 @@ export function computeServiceCharge(subtotal: number, config: ServiceChargeConf
   const amount = round2(atLeastZero(finite(subtotal)) * (percent / 100))
   const taxPercent = round2(atLeastZero(finite(config.taxPercent)))
   const tax = taxPercent > 0 ? round2(amount * (taxPercent / 100)) : 0
-  return { percent, amount, taxPercent: tax > 0 ? taxPercent : 0, tax, cgst: round2(tax / 2), sgst: round2(tax / 2) }
+  // Rounded ONCE; sgst takes the remainder, so cgst + sgst === tax exactly
+  // even for an odd paisa.
+  const cgst = round2(tax / 2)
+  const sgst = round2(tax - cgst)
+  return { percent, amount, taxPercent: tax > 0 ? taxPercent : 0, tax, cgst, sgst }
 }
 
 /**

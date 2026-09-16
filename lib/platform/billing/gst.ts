@@ -38,21 +38,21 @@ import { round2 } from '@/lib/billing/pricing'
  *
  * ── WHY THE CGST/SGST SPLIT IS NOT `tax/2` TWICE ────────────────────────────
  *
- * priceBill() writes `cgst: round2(tax/2), sgst: round2(tax/2)`. For an odd
- * number of paise that sums to one paisa MORE than the tax: ₹18.05 → 9.03 +
- * 9.03 = 18.06. On a POS bill nothing enforces the sum so it goes unnoticed.
- * Here, `tax_total = cgst + sgst + igst` is a database CHECK, so the same code
- * would fail to insert.
+ * Naively writing `cgst: round2(tax/2), sgst: round2(tax/2)` sums to one
+ * paisa MORE than the tax for an odd number of paise: ₹18.05 → 9.03 + 9.03 =
+ * 18.06. Here, `tax_total = cgst + sgst + igst` is a database CHECK, so that
+ * would fail to insert outright.
  *
  * So the half is rounded ONCE and the remainder is given to SGST:
  *
  *     cgst = round2(tax / 2)
  *     sgst = round2(tax − cgst)
  *
- * Deterministic, never more than one paisa apart, and exactly summing. This is
- * a refinement of the same idea, not a different rounding rule — and
- * priceBill() is deliberately left untouched, because changing it would alter
- * every POS invoice in the product for a one-paisa presentation detail.
+ * Deterministic, never more than one paisa apart, and exactly summing.
+ * lib/billing/pricing.ts's priceBill() and lib/billing/split.ts's
+ * bill-splitting apply the identical remainder rule for the same reason —
+ * a POS receipt has no CHECK constraint to catch a stray paisa, but showing
+ * ₹0.02 of tax on a bill that only charged ₹0.01 is wrong regardless.
  */
 
 /**
