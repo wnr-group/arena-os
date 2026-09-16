@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { Loader2, Users, Receipt, LayoutGrid, X } from 'lucide-react'
 import { previewSplitBill, issueSplitBill } from '@/lib/actions/billing'
 import type { CheckPricing } from '@/lib/billing/split'
@@ -56,6 +56,18 @@ export function SplitBillDialog({
   const [previewing, startPreview] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  /**
+   * Which pricing-relevant input the CURRENT `preview` actually reflects, so
+   * confirm() can refuse to fire against a stale preview (e.g. the cashier
+   * bumped evenCount or retyped the comp after the last successful preview,
+   * but never re-ran it). Null whenever there is no preview that matches
+   * the inputs right now.
+   */
+  const [previewSignature, setPreviewSignature] = useState<string | null>(null)
+  /** Bumped on every runPreview() call (and on every pricing-input change);
+   *  a response is applied only if this still matches the id it was issued
+   *  under, so an older, slower request can never overwrite a newer one. */
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     const original = document.body.style.overflow
@@ -93,34 +105,69 @@ export function SplitBillDialog({
       ? { compAmount, compReason: compReason.trim() }
       : {}
 
-  /** Ask the server for a read-only preview of the current mode/comp inputs, without committing anything. */
+  /** The exact request body previewSplitBill/issueSplitBill would take for the CURRENT inputs — one place, so the two can never drift apart. */
+  function buildInput() {
+    return mode === 'even'
+      ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
+      : mode === 'seat'
+        ? { bookingId, mode: 'seat' as const, ...compInput }
+        : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
+  }
+
+  // What actually affects the PRICED totals shown below — deliberately
+  // narrower than buildInput(): compReason's wording never changes a single
+  // number, only whether one was given at all (resolveCompInput requires a
+  // reason once compAmount > 0), so its full text is collapsed to a
+  // boolean here. That keeps this signature stable while the cashier is
+  // still typing the reason, instead of invalidating the preview on every
+  // keystroke.
+  const pricingSignature = JSON.stringify({
+    mode,
+    evenCount,
+    itemCheckCount,
+    assignments,
+    compAmount: compInput.compAmount ?? 0,
+    hasCompReason: compReason.trim() !== '',
+  })
+
+  /** Ask the server for a read-only preview of the current inputs, without committing anything. */
   function runPreview() {
     setPreviewError(null)
     setPreview(null)
-    const input =
-      mode === 'even'
-        ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
-        : mode === 'seat'
-          ? { bookingId, mode: 'seat' as const, ...compInput }
-          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
+    setPreviewSignature(null)
+    const id = ++requestIdRef.current
+    const input = buildInput()
+    const signature = pricingSignature
     startPreview(async () => {
       const r = await previewSplitBill(input)
+      // A newer request (a manual re-preview, or an input change below) has
+      // since started — this response is obsolete even if it resolves last,
+      // so it must never overwrite whatever that newer request produces.
+      if (requestIdRef.current !== id) return
       if (r.error || !r.checks) {
         setPreviewError(r.error ?? 'Could not preview the split.')
         return
       }
       setPreview(r.checks)
+      setPreviewSignature(signature)
     })
   }
 
-  // Re-preview whenever the mode or its inputs change — seat mode has no
-  // inputs, so it previews immediately on selecting the tab.
+  // Re-preview whenever anything that affects the priced totals changes —
+  // not just `mode`: bumping evenCount, re-assigning an item, or editing the
+  // comp amount must invalidate whatever preview is on screen immediately,
+  // and bump requestIdRef so a still-in-flight request for the OLD inputs
+  // can never land afterward and repaint stale totals. Seat mode has no
+  // manual "Preview" button, so it re-previews itself; even/item mode just
+  // go blank until the cashier clicks Preview again.
   useEffect(() => {
     setPreview(null)
     setPreviewError(null)
+    setPreviewSignature(null)
+    requestIdRef.current++
     if (mode === 'seat') runPreview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode])
+  }, [pricingSignature])
 
   /** Validate the comp reason (if any), then commit the split via issueSplitBill. */
   function confirm() {
@@ -130,14 +177,8 @@ export function SplitBillDialog({
       return
     }
     setError(null)
-    const input =
-      mode === 'even'
-        ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
-        : mode === 'seat'
-          ? { bookingId, mode: 'seat' as const, ...compInput }
-          : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
     start(async () => {
-      const r = await issueSplitBill(input)
+      const r = await issueSplitBill(buildInput())
       if (r.error || !r.checkCount) {
         setError(r.error ?? 'Could not split the bill.')
         return
@@ -146,10 +187,17 @@ export function SplitBillDialog({
     })
   }
 
+  // Requires a SUCCESSFUL preview that still matches the current inputs
+  // (previewSignature === pricingSignature) — a stale or in-flight preview
+  // (both leave previewSignature null, see runPreview/the effect above)
+  // cannot enable this, so a cashier can never confirm a split whose issued
+  // checks would differ from what's actually on screen.
   const canConfirm =
     !pending &&
     !compReasonMissing &&
     compValid &&
+    preview !== null &&
+    previewSignature === pricingSignature &&
     ((mode === 'even' && evenCount >= 2) || mode === 'seat' || (mode === 'item' && allAssigned))
 
   return (
