@@ -9,6 +9,7 @@ const input = 'w-full rounded-md border bg-background px-3 py-2 text-base outlin
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 
+/** Modal for seating a walk-in party at a table: guest count, optional name/phone, then a booking. */
 export function SeatTableDialog({
   branchId,
   tableId,

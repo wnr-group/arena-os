@@ -33,6 +33,7 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
  */
 type Status = 'Inactive' | 'Usage Limit Reached' | 'Scheduled' | 'Expired' | 'Active'
 
+/** Derive a promo's display status from its active flag, usage counter and validity window. */
 export function statusOf(p: PromoRow, now = new Date()): Status {
   if (!p.isActive) return 'Inactive'
   if (p.maxUses !== null && p.uses >= p.maxUses) return 'Usage Limit Reached'
@@ -52,13 +53,16 @@ const STATUS_STYLE: Record<Status, string> = {
 /** `2026-08-10T12:30:00Z` → `2026-08-10T18:00` for a datetime-local input. */
 function toLocalInput(iso: string): string {
   const d = new Date(iso)
+  /** Zero-pad a number to 2 digits for a datetime-local string. */
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** Format an ISO date as a short display date (e.g. "10 Aug 2026"). */
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 
+/** Settings page for creating/editing promo codes and toggling them active. */
 export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; currency: string }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -67,6 +71,7 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
   const [modal, setModal] = useState<Modal | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
+  /** Run a server action, surfacing its error via state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     setError(null)
     start(async () => {
@@ -87,7 +92,9 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
     return { total, active, inactive: total - active, redemptions }
   }, [promos])
 
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string) => formatMoney(v, currency)
+  /** Render a promo's discount as "20%" or a formatted rupee amount, depending on its type. */
   const discountOf = (p: PromoRow) =>
     p.discountType === 'percentage' ? `${Number(p.discountValue)}%` : money(p.discountValue)
 

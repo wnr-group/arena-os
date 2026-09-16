@@ -35,6 +35,7 @@ function netPay(row: { base: string; allowances: Component[]; deductions: Compon
   return Number(row.base) + componentTotal(row.allowances) - componentTotal(row.deductions)
 }
 
+/** Settings page for creating/editing staff salary structures (base pay, allowances, deductions). */
 export function SalaryStructuresManager({
   structures,
   staff,
@@ -50,8 +51,10 @@ export function SalaryStructuresManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, currency)
 
+  /** Run a server action, surfacing its error via state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     setError(null)
     start(async () => {

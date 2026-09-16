@@ -59,6 +59,7 @@ function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number
   )
 }
 
+/** Settings page for creating/editing resource types (tables, consoles, rooms, etc). */
 export function ResourceTypesManager({
   currency,
   types,
@@ -80,6 +81,7 @@ export function ResourceTypesManager({
   const isRestaurant = industry === 'restaurant'
   const columnCount = isRestaurant ? 3 : 4
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     start(async () => {
       const r = await fn()

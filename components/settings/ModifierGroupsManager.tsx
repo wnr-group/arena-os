@@ -47,6 +47,7 @@ function selectSummary(minSelect: number, maxSelect: number): string {
   return `Choose ${minSelect}–${maxSelect}`
 }
 
+/** Settings page for creating/editing modifier groups and their options (M17 #8). */
 export function ModifierGroupsManager({ currency, groups }: { currency: string; groups: ModifierGroupRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -56,6 +57,7 @@ export function ModifierGroupsManager({ currency, groups }: { currency: string; 
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null)
   const [deletingOptionId, setDeletingOptionId] = useState<string | null>(null)
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()

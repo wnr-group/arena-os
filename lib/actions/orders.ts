@@ -60,6 +60,7 @@ const createInput = z.object({
     .min(1, 'Add at least one item'),
 })
 
+/** Server action: place a food/drink order against a booking. */
 export async function createOrder(input: z.input<typeof createInput>): Promise<CreateResult> {
   try {
     const ctx = await requireContext()

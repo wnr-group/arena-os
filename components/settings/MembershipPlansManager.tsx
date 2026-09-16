@@ -46,6 +46,7 @@ export function durationLabel(months: number): string {
 /** Drop a trailing `.00` so `2.00` free hours reads as `2`. */
 const trimZeros = (v: string) => String(Number(v))
 
+/** Settings page for creating/editing membership plans and their wallet-credit/discount benefits. */
 export function MembershipPlansManager({
   plans,
   currency,
@@ -58,6 +59,7 @@ export function MembershipPlansManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
 
+  /** Run a server action, surfacing its error via state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     setError(null)
     start(async () => {
@@ -79,6 +81,7 @@ export function MembershipPlansManager({
     return { total, active, inactive: total - active, credit }
   }, [plans])
 
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string | number) => formatMoney(v, currency)
 
   function toggleActive(row: MembershipPlanRow) {
@@ -234,6 +237,7 @@ function PlanDialog({
   const [walletCredit, setWalletCredit] = useState(editing ? trimZeros(editing.walletCredit) : '0')
   const [isActive, setIsActive] = useState(editing?.isActive ?? true)
 
+  /** Parse a form field to a number, treating a blank string as NaN rather than 0. */
   const num = (s: string) => (s.trim() === '' ? NaN : Number(s))
   const priceN = num(price)
   const durationN = num(durationMonths)

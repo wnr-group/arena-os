@@ -28,6 +28,7 @@ type Fields = {
 const input =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60'
 
+/** Settings form for the tenant's business profile (GST, invoice prefix, service charge, etc). */
 export function BusinessProfileForm({
   initial,
   tenantName,

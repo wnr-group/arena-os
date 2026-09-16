@@ -36,6 +36,7 @@ export default async function PayrollCostReportPage({ searchParams }: { searchPa
   if (from > to) from = to
 
   const report = await getPayrollCostReport(ctx, from, to)
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, ctx.tenant.currency)
 
   const csvRows = report.rows.map((r) => ({

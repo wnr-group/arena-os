@@ -30,6 +30,7 @@ type PayrollPeriodSummary = { period: string; payslipCount: number; totalNetPay:
 
 const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50'
 
+/** Settings page for running payroll for a period and listing past runs/payslips. */
 export function PayrollRunsManager({
   period,
   currentPeriod,
@@ -46,6 +47,7 @@ export function PayrollRunsManager({
   const router = useRouter()
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number | string) => formatMoney(Number(n), currency)
 
   const alreadyRun = periods.some((p) => p.period === period)

@@ -89,6 +89,7 @@ function elapsedLabel(since: string, now: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
 }
 
+/** Restaurant floor plan: table statuses, occupancy, and quick actions per table. */
 export function FloorView({
   branchId,
   currency,

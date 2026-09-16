@@ -43,6 +43,7 @@ function formatTime(t: string) {
   return `${h12}:${String(m).padStart(2, '0')} ${period}`
 }
 
+/** Weekly staff roster/shift-schedule view, with day navigation. */
 export function RosterView({
   days,
   prevDate,

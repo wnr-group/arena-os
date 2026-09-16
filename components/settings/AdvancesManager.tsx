@@ -41,6 +41,7 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
 const modalInput =
   'w-full rounded-lg border border-border bg-background px-3.5 py-2.5 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20'
 
+/** Settings page for recording and listing staff salary advances. */
 export function AdvancesManager({
   advances,
   staff,
@@ -56,8 +57,10 @@ export function AdvancesManager({
   const [pending, start] = useTransition()
   const [open, setOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, currency)
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     setError(null)
     start(async () => {

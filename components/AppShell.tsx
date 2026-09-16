@@ -20,6 +20,7 @@ function initialsOf(name: string) {
   )
 }
 
+/** Dashboard shell: sidebar nav, top bar and content frame shared across every authenticated tenant page. */
 export function AppShell({
   industryLabel,
   industry,

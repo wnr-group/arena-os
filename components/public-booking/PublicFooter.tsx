@@ -13,6 +13,7 @@ const ROUTES: Record<string, string> = {
   resources: '/resources',
 }
 
+/** Footer for a tenant's public storefront pages — nav links, contact info and the platform attribution badge. */
 export function PublicFooter({
   tenantName,
   industryLabel,

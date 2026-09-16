@@ -38,6 +38,7 @@ function blankToNull(v: string | null | undefined): string | null {
   return t ? t : null
 }
 
+/** Build a zod schema for an optional, length-capped text field. */
 const optionalText = (max: number, label: string) =>
   z.string().trim().max(max, `${label} is too long.`).optional().nullable()
 

@@ -7,6 +7,7 @@ const NAV_LINKS = [
   { id: 'contact', label: 'Contact' },
 ]
 
+/** Footer for the marketing site: nav links, contact and the "Powered by" attribution badge. */
 export function MarketingFooter({ domain }: { domain: string }) {
   const year = new Date().getFullYear()
 

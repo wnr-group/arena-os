@@ -93,6 +93,7 @@ export async function writeAudit(
  */
 export const BILLABLE_BOOKING_STATUSES = ['confirmed', 'checked_in'] as const
 
+/** True when a booking in `status` may have a bill raised against it (see BILLABLE_BOOKING_STATUSES above). */
 export function isBillableBookingStatus(status: string): boolean {
   return (BILLABLE_BOOKING_STATUSES as readonly string[]).includes(status)
 }

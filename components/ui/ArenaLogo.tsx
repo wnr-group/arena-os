@@ -11,6 +11,7 @@ import { useId } from 'react'
  */
 export function ArenaLogo({ className, title = 'ArenaOS' }: { className?: string; title?: string }) {
   const uid = useId()
+  /** Namespace an SVG def id to this component instance, so multiple logos on one page never collide. */
   const id = (name: string) => `arena-logo-${name}-${uid}`
   const titleId = id('title')
 

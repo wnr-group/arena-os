@@ -134,6 +134,7 @@ async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: stri
   return `BK-${compact}-${String(value).padStart(3, '0')}`
 }
 
+/** Transactional core of creating a booking: validates the slots, locks for conflicts, and inserts the booking + its slots. */
 export async function createBookingCore(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId: string | null },

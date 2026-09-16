@@ -22,6 +22,7 @@ const btn =
   'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
+/** Settings page for creating/editing/deleting menu categories. */
 export function MenuCategoriesManager({ categories }: { categories: CategoryRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -29,6 +30,7 @@ export function MenuCategoriesManager({ categories }: { categories: CategoryRow[
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
+  /** Run a server action, surfacing its error via toast or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     start(async () => {
       const r = await fn()

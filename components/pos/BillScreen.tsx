@@ -207,6 +207,7 @@ export function BillScreen({
 
   const blocked = Boolean(existingInvoice) || Boolean(splitChecks) || !booking.billable || lines.length === 0
   const canSplit = isRestaurant && !existingInvoice && !splitChecks && booking.billable && lines.length > 0
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, currency)
 
   // The by-item split picker's source list — same gross per-item value the

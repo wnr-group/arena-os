@@ -65,6 +65,7 @@ const createInput = z.object({
     .min(1, 'Add at least one resource slot'),
 })
 
+/** Server action: create a booking across one or more resource slots for the signed-in tenant. */
 export async function createBooking(input: z.input<typeof createInput>): Promise<CreateResult> {
   try {
     const ctx = await requireContext()
@@ -247,6 +248,7 @@ export async function lookupCustomerByPhone(phone: string): Promise<CustomerLook
 
 type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
 
+/** Server action: transition a booking's status, gating 'completed' on a fully-paid bill and cancelling its open orders on 'cancelled'. */
 export async function setBookingStatus(id: string, status: BookingStatus): Promise<Result> {
   try {
     const ctx = await requireContext()
@@ -280,6 +282,7 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
   }
 }
 
+/** Server action: cancel a booking (thin wrapper over setBookingStatus). */
 export async function cancelBooking(id: string): Promise<Result> {
   return setBookingStatus(id, 'cancelled')
 }

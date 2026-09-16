@@ -75,6 +75,7 @@ const STATUS_BADGE: Record<ResourceStatus, string> = {
   inactive: 'bg-muted text-muted-foreground',
 }
 
+/** Settings page for creating/editing individual bookable resources (tables, consoles, rooms, etc). */
 export function ResourcesManager({
   branchId,
   currency,
@@ -105,6 +106,7 @@ export function ResourcesManager({
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | ResourceStatus>('all')
 
+  /** Run a server action, surfacing its error via toast or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()

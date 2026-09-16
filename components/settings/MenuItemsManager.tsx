@@ -81,6 +81,7 @@ const STATUS_BADGE: Record<ItemStatus, string> = {
 
 export type ModifierGroupOption = { id: string; name: string }
 
+/** Settings page for creating/editing menu items — pricing, category, tax rate and modifier groups. */
 export function MenuItemsManager({
   currency,
   categories,
@@ -116,6 +117,7 @@ export function MenuItemsManager({
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | ItemStatus>('all')
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()

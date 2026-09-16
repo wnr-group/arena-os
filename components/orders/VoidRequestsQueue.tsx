@@ -34,6 +34,7 @@ function elapsedLabel(iso: string, now: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m ago`
 }
 
+/** Manager-facing queue for approving/rejecting pending item void/comp requests. */
 export function VoidRequestsQueue({ requests, currency }: { requests: VoidRequest[]; currency: string }) {
   const router = useRouter()
   const confirm = useConfirm()

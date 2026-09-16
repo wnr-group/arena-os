@@ -45,6 +45,7 @@ const sectionInput = z.object({
   content: z.unknown(),
 })
 
+/** Server action: create or update one section of the tenant's public website (manager/owner only). */
 export async function upsertWebsiteSection(input: z.input<typeof sectionInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
@@ -81,6 +82,7 @@ export async function upsertWebsiteSection(input: z.input<typeof sectionInput>):
   }
 }
 
+/** Server action: delete one section of the tenant's public website (manager/owner only). */
 export async function deleteWebsiteSection(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()

@@ -10,6 +10,7 @@ export const metadata: Metadata = {
     'Multi-tenant booking, POS and operations platform for gaming cafes, studios and experience centres.',
 }
 
+/** App-wide root layout: base HTML shell, global styles, toaster and confirm-dialog providers. */
 export default function RootLayout({
   children,
 }: {

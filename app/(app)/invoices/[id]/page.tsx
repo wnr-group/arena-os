@@ -53,6 +53,7 @@ export default async function InvoiceReceiptPage({
 
   const { invoice, items, payments, business, customer } = receipt
   const tz = ctx.tenant.timezone
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string | number) => formatMoney(v, ctx.tenant.currency)
   const invoiceDate = invoice.issuedAt ?? invoice.createdAt
   // Everything that actually reached the till, refunded or not — a receipt that

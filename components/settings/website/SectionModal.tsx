@@ -55,6 +55,7 @@ type SectionModalProps =
   | { mode: 'add'; type: WebsiteSectionType; onClose: () => void }
   | { mode: 'edit'; section: SectionRow; onClose: () => void }
 
+/** Modal for adding or editing one section of the tenant's public website. */
 export function SectionModal(props: SectionModalProps) {
   const { onClose } = props
   const section = props.mode === 'edit' ? props.section : undefined

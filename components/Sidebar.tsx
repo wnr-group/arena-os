@@ -242,6 +242,7 @@ function isChildActive(activeHref: string | null, children: NavChild[]) {
   return children.some((c) => c.href === activeHref)
 }
 
+/** The dashboard's left navigation — renders the nav tree for the tenant's industry/role and highlights the active item. */
 export function Sidebar({
   role,
   industry,

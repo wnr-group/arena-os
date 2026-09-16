@@ -39,6 +39,7 @@ type Modal = { mode: 'add'; type: WebsiteSectionType } | { mode: 'edit'; section
 const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/
 const DEFAULT_ACCENT = '#8b2242'
 
+/** Settings page for editing the tenant's public website: sections, branding and publish status. */
 export function WebsiteEditor({
   sections,
   settings,

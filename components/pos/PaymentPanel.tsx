@@ -127,6 +127,7 @@ export function PaymentPanel({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number | string) => formatMoney(n, currency)
   const amount = Number(amountText)
   const settled = paise(settlement.balance) <= 0 || settlement.status === 'paid'

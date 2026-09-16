@@ -118,6 +118,7 @@ function minutesInZone(iso: string, tz: string): number {
   return h * 60 + map.minute
 }
 
+/** The daily bookings board: timeline of a branch's resources, walk-in creation, and status actions. */
 export function BookingsView({
   branchId,
   branchName,
@@ -251,6 +252,7 @@ export function BookingsView({
   }, [bookingsList, search, statusFilter])
 
   const span = Math.max(60, closeMin - openMin)
+  /** Convert a minute-of-day into a left-offset percentage across the timeline's open/close span. */
   const pct = (min: number) => ((clamp(min) - openMin) / span) * 100
   function clamp(min: number) {
     return Math.min(closeMin, Math.max(openMin, min))

@@ -1,8 +1,10 @@
 /**
  * Pricing & GST — what a bill actually costs.
+ */
 /** Significant digits kept before rounding, enough to strip IEEE-754 noise. */
 const PRECISION_DIGITS = 12
 
+/** Round to 2 decimal places (whole paise), stripping IEEE-754 float noise first. */
 export function round2(value: number): number {
   if (!Number.isFinite(value)) return 0
   const scaled = Number((value * 100).toPrecision(PRECISION_DIGITS))

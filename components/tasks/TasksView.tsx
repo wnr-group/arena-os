@@ -32,6 +32,7 @@ const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn = 'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 
+/** Task board: a manager's assign/track view, or a staffer's own task list. */
 export function TasksView({
   isManagerView,
   currentMembershipId,

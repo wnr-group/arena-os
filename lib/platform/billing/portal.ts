@@ -165,6 +165,7 @@ function moduleLabel(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+/** Load the tenant's subscription-management view: live subscription, plan grants, invoices and payment methods. */
 export async function getBillingPortal(ctx: ActiveContext): Promise<BillingPortal> {
   return withUser(ctx.user.id, async (tx) => {
     const tenantId = ctx.tenant.id

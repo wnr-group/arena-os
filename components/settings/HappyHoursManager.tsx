@@ -65,6 +65,7 @@ const STATUS_META: Record<Status, { label: string; className: string; icon: Comp
   disabled: { label: 'Disabled', className: 'bg-muted text-muted-foreground', icon: XCircle },
 }
 
+/** Settings page for configuring happy-hour pricing windows. */
 export function HappyHoursManager({
   currency,
   timezone,
@@ -89,6 +90,7 @@ export function HappyHoursManager({
     return () => clearInterval(id)
   }, [])
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()
