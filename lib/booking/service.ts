@@ -389,7 +389,14 @@ export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId
   const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
   for (const invoiceId of invoiceIds) {
     const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
-    if (settlement?.payable) {
+    // findLiveBilling just proved this exact invoice exists in the SAME
+    // transaction — it cannot have vanished a moment later (same reasoning
+    // as lib/billing/data.ts's identical check). A null result is therefore
+    // an unexpected state, not a paid invoice, so this must fail closed
+    // rather than let `settlement?.payable` silently evaluate to undefined
+    // (falsy) and wave the booking through as if it were settled.
+    if (!settlement) throw new Error(`Settlement missing for invoice ${invoiceId}.`)
+    if (settlement.payable) {
       throw new BookingError(
         billing.kind === 'split'
           ? "This table's bill has been split — settle every check before completing."
