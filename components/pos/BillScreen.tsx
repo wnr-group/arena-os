@@ -46,6 +46,7 @@ const KIND_LABEL: Record<string, string> = {
   service_charge: 'Service charge',
 }
 
+/** The POS bill screen for one booking — raise/split the bill pre-issue, or settle it (PaymentPanel) once issued. */
 export function BillScreen({
   booking,
   lines,
@@ -219,6 +220,7 @@ export function BillScreen({
     [preview.items],
   )
 
+  /** Validate the pre-bill inputs client-side, then raise the invoice via createInvoiceForBooking. */
   function generate() {
     if (blocked || pending) return
     if (!discountValid) {

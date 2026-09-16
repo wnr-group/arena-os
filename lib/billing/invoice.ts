@@ -62,6 +62,7 @@ export class BillingError extends Error {}
  */
 export type AuditActor = { tenantId: string; membershipId: string }
 
+/** Append one durable, append-only row to `audit_log` for `entry`, attributed to `actor`. */
 export async function writeAudit(
   tx: Db,
   actor: AuditActor,

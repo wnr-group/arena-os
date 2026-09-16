@@ -71,6 +71,7 @@ const inputCls =
 /** Whole paise, so no balance is ever compared as a float. */
 const paise = (n: number) => Math.round(round2(n) * 100)
 
+/** Cashier panel for recording one more tender against an invoice and showing the running balance until it settles. */
 export function PaymentPanel({
   settlement,
   wallet,
@@ -175,6 +176,7 @@ export function PaymentPanel({
       : null
   const changeDue = showTendered && tendered !== null && !tenderedError ? round2(tendered - amount) : 0
 
+  /** Validate the pending tender client-side, then record it via recordPayment or payInvoiceFromWallet. */
   function submit() {
     if (settled || pending || amountError || tipError || tenderedError) return
     setError(null)

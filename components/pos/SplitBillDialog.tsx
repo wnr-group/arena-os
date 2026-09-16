@@ -18,6 +18,7 @@ const btn = 'rounded-lg px-3.5 py-2.5 text-sm font-medium transition disabled:cu
 
 type Mode = 'even' | 'seat' | 'item'
 
+/** Modal for splitting a restaurant bill into independent checks (even/by-seat/by-item), with a live preview before committing. */
 export function SplitBillDialog({
   bookingId,
   items,
@@ -92,6 +93,7 @@ export function SplitBillDialog({
       ? { compAmount, compReason: compReason.trim() }
       : {}
 
+  /** Ask the server for a read-only preview of the current mode/comp inputs, without committing anything. */
   function runPreview() {
     setPreviewError(null)
     setPreview(null)
@@ -120,6 +122,7 @@ export function SplitBillDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode])
 
+  /** Validate the comp reason (if any), then commit the split via issueSplitBill. */
   function confirm() {
     if (pending) return
     if (compReasonMissing) {

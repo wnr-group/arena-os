@@ -8,6 +8,7 @@ import { BillScreen } from '@/components/pos/BillScreen'
 /** Matches a UUID, so a junk id 404s instead of erroring in the query. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** Server page for /pos/[bookingId] — loads the billable booking and renders BillScreen with every display-only flag it needs. */
 export default async function PosBillPage({
   params,
 }: {
