@@ -7,6 +7,7 @@ import {
   workingHours,
   bookings,
   bookingSlots,
+  taxRates,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { addDays, zonedTimeToUtc } from './time'
@@ -14,9 +15,31 @@ import { addDays, zonedTimeToUtc } from './time'
 // Re-exported so every existing `@/lib/booking/data` import site is unchanged.
 export { addDays }
 
+/** Resource types joined with their (optional) tax rate — same shape as listMenuItems. */
 export function listResourceTypes(ctx: ActiveContext) {
   return withUser(ctx.user.id, (tx) =>
-    tx.select().from(resourceTypes).where(eq(resourceTypes.tenantId, ctx.tenant.id)).orderBy(asc(resourceTypes.name)),
+    tx
+      .select({
+        id: resourceTypes.id,
+        tenantId: resourceTypes.tenantId,
+        name: resourceTypes.name,
+        description: resourceTypes.description,
+        hourlyRate: resourceTypes.hourlyRate,
+        bufferMinutes: resourceTypes.bufferMinutes,
+        capacity: resourceTypes.capacity,
+        color: resourceTypes.color,
+        imageUrl: resourceTypes.imageUrl,
+        taxRateId: resourceTypes.taxRateId,
+        taxRateName: taxRates.name,
+        taxPercent: taxRates.percent,
+        isActive: resourceTypes.isActive,
+        createdAt: resourceTypes.createdAt,
+        updatedAt: resourceTypes.updatedAt,
+      })
+      .from(resourceTypes)
+      .leftJoin(taxRates, eq(taxRates.id, resourceTypes.taxRateId))
+      .where(eq(resourceTypes.tenantId, ctx.tenant.id))
+      .orderBy(asc(resourceTypes.name)),
   )
 }
 

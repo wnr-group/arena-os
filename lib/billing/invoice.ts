@@ -179,6 +179,7 @@ export async function loadBookingLines(
       rateApplied: bookingSlots.rateApplied,
       resourceName: bookingSlots.resourceName,
       resourceTypeName: bookingSlots.resourceTypeName,
+      taxRatePercent: bookingSlots.taxRatePercent,
     })
     .from(bookingSlots)
     .where(
@@ -196,12 +197,11 @@ export async function loadBookingLines(
     sourceId: s.id,
     qty: durationHours(s.startsAt, s.endsAt),
     unitPrice: Number(s.rateApplied),
-    // No tax rate source exists yet: `tax_rates` is unbuilt (docs/DATA-MODEL.md
-    // "M1 — Settings") and `resource_types` carries no tax column, so there is
-    // nothing to read a percentage from. 0 keeps the arithmetic honest instead
-    // of inventing a rate. Once tax_rates lands, resolve it here — priceBill
-    // already does the whole multi-rate CGST/SGST split.
-    taxPercent: 0,
+    // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
+    // priceBookingSlots) from the resource type's own tax rate — same
+    // discipline rate_applied already uses. 0 means no 'resources'/'both'
+    // tax rate was configured for that type at booking time.
+    taxPercent: Number(s.taxRatePercent),
   }))
 }
 

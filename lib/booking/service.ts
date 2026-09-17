@@ -9,12 +9,13 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
 import { durationHours } from './availability'
 import { todayInZone } from './time'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
 import { getInvoiceSettlement } from '@/lib/billing/payments'
+import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -45,6 +46,7 @@ export type PricedBookingSlot = {
   slotTotal: string
   resourceName: string
   resourceTypeName: string
+  taxRatePercent: string
 }
 
 /**
@@ -75,9 +77,15 @@ export async function priceBookingSlots(
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       rateOverride: resources.hourlyRateOverride,
+      // Only a rate with appliesTo 'resources' or 'both' can ever be set here
+      // (enforced in lib/actions/resources.ts), so no re-check is needed at
+      // read time — unlike menu items, which snapshot from a live join too
+      // but read whatever's on the row unconditionally (loadFoodLines).
+      taxPercent: taxRates.percent,
     })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .leftJoin(taxRates, eq(taxRates.id, resourceTypes.taxRateId))
     .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, ids)))
 
   const byId = new Map(rows.map((r) => [r.id, r]))
@@ -85,6 +93,14 @@ export async function priceBookingSlots(
   for (const r of rows) {
     if (r.branchId !== input.branchId) throw new BookingError('A resource belongs to a different branch.')
   }
+
+  // Resource types with no tax_rate_id of their own fall back to the
+  // tenant's sole active 'resources'/'both' rate, if unambiguous — see
+  // resolveScopeDefaultTaxPercent. Skipped when every resource already has
+  // its own rate.
+  const defaultResourcesTaxPercent = rows.some((r) => r.taxPercent === null)
+    ? await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')
+    : null
 
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
@@ -102,6 +118,7 @@ export async function priceBookingSlots(
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
+      taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
     }
   })
 

@@ -8,7 +8,14 @@ import { upsertTaxRate, deleteTaxRate } from '@/lib/actions/tax-rates'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
-type TaxRateRow = { id: string; name: string; percent: string; isActive: boolean }
+type TaxRateApplies = 'food' | 'resources' | 'both'
+type TaxRateRow = { id: string; name: string; percent: string; appliesTo: TaxRateApplies; isActive: boolean }
+
+const APPLIES_TO_LABELS: Record<TaxRateApplies, string> = {
+  food: 'Food',
+  resources: 'Resources',
+  both: 'Both',
+}
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TaxRateRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
 
@@ -97,6 +104,7 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
               <tr>
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Rate</th>
+                <th className="px-4 py-3 font-medium">Applies to</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
@@ -104,7 +112,7 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
             <tbody className="divide-y divide-border">
               {taxRates.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No tax rates yet. Add one to get started.
                   </td>
                 </tr>
@@ -113,6 +121,7 @@ export function TaxRatesManager({ taxRates }: { taxRates: TaxRateRow[] }) {
                 <tr key={row.id} className="transition hover:bg-muted/20">
                   <td className="px-4 py-3 font-medium">{row.name}</td>
                   <td className="px-4 py-3 text-muted-foreground">{row.percent}%</td>
+                  <td className="px-4 py-3 text-muted-foreground">{APPLIES_TO_LABELS[row.appliesTo]}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -187,6 +196,7 @@ function TaxRateModal({
 }) {
   const [name, setName] = useState(row?.name ?? '')
   const [percent, setPercent] = useState(row?.percent ?? '')
+  const [appliesTo, setAppliesTo] = useState<TaxRateApplies>(row?.appliesTo ?? 'food')
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
   const [submitted, setSubmitted] = useState(false)
 
@@ -214,6 +224,7 @@ function TaxRateModal({
           id: row?.id,
           name: name.trim(),
           percent: Number(percent),
+          appliesTo,
           isActive,
         }),
       onClose,
@@ -260,6 +271,18 @@ function TaxRateModal({
               onChange={(e) => setPercent(e.target.value)}
             />
             {submitted && errors.percent && <p className={errorText}>{errors.percent}</p>}
+          </div>
+          <div>
+            <label className={label}>Applies to</label>
+            <select
+              className={input}
+              value={appliesTo}
+              onChange={(e) => setAppliesTo(e.target.value as TaxRateApplies)}
+            >
+              <option value="food">Food (menu items)</option>
+              <option value="resources">Resources (bookable devices, rooms, tables…)</option>
+              <option value="both">Both</option>
+            </select>
           </div>
           <label className="flex items-center gap-2 text-base">
             <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />

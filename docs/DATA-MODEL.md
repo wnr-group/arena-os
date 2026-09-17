@@ -77,7 +77,7 @@ RLS: member `select`; owner `update`.
 ## Resources & booking `[built]`
 
 ### `resource_types` `[T]`
-`id` · `tenant_id` · `name` · `description` · `hourly_rate numeric(10,2)` · `buffer_minutes int` · `capacity int null` · `color text` · `is_active boolean` · timestamps. Unique `(tenant_id, name)`.
+`id` · `tenant_id` · `name` · `description` · `hourly_rate numeric(10,2)` · `buffer_minutes int` · `capacity int null` · `color text` · `tax_rate_id → tax_rates null` · `is_active boolean` · timestamps. Unique `(tenant_id, name)`.
 
 ### `resources` `[T/B]`
 `id` · `tenant_id` · `branch_id not null` · `resource_type_id → resource_types` · `name` · `hourly_rate_override numeric null` · `status resource_status` · `sort_order int` · timestamps. Unique `(tenant_id, name)`.
@@ -89,7 +89,7 @@ RLS: member `select`; owner `update`.
 `id` · `tenant_id` · `branch_id` · `booking_number text` · `customer_name/phone/email` (snapshot) · `status booking_status` · `source booking_source` · `subtotal/discount/tax/total/deposit numeric` · `notes` · `created_by → memberships null` · timestamps · `checked_in_at/completed_at/cancelled_at`. Unique `(tenant_id, booking_number)`. *(M1 adds `customer_id → customers`.)*
 
 ### `booking_slots` `[T]`
-`id` · `tenant_id` · `booking_id → bookings on delete cascade` · `resource_id → resources` · `starts_at timestamptz` · `ends_at timestamptz` · `rate_applied` · `slot_total` · `resource_name`/`resource_type_name` (snapshot) · `active boolean`.
+`id` · `tenant_id` · `booking_id → bookings on delete cascade` · `resource_id → resources` · `starts_at timestamptz` · `ends_at timestamptz` · `rate_applied` · `slot_total` · `tax_rate_percent numeric(5,2)` (snapshot, 0 = no resources tax configured) · `resource_name`/`resource_type_name` (snapshot) · `active boolean`.
 **Exclusion constraint** `exclude using gist (resource_id with =, tstzrange(starts_at,ends_at) with &&) where (active)` → no overlapping active slot on a resource. Trigger syncs `active` from booking status.
 
 **Enums:** `resource_status(available|maintenance|inactive)`, `booking_status(confirmed|checked_in|completed|cancelled|no_show)`, `booking_source(walk_in|staff|online)`.
@@ -131,7 +131,7 @@ RLS: member `select`, **owner/manager write** via `auth_is_manager()`. Append-on
 `id` · `tenant_id` · `code text` · `discount_type(percentage|fixed)` · `discount_value numeric` · `valid_from/valid_until timestamptz` · `max_uses int null` · `uses int default 0` · `is_active boolean` · timestamps. Unique `(tenant_id, upper(code))`.
 
 ### `tax_rates` `[T]`
-`id` · `tenant_id` · `name text` · `percent numeric(5,2)` · `is_active boolean` · timestamps.
+`id` · `tenant_id` · `name text` · `percent numeric(5,2)` · `applies_to tax_rate_applies_to(food|resources|both)` (gates the tax-rate picker on menu items and resource types) · `is_active boolean` · timestamps.
 
 ### `sequences` `[T]` `[built]`  (per-tenant human numbers)
 `tenant_id` · `kind text(booking|invoice|kot)` (CHECK) · `period text` (e.g. YYYYMMDD or YYYY, `-` for never-resetting) · `value int >= 0`. PK `(tenant_id, kind, period)` — an upsert on that key is what serialises the increment, giving gap-free per-scope numbering. RLS tenant-scoped; granted `select, insert, update` (a counter is reset by writing 0, never deleted).

@@ -8,6 +8,7 @@ import {
   listModifierGroups,
   listMenuItemModifierGroupLinks,
 } from '@/lib/menu/data'
+import { findScopeDefaultTaxRate } from '@/lib/tax-rates/resolve'
 import { MenuItemsManager } from '@/components/settings/MenuItemsManager'
 
 export default async function MenuItemsPage() {
@@ -38,6 +39,11 @@ export default async function MenuItemsPage() {
     ;(itemModifierGroupIds[link.menuItemId] ??= []).push(link.groupId)
   }
 
+  // The rate an item with no tax_rate_id of its own actually gets charged at
+  // (lib/tax-rates/resolve.ts) — shown in the table so "—" never means "not
+  // taxed" when it's really "taxed via the tenant's one food rate."
+  const autoFoodTaxRate = findScopeDefaultTaxRate(taxRates, 'food')
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold">Menu Items</h1>
@@ -47,7 +53,12 @@ export default async function MenuItemsPage() {
       <MenuItemsManager
         currency={ctx.tenant.currency}
         categories={categories.map((c) => ({ id: c.id, name: c.name, isActive: c.isActive }))}
-        taxRates={taxRates.map((t) => ({ id: t.id, name: t.name, percent: t.percent }))}
+        taxRates={taxRates.map((t) => ({ id: t.id, name: t.name, percent: t.percent, appliesTo: t.appliesTo }))}
+        autoTaxRate={
+          autoFoodTaxRate
+            ? { id: autoFoodTaxRate.id, name: autoFoodTaxRate.name, percent: autoFoodTaxRate.percent }
+            : null
+        }
         items={items.map((i) => ({
           id: i.id,
           name: i.name,

@@ -39,7 +39,7 @@ function fileNameFromUrl(url: string): string {
 }
 
 type CategoryRow = { id: string; name: string; isActive: boolean }
-type TaxRateRow = { id: string; name: string; percent: string }
+type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food' | 'resources' | 'both' }
 type ItemStatus = 'available' | 'out_of_stock' | 'hidden'
 type ItemRow = {
   id: string
@@ -73,6 +73,16 @@ const STATUS_LABELS: Record<ItemStatus, string> = {
   out_of_stock: 'Out of stock',
   hidden: 'Hidden',
 }
+/** An item with no tax_rate_id of its own is still taxed when the tenant has
+ *  exactly one eligible rate (see lib/tax-rates/resolve.ts) — surfaces that
+ *  rate's name instead of a blank "—" that reads as untaxed. */
+function effectiveTaxLabel(
+  taxRateName: string | null,
+  autoTaxRate: { id: string; name: string; percent: string } | null,
+): string | null {
+  return taxRateName ?? autoTaxRate?.name ?? null
+}
+
 const STATUS_BADGE: Record<ItemStatus, string> = {
   available: 'bg-emerald-500/10 text-emerald-600',
   out_of_stock: 'bg-amber-500/10 text-amber-600',
@@ -86,6 +96,7 @@ export function MenuItemsManager({
   currency,
   categories,
   taxRates,
+  autoTaxRate = null,
   items,
   modifierGroups = [],
   itemModifierGroupIds = {},
@@ -94,6 +105,11 @@ export function MenuItemsManager({
   currency: string
   categories: CategoryRow[]
   taxRates: TaxRateRow[]
+  /** The rate an item with no tax_rate_id of its own actually gets charged at
+   *  (lib/tax-rates/resolve.ts's findScopeDefaultTaxRate) — null when zero or
+   *  more than one eligible rate exists, in which case an unassigned item is
+   *  genuinely untaxed and must be assigned explicitly. */
+  autoTaxRate?: { id: string; name: string; percent: string } | null
   items: ItemRow[]
   /** Every modifier group the tenant has defined (M17 #8) — offered as a
    *  checkbox multi-select in ItemModal. Empty until Menu → Modifiers has
@@ -319,6 +335,7 @@ export function MenuItemsManager({
               key={row.id}
               row={row}
               currency={currency}
+              autoTaxRate={autoTaxRate}
               pending={pending}
               deleting={deletingId === row.id}
               toggling={togglingId === row.id}
@@ -358,7 +375,7 @@ export function MenuItemsManager({
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{row.categoryName}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatMoney(row.price, currency)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{row.taxRateName ?? '—'}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{effectiveTaxLabel(row.taxRateName, autoTaxRate) ?? '—'}</td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[row.status]}`}>
                         {STATUS_LABELS[row.status]}
@@ -414,6 +431,7 @@ export function MenuItemsManager({
           row={modal.mode === 'edit' ? modal.row : undefined}
           categories={categories}
           taxRates={taxRates}
+          autoTaxRate={autoTaxRate}
           currency={currency}
           pending={pending}
           run={run}
@@ -539,6 +557,7 @@ function ItemCardBody({
 function ItemCard({
   row,
   currency,
+  autoTaxRate,
   pending,
   deleting,
   toggling,
@@ -548,6 +567,7 @@ function ItemCard({
 }: {
   row: ItemRow
   currency: string
+  autoTaxRate: { id: string; name: string; percent: string } | null
   pending: boolean
   deleting: boolean
   toggling: boolean
@@ -608,7 +628,7 @@ function ItemCard({
         price={row.price}
         currency={currency}
         description={row.description}
-        taxLabel={row.taxRateName}
+        taxLabel={effectiveTaxLabel(row.taxRateName, autoTaxRate)}
       />
     </div>
   )
@@ -618,6 +638,7 @@ function ItemModal({
   row,
   categories,
   taxRates,
+  autoTaxRate,
   currency,
   pending,
   run,
@@ -629,6 +650,7 @@ function ItemModal({
   row?: ItemRow
   categories: CategoryRow[]
   taxRates: TaxRateRow[]
+  autoTaxRate: { id: string; name: string; percent: string } | null
   currency: string
   pending: boolean
   run: Run
@@ -641,7 +663,11 @@ function ItemModal({
   const [description, setDescription] = useState(row?.description ?? '')
   const [categoryId, setCategoryId] = useState(row?.categoryId ?? categories.find((c) => c.isActive)?.id ?? '')
   const [price, setPrice] = useState(row?.price ?? '')
-  const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? '')
+  // Falls back to the tenant's auto-applied default (if any) so the dropdown
+  // shows what's actually being charged — matching the table's Tax column —
+  // instead of sitting on "No tax" for an item that's really being taxed via
+  // the implicit scope default (lib/tax-rates/resolve.ts).
+  const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? autoTaxRate?.id ?? '')
   const [status, setStatus] = useState<ItemStatus>(row?.status ?? 'available')
   const [sortOrder, setSortOrder] = useState(String(row?.sortOrder ?? 0))
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
@@ -657,11 +683,19 @@ function ItemModal({
 
   const previewCategoryName = categories.find((c) => c.id === categoryId)?.name
   const selectedTax = taxRates.find((t) => t.id === taxRateId)
-  const previewTaxLabel = selectedTax ? `${selectedTax.name} · ${selectedTax.percent}%` : null
+  const previewTaxLabel = selectedTax
+    ? `${selectedTax.name} · ${selectedTax.percent}%`
+    : autoTaxRate
+      ? `${autoTaxRate.name} · ${autoTaxRate.percent}%`
+      : null
   // Retired categories can't be picked for new/other items, but stay in the
   // list if this item is currently in one — otherwise the select would
   // silently reassign it on save.
   const selectableCategories = categories.filter((c) => c.isActive || c.id === categoryId)
+  // A rate scoped to 'resources' only isn't valid on a menu item — the server
+  // rejects it too (lib/actions/menu.ts) — but keep the current selection
+  // visible even if it no longer qualifies, same as selectableCategories above.
+  const selectableTaxRates = taxRates.filter((t) => t.appliesTo !== 'resources' || t.id === taxRateId)
 
   const errors = useMemo(() => {
     const e: { name?: string; description?: string; categoryId?: string; price?: string; sortOrder?: string } = {}
@@ -806,7 +840,7 @@ function ItemModal({
                 <label className={label}>Tax rate</label>
                 <select className={input} value={taxRateId} onChange={(e) => setTaxRateId(e.target.value)}>
                   <option value="">No tax</option>
-                  {taxRates.map((t) => (
+                  {selectableTaxRates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name} ({t.percent}%)
                     </option>

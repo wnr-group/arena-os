@@ -32,6 +32,7 @@ import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
+import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -177,6 +178,14 @@ export async function createOrderCore(
 
   const byId = new Map(rows.map((r) => [r.id, r]))
   if (byId.size !== ids.length) throw new OrderError('One or more menu items were not found.')
+
+  // Items with no tax_rate_id of their own fall back to the tenant's sole
+  // active 'food'/'both' rate, if unambiguous — see resolveScopeDefaultTaxPercent.
+  // Skipped entirely when every item already has its own rate, which is the
+  // common case once a tenant has started assigning rates per item.
+  const defaultFoodTaxPercent = rows.some((r) => r.taxPercent === null)
+    ? await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'food')
+    : null
 
   // The true authority, not just a UI filter: the picker (TakeOrderDialog)
   // already hides 'hidden' items and shows 'out_of_stock' ones disabled, but
@@ -411,7 +420,7 @@ export async function createOrderCore(
         menuItemId: i.menuItemId,
         itemName: m.name,
         unitPrice: unitPrice.toFixed(2),
-        taxRate: Number(m.taxPercent ?? 0).toFixed(2),
+        taxRate: Number(m.taxPercent ?? defaultFoodTaxPercent ?? 0).toFixed(2),
         qty: i.qty,
         lineTotal: (unitPrice * i.qty).toFixed(2),
         specialInstructions: i.specialInstructions || null,

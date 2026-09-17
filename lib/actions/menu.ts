@@ -129,11 +129,14 @@ export async function upsertMenuItem(input: z.input<typeof menuItemInput>): Prom
 
       if (v.taxRateId) {
         const [taxRate] = await tx
-          .select({ id: taxRates.id })
+          .select({ id: taxRates.id, appliesTo: taxRates.appliesTo })
           .from(taxRates)
           .where(and(eq(taxRates.id, v.taxRateId), eq(taxRates.tenantId, ctx.tenant.id)))
           .limit(1)
         if (!taxRate) throw new AuthError('Choose a tax rate from this menu.')
+        if (taxRate.appliesTo === 'resources') {
+          throw new AuthError('That tax rate only applies to resources, not food.')
+        }
       }
 
       const values = {

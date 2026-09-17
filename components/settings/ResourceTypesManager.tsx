@@ -27,8 +27,11 @@ type TypeRow = {
   capacity: number | null
   color: string | null
   imageUrl: string | null
+  taxRateId: string | null
+  taxRateName: string | null
   isActive: boolean
 }
+type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food' | 'resources' | 'both' }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TypeRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
 
@@ -39,6 +42,16 @@ const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
   'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+
+/** A type with no tax_rate_id of its own is still taxed when the tenant has
+ *  exactly one eligible rate (see lib/tax-rates/resolve.ts) — surfaces that
+ *  rate's name instead of a blank "—" that reads as untaxed. */
+function effectiveTaxLabel(
+  taxRateName: string | null,
+  autoTaxRate: { id: string; name: string; percent: string } | null,
+): string | null {
+  return taxRateName ?? autoTaxRate?.name ?? null
+}
 
 function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number }) {
   return imageUrl ? (
@@ -63,10 +76,17 @@ function Thumb({ imageUrl, size = 44 }: { imageUrl: string | null; size?: number
 export function ResourceTypesManager({
   currency,
   types,
+  taxRates,
+  autoTaxRate = null,
   industry,
 }: {
   currency: string
   types: TypeRow[]
+  taxRates: TaxRateRow[]
+  /** The rate a type with no tax_rate_id of its own actually gets charged at
+   *  (lib/tax-rates/resolve.ts's findScopeDefaultTaxRate) — null when zero or
+   *  more than one eligible rate exists. */
+  autoTaxRate?: { id: string; name: string; percent: string } | null
   /** Gates the simplified name/capacity-only form in TypeModal — restaurant
    *  tenants only, every other industry's dialog is unaffected. */
   industry: string
@@ -77,9 +97,9 @@ export function ResourceTypesManager({
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   // A table isn't priced by the hour (see TypeModal), so there's nothing
-  // meaningful to show in a Rate column for a restaurant tenant.
+  // meaningful to show in a Rate/Tax column for a restaurant tenant.
   const isRestaurant = industry === 'restaurant'
-  const columnCount = isRestaurant ? 3 : 4
+  const columnCount = isRestaurant ? 3 : 5
 
   /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
@@ -144,6 +164,7 @@ export function ResourceTypesManager({
               <tr>
                 <th className="px-4 py-3 font-medium">Type</th>
                 {!isRestaurant && <th className="px-4 py-3 font-medium">Rate</th>}
+                {!isRestaurant && <th className="px-4 py-3 font-medium">Tax</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
@@ -178,6 +199,9 @@ export function ResourceTypesManager({
                   </td>
                   {!isRestaurant && (
                     <td className="px-4 py-3 text-muted-foreground">{formatMoney(row.hourlyRate, currency)}/hr</td>
+                  )}
+                  {!isRestaurant && (
+                    <td className="px-4 py-3 text-muted-foreground">{effectiveTaxLabel(row.taxRateName, autoTaxRate) ?? '—'}</td>
                   )}
                   <td className="px-4 py-3">
                     <span
@@ -219,6 +243,8 @@ export function ResourceTypesManager({
           row={modal.mode === 'edit' ? modal.row : undefined}
           currency={currency}
           industry={industry}
+          taxRates={taxRates}
+          autoTaxRate={autoTaxRate}
           pending={pending}
           run={run}
           onClose={() => setModal(null)}
@@ -314,6 +340,8 @@ function TypeModal({
   row,
   currency,
   industry,
+  taxRates,
+  autoTaxRate,
   pending,
   run,
   onClose,
@@ -321,12 +349,14 @@ function TypeModal({
   row?: TypeRow
   currency: string
   industry: string
+  taxRates: TaxRateRow[]
+  autoTaxRate: { id: string; name: string; percent: string } | null
   pending: boolean
   run: Run
   onClose: () => void
 }) {
   // Restaurant tenants only: a table isn't priced by the hour, doesn't need
-  // a buffer/color/photo, and is active the moment it's created — so the
+  // a buffer/color/photo/tax, and is active the moment it's created — so the
   // dialog collects only what actually matters for a table, name and seat
   // count. Every other field still submits (upsertResourceType/the schema
   // are unchanged) — it just keeps its default value since its input never
@@ -338,6 +368,11 @@ function TypeModal({
   const [buffer, setBuffer] = useState(String(row?.bufferMinutes ?? 0))
   const [capacity, setCapacity] = useState(row?.capacity ? String(row.capacity) : '')
   const [color, setColor] = useState(row?.color ?? '')
+  // Falls back to the tenant's auto-applied default (if any) so the dropdown
+  // shows what's actually being charged — matching the table's Tax column —
+  // instead of sitting on "No tax" for a type that's really being taxed via
+  // the implicit scope default (lib/tax-rates/resolve.ts).
+  const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? autoTaxRate?.id ?? '')
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
   const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
@@ -359,6 +394,11 @@ function TypeModal({
     return e
   }, [name, description, rate, buffer, capacity])
   const isValid = Object.keys(errors).length === 0
+  // A rate scoped to 'food' only isn't valid on a resource type — the server
+  // rejects it too (lib/actions/resources.ts) — but keep the current
+  // selection visible even if it no longer qualifies, same as
+  // MenuItemsManager's selectableTaxRates.
+  const selectableTaxRates = taxRates.filter((t) => t.appliesTo !== 'food' || t.id === taxRateId)
 
   useBodyScrollLock()
 
@@ -393,6 +433,7 @@ function TypeModal({
           capacity: capacity === '' ? undefined : Number(capacity),
           color,
           imageUrl,
+          taxRateId: taxRateId || null,
           isActive,
         }),
       () => {
@@ -539,6 +580,17 @@ function TypeModal({
                       onChange={(e) => setColor(e.target.value)}
                     />
                   </div>
+                </div>
+                <div>
+                  <label className={label}>Tax rate</label>
+                  <select className={input} value={taxRateId} onChange={(e) => setTaxRateId(e.target.value)}>
+                    <option value="">No tax</option>
+                    {selectableTaxRates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.percent}%)
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />

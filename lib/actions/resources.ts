@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resourceTypes, resources, workingHours } from '@/db/schema'
+import { resourceTypes, resources, workingHours, taxRates } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
@@ -47,6 +47,7 @@ const resourceTypeInput = z.object({
   capacity: z.coerce.number().int().positive().optional(),
   color: z.string().trim().optional(),
   imageUrl: z.string().trim().optional(),
+  taxRateId: z.string().uuid().nullable().optional(),
   isActive: z.boolean().default(true),
 })
 
@@ -57,6 +58,21 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
     const newImageUrl = v.imageUrl || null
     let oldImageUrl: string | null = null
     await withUser(ctx.user.id, async (tx) => {
+      // taxRateId is a foreign key but not tenant-composite at the DB level —
+      // re-check ownership + scope in this transaction, same discipline
+      // upsertMenuItem (lib/actions/menu.ts) uses for its own taxRateId.
+      if (v.taxRateId) {
+        const [taxRate] = await tx
+          .select({ id: taxRates.id, appliesTo: taxRates.appliesTo })
+          .from(taxRates)
+          .where(and(eq(taxRates.id, v.taxRateId), eq(taxRates.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (!taxRate) throw new AuthError('Choose a tax rate from this menu.')
+        if (taxRate.appliesTo === 'food') {
+          throw new AuthError('That tax rate only applies to food, not resources.')
+        }
+      }
+
       const values = {
         tenantId: ctx.tenant.id,
         name: v.name,
@@ -66,6 +82,7 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         capacity: v.capacity ?? null,
         color: v.color || null,
         imageUrl: newImageUrl,
+        taxRateId: v.taxRateId || null,
         isActive: v.isActive,
       }
       if (v.id) {

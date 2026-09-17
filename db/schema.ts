@@ -25,6 +25,7 @@ import {
   index,
   primaryKey,
   foreignKey,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 
 // ── enums ────────────────────────────────────────────────────────────────────
@@ -158,6 +159,10 @@ export const resourceTypes = pgTable(
     capacity: integer('capacity'),
     color: text('color'),
     imageUrl: text('image_url'),
+    // Migration 0092 — mirrors menuItems.taxRateId's FK shape (nullable, SET
+    // NULL on delete). Only a rate with appliesTo 'resources' or 'both' may be
+    // assigned here; enforced in lib/actions/resources.ts, not by the FK.
+    taxRateId: uuid('tax_rate_id').references((): AnyPgColumn => taxRates.id, { onDelete: 'set null' }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -304,6 +309,13 @@ export const bookingSlots = pgTable(
     endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
     rateApplied: numeric('rate_applied', { precision: 10, scale: 2 }).notNull().default('0'),
     slotTotal: numeric('slot_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    // Migration 0092 — snapshot of the resource type's tax rate at booking
+    // time, same discipline as rateApplied/resourceName/resourceTypeName
+    // above and orderItems.taxRate for food: never re-derived from live
+    // config on read, so a rate change tomorrow can't reprice a booking taken
+    // today. 0 (the default) means "no resources tax configured," identical
+    // to the pre-0092 hardcoded behaviour in loadBookingLines.
+    taxRatePercent: numeric('tax_rate_percent', { precision: 5, scale: 2 }).notNull().default('0'),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),
@@ -544,7 +556,14 @@ export const payslips = pgTable(
   ],
 )
 
-// ── tax rates (migration 0009) ───────────────────────────────────────────────
+// ── tax rates (migration 0009; appliesTo added in migration 0092) ────────────
+/** What a tax_rates row is eligible to be attached to (migration 0092) — gates
+ *  the tax-rate picker on menu items ('food'/'both') and resource types
+ *  ('resources'/'both') so an owner can't put a devices-only GST slab on a
+ *  menu item or vice versa. Existing rows default to 'food', since that was
+ *  the only thing a tax rate could be attached to before this column existed. */
+export const taxRateAppliesTo = pgEnum('tax_rate_applies_to', ['food', 'resources', 'both'])
+
 export const taxRates = pgTable(
   'tax_rates',
   {
@@ -554,6 +573,7 @@ export const taxRates = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     percent: numeric('percent', { precision: 5, scale: 2 }).notNull(),
+    appliesTo: taxRateAppliesTo('applies_to').notNull().default('food'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
