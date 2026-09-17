@@ -389,8 +389,8 @@ async function main() {
   const revenueCsv = toCsv(rowsA, DAILY_REVENUE_CSV_COLUMNS)
   const revenueLines = revenueCsv.trimEnd().split('\r\n')
   check('the revenue export has a header plus one line per row', revenueLines.length === rowsA.length + 1)
-  check('…with the documented columns', revenueLines[0] === 'Day,Branch,Invoices,Gross,Discount,Tax,Net')
-  check('…money at 2dp, unformatted, so a spreadsheet reads it as a number', revenueLines.some((l) => l.includes(',1500.00,100.00,70.00,1470.00')))
+  check('…with the documented columns', revenueLines[0] === 'Day,Branch,Invoices,Gross,Discount,Tax,Service charge,Refunds,Net')
+  check('…money at 2dp, unformatted, so a spreadsheet reads it as a number', revenueLines.some((l) => l.includes(',1500.00,100.00,70.00,0.00,0.00,1470.00')))
 
   console.log('\n── access + infrastructure ──')
   const cashierCtx = ctxFor(A, A.tenantId, 'cashier')

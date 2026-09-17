@@ -4,7 +4,7 @@ import { withUser } from '@/db'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
-import { collectionRatio, paidForKind, paidRevenueFilter, paidRevenueJoins, paymentLocalDay } from './revenue-basis'
+import { cashMovements, movementForKind, movementRefundsOut, movementShareOf } from './revenue-basis'
 import type { CsvColumn } from './csv'
 import type { DateRange } from './date-range'
 
@@ -43,33 +43,43 @@ export type DailyRevenueRow = {
   day: string
   branchId: string
   branchName: string | null
-  /** The collected share of the invoices' subtotal — before discount and tax. */
+  /** The collected share of the invoices' subtotal — before discount and tax,
+   *  net of refunds. */
   gross: number
-  /** The collected share of the invoices' discount. */
+  /** The collected share of the invoices' discount, net of refunds. */
   discount: number
-  /** The collected share of the invoices' tax. */
+  /** The collected share of the invoices' tax, net of refunds. */
   tax: number
-  /** THE FIGURE: rupees actually captured. */
+  /** The collected share of the invoices' service charge, net of refunds. */
+  serviceCharge: number
+  /** THE FIGURE: rupees captured on this day, minus rupees refunded on it. */
   net: number
-  /** Distinct invoices money was taken against. */
+  /** Rupees returned to customers on this day (the size of the day's refunds).
+   *  Already subtracted from `net`; shown so a busy refund day is legible. */
+  refunds: number
+  /** Distinct invoices money moved against (paid or refunded). */
   invoiceCount: number
-  /** `net`, split by what the money was for. The three sum to `net` less
-   *  anything on an invoice with no items to apportion by. */
+  /** `net`, split by what the money was for. The four sum to `net` exactly
+   *  (adjustment lines are counted with food). */
   bookingRevenue: number
   foodRevenue: number
   membershipRevenue: number
+  serviceChargeRevenue: number
 }
 
 export type DailyRevenueTotals = {
   gross: number
   discount: number
   tax: number
+  serviceCharge: number
   net: number
+  refunds: number
   invoiceCount: number
   days: number
   bookingRevenue: number
   foodRevenue: number
   membershipRevenue: number
+  serviceChargeRevenue: number
 }
 
 export class ReportAccessError extends Error {}
@@ -96,20 +106,22 @@ export async function getDailyRevenue(
   // One GROUP BY in Postgres — at most one row per branch per day out.
   const result = await withUser(ctx.user.id, (tx) =>
     tx.execute(sql`
-      select ${paymentLocalDay}::text                     as day,
-             i.branch_id::text                             as branch_id,
-             b.name                                        as branch_name,
-             sum(i.subtotal * ${collectionRatio})::float   as gross,
-             sum(i.discount * ${collectionRatio})::float   as discount,
-             sum(i.tax_total * ${collectionRatio})::float  as tax,
-             sum(p.amount)::float                          as net,
-             count(distinct i.id)::int                     as invoice_count,
-             coalesce(sum(${paidForKind('booking')}), 0)::float    as booking_revenue,
-             coalesce(sum(${paidForKind('food')}), 0)::float       as food_revenue,
-             coalesce(sum(${paidForKind('membership')}), 0)::float as membership_revenue
-      ${paidRevenueJoins}
-       where ${paidRevenueFilter(ctx.tenant.id, range, branchId)}
-       group by ${paymentLocalDay}, i.branch_id, b.name
+      select m.local_day::text                                        as day,
+             m.branch_id::text                                        as branch_id,
+             m.branch_name                                            as branch_name,
+             sum(${movementShareOf(sql`subtotal`)})::float            as gross,
+             sum(${movementShareOf(sql`discount`)})::float            as discount,
+             sum(${movementShareOf(sql`tax_total`)})::float           as tax,
+             sum(${movementShareOf(sql`service_charge`)})::float      as service_charge,
+             sum(m.amount)::float                                     as net,
+             sum(${movementRefundsOut})::float                        as refunds,
+             count(distinct m.invoice_id)::int                        as invoice_count,
+             coalesce(sum(${movementForKind('booking')}), 0)::float        as booking_revenue,
+             coalesce(sum(${movementForKind('food')}), 0)::float           as food_revenue,
+             coalesce(sum(${movementForKind('membership')}), 0)::float     as membership_revenue,
+             coalesce(sum(${movementForKind('service_charge')}), 0)::float as service_charge_revenue
+        from ${cashMovements(ctx.tenant.id, range, branchId)} m
+       group by m.local_day, m.branch_id, m.branch_name
        order by day asc, branch_name asc
     `),
   )
@@ -120,11 +132,14 @@ export async function getDailyRevenue(
     gross: number
     discount: number
     tax: number
+    service_charge: number
     net: number
+    refunds: number
     invoice_count: number
     booking_revenue: number
     food_revenue: number
     membership_revenue: number
+    service_charge_revenue: number
   }[]
 
   return rows.map((r) => ({
@@ -134,11 +149,14 @@ export async function getDailyRevenue(
     gross: round2(Number(r.gross)),
     discount: round2(Number(r.discount)),
     tax: round2(Number(r.tax)),
+    serviceCharge: round2(Number(r.service_charge)),
     net: round2(Number(r.net)),
+    refunds: round2(Number(r.refunds)),
     invoiceCount: Number(r.invoice_count),
     bookingRevenue: round2(Number(r.booking_revenue)),
     foodRevenue: round2(Number(r.food_revenue)),
     membershipRevenue: round2(Number(r.membership_revenue)),
+    serviceChargeRevenue: round2(Number(r.service_charge_revenue)),
   }))
 }
 
@@ -151,19 +169,23 @@ export async function getDailyRevenue(
  */
 export function sumDailyRevenue(rows: readonly DailyRevenueRow[]): DailyRevenueTotals {
   const totals = {
-    gross: 0, discount: 0, tax: 0, net: 0, invoiceCount: 0, days: 0,
-    bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0,
+    gross: 0, discount: 0, tax: 0, serviceCharge: 0, net: 0, refunds: 0,
+    invoiceCount: 0, days: 0,
+    bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0, serviceChargeRevenue: 0,
   }
   const days = new Set<string>()
   for (const r of rows) {
     totals.gross += r.gross
     totals.discount += r.discount
     totals.tax += r.tax
+    totals.serviceCharge += r.serviceCharge
     totals.net += r.net
+    totals.refunds += r.refunds
     totals.invoiceCount += r.invoiceCount
     totals.bookingRevenue += r.bookingRevenue
     totals.foodRevenue += r.foodRevenue
     totals.membershipRevenue += r.membershipRevenue
+    totals.serviceChargeRevenue += r.serviceChargeRevenue
     days.add(r.day)
   }
   totals.days = days.size
@@ -174,10 +196,13 @@ export function sumDailyRevenue(rows: readonly DailyRevenueRow[]): DailyRevenueT
     gross: round2(totals.gross),
     discount: round2(totals.discount),
     tax: round2(totals.tax),
+    serviceCharge: round2(totals.serviceCharge),
     net: round2(totals.net),
+    refunds: round2(totals.refunds),
     bookingRevenue: round2(totals.bookingRevenue),
     foodRevenue: round2(totals.foodRevenue),
     membershipRevenue: round2(totals.membershipRevenue),
+    serviceChargeRevenue: round2(totals.serviceChargeRevenue),
   }
 }
 
@@ -195,6 +220,8 @@ export const DAILY_REVENUE_CSV_COLUMNS: readonly CsvColumn<DailyRevenueRow>[] = 
   { header: 'Gross', value: (r) => r.gross.toFixed(2) },
   { header: 'Discount', value: (r) => r.discount.toFixed(2) },
   { header: 'Tax', value: (r) => r.tax.toFixed(2) },
+  { header: 'Service charge', value: (r) => r.serviceCharge.toFixed(2) },
+  { header: 'Refunds', value: (r) => r.refunds.toFixed(2) },
   { header: 'Net', value: (r) => r.net.toFixed(2) },
 ]
 

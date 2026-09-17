@@ -247,6 +247,7 @@ export async function loadInvoiceReceipt(
       customerId: invoices.customerId,
       subtotal: invoices.subtotal,
       discount: invoices.discount,
+      compAmount: invoices.compAmount,
       membershipDiscount: invoices.membershipDiscount,
       membershipDiscountPercent: invoices.membershipDiscountPercent,
       membershipPlanName: invoices.membershipPlanName,
@@ -340,17 +341,22 @@ export async function loadInvoiceReceipt(
 
   // The promo's share of `discount`. The invoice snapshots WHICH code was
   // honoured but not what it took off, because a promo is never an amount
-  // alongside the discount — `discount` is the sum of its parts, and the other
-  // two parts are each stored. Subtracting them leaves the promo's exactly: a
-  // code REPLACES a keyed-in figure rather than stacking with it (step 4b of
-  // issueInvoiceForBooking), so when an invoice cites a code the remainder is
-  // all of it. Subtraction of stored values, in the spirit of the rule at the
-  // top of this file — nothing here is repriced.
+  // alongside the discount — `discount` is the sum of its parts (membership,
+  // loyalty, a manager comp, and the promo), and every other part is stored.
+  // Subtracting them all leaves the promo's exactly: a code REPLACES a keyed-in
+  // figure rather than stacking with it (step 4d of issueInvoiceForBooking), so
+  // when an invoice cites a code the remainder is all of it. The comp
+  // (comp_amount, M18 #5) MUST be subtracted too — otherwise a bill carrying
+  // both a promo and a comp would print the comp on the "Promo" line and
+  // overstate it. Subtraction of stored values — nothing here is repriced.
   const promoDiscount = row.promoCode
     ? Math.max(
         0,
         round2(
-          Number(row.discount) - Number(row.membershipDiscount) - Number(row.loyaltyDiscount),
+          Number(row.discount) -
+            Number(row.membershipDiscount) -
+            Number(row.loyaltyDiscount) -
+            Number(row.compAmount),
         ),
       )
     : 0

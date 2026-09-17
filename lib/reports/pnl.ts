@@ -6,7 +6,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { ReportAccessError } from './daily-revenue'
-import { collectionRatio, paidForKind, paidRevenueFilter, paidRevenueJoins } from './revenue-basis'
+import { cashMovements, movementForKind, movementRefundsOut, movementShareOf } from './revenue-basis'
 import type { DateRange } from './date-range'
 
 /**
@@ -14,13 +14,14 @@ import type { DateRange } from './date-range'
  *
  * ── WHAT EACH LINE READS ────────────────────────────────────────────────────
  *
- *   revenue   public.v_daily_revenue — the AROS-64 security-barrier view, and
- *             only ever that. NEVER mv_daily_revenue: a materialized view does
- *             not enforce RLS, arena_app holds no grant on it (0043), and the
- *             barrier view is what re-applies auth_tenant_ids(). The status
- *             filter the ticket asks for — invoices in ('issued','paid') — is
- *             already baked into the MV, so this reader inherits it and cannot
- *             get it wrong.
+ *   revenue   Captured payments net of refunds, LIVE from `payments` and
+ *             `refunds`, through the shared definition in ./revenue-basis.ts —
+ *             the identical cash-movement basis Revenue & Bookings and the
+ *             sales reports use, so the reports cannot disagree on what revenue
+ *             means. RLS-scoped through withUser() like every other read here.
+ *             It no longer reads mv_daily_revenue / v_daily_revenue at all: that
+ *             snapshot was never refreshed on a schedule, so anything billed
+ *             since the last manual run was silently missing.
  *
  *   expenses  public.expenses, RLS-scoped, filtered on `spent_on`.
  *
@@ -99,18 +100,26 @@ export type PnlExpenseCategoryRow = {
 export type PnlReport = {
   range: DateRange
   revenue: {
-    /** Rupees actually captured in the period — the P&L's income line. */
+    /** Rupees captured in the period minus rupees refunded in it — the P&L's
+     *  income line. */
     net: number
-    /** The collected share of the invoices' subtotal. Context, not the P&L line. */
+    /** The collected share of the invoices' subtotal, net of refunds. Context,
+     *  not the P&L line. `net = gross − discount + tax + serviceCharge`. */
     gross: number
     discount: number
     tax: number
-    /** Distinct invoices money was taken against. */
+    /** The collected share of the invoices' service charge, net of refunds. */
+    serviceCharge: number
+    /** Rupees returned to customers in the period. Already subtracted from `net`. */
+    refunds: number
+    /** Distinct invoices money moved against (paid or refunded). */
     invoiceCount: number
-    /** `net` split by what the money was for. Same basis as Revenue & Bookings. */
+    /** `net` split by what the money was for; the four sum to `net`. Same basis
+     *  as Revenue & Bookings. */
     bookingRevenue: number
     foodRevenue: number
     membershipRevenue: number
+    serviceChargeRevenue: number
   }
   expenses: {
     total: number
@@ -186,27 +195,32 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
     // the sales reports use (./revenue-basis.ts). Nothing here may drift from
     // that file, which is why none of the rules are restated.
     const revenueResult = await tx.execute(sql`
-      select coalesce(sum(i.subtotal * ${collectionRatio}), 0)::float  as gross,
-             coalesce(sum(i.discount * ${collectionRatio}), 0)::float  as discount,
-             coalesce(sum(i.tax_total * ${collectionRatio}), 0)::float as tax,
-             coalesce(sum(p.amount), 0)::float                          as net,
-             count(distinct i.id)::int                                  as invoice_count,
-             coalesce(sum(${paidForKind('booking')}), 0)::float         as booking_revenue,
-             coalesce(sum(${paidForKind('food')}), 0)::float            as food_revenue,
-             coalesce(sum(${paidForKind('membership')}), 0)::float      as membership_revenue
-      ${paidRevenueJoins}
-       where ${paidRevenueFilter(ctx.tenant.id, range)}
+      select coalesce(sum(${movementShareOf(sql`subtotal`)}), 0)::float        as gross,
+             coalesce(sum(${movementShareOf(sql`discount`)}), 0)::float        as discount,
+             coalesce(sum(${movementShareOf(sql`tax_total`)}), 0)::float       as tax,
+             coalesce(sum(${movementShareOf(sql`service_charge`)}), 0)::float  as service_charge,
+             coalesce(sum(m.amount), 0)::float                                  as net,
+             coalesce(sum(${movementRefundsOut}), 0)::float                     as refunds,
+             count(distinct m.invoice_id)::int                                  as invoice_count,
+             coalesce(sum(${movementForKind('booking')}), 0)::float             as booking_revenue,
+             coalesce(sum(${movementForKind('food')}), 0)::float                as food_revenue,
+             coalesce(sum(${movementForKind('membership')}), 0)::float          as membership_revenue,
+             coalesce(sum(${movementForKind('service_charge')}), 0)::float      as service_charge_revenue
+        from ${cashMovements(ctx.tenant.id, range)} m
     `)
     const revenueRow = revenueResult.rows[0] as
       | {
           gross: number
           discount: number
           tax: number
+          service_charge: number
           net: number
+          refunds: number
           invoice_count: number
           booking_revenue: number
           food_revenue: number
           membership_revenue: number
+          service_charge_revenue: number
         }
       | undefined
 
@@ -276,10 +290,13 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         gross: round2(Number(revenueRow?.gross ?? 0)),
         discount: round2(Number(revenueRow?.discount ?? 0)),
         tax: round2(Number(revenueRow?.tax ?? 0)),
+        serviceCharge: round2(Number(revenueRow?.service_charge ?? 0)),
+        refunds: round2(Number(revenueRow?.refunds ?? 0)),
         invoiceCount: Number(revenueRow?.invoice_count ?? 0),
         bookingRevenue: round2(Number(revenueRow?.booking_revenue ?? 0)),
         foodRevenue: round2(Number(revenueRow?.food_revenue ?? 0)),
         membershipRevenue: round2(Number(revenueRow?.membership_revenue ?? 0)),
+        serviceChargeRevenue: round2(Number(revenueRow?.service_charge_revenue ?? 0)),
       },
       expenses: {
         total: expenseTotal,

@@ -5,7 +5,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
-import { lineOwed, paidRevenueFilter, paidRevenueJoins } from './revenue-basis'
+import { cashMovements, lineOwed } from './revenue-basis'
 import type { CsvColumn } from './csv'
 import type { DateRange } from './date-range'
 
@@ -32,7 +32,8 @@ import type { DateRange } from './date-range'
  *   * cancelled orders excluded — never invoiced;
  *   * draft and VOID invoices excluded — same status filter revenue uses, so a
  *     voided bill's food disappears from this report exactly as it disappears
- *     from mv_daily_revenue;
+ *     from the Revenue & Bookings and P&L reports (the shared cash-movement
+ *     basis in ./revenue-basis.ts);
  *   * each sale counted ONCE. Counting `order_items` as well would double every
  *     billed plate, which is precisely the trap this choice avoids;
  *   * the HISTORICAL price, not today's menu price.
@@ -139,18 +140,25 @@ export async function getSalesReport(
     // Each payment is apportioned to a food LINE by that line's share of the
     // whole bill, so a payment settling a mixed booking-and-food invoice
     // contributes to both in proportion and to neither twice.
+    // Movements (payments and refunds) are collapsed to ONE net figure per
+    // invoice first, so joining to invoice_items counts each plate's qty once
+    // — never once per payment/refund — while the money still nets refunds.
     const food = await tx.execute(sql`
-      select ii.description                      as item_name,
-             sum(ii.qty)::float                  as quantity,
-             sum(p.amount * ${lineOwed} / nullif(k.all_lines, 0))::float as gross_revenue,
-             count(distinct i.id)::int           as invoices
-      ${paidRevenueJoins}
+      with inv_net as (
+        select invoice_id, sum(amount) as net_amount, max(all_lines) as all_lines
+          from ${cashMovements(tenantId, range, branchId)} m
+         group by invoice_id
+      )
+      select ii.description                                                  as item_name,
+             sum(ii.qty)::float                                              as quantity,
+             sum(n.net_amount * ${lineOwed} / nullif(n.all_lines, 0))::float as gross_revenue,
+             count(distinct ii.invoice_id)::int                             as invoices
+        from inv_net n
         join public.invoice_items ii
-          on ii.invoice_id = i.id
-         and ii.tenant_id = i.tenant_id
+          on ii.invoice_id = n.invoice_id
+         and ii.tenant_id = ${tenantId}
          and ii.kind = 'food'
-        join public.invoices inv on inv.id = i.id
-       where ${paidRevenueFilter(tenantId, range, branchId)}
+        join public.invoices inv on inv.id = n.invoice_id
        group by ii.description
        order by gross_revenue desc, item_name
     `)
@@ -178,7 +186,12 @@ export async function getSalesReport(
     //             sold on credit therefore counts as sold and earns nothing
     //             until it is paid for.
     const memberships = await tx.execute(sql`
-      with sold as (
+      with inv_net as (
+        select invoice_id, sum(amount) as net_amount, max(all_lines) as all_lines
+          from ${cashMovements(tenantId, range, branchId)} m
+         group by invoice_id
+      ),
+      sold as (
         select cm.plan_id, cm.plan_name,
                count(*)::int as sold,
                count(*) filter (where cm.status = 'cancelled')::int as cancelled
@@ -195,17 +208,16 @@ export async function getSalesReport(
       ),
       collected as (
         select cm.plan_id, cm.plan_name,
-               sum(p.amount * ${lineOwed} / nullif(k.all_lines, 0))::float as revenue
-        ${paidRevenueJoins}
+               sum(n.net_amount * ${lineOwed} / nullif(n.all_lines, 0))::float as revenue
+          from inv_net n
           join public.invoice_items ii
-            on ii.invoice_id = i.id
-           and ii.tenant_id = i.tenant_id
+            on ii.invoice_id = n.invoice_id
+           and ii.tenant_id = ${tenantId}
            and ii.kind = 'membership'
-          join public.invoices inv on inv.id = i.id
+          join public.invoices inv on inv.id = n.invoice_id
           join public.customer_memberships cm
-            on cm.invoice_id = i.id
-           and cm.tenant_id = i.tenant_id
-         where ${paidRevenueFilter(tenantId, range, branchId)}
+            on cm.invoice_id = n.invoice_id
+           and cm.tenant_id = inv.tenant_id
          group by cm.plan_id, cm.plan_name
       )
       select coalesce(s.plan_id, c.plan_id)::text     as plan_id,

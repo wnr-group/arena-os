@@ -3,10 +3,13 @@
  *
  * ── THE RULE ────────────────────────────────────────────────────────────────
  *
- * Revenue is a CAPTURED PAYMENT, dated by when it was captured, apportioned to
- * booking / food / membership by what each line of the bill was owed. An
- * invoice on its own is not revenue: ₹500 billed with ₹0 collected contributes
- * ₹0, with ₹200 collected contributes ₹200, paid in full contributes ₹500.
+ * Revenue is money in NET of money back: a CAPTURED PAYMENT counts on the day
+ * it was taken, a REFUND subtracts on the day it happened, and each is
+ * apportioned to booking / food / membership / service charge by what each line
+ * of the bill was owed. An invoice on its own is not revenue: ₹500 billed with
+ * ₹0 collected contributes ₹0, with ₹200 collected contributes ₹200, paid in
+ * full then ₹200 refunded contributes ₹300 — and the refund lands on the day it
+ * was made, never reaching back to restate the day of the sale.
  *
  * The one definition lives in lib/reports/revenue-basis.ts and is used by
  * Revenue & Bookings, Profit & Loss, and the Food and Membership reports.
@@ -111,6 +114,9 @@ async function main() {
     issuedOn?: string
     lines: { kind: 'booking' | 'food' | 'membership' | 'wallet_topup'; description: string; amount: number; taxPercent?: number }[]
     discount?: number
+    /** Service charge (M18): added after discount, taxed at its own rate,
+     *  folded into tax_total/total but never into subtotal. */
+    serviceCharge?: { amount: number; taxPercent?: number }
     /** Captured tender. Omit for none. */
     paid?: number
     /** When the money was taken. Defaults to the issue instant. */
@@ -120,20 +126,30 @@ async function main() {
     const subtotal = round2(o.lines.reduce((s, l) => s + l.amount, 0))
     const discount = o.discount ?? 0
     // Mirrors priceBill: discount pro rata by line value, then GST per line.
-    const tax = round2(
+    const foodTax = round2(
       o.lines.reduce(
         (s, l) => s + (l.amount - (discount * l.amount) / (subtotal || 1)) * ((l.taxPercent ?? 0) / 100),
         0,
       ),
     )
-    const total = round2(subtotal - discount + tax)
+    // Service charge (M18): after the discount, taxed at its own rate, folded
+    // into tax_total/total but NEVER into subtotal — exactly as
+    // lib/billing/invoice.ts writes it.
+    const scAmount = o.serviceCharge ? round2(o.serviceCharge.amount) : 0
+    const scTaxPercent = o.serviceCharge?.taxPercent ?? 0
+    const scTax = round2((scAmount * scTaxPercent) / 100)
+    const scPercent = subtotal > 0 ? round2((scAmount / subtotal) * 100) : 0
+    const tax = round2(foodTax + scTax)
+    const total = round2(subtotal - discount + tax + scAmount)
     const issuedAt = o.issuedOn ?? ist(DAY, '12:00')
     const inv = await owner.query<{ id: string }>(
       `insert into invoices (tenant_id,branch_id,invoice_number,status,subtotal,discount,
-                             tax_total,total,issued_at)
-       values ($1,$2,$3,$4::invoice_status,$5,$6,$7,$8,$9) returning id`,
+                             tax_total,total,service_charge_amount,service_charge_percent,
+                             service_charge_tax_percent,issued_at)
+       values ($1,$2,$3,$4::invoice_status,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
       [tenantId, branchId, `RC-${seq}`, o.status ?? 'paid', subtotal.toFixed(2),
-       discount.toFixed(2), tax.toFixed(2), total.toFixed(2), issuedAt])
+       discount.toFixed(2), tax.toFixed(2), total.toFixed(2), scAmount.toFixed(2),
+       scPercent.toFixed(2), scTaxPercent.toFixed(2), issuedAt])
     for (const l of o.lines) {
       await owner.query(
         `insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,
@@ -141,6 +157,13 @@ async function main() {
          values ($1,$2,$3,$4,1,$5,$6,$5)`,
         [tenantId, inv.rows[0].id, l.kind, l.description, l.amount.toFixed(2),
          (l.taxPercent ?? 0).toFixed(2)])
+    }
+    if (scAmount > 0) {
+      await owner.query(
+        `insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,
+                                    tax_rate,line_total)
+         values ($1,$2,'service_charge','Service charge',1,$3,$4,$3)`,
+        [tenantId, inv.rows[0].id, scAmount.toFixed(2), scTaxPercent.toFixed(2)])
     }
     let paymentId: string | null = null
     if (o.paid !== undefined && o.paid > 0) {
@@ -236,28 +259,79 @@ async function main() {
     check('a voided bill contributes ₹0 even though ₹700 was captured', d.revenueTotals.net === 0)
   }
 
-  console.log('\n── a refunded payment ──')
+  console.log('\n── refunds net out, dated by when they happen ──')
   {
     await wipe()
     const one = await bill({ lines: [{ kind: 'booking', description: 'refunded in full', amount: 400 }], paid: 400 })
     const two = await bill({ lines: [{ kind: 'booking', description: 'part refunded', amount: 600 }], paid: 600 })
     check('both are revenue to begin with — ₹1000', (await dashboard()).revenueTotals.net === 1000)
 
-    // A FULL refund flips the payment out of 'captured', so it leaves revenue
-    // on its own — the established behaviour, not a rule invented here.
-    await owner.query(
-      `insert into refunds (tenant_id,payment_id,amount,reason) values ($1,$2,'400.00','test')`,
-      [tenantId, one.paymentId])
-    await owner.query(`update payments set status='refunded' where id=$1`, [one.paymentId])
-    check('a fully refunded payment drops out', (await dashboard()).revenueTotals.net === 600)
+    // A refund is money OUT. It nets against revenue on the day it happens.
+    // Refund WITHIN the window, so it counts here.
+    const refundDay = ist(DAY, '18:00')
 
-    // A PARTIAL refund leaves the payment captured at its full amount —
-    // exactly what capturedTotal(), the payment panel and the receipt report.
+    // A FULL refund flips the payment to 'refunded' — the money still came in
+    // on the sale's own day (so the sale is not erased from it), and the refund
+    // subtracts on the refund day. Both are in range, so net falls to ₹600.
     await owner.query(
-      `insert into refunds (tenant_id,payment_id,amount,reason) values ($1,$2,'100.00','test')`,
-      [tenantId, two.paymentId])
-    check('a partial refund does not reduce it — consistent with the till',
-      (await dashboard()).revenueTotals.net === 600)
+      `insert into refunds (tenant_id,payment_id,amount,reason,created_at) values ($1,$2,'400.00','test',$3)`,
+      [tenantId, one.paymentId, refundDay])
+    await owner.query(`update payments set status='refunded' where id=$1`, [one.paymentId])
+    check('a full refund in the window nets the sale out — ₹600', (await dashboard()).revenueTotals.net === 600)
+
+    // A PARTIAL refund leaves the payment captured at its full amount, but the
+    // money returned still leaves the till — so revenue falls by exactly it.
+    await owner.query(
+      `insert into refunds (tenant_id,payment_id,amount,reason,created_at) values ($1,$2,'100.00','test',$3)`,
+      [tenantId, two.paymentId, refundDay])
+    const d = await dashboard()
+    check('a partial refund reduces revenue by the refund — ₹500', d.revenueTotals.net === 500)
+    check('…and the ₹500 returned is reported as refunds', d.revenueTotals.refunds === 500)
+  }
+
+  console.log('\n── a refund lands on the refund day, never the sale day ──')
+  {
+    await wipe()
+    // Sold and paid inside the window; refunded AFTER it. The refund must not
+    // reach back and restate a period that is already closed — the sale still
+    // stands in the window it was made in, and the refund belongs to July.
+    const sale = await bill({ lines: [{ kind: 'booking', description: 'sold in window', amount: 400 }], paid: 400 })
+    await owner.query(
+      `insert into refunds (tenant_id,payment_id,amount,reason,created_at) values ($1,$2,'400.00','later','2040-07-10T06:30:00Z')`,
+      [tenantId, sale.paymentId])
+    await owner.query(`update payments set status='refunded' where id=$1`, [sale.paymentId])
+    check('the in-window sale still counts — ₹400', (await dashboard()).revenueTotals.net === 400)
+  }
+
+  console.log('\n── a service-charge bill reconciles ──')
+  {
+    await wipe()
+    // ₹1000 food @5% GST + a ₹100 service charge taxed @18%.
+    // GST = 50 (food) + 18 (service) = 68; total = 1000 + 68 + 100 = 1168.
+    await bill({
+      lines: [{ kind: 'food', description: 'SC platter', amount: 1000, taxPercent: 5 }],
+      serviceCharge: { amount: 100, taxPercent: 18 },
+      paid: 1168,
+    })
+    const t = (await dashboard()).revenueTotals
+    check('net is the full ₹1168 collected', t.net === 1168)
+    check('gross is the food subtotal only — ₹1000', t.gross === 1000)
+    check('tax includes the service-charge GST — ₹68', t.tax === 68)
+    check('the service charge is reported — ₹100', t.serviceCharge === 100)
+    check(
+      'net === gross − discount + tax + service charge',
+      round2(t.gross - t.discount + t.tax + t.serviceCharge) === t.net,
+    )
+    check(
+      'the four sources add back to net exactly',
+      round2(t.bookingRevenue + t.foodRevenue + t.membershipRevenue + t.serviceChargeRevenue) === t.net,
+    )
+    check('food keeps its own share (1000 + its ₹50 GST)', t.foodRevenue === 1050)
+    check('the service charge is its own ₹118 (100 + ₹18 GST)', t.serviceChargeRevenue === 118)
+
+    const p = await getPnlReport(ctx, RANGE)
+    check('P&L agrees on net — ₹1168', p.revenue.net === 1168)
+    check('…and reports the service charge — ₹100', p.revenue.serviceCharge === 100)
   }
 
   // ══ 2. FOOD ══════════════════════════════════════════════════════════════

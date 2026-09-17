@@ -509,9 +509,15 @@ export type BookingPaymentStatus =
 
 export type BookingPaymentState = {
   status: BookingPaymentStatus
+  /** A representative invoice for the link — the FIRST check of a split, or the
+   *  only invoice otherwise. See `invoiceCount`. */
   invoiceId: string
   invoiceNumber: string
-  /** Rupees, 2dp — the stored invoice total, never recomputed. */
+  /** How many live invoices this booking has. > 1 means a split bill (M18): the
+   *  totals below are the sum across every check, and `invoiceId` links the first. */
+  invoiceCount: number
+  /** Rupees, 2dp — the stored invoice total(s), never recomputed. Summed across
+   *  every check for a split bill. */
   total: number
   paid: number
   balance: number
@@ -598,16 +604,56 @@ export async function listBookingPaymentStates(
       ]),
     )
 
-    const out: Record<string, BookingPaymentState> = {}
+    // A booking may carry MORE THAN ONE live invoice — a split bill (M18)
+    // raises one 'check' per share. Aggregate every check into ONE state for
+    // the booking, so the badge and the totals describe the whole table rather
+    // than whichever check the database happened to return last. Without this
+    // the row previously overwrote per invoice with no ordering, so a
+    // half-settled split reported an arbitrary check as the whole booking.
+    type Agg = {
+      total: number
+      paid: number
+      refunded: number
+      netHeld: number
+      invoiceId: string
+      invoiceNumber: string
+      invoiceCount: number
+    }
+    const byBooking = new Map<string, Agg>()
     for (const inv of invoiceRows) {
       if (!inv.bookingId) continue
       const total = round2(Number(inv.total))
       const paid = paidByInvoice.get(inv.id) ?? 0
       const refundRow = refundedByInvoice.get(inv.id)
       const refunded = refundRow?.total ?? 0
-      // What the business is actually still holding on this bill.
+      // What the business is actually still holding on THIS check.
       const netHeld = round2(paid - (refundRow?.againstHeld ?? 0))
-      const balance = round2(total - paid)
+
+      const acc = byBooking.get(inv.bookingId)
+      if (!acc) {
+        byBooking.set(inv.bookingId, {
+          total, paid, refunded, netHeld,
+          invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, invoiceCount: 1,
+        })
+      } else {
+        acc.total = round2(acc.total + total)
+        acc.paid = round2(acc.paid + paid)
+        acc.refunded = round2(acc.refunded + refunded)
+        acc.netHeld = round2(acc.netHeld + netHeld)
+        acc.invoiceCount += 1
+        // A deterministic representative for the link: the first check, by
+        // invoice number (which increments per check), instead of an arbitrary
+        // row.
+        if (inv.invoiceNumber < acc.invoiceNumber) {
+          acc.invoiceId = inv.id
+          acc.invoiceNumber = inv.invoiceNumber
+        }
+      }
+    }
+
+    const out: Record<string, BookingPaymentState> = {}
+    for (const [bookingId, a] of byBooking) {
+      const balance = round2(a.total - a.paid)
       // paise(), never `>=` on rupees: floats that look equal compare wrong,
       // and this decides whether a bill reads as settled.
       //
@@ -615,22 +661,23 @@ export async function listBookingPaymentStates(
       // the more surprising fact about the bill: "Paid" on a till list that has
       // just handed the money back is the reading worth preventing.
       const status: BookingPaymentStatus =
-        paise(refunded) > 0
-          ? paise(netHeld) <= 0
+        paise(a.refunded) > 0
+          ? paise(a.netHeld) <= 0
             ? 'refunded'
             : 'partially_refunded'
           : paise(balance) <= 0
             ? 'paid'
-            : paise(paid) > 0
+            : paise(a.paid) > 0
               ? 'partially_paid'
               : 'issued'
-      out[inv.bookingId] = {
+      out[bookingId] = {
         status,
-        invoiceId: inv.id,
-        invoiceNumber: inv.invoiceNumber,
-        total,
-        paid,
-        refunded,
+        invoiceId: a.invoiceId,
+        invoiceNumber: a.invoiceNumber,
+        invoiceCount: a.invoiceCount,
+        total: a.total,
+        paid: a.paid,
+        refunded: a.refunded,
         // Never show a negative amount owing — same floor the receipt applies.
         balance: paise(balance) > 0 ? balance : 0,
       }

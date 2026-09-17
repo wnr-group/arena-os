@@ -19,6 +19,7 @@
  *
  * (The server-only hook is required: lib/billing/data.ts is `server-only`.)
  */
+import { randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
 import type { ActiveContext } from '../lib/tenant/context'
 import { loadEnv } from './env'
@@ -283,7 +284,37 @@ async function main() {
       over?.status === 'paid' && over?.balance === 0)
   }
 
-  // ══ 8. batching and isolation ════════════════════════════════════════════
+  // ══ 8. a split bill (M18) — several checks on one booking ═════════════════
+  console.log('\n── a split bill aggregates every check ──')
+  {
+    const bookingId = await makeBooking(A, 1000)
+    const groupId = randomUUID()
+    // Two ₹500 checks sharing one bill_group_id, as issueSplitBillForBooking
+    // writes them. Inserted directly because issueInvoiceForBooking refuses a
+    // second live invoice for a booking.
+    const c1 = await owner.query<{ id: string }>(
+      `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,status,subtotal,
+         tax_total,total,bill_group_id,bill_group_seq)
+       values ($1,$2,$3,$4,'issued','500','0','500',$5,1) returning id`,
+      [A.tenantId, A.branchId, `SP-${++seq}-1`, bookingId, groupId])
+    await owner.query(
+      `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,status,subtotal,
+         tax_total,total,bill_group_id,bill_group_seq)
+       values ($1,$2,$3,$4,'issued','500','0','500',$5,2)`,
+      [A.tenantId, A.branchId, `SP-${seq}-2`, bookingId, groupId])
+    // Settle the first check, leave the second unpaid.
+    await pay(A, c1.rows[0].id, 500)
+
+    const s = await stateOf(A, bookingId)
+    check('one check paid, one unpaid reads "partially_paid" for the booking',
+      s?.status === 'partially_paid')
+    check('…totals are the whole table: ₹1000 billed, ₹500 paid, ₹500 due',
+      s?.total === 1000 && s?.paid === 500 && s?.balance === 500)
+    check('…and it reports 2 checks', s?.invoiceCount === 2)
+    check('…linking the first check deterministically', s?.invoiceNumber === `SP-${seq}-1`)
+  }
+
+  // ══ 9. batching and isolation ════════════════════════════════════════════
   console.log('\n── a whole day at once ──')
   {
     const one = await makeBooking(A, 200)

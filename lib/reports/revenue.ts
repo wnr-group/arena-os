@@ -10,7 +10,7 @@ import { eachDay, type DateRange } from './date-range'
  * The Revenue & Bookings dashboard's data (AROS-65), composed from the two
  * readers rather than from any new query of its own:
  *
- *   revenue  → ./daily-revenue.ts  → v_daily_revenue (the AROS-64 barrier view)
+ *   revenue  → ./daily-revenue.ts  → captured payments net of refunds (revenue-basis.ts)
  *   bookings → ./bookings.ts       → booking_slots / resources / working_hours
  *
  * Both are already tenant-scoped through withUser() and both refuse a
@@ -25,13 +25,17 @@ export type DashboardDay = {
   gross: number
   discount: number
   tax: number
-  /** Money captured on this day. */
+  serviceCharge: number
+  /** Money captured on this day, minus money refunded on it. */
   net: number
+  /** Money refunded on this day (already subtracted from `net`). */
+  refunds: number
   invoices: number
-  /** `net` split by what the money was for; the three sum back to it. */
+  /** `net` split by what the money was for; the four sum back to it. */
   bookingRevenue: number
   foodRevenue: number
   membershipRevenue: number
+  serviceChargeRevenue: number
   /** Booking-side figures for the same local day. */
   bookings: number
   bookedMinutes: number
@@ -75,22 +79,26 @@ export async function getRevenueDashboard(
   // of source rows in JS.
   const revenueByDay = new Map<
     string,
-    { gross: number; discount: number; tax: number; net: number; invoices: number
-      bookingRevenue: number; foodRevenue: number; membershipRevenue: number }
+    { gross: number; discount: number; tax: number; serviceCharge: number; net: number
+      refunds: number; invoices: number
+      bookingRevenue: number; foodRevenue: number; membershipRevenue: number; serviceChargeRevenue: number }
   >()
   for (const r of revenueByBranch) {
     const acc = revenueByDay.get(r.day) ?? {
-      gross: 0, discount: 0, tax: 0, net: 0, invoices: 0,
-      bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0,
+      gross: 0, discount: 0, tax: 0, serviceCharge: 0, net: 0, refunds: 0, invoices: 0,
+      bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0, serviceChargeRevenue: 0,
     }
     acc.gross += r.gross
     acc.discount += r.discount
     acc.tax += r.tax
+    acc.serviceCharge += r.serviceCharge
     acc.net += r.net
+    acc.refunds += r.refunds
     acc.invoices += r.invoiceCount
     acc.bookingRevenue += r.bookingRevenue
     acc.foodRevenue += r.foodRevenue
     acc.membershipRevenue += r.membershipRevenue
+    acc.serviceChargeRevenue += r.serviceChargeRevenue
     revenueByDay.set(r.day, acc)
   }
 
@@ -104,11 +112,14 @@ export async function getRevenueDashboard(
       gross: round2(rev?.gross ?? 0),
       discount: round2(rev?.discount ?? 0),
       tax: round2(rev?.tax ?? 0),
+      serviceCharge: round2(rev?.serviceCharge ?? 0),
       net: round2(rev?.net ?? 0),
+      refunds: round2(rev?.refunds ?? 0),
       invoices: rev?.invoices ?? 0,
       bookingRevenue: round2(rev?.bookingRevenue ?? 0),
       foodRevenue: round2(rev?.foodRevenue ?? 0),
       membershipRevenue: round2(rev?.membershipRevenue ?? 0),
+      serviceChargeRevenue: round2(rev?.serviceChargeRevenue ?? 0),
       bookings: bk?.bookings ?? 0,
       bookedMinutes: bk?.bookedMinutes ?? 0,
       availableMinutes: bk?.availableMinutes ?? 0,
@@ -141,6 +152,8 @@ export const DASHBOARD_CSV_COLUMNS: readonly CsvColumn<DashboardDay>[] = [
   { header: 'Gross', value: (d) => d.gross.toFixed(2) },
   { header: 'Discount', value: (d) => d.discount.toFixed(2) },
   { header: 'Tax', value: (d) => d.tax.toFixed(2) },
+  { header: 'Service charge', value: (d) => d.serviceCharge.toFixed(2) },
+  { header: 'Refunds', value: (d) => d.refunds.toFixed(2) },
   { header: 'Net', value: (d) => d.net.toFixed(2) },
   { header: 'Bookings', value: (d) => d.bookings },
   { header: 'Booked minutes', value: (d) => d.bookedMinutes },
