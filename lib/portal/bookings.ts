@@ -433,7 +433,7 @@ export async function readPortalBooking(
 
     if (!row) return null
 
-    const slots = await tx
+    const slotRows = await tx
       .select({
         resourceName: bookingSlots.resourceName,
         resourceTypeName: bookingSlots.resourceTypeName,
@@ -443,6 +443,11 @@ export async function readPortalBooking(
       .from(bookingSlots)
       .where(eq(bookingSlots.bookingId, bookingId))
       .orderBy(asc(bookingSlots.startsAt))
+
+    // M21: the customer portal never shows an open-tab walk-in (no ends_at
+    // yet) — excluded here pending a walk-in-facing portal story, not a
+    // behavior change today.
+    const slots = slotRows.filter((s): s is typeof s & { endsAt: Date } => s.endsAt !== null)
 
     return { ...normalise(row), slots, policy }
   }

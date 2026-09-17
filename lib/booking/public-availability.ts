@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNotNull, lt } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
@@ -223,8 +223,13 @@ export async function getPublicAvailableStarts(
           // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
           gt(bookingSlots.endsAt, dayStart),
+          // M21: an open-tab walk-in has no ends_at yet — excluded here
+          // pending the walk-in availability story, same as `gt` above
+          // already excludes it at the SQL level.
+          isNotNull(bookingSlots.endsAt),
         ),
       )
+      .then((rows) => rows.filter((r): r is { startsAt: Date; endsAt: Date } => r.endsAt !== null))
 
     const resolvedHours = hours ?? DEFAULT_HOURS
     const starts = availableStartTimes(date, timeZone, resolvedHours, existing, {
@@ -442,11 +447,16 @@ export async function getPublicAvailableStartsForType(
           // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
           gt(bookingSlots.endsAt, dayStart),
+          // M21: an open-tab walk-in has no ends_at yet — excluded here
+          // pending the walk-in availability story, same as `gt` above
+          // already excludes it at the SQL level.
+          isNotNull(bookingSlots.endsAt),
         ),
       )
 
     const existingByResource = new Map<string, Interval[]>()
     for (const row of existingRows) {
+      if (row.endsAt === null) continue
       const list = existingByResource.get(row.resourceId) ?? []
       list.push({ startsAt: row.startsAt, endsAt: row.endsAt })
       existingByResource.set(row.resourceId, list)

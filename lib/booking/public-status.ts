@@ -85,7 +85,7 @@ export async function getRecentPublicBookingsByPhone(
       )
       .orderBy(bookingSlots.startsAt)
 
-    const slotsByBooking = new Map<string, { resourceName: string; startsAt: Date; endsAt: Date }[]>()
+    const slotsByBooking = new Map<string, { resourceName: string; startsAt: Date; endsAt: Date | null }[]>()
     for (const row of slotRows) {
       slotsByBooking.set(row.bookingId, [...(slotsByBooking.get(row.bookingId) ?? []), row])
     }
@@ -102,11 +102,13 @@ export async function getRecentPublicBookingsByPhone(
         // The latest-ENDING slot, not the last-by-START-time one — slots is
         // ordered by startsAt, and with overlapping/out-of-order slots those
         // are not the same row (e.g. 10:00–12:00 then 11:00–11:30: the second
-        // starts later but ends earlier).
-        endsAt:
-          slots.length > 0
-            ? new Date(Math.max(...slots.map((s) => s.endsAt.getTime()))).toISOString()
-            : null,
+        // starts later but ends earlier). A walk-in's open-tab slot (M21) has
+        // no ends_at yet, so it's excluded from this max — still "ongoing",
+        // not resolvable to a latest end.
+        endsAt: (() => {
+          const ends = slots.flatMap((s) => (s.endsAt ? [s.endsAt.getTime()] : []))
+          return ends.length > 0 ? new Date(Math.max(...ends)).toISOString() : null
+        })(),
       }
     })
   })

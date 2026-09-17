@@ -278,6 +278,19 @@ export const bookings = pgTable(
     // M17 (0072): when the table's bill was requested. Null for every
     // non-restaurant booking.
     billRequestedAt: timestamp('bill_requested_at', { withTimezone: true }),
+    // M21 (0093): how this booking was taken — 'reserved' (default, every
+    // pre-existing and future non-walk-in booking) or 'walkin'. Gated at the
+    // action layer per industry, not just the UI.
+    channel: text('channel').notNull().default('reserved'),
+    // M21 (0093): walk-in billing shape — 'open_tab' | 'timed' | null. Null
+    // for every reserved booking.
+    billingMode: text('billing_mode'),
+    // M21 (0093): a timed walk-in's current committed end; moves forward on
+    // extension. Null for open-tab and every reserved booking.
+    committedEndAt: timestamp('committed_end_at', { withTimezone: true }),
+    // M21 (0093): minutes before committedEndAt the heads-up alarm fires for
+    // a timed walk-in. Default 5.
+    warningMinutes: smallint('warning_minutes').notNull().default(5),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -289,6 +302,8 @@ export const bookings = pgTable(
     index('idx_bookings_customer').on(t.tenantId, t.customerId),
     // Partial (resource_id is not null) in the DB — see 0071_table_sessions.sql.
     index('idx_bookings_resource').on(t.tenantId, t.resourceId),
+    // Partial (committed_end_at is not null) in the DB — M21 sessions board.
+    index('idx_bookings_committed_end').on(t.tenantId, t.committedEndAt),
   ],
 )
 
@@ -306,7 +321,9 @@ export const bookingSlots = pgTable(
       .notNull()
       .references(() => resources.id, { onDelete: 'restrict' }),
     startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
-    endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+    // M21 (0093): null for an open-tab walk-in until checkout finalizes it.
+    // Always set for every reserved/timed booking.
+    endsAt: timestamp('ends_at', { withTimezone: true }),
     rateApplied: numeric('rate_applied', { precision: 10, scale: 2 }).notNull().default('0'),
     slotTotal: numeric('slot_total', { precision: 10, scale: 2 }).notNull().default('0'),
     // Migration 0092 — snapshot of the resource type's tax rate at booking

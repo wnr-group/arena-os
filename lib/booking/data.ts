@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNotNull, lt } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   resourceTypes,
@@ -140,6 +140,11 @@ export function listTables(ctx: ActiveContext, branchId: string) {
  * timeline positions it by its portion WITHIN the displayed day (see
  * BookingsView), so it renders flush to the left edge rather than at the hour
  * it originally started.
+ *
+ * M21: an open-tab walk-in's slot has no ends_at until checkout, so it's
+ * excluded here for now — the inline-timer story (AROS-199) needs to render
+ * it specially (no fixed right edge) rather than inherit this timeline's
+ * fixed-interval layout, so it isn't just a filter to lift later.
  */
 export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
   const dayStart = zonedTimeToUtc(dateStr, '00:00', tz)
@@ -171,8 +176,10 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
           eq(bookingSlots.active, true),
           lt(bookingSlots.startsAt, dayEnd),
           gt(bookingSlots.endsAt, dayStart),
+          isNotNull(bookingSlots.endsAt),
         ),
       )
-      .orderBy(asc(bookingSlots.startsAt)),
+      .orderBy(asc(bookingSlots.startsAt))
+      .then((rows) => rows.filter((r): r is typeof r & { endsAt: Date } => r.endsAt !== null)),
   )
 }

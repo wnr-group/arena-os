@@ -191,18 +191,23 @@ export async function loadBookingLines(
     )
     .orderBy(bookingSlots.startsAt)
 
-  return slots.map((s) => ({
-    description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
-    kind: 'booking' as const,
-    sourceId: s.id,
-    qty: durationHours(s.startsAt, s.endsAt),
-    unitPrice: Number(s.rateApplied),
-    // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
-    // priceBookingSlots) from the resource type's own tax rate — same
-    // discipline rate_applied already uses. 0 means no 'resources'/'both'
-    // tax rate was configured for that type at booking time.
-    taxPercent: Number(s.taxRatePercent),
-  }))
+  return slots
+    // M21: an open-tab walk-in slot has no ends_at until checkout finalizes
+    // it — elapsed-time billing for it lands in the price-elapsed engine
+    // story (AROS-195/196), not here.
+    .filter((s): s is typeof s & { endsAt: Date } => s.endsAt !== null)
+    .map((s) => ({
+      description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
+      kind: 'booking' as const,
+      sourceId: s.id,
+      qty: durationHours(s.startsAt, s.endsAt),
+      unitPrice: Number(s.rateApplied),
+      // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
+      // priceBookingSlots) from the resource type's own tax rate — same
+      // discipline rate_applied already uses. 0 means no 'resources'/'both'
+      // tax rate was configured for that type at booking time.
+      taxPercent: Number(s.taxRatePercent),
+    }))
 }
 
 /**
