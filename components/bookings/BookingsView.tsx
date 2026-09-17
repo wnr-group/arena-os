@@ -12,6 +12,7 @@ import {
   Clock,
   Loader2,
   Plus,
+  RefreshCw,
   Search,
   ShoppingBag,
   UserCheck,
@@ -186,6 +187,9 @@ export function BookingsView({
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
   const [actingAction, setActingAction] = useState<string | null>(null)
+  // Separate from `pending` above (which tracks status-change/cancel actions)
+  // so refreshing the list never shows a spinner on an unrelated row button.
+  const [refreshing, startRefresh] = useTransition()
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -325,6 +329,16 @@ export function BookingsView({
             <ChevronRight size={16} />
           </Link>
           <button
+            onClick={() => startRefresh(() => router.refresh())}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
+            aria-label="Refresh bookings"
+            title="Refresh"
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+          <button
             onClick={() => openNew()}
             disabled={resources.length === 0}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
@@ -334,7 +348,7 @@ export function BookingsView({
           <button
             onClick={() => setOrderDialog({})}
             disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-base font-medium transition hover:bg-muted disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
           >
             <ShoppingBag size={16} /> Take order
           </button>
