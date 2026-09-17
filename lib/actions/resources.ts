@@ -234,19 +234,6 @@ export async function deleteResource(id: string): Promise<Result> {
   }
 }
 
-// ── resource (unit) image upload ────────────────────────────────────────────
-export async function uploadResourceImage(formData: FormData): Promise<{ url?: string; error?: string }> {
-  try {
-    const ctx = await requireManager()
-    const file = formData.get('file')
-    if (!(file instanceof File)) return { error: 'No file provided.' }
-    const url = await uploadImage(file, `tenants/${ctx.tenant.id}/resources`)
-    return { url }
-  } catch (e) {
-    return fail(e)
-  }
-}
-
 // ── working hours ────────────────────────────────────────────────────────────
 const dayInput = z.object({
   dayOfWeek: z.number().int().min(0).max(6),

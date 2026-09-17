@@ -19,23 +19,13 @@ import {
   Filter,
   ChevronDown,
   Loader2,
-  UploadCloud,
-  FileImage,
   QrCode,
 } from 'lucide-react'
-import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
+import { upsertResource, deleteResource } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-
-function fileNameFromUrl(url: string): string {
-  try {
-    return decodeURIComponent(url.split('/').pop() || url)
-  } catch {
-    return url
-  }
-}
 
 type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
 type ResourceStatus = 'available' | 'maintenance' | 'inactive'
@@ -597,10 +587,11 @@ function ResourceModal({
   const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
   const [override, setOverride] = useState(row?.rateOverride ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
-  const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
-  const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  // No per-resource upload anymore — a resource always shows its type's
+  // photo (ResourceVisual/table row already fall back to typeImageUrl).
+  // Kept as a plain value (not state) so an existing legacy override, if any,
+  // is preserved on save rather than silently cleared.
+  const imageUrl = row?.imageUrl ?? ''
   const [submitted, setSubmitted] = useState(false)
 
   const selectedType = types.find((t) => t.id === typeId)
@@ -621,23 +612,6 @@ function ResourceModal({
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
-
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    setUploadError(null)
-    setUploading(true)
-    const fd = new FormData()
-    fd.append('file', file)
-    const r = await uploadResourceImage(fd)
-    setUploading(false)
-    if (r.error) setUploadError(r.error)
-    else if (r.url) {
-      setImageUrl(r.url)
-      setFileName(file.name)
-    }
-  }
 
   function submit() {
     setSubmitted(true)
@@ -674,7 +648,7 @@ function ResourceModal({
       </button>
       <button
         className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={pending || uploading}
+        disabled={pending}
         onClick={submit}
       >
         {pending && <Loader2 size={15} className="animate-spin" />}
@@ -707,8 +681,6 @@ function ResourceModal({
           </p>
 
           <div className="mt-4 space-y-3">
-            {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
-
             <div className={isRestaurant ? 'space-y-3' : 'grid grid-cols-2 gap-3'}>
               <div>
                 <label className={label}>
@@ -795,61 +767,13 @@ function ResourceModal({
                   />
                 </div>
 
-                <div>
-                  <label className={label}>Photo (optional override)</label>
-                  <label
-                    className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-                      uploading
-                        ? 'cursor-not-allowed border-border opacity-60'
-                        : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                    }`}
-                  >
-                    {uploading ? (
-                      <>
-                        <Loader2 size={20} className="animate-spin text-muted-foreground" />
-                        <span className="text-sm text-muted-foreground">Uploading…</span>
-                      </>
-                    ) : fileName ? (
-                      <>
-                        <FileImage size={20} className="text-primary" />
-                        <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
-                        <span className="text-xs text-muted-foreground">Click to replace</span>
-                      </>
-                    ) : (
-                      <>
-                        <UploadCloud size={20} className="text-muted-foreground" />
-                        <span className="text-sm font-medium">Click to upload a photo</span>
-                        <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
-                      </>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,image/gif"
-                      className="hidden"
-                      disabled={uploading}
-                      onChange={handleFile}
-                    />
-                  </label>
-                  {fileName && !uploading ? (
-                    <button
-                      type="button"
-                      className="mt-1 text-xs text-muted-foreground hover:text-destructive"
-                      onClick={() => {
-                        setImageUrl('')
-                        setFileName(null)
-                      }}
-                    >
-                      Remove — Use the Type&apos;s Default Photo
-                    </button>
+                <p className="text-xs text-muted-foreground">
+                  {selectedType?.imageUrl ? (
+                    <>Photo comes from the resource type — set it on <Link href="/settings/resources/types" className="font-medium text-primary hover:underline">{selectedType.name}</Link>.</>
                   ) : (
-                    !uploading &&
-                    selectedType?.imageUrl && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Currently showing the resource type&apos;s default photo.
-                      </p>
-                    )
+                    <>No photo yet — add one on the resource type to show it here.</>
                   )}
-                </div>
+                </p>
               </>
             )}
           </div>
