@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
+import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
   seatTableSessionCore,
@@ -16,6 +17,14 @@ import {
   assertBookingFullyPaid,
   BookingError,
 } from '@/lib/booking/service'
+import {
+  startWalkinCore,
+  listWalkinResources as listWalkinResourcesForBranch,
+  WALKIN_MIN_DURATION_MINUTES,
+  WALKIN_MAX_DURATION_MINUTES,
+  WALKIN_DURATION_STEP_MINUTES,
+  type WalkinResourceOption,
+} from '@/lib/booking/walkin'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -77,6 +86,94 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
 
     revalidatePath('/bookings')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const WALKIN_INDUSTRY_ERROR = 'Walk-ins are not enabled for this business.'
+
+const startWalkinInput = z
+  .object({
+    branchId: z.string().uuid(),
+    resourceId: z.string().uuid(),
+    phone: z
+      .string()
+      .trim()
+      .min(1, 'Phone number is required.')
+      .refine((v) => isValidPhone(v), 'Enter a valid 10-digit phone number.'),
+    name: z.string().trim().optional(),
+    startAt: z.string().datetime(),
+    mode: z.enum(['open_tab', 'timed']),
+    durationMin: z.coerce.number().int().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.mode !== 'timed') return
+    if (
+      v.durationMin === undefined ||
+      v.durationMin < WALKIN_MIN_DURATION_MINUTES ||
+      v.durationMin > WALKIN_MAX_DURATION_MINUTES ||
+      v.durationMin % WALKIN_DURATION_STEP_MINUTES !== 0
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['durationMin'],
+        message: `Pick a duration between ${WALKIN_MIN_DURATION_MINUTES} minutes and ${WALKIN_MAX_DURATION_MINUTES / 60} hours, in ${WALKIN_DURATION_STEP_MINUTES}-minute steps.`,
+      })
+    }
+  })
+
+/**
+ * Start a walk-in session (M21 #3) — the non-restaurant sibling of seatTable.
+ * Gated at the action layer like every other industry-scoped action here: a
+ * restaurant tenant (which uses M17 Seat-a-party instead) or a role outside
+ * WALKIN_ROLES gets rejected here regardless of what the client sent, even if
+ * the chooser/start form were somehow bypassed.
+ */
+export async function startWalkin(input: z.input<typeof startWalkinInput>): Promise<CreateResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to start a walk-in.')
+    }
+    const v = startWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      startWalkinCore(
+        tx,
+        { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+        v,
+      ),
+    )
+
+    revalidatePath('/bookings')
+    return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Free/occupied hourly stations for the walk-in start form's station picker.
+ * Same industry/role gate as startWalkin — read-only, but a restaurant
+ * tenant or unauthorized role has no legitimate reason to see it either.
+ */
+export async function listWalkinResources(
+  branchId: string,
+): Promise<{ error?: string; resources?: WalkinResourceOption[] }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to start a walk-in.')
+    }
+    const resources = await listWalkinResourcesForBranch(ctx, branchId)
+    return { resources }
   } catch (e) {
     return fail(e)
   }

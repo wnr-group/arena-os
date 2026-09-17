@@ -20,7 +20,6 @@ import {
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { NewBookingDialog } from './NewBookingDialog'
 import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
@@ -206,8 +205,6 @@ export function BookingsView({
   const router = useRouter()
   const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
-  const [showNew, setShowNew] = useState(false)
-  const [presetResourceTypeId, setPresetResourceTypeId] = useState<string | undefined>(undefined)
   const [selected, setSelected] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
@@ -296,8 +293,9 @@ export function BookingsView({
   // edge of the day's window. Using minutes-of-day instead would put a booking
   // that started at 22:00 yesterday at the far RIGHT of today's timeline,
   // which is exactly backwards.
-  // The project's own zone helper, the same one NewBookingDialog uses to turn
-  // a picked time into an instant — no second conversion to get subtly wrong.
+  // The project's own zone helper, the same one the booking wizard
+  // (components/bookings/new) uses to turn a picked time into an instant —
+  // no second conversion to get subtly wrong.
   const dayStartMs = useMemo(
     () => zonedTimeToUtc(date, '00:00', timeZone).getTime(),
     [date, timeZone],
@@ -324,9 +322,20 @@ export function BookingsView({
     })
   }
 
-  function openNew(resourceTypeId?: string) {
-    setPresetResourceTypeId(resourceTypeId)
-    setShowNew(true)
+  /**
+   * The full-page booking wizard (M21 #3) replaces what used to be an
+   * in-place modal — clicking a resource type's timeline row still presets
+   * that type, now via a query param instead of local state, and forces the
+   * Future tab open since picking a spot on the calendar only ever means a
+   * future booking, never a walk-in.
+   */
+  function newBookingHref(resourceTypeId?: string): string {
+    const params = new URLSearchParams({ date })
+    if (resourceTypeId) {
+      params.set('resourceTypeId', resourceTypeId)
+      params.set('tab', 'future')
+    }
+    return `/bookings/new?${params.toString()}`
   }
 
   async function handleCancel(slot: Slot) {
@@ -382,13 +391,21 @@ export function BookingsView({
             <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
             Refresh
           </button>
-          <button
-            onClick={() => openNew()}
-            disabled={resources.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-          >
-            <Plus size={16} /> New booking
-          </button>
+          {resources.length === 0 ? (
+            <button
+              disabled
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground opacity-50"
+            >
+              <Plus size={16} /> New booking
+            </button>
+          ) : (
+            <Link
+              href={newBookingHref()}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              <Plus size={16} /> New booking
+            </Link>
+          )}
           <button
             onClick={() => setOrderDialog({})}
             disabled={menuItems.length === 0}
@@ -456,10 +473,10 @@ export function BookingsView({
                       <p className="truncate text-xs text-muted-foreground">{r.typeName}</p>
                     </div>
                   </div>
-                  <button
-                    className="relative h-16 flex-1 cursor-copy"
-                    onClick={() => openNew(r.resourceTypeId)}
-                    title="Click to add a booking of this resource type"
+                  <Link
+                    href={newBookingHref(r.resourceTypeId)}
+                    className="relative block h-16 flex-1 cursor-copy"
+                    title="Click to add a future booking of this resource type"
                   >
                     {/* hour gridlines */}
                     {hourTicks.map((h) => (
@@ -500,7 +517,7 @@ export function BookingsView({
                         </span>
                       )
                     })}
-                  </button>
+                  </Link>
                 </div>
               )
             })}
@@ -528,13 +545,18 @@ export function BookingsView({
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <button
-              onClick={() => openNew()}
-              disabled={resources.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2.5 text-base font-medium transition hover:bg-muted disabled:opacity-50"
-            >
-              <Plus size={16} /> Walk-in booking
-            </button>
+            {resources.length === 0 ? (
+              <button disabled className="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2.5 text-base font-medium opacity-50">
+                <Plus size={16} /> Walk-in booking
+              </button>
+            ) : (
+              <Link
+                href={newBookingHref()}
+                className="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2.5 text-base font-medium transition hover:bg-muted"
+              >
+                <Plus size={16} /> Walk-in booking
+              </Link>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-1.5">
@@ -647,31 +669,6 @@ export function BookingsView({
             </div>
           </div>
         </div>
-      )}
-
-      {/* new booking dialog */}
-      {showNew && (
-        <NewBookingDialog
-          branchId={branchId}
-          date={date}
-          timeZone={timeZone}
-          openMin={openMin}
-          closeMin={closeMin}
-          resources={resources.map((r) => ({
-            id: r.id,
-            name: r.name,
-            resourceTypeId: r.resourceTypeId,
-            typeName: r.typeName,
-            imageUrl: r.imageUrl,
-          }))}
-          presetResourceTypeId={presetResourceTypeId}
-          onClose={() => setShowNew(false)}
-          onCreated={(num) => {
-            setShowNew(false)
-            toast.success(`Booking ${num} created.`)
-            router.refresh()
-          }}
-        />
       )}
 
       {/* booking detail */}

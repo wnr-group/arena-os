@@ -76,3 +76,14 @@ export const INCOMING_ORDER_ROLES: MemberRole[] = ['owner', 'manager', 'cashier'
 export function canManageIncomingOrders(role: MemberRole | null | undefined): boolean {
   return !!role && INCOMING_ORDER_ROLES.includes(role)
 }
+
+/**
+ * Roles that may start and check out a walk-in session (M21) — the same
+ * front-of-house set as INCOMING_ORDER_ROLES: kitchen staff never runs the
+ * front desk, so they never see or start a walk-in either.
+ */
+export const WALKIN_ROLES: MemberRole[] = ['owner', 'manager', 'cashier', 'receptionist', 'floor_staff']
+
+export function canManageWalkins(role: MemberRole | null | undefined): boolean {
+  return !!role && WALKIN_ROLES.includes(role)
+}

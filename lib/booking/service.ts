@@ -137,8 +137,11 @@ export async function priceBookingSlots(
  * would hand two concurrent callers the same number and let
  * bookings_tenant_number_key reject the loser, which a walk-in-heavy screen
  * like seatTableSessionCore hits often enough at rush to matter.
+ *
+ * Exported (M21) so lib/booking/walkin.ts's startWalkinCore can share this
+ * exact same numbering scheme instead of a second, potentially-drifting copy.
  */
-async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: string }): Promise<string> {
+export async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: string }): Promise<string> {
   const compact = todayInZone(ctx.timezone).replace(/-/g, '')
   const bumped = await tx.execute<{ value: number }>(sql`
     insert into sequences (tenant_id, kind, period, value)
