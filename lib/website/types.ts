@@ -42,6 +42,8 @@ export const videoTextContentSchema = z.object({
 /** "Show up to N" — shared by the two catalogue-backed sections below. */
 const dynamicLimitSchema = z.object({ limit: z.number().int().min(1).max(12) })
 export const resourcesContentSchema = dynamicLimitSchema
+/** Upcoming public events (M15 #2) — same "show up to N" shape. */
+export const eventsContentSchema = dynamicLimitSchema
 export const menuContentSchema = dynamicLimitSchema
 
 /** No editor-owned fields — these render entirely from the branch record
@@ -59,6 +61,7 @@ export const websiteSectionTypeSchema = z.enum([
   'menu',
   'hours',
   'map',
+  'events',
 ])
 export type WebsiteSectionType = z.infer<typeof websiteSectionTypeSchema>
 
@@ -75,6 +78,7 @@ export const sectionContentSchemas = {
   menu: menuContentSchema,
   hours: hoursContentSchema,
   map: mapContentSchema,
+  events: eventsContentSchema,
 } satisfies Record<WebsiteSectionType, z.ZodTypeAny>
 
 export const websiteSectionSchema = z.discriminatedUnion('type', [
@@ -87,6 +91,7 @@ export const websiteSectionSchema = z.discriminatedUnion('type', [
   z.object({ id: z.string(), type: z.literal('menu'), heading: z.string().nullable(), position: z.number(), content: menuContentSchema }),
   z.object({ id: z.string(), type: z.literal('hours'), heading: z.string().nullable(), position: z.number(), content: hoursContentSchema }),
   z.object({ id: z.string(), type: z.literal('map'), heading: z.string().nullable(), position: z.number(), content: mapContentSchema }),
+  z.object({ id: z.string(), type: z.literal('events'), heading: z.string().nullable(), position: z.number(), content: eventsContentSchema }),
 ])
 
 export type WebsiteSection = z.infer<typeof websiteSectionSchema>

@@ -46,6 +46,13 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
+    // Public events listing and detail (M15 #2). Safe to open WHOLESALE because
+    // /events is now exclusively public — the manager screen lives at
+    // /settings/events, behind the staff gate below. Visibility of individual
+    // events is not this gate's job: events_public_select (0089) admits only
+    // published/registration_open rows of the subdomain's own tenant.
+    pathname === '/events' ||
+    pathname.startsWith('/events/') ||
     pathname.startsWith('/b/') ||
     pathname.startsWith('/order/') ||
     // Order status tracking (M14 #7, v2) — /o/[orderId] is the no-login

@@ -43,6 +43,32 @@ async function main() {
   const db = new Client({ connectionString: process.env.DATABASE_URL_OWNER })
   await db.connect()
 
+  // Anchored to the WALL CLOCK, in the tenant's own timezone — never a pinned
+  // calendar month. A fixture dated "2026-08-01" reads as due, has-one-period,
+  // next-run-is-September for exactly one calendar month per year and is wrong
+  // for the other eleven: once real time passes the pinned month, "due" no
+  // longer means "exactly one period" (see run-recurring-expenses.ts's own
+  // rule — EVERY missed period is generated), so a fixture two months stale
+  // generates three rows, not one, and the suite fails for no code reason.
+  //
+  // Four dates, computed once by Postgres so the job's own "at time zone" rule
+  // and the test's expectations can never drift apart:
+  //   current  this month's 1st — a template due here generates exactly ONE
+  //            period today, whatever today's date is.
+  //   prev1/2  one and two months back — three CONSECUTIVE due periods for the
+  //            "multiple missed periods" case, regardless of the current month.
+  //   next     next month's 1st — where next_run must land after catching up
+  //            to `current`. Never itself due, because its day (1) cannot be
+  //            <= today's date in THIS month.
+  const dates = (
+    await db.query<{ current_month: string; prev1: string; prev2: string; next_month: string }>(`
+      select date_trunc('month', now() at time zone 'Asia/Kolkata')::date::text                    as current_month,
+             (date_trunc('month', now() at time zone 'Asia/Kolkata') - interval '1 month')::date::text as prev1,
+             (date_trunc('month', now() at time zone 'Asia/Kolkata') - interval '2 months')::date::text as prev2,
+             (date_trunc('month', now() at time zone 'Asia/Kolkata') + interval '1 month')::date::text as next_month
+    `)
+  ).rows[0]
+
   async function makeUser(tenantId: string, email: string, role: string) {
     const u = await db.query<{ id: string }>(
       `insert into users (email, password_hash) values ($1,'x')
@@ -125,26 +151,26 @@ async function main() {
 
   // ── 1. basic generation ────────────────────────────────────────────────────
   console.log('\n── basic generation ──')
-  const t1 = await template(A.tenantId, catA, venA, '50000.00', 1, '2026-08-01', true, 'Shop rent')
+  const t1 = await template(A.tenantId, catA, venA, '50000.00', 1, dates.current_month, true, 'Shop rent')
   runJob()
   {
     const r = await rowsFor(t1)
     check('one expense generated', r.length === 1, `got ${r.length}`)
-    check('spent_on is the due date', r[0]?.spent_on === '2026-08-01')
-    check('recurrence_period is the month start', r[0]?.recurrence_period === '2026-08-01')
+    check('spent_on is the due date', r[0]?.spent_on === dates.current_month)
+    check('recurrence_period is the month start', r[0]?.recurrence_period === dates.current_month)
     check('amount copied as a string, 2dp', r[0]?.amount === '50000.00', `got ${r[0]?.amount}`)
     check('template note copied onto the expense', r[0]?.note === 'Shop rent')
-    check('next_run advanced to September', (await nextRunOf(t1)) === '2026-09-01', await nextRunOf(t1))
+    check('next_run advanced to next month', (await nextRunOf(t1)) === dates.next_month, await nextRunOf(t1))
   }
 
   // ── 2. duplicate execution ────────────────────────────────────────────────
   console.log('\n── duplicate execution ──')
   {
-    await db.query(`update recurring_expenses set next_run='2026-08-01' where id=$1`, [t1])
+    await db.query(`update recurring_expenses set next_run=$2 where id=$1`, [t1, dates.current_month])
     runJob()
     const r = await rowsFor(t1)
     check('re-running the SAME period creates no duplicate', r.length === 1, `got ${r.length}`)
-    check('next_run still advances past it', (await nextRunOf(t1)) === '2026-09-01')
+    check('next_run still advances past it', (await nextRunOf(t1)) === dates.next_month)
   }
 
   // ── 3. concurrent execution ───────────────────────────────────────────────
@@ -185,43 +211,100 @@ async function main() {
   // ── 4. multiple missed periods ────────────────────────────────────────────
   console.log('\n── multiple missed periods ──')
   {
-    const t4 = await template(A.tenantId, catA, venA, '100.00', 1, '2026-06-01')
+    const t4 = await template(A.tenantId, catA, venA, '100.00', 1, dates.prev2)
     runJob()
     const r = await rowsFor(t4)
-    check('June, July and August all generated', r.length === 3, `got ${r.length}`)
-    check('…in period order', r.map((x) => x.recurrence_period).join(',') === '2026-06-01,2026-07-01,2026-08-01',
+    check('three consecutive missed periods all generated', r.length === 3, `got ${r.length}`)
+    const expected = [dates.prev2, dates.prev1, dates.current_month].join(',')
+    check('…in period order', r.map((x) => x.recurrence_period).join(',') === expected,
       r.map((x) => x.recurrence_period).join(','))
-    check('next_run becomes September', (await nextRunOf(t4)) === '2026-09-01', await nextRunOf(t4))
+    check('next_run becomes next month', (await nextRunOf(t4)) === dates.next_month, await nextRunOf(t4))
   }
 
   // ── 5. inactive template ──────────────────────────────────────────────────
   console.log('\n── inactive template ──')
   {
-    const t5 = await template(A.tenantId, catA, venA, '77.00', 1, '2026-08-01', false)
+    const t5 = await template(A.tenantId, catA, venA, '77.00', 1, dates.current_month, false)
     runJob()
     check('disabled template generates nothing', (await rowsFor(t5)).length === 0)
-    check('…and its next_run is untouched', (await nextRunOf(t5)) === '2026-08-01')
+    check('…and its next_run is untouched', (await nextRunOf(t5)) === dates.current_month)
   }
 
   // ── 6. month boundaries ───────────────────────────────────────────────────
   console.log('\n── month boundaries ──')
   {
-    // Day 31 starting in a 31-day month: Jan 31 → Feb 28 → Mar 31 …
-    const t6 = await template(A.tenantId, catA, null, '10.00', 31, '2026-01-31')
+    // ── 6a. the CLAMP RULE, for every month of a fixed reference year ────────
+    //
+    // Calls recurring_expense_due_day() directly with EXPLICIT period starts —
+    // 2025 was chosen only because it is not a leap year, not because of when
+    // this suite happens to run. This is the one place the exact calendar
+    // facts ("February clamps to the 28th") belong: they are true of the
+    // calendar itself, not of today's date, so they are asserted against fixed
+    // months rather than whatever real month the job traversal below lands on.
+    const dueDay = async (periodStart: string, day: number) =>
+      (
+        await db.query<{ d: string }>(
+          `select public.recurring_expense_due_day($1::date, $2::smallint)::text d`,
+          [periodStart, day],
+        )
+      ).rows[0].d
+    const calendar31: Record<string, string> = {}
+    for (let m = 1; m <= 12; m++) {
+      calendar31[String(m).padStart(2, '0')] = await dueDay(`2025-${String(m).padStart(2, '0')}-01`, 31)
+    }
+    check('January keeps the 31st', calendar31['01'] === '2025-01-31', calendar31['01'])
+    check('February clamps to the 28th (non-leap)', calendar31['02'] === '2025-02-28', calendar31['02'])
+    check('March keeps the 31st', calendar31['03'] === '2025-03-31', calendar31['03'])
+    check('April clamps to the 30th', calendar31['04'] === '2025-04-30', calendar31['04'])
+    check('…every 31-day month keeps the 31st', ['01', '03', '05', '07', '08', '10', '12'].every((m) => calendar31[m].endsWith('-31')))
+    check('…every 30-day month clamps to the 30th', ['04', '06', '09', '11'].every((m) => calendar31[m].endsWith('-30')))
+    check('…and every produced date parses', Object.values(calendar31).every((d) => !Number.isNaN(Date.parse(d))))
+
+    // ── 6b. the JOB traverses several missed day-31 periods correctly ───────
+    //
+    // The EXPECTED periods are not a fixed count. Unlike a day-1 template —
+    // where "this month" is always due, because the 1st has always arrived by
+    // the time the job runs — a day-31 template's CURRENT month may clamp to a
+    // due day that has not happened yet (e.g. today is 3 September and this
+    // month's due day clamps to 30 September). Assuming "prev2, prev1 AND
+    // current are always due" is exactly the wall-clock assumption this whole
+    // fix exists to remove, so the expectation is WALKED here with the same
+    // rule the job itself applies — start at prev2's due day, keep going while
+    // it has elapsed — rather than assumed.
+    const addMonths = (monthStart: string, n: number): string => {
+      const [y, m] = monthStart.split('-').map(Number)
+      const total = y * 12 + (m - 1) + n
+      return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, '0')}-01`
+    }
+    const today = (await db.query<{ d: string }>(`select (now() at time zone 'Asia/Kolkata')::date::text d`)).rows[0].d
+
+    const expected: string[] = []
+    let cursorMonth = dates.prev2
+    let cursorDue = await dueDay(cursorMonth, 31)
+    while (cursorDue <= today) {
+      expected.push(cursorDue)
+      cursorMonth = addMonths(cursorMonth, 1)
+      cursorDue = await dueDay(cursorMonth, 31)
+    }
+    // Whatever the walk stopped ON is the next still-future due day — exactly
+    // what the job should leave next_run pointing at.
+    const expectedNextRun = cursorDue
+
+    const t6 = await template(A.tenantId, catA, null, '10.00', 31, expected[0])
     runJob()
     const days = (await rowsFor(t6)).map((x) => x.spent_on)
-    // Jan..Jul only: August's due day for a day-31 template is 2026-08-31,
-    // which is still in the future, so the job must NOT generate it early.
-    // That is the property worth asserting — a job that ran ahead of the due
-    // date would put next month's rent in this month's books.
-    const today = (await db.query<{ d: string }>(`select (now() at time zone 'Asia/Kolkata')::date::text d`)).rows[0].d
-    check('day-31 template ran for every ELAPSED month', days.length === 7, `got ${days.length}: ${days.join(',')}`)
-    check('…and did not run ahead of its due date', days.every((d) => d <= today), `today ${today}`)
-    check('…next_run is the un-elapsed August 31st', (await nextRunOf(t6)) === '2026-08-31', await nextRunOf(t6))
-    check('…February clamps to the 28th', days.includes('2026-02-28'), days.join(','))
-    check('…April clamps to the 30th', days.includes('2026-04-30'))
-    check('…31-day months keep the 31st', days.includes('2026-03-31') && days.includes('2026-01-31'))
-    check('…and no invalid date was ever produced', days.every((d) => !Number.isNaN(Date.parse(d))))
+
+    check(
+      `day-31 template ran for every ELAPSED month (${expected.length})`,
+      days.length === expected.length,
+      `got ${days.length}: ${days.join(',')}`,
+    )
+    check('…matching the clamp rule for each period', days.join(',') === expected.join(','), `${days.join(',')} vs ${expected.join(',')}`)
+    // The property this whole sub-test exists for: a job that ran ahead of the
+    // due date would put next month's rent in this month's books.
+    check('…and did not run ahead of its own due date', days.every((d) => d <= today), `today ${today}`)
+    check('next_run is the un-elapsed next due day', (await nextRunOf(t6)) === expectedNextRun, await nextRunOf(t6))
+    check('…which is still in the future', expectedNextRun > today, `${expectedNextRun} vs today ${today}`)
 
     // Leap year: day 29 in a leap February.
     const t6b = await template(A.tenantId, catA, null, '10.00', 29, '2028-02-29')

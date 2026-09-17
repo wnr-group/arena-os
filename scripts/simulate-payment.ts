@@ -31,7 +31,11 @@
  * unmodified.
  *
  * Usage:
- *   npx tsx --import ./scripts/server-only-hook.mjs scripts/simulate-payment.ts <order-number-or-booking-number>
+ *   npx tsx --import ./scripts/server-only-hook.mjs scripts/simulate-payment.ts <identifier>
+ *
+ * where <identifier> is an order number, a booking number, or — for a
+ * tournament entry fee — the event title, the gateway order id, or the
+ * registration id.
  *
  * Tries an order first, then a booking, by that identifier.
  */
@@ -43,7 +47,7 @@ async function main() {
   loadEnv()
   const identifier = process.argv[2]
   if (!identifier) {
-    console.error('Usage: simulate-payment.ts <order-number-or-booking-number>')
+    console.error('Usage: simulate-payment.ts <order-number | booking-number | event-title | gateway-order-id | registration-id>')
     process.exit(1)
   }
 
@@ -54,7 +58,7 @@ async function main() {
 
   const pool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
-  type Target = { kind: 'order' | 'booking'; label: string; tenantId: string }
+  type Target = { kind: 'order' | 'booking' | 'event registration'; label: string; tenantId: string }
   type Intent = { id: string; gatewayOrderId: string; amount: string; currency: string; status: string }
 
   async function findByOrder(): Promise<{ target: Target; intent: Intent } | null> {
@@ -93,9 +97,40 @@ async function main() {
     return { target: { kind: 'booking', label: booking.booking_number, tenantId: booking.tenant_id }, intent: pi.rows[0] }
   }
 
-  const found = (await findByOrder()) ?? (await findByBooking())
+  /**
+   * An EVENT REGISTRATION (M15). Same shape as the two above, added because
+   * the events entry fee goes through the identical intent → webhook path and
+   * therefore gets identically stuck in local dev — but this script predates
+   * M15 and only knew about orders and bookings.
+   *
+   * Looked up by the EVENT's title rather than a number, because a
+   * registration has no human-facing reference: the customer sees the event,
+   * not an id. The newest pending intent for that event wins, which is what
+   * you want after retrying a checkout a few times.
+   */
+  async function findByEvent(): Promise<{ target: Target; intent: Intent } | null> {
+    const pi = await pool.query<Intent & { title: string; tenant_id: string }>(
+      `select pi.id, pi.gateway_order_id as "gatewayOrderId", pi.amount, pi.currency, pi.status,`
+        + ` e.title, e.tenant_id`
+        + ` from payment_intents pi`
+        + ` join event_registrations r on r.id = pi.event_registration_id`
+        + ` join events e on e.id = r.event_id`
+        + ` where pi.purpose = 'event_registration'`
+        + `   and (e.title = $1 or pi.gateway_order_id = $1 or r.id::text = $1)`
+        + ` order by pi.status = 'pending' desc, pi.created_at desc limit 1`,
+      [identifier],
+    )
+    if (pi.rows.length === 0) return null
+    const row = pi.rows[0]
+    return {
+      target: { kind: 'event registration', label: row.title, tenantId: row.tenant_id },
+      intent: row,
+    }
+  }
+
+  const found = (await findByOrder()) ?? (await findByBooking()) ?? (await findByEvent())
   if (!found) {
-    console.error(`No order or booking "${identifier}" with a payment_intents row was found.`)
+    console.error(`No order, booking or event registration "${identifier}" with a payment_intents row was found.`)
     await pool.end()
     process.exit(1)
   }

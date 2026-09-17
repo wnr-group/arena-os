@@ -10,6 +10,8 @@ import { extractYoutubeVideoId, youtubeEmbedUrl } from '@/lib/website/youtube'
 import { renderLightMarkdown } from '@/lib/website/markdown'
 import { MenuHighlightsClient } from '@/components/public-booking/MenuHighlightsClient'
 import { ResourceTypeCard } from '@/components/public-booking/ResourceTypeCard'
+import { EventCard } from '@/components/public-booking/EventCard'
+import { getUpcomingPublicEvents } from '@/lib/events/public'
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -183,6 +185,14 @@ async function WebsiteSectionBlock({
             ))}
           </div>
         </SectionShell>
+      )
+    }
+    case 'events': {
+      const count = Math.min(section.content.limit, 3)
+      return (
+        <Suspense fallback={<EventsSkeleton heading={section.heading} tinted={tinted} count={count} />}>
+          <EventsContent section={section} tinted={tinted} tenantId={tenantId} currency={currency} timezone={timezone} />
+        </Suspense>
       )
     }
     case 'map': {
@@ -386,5 +396,54 @@ function YoutubeEmbed({ youtubeUrl }: { youtubeUrl: string }) {
         className="h-full w-full"
       />
     </div>
+  )
+}
+
+/**
+ * The 'events' case's data fetch (M15 #2), split out to stream behind its own
+ * Suspense boundary like ResourcesContent/MenuContent.
+ *
+ * Visibility is NOT decided here: getUpcomingPublicEvents() is the one public
+ * reader, so this section can only ever show what /events shows — published and
+ * registration_open, upcoming, this tenant. Returning null when there is
+ * nothing upcoming is what makes the section disappear gracefully rather than
+ * rendering an empty heading, matching ResourcesContent's own behaviour.
+ */
+async function EventsContent({
+  section,
+  tinted,
+  tenantId,
+  currency,
+  timezone,
+}: {
+  section: Extract<WebsiteSection, { type: 'events' }>
+  tinted: boolean
+  tenantId: string
+  currency: string
+  timezone: string
+}) {
+  const events = await getUpcomingPublicEvents(tenantId, section.content.limit)
+  if (events.length === 0) return null
+  return (
+    <SectionShell heading={section.heading ?? "What's On"} tinted={tinted} maxWidthClass="max-w-6xl">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {events.map((e) => (
+          <EventCard key={e.id} event={e} currency={currency} timezone={timezone} />
+        ))}
+      </div>
+    </SectionShell>
+  )
+}
+
+/** Heading is known synchronously, so only the card grid is a placeholder. */
+function EventsSkeleton({ heading, tinted, count }: { heading: string | null; tinted: boolean; count: number }) {
+  return (
+    <SectionShell heading={heading ?? "What's On"} tinted={tinted} maxWidthClass="max-w-6xl">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: count }).map((_, i) => (
+          <div key={i} className="h-80 animate-pulse rounded-2xl border border-border bg-muted/40" />
+        ))}
+      </div>
+    </SectionShell>
   )
 }

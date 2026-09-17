@@ -41,6 +41,15 @@ export async function requireCustomer(next?: string): Promise<CurrentCustomer> {
 /** The portal's home, and the fallback for anything safeCustomerNext() rejects. */
 export const CUSTOMER_HOME_PATH = '/account'
 
+/** The customer's own events — where a registration lands and can be cancelled. */
+export const CUSTOMER_EVENTS_PATH = '/account/events'
+
+/**
+ * The only destinations login will return a customer to. See safeCustomerNext()
+ * for why /events is on the list.
+ */
+const ALLOWED_NEXT_PREFIXES = [CUSTOMER_HOME_PATH, '/events'] as const
+
 /**
  * Sanitise a `?next=` value into a path we are willing to redirect to.
  *
@@ -54,8 +63,16 @@ export const CUSTOMER_HOME_PATH = '/account'
  *     treats as an absolute URL);
  *   * must not contain a backslash — some clients normalise '\' to '/', so
  *     '/\evil.test' can escape the same way;
- *   * must be under /account once RESOLVED, so the value cannot be used to
- *     bounce through an unrelated part of the app.
+ *   * must resolve under one of ALLOWED_NEXT_PREFIXES, so the value cannot be
+ *     used to bounce through an unrelated part of the app.
+ *
+ * The allowlist is two entries. /account is the portal itself. /events was
+ * added by M15 #3: registering for an event requires an OTP session, so the
+ * event registration page sends a signed-out visitor to login and needs them
+ * back on the page they were about to act on — landing them on the portal home
+ * instead would silently drop the thing they came to do. It is the same trust
+ * level as /account: a tenant-scoped path on this origin, resolved before it is
+ * tested, and reachable without a session anyway.
  *
  * That last word — resolved — is the point of the URL round-trip below. A
  * literal prefix test is not enough: '/account/../../evil' starts with
@@ -96,9 +113,10 @@ export function safeCustomerNext(next: string | null | undefined): string {
     return CUSTOMER_HOME_PATH
   }
 
-  if (path !== CUSTOMER_HOME_PATH && !path.startsWith(`${CUSTOMER_HOME_PATH}/`)) {
-    return CUSTOMER_HOME_PATH
-  }
+  const allowed = ALLOWED_NEXT_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  )
+  if (!allowed) return CUSTOMER_HOME_PATH
   // The login page itself is never a destination — it would loop. Tested on the
   // normalised PATH, so neither a trailing slash nor a query string slips past.
   if (path === CUSTOMER_LOGIN_PATH || path === `${CUSTOMER_LOGIN_PATH}/`) {
