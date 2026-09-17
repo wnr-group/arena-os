@@ -6,6 +6,7 @@ import { Plus, Pencil, Ban, RotateCcw, X, TicketPercent, CheckCircle2, XCircle, 
 import { upsertPromoCode, setPromoCodeActive } from '@/lib/actions/promo-codes'
 import { formatMoney } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 export type PromoRow = {
   id: string
@@ -32,6 +33,7 @@ const btn = 'rounded-md px-3 py-2 text-sm font-medium transition disabled:opacit
  */
 type Status = 'Inactive' | 'Usage Limit Reached' | 'Scheduled' | 'Expired' | 'Active'
 
+/** Derive a promo's display status from its active flag, usage counter and validity window. */
 export function statusOf(p: PromoRow, now = new Date()): Status {
   if (!p.isActive) return 'Inactive'
   if (p.maxUses !== null && p.uses >= p.maxUses) return 'Usage Limit Reached'
@@ -51,13 +53,16 @@ const STATUS_STYLE: Record<Status, string> = {
 /** `2026-08-10T12:30:00Z` → `2026-08-10T18:00` for a datetime-local input. */
 function toLocalInput(iso: string): string {
   const d = new Date(iso)
+  /** Zero-pad a number to 2 digits for a datetime-local string. */
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** Format an ISO date as a short display date (e.g. "10 Aug 2026"). */
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 
+/** Settings page for creating/editing promo codes and toggling them active. */
 export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; currency: string }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -66,6 +71,7 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
   const [modal, setModal] = useState<Modal | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
+  /** Run a server action, surfacing its error via state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     setError(null)
     start(async () => {
@@ -86,7 +92,9 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
     return { total, active, inactive: total - active, redemptions }
   }, [promos])
 
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string) => formatMoney(v, currency)
+  /** Render a promo's discount as "20%" or a formatted rupee amount, depending on its type. */
   const discountOf = (p: PromoRow) =>
     p.discountType === 'percentage' ? `${Number(p.discountValue)}%` : money(p.discountValue)
 
@@ -120,10 +128,10 @@ export function PromoCodesManager({ promos, currency }: { promos: PromoRow[]; cu
       )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={TicketPercent} label="Total codes" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="Active now" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={XCircle} label="Not usable" value={stats.inactive} accent="bg-muted text-muted-foreground" />
-        <StatCard icon={RotateCcw} label="Redemptions" value={stats.redemptions} accent="bg-primary/10 text-primary" />
+        <StatCard icon={TicketPercent} label="Total codes" value={stats.total} tint="rose" />
+        <StatCard icon={CheckCircle2} label="Active now" value={stats.active} tint="mint" />
+        <StatCard icon={XCircle} label="Not usable" value={stats.inactive} tint="slate" />
+        <StatCard icon={RotateCcw} label="Redemptions" value={stats.redemptions} tint="rose" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -436,19 +444,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border p-4 transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
-      <div className={`inline-flex size-8 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={16} />
+    <div className={`group rounded-xl border p-4 transition-all duration-300 hover:-translate-y-1 hover:shadow-md ${card}`}>
+      <div className="inline-flex size-8 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={16} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tabular-nums">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   )

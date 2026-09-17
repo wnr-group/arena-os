@@ -155,7 +155,7 @@ export const websiteBrandingInputSchema = z
     logoUrl: z.string().url().nullable(),
     accentColor: z
       .string()
-      .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex colour like #7c3aed')
+      .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex colour like #8b2242')
       .nullable(),
     heroImageUrl: z.string().url().nullable(),
     heroHeading: optionalText(200),

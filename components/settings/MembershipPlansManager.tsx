@@ -19,6 +19,7 @@ import {
   setMembershipPlanActive,
 } from '@/lib/actions/membership-plans'
 import { formatMoney } from '@/lib/format'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 export type MembershipPlanRow = {
   id: string
@@ -45,6 +46,7 @@ export function durationLabel(months: number): string {
 /** Drop a trailing `.00` so `2.00` free hours reads as `2`. */
 const trimZeros = (v: string) => String(Number(v))
 
+/** Settings page for creating/editing membership plans and their wallet-credit/discount benefits. */
 export function MembershipPlansManager({
   plans,
   currency,
@@ -57,6 +59,7 @@ export function MembershipPlansManager({
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
 
+  /** Run a server action, surfacing its error via state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess) => {
     setError(null)
     start(async () => {
@@ -78,6 +81,7 @@ export function MembershipPlansManager({
     return { total, active, inactive: total - active, credit }
   }, [plans])
 
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string | number) => formatMoney(v, currency)
 
   function toggleActive(row: MembershipPlanRow) {
@@ -101,10 +105,10 @@ export function MembershipPlansManager({
       )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={BadgeCheck} label="Total plans" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="On sale" value={stats.active} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={XCircle} label="Retired" value={stats.inactive} accent="bg-muted text-muted-foreground" />
-        <StatCard icon={Wallet} label="Credit on offer" value={money(stats.credit)} accent="bg-primary/10 text-primary" />
+        <StatCard icon={BadgeCheck} label="Total plans" value={stats.total} tint="rose" />
+        <StatCard icon={CheckCircle2} label="On sale" value={stats.active} tint="mint" />
+        <StatCard icon={XCircle} label="Retired" value={stats.inactive} tint="slate" />
+        <StatCard icon={Wallet} label="Credit on offer" value={money(stats.credit)} tint="rose" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -233,6 +237,7 @@ function PlanDialog({
   const [walletCredit, setWalletCredit] = useState(editing ? trimZeros(editing.walletCredit) : '0')
   const [isActive, setIsActive] = useState(editing?.isActive ?? true)
 
+  /** Parse a form field to a number, treating a blank string as NaN rather than 0. */
   const num = (s: string) => (s.trim() === '' ? NaN : Number(s))
   const priceN = num(price)
   const durationN = num(durationMonths)
@@ -426,19 +431,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="rounded-xl border border-border p-4">
-      <div className={`inline-flex size-8 items-center justify-center rounded-lg ${accent}`}>
-        <Icon size={16} />
+    <div className={`rounded-xl border p-4 ${card}`}>
+      <div className="inline-flex size-8 items-center justify-center rounded-lg bg-white">
+        <Icon size={16} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tabular-nums">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   )

@@ -32,11 +32,18 @@ import { applyHappyHour } from '@/lib/happy-hours/apply'
 import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
+import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 
 type Db = NodePgDatabase<typeof schema>
 
 /** Order rule violations the caller is allowed to show verbatim. */
 export class OrderError extends Error {}
+
+/** order_items.seat_no is a `smallint` (migration 0088) — its Postgres range
+ *  is the actual constraint being validated against here, so both this core
+ *  and the Zod schema in lib/actions/orders.ts bound against the SAME
+ *  number, not two independently-guessed ones that could drift apart. */
+export const MAX_SEAT_NO = 32767
 
 export type CreateOrderItemInput = {
   menuItemId: string
@@ -49,6 +56,12 @@ export type CreateOrderItemInput = {
   // both that and every attached group's min/max, and snapshots the chosen
   // options' name + price delta onto order_item_modifiers.
   modifierOptionIds?: string[]
+  // Seat/guest tagging (migration 0088, M18 #1) — which guest this line
+  // belongs to, for later by-seat bill splitting. Optional and unvalidated
+  // against cover_count here: a waiter may tag a seat before the table's
+  // guest count is finalised, and a stale/absent cover_count must never
+  // block placing food. Pure bookkeeping — never affects pricing.
+  seatNo?: number
 }
 
 export type CreateOrderInput = {
@@ -165,6 +178,14 @@ export async function createOrderCore(
 
   const byId = new Map(rows.map((r) => [r.id, r]))
   if (byId.size !== ids.length) throw new OrderError('One or more menu items were not found.')
+
+  // Items with no tax_rate_id of their own fall back to the tenant's sole
+  // active 'food'/'both' rate, if unambiguous — see resolveScopeDefaultTaxPercent.
+  // Skipped entirely when every item already has its own rate, which is the
+  // common case once a tenant has started assigning rates per item.
+  const defaultFoodTaxPercent = rows.some((r) => r.taxPercent === null)
+    ? await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'food')
+    : null
 
   // The true authority, not just a UI filter: the picker (TakeOrderDialog)
   // already hides 'hidden' items and shows 'out_of_stock' ones disabled, but
@@ -363,6 +384,20 @@ export async function createOrderCore(
   // transaction can attach order_item_modifiers rows to the right parent
   // without a second round trip (RETURNING doesn't promise to preserve
   // input order for a multi-row INSERT ... VALUES).
+  // seat_no is a plain smallint with no seats table to check against (see
+  // migration 0088) — only shape-validated here (a real positive integer
+  // within the seat_no column's own smallint range), same "trust nothing
+  // from the browser but shape" discipline as qty. The upper bound matters:
+  // without it, a value the Zod schema also failed to cap (or a caller that
+  // bypasses it entirely, e.g. a test or another server action) reaches the
+  // INSERT and fails on Postgres' smallint range check instead — a raw DB
+  // error instead of this clear one.
+  for (const i of input.items) {
+    if (i.seatNo !== undefined && (!Number.isInteger(i.seatNo) || i.seatNo < 1 || i.seatNo > MAX_SEAT_NO)) {
+      throw new OrderError(`Seat number must be a whole number between 1 and ${MAX_SEAT_NO}.`)
+    }
+  }
+
   const preparedItems = input.items.map((i) => {
     const m = byId.get(i.menuItemId)!
     const basePrice = Number(m.price)
@@ -385,7 +420,7 @@ export async function createOrderCore(
         menuItemId: i.menuItemId,
         itemName: m.name,
         unitPrice: unitPrice.toFixed(2),
-        taxRate: Number(m.taxPercent ?? 0).toFixed(2),
+        taxRate: Number(m.taxPercent ?? defaultFoodTaxPercent ?? 0).toFixed(2),
         qty: i.qty,
         lineTotal: (unitPrice * i.qty).toFixed(2),
         specialInstructions: i.specialInstructions || null,
@@ -398,6 +433,7 @@ export async function createOrderCore(
         originalUnitPrice: applied ? basePrice.toFixed(2) : null,
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
+        seatNo: i.seatNo ?? null,
       },
       modifiers: selected.map((o) => ({
         tenantId: ctx.tenantId,

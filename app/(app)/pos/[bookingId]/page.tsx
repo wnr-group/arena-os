@@ -1,13 +1,14 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canBill } from '@/lib/auth/roles'
+import { canBill, isManager } from '@/lib/auth/roles'
 import { getBillableForBooking } from '@/lib/billing/data'
 import { BillScreen } from '@/components/pos/BillScreen'
 
 /** Matches a UUID, so a junk id 404s instead of erroring in the query. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** Server page for /pos/[bookingId] — loads the billable booking and renders BillScreen with every display-only flag it needs. */
 export default async function PosBillPage({
   params,
 }: {
@@ -43,6 +44,19 @@ export default async function PosBillPage({
   const settlement = data.settlement
     ? { ...data.settlement, payments: data.settlement.payments.map((p) => ({ ...p, createdAt: p.createdAt.toISOString() })) }
     : null
+  const splitChecks = data.splitChecks
+    ? data.splitChecks.map((c) => ({
+        invoiceId: c.invoiceId,
+        invoiceNumber: c.invoiceNumber,
+        seq: c.seq,
+        label: `Check ${c.seq} of ${data.splitChecks!.length}`,
+        settlement: {
+          ...c.settlement,
+          payments: c.settlement.payments.map((p) => ({ ...p, createdAt: p.createdAt.toISOString() })),
+        },
+        wallet: c.wallet,
+      }))
+    : null
 
   return (
     <BillScreen
@@ -50,6 +64,7 @@ export default async function PosBillPage({
       lines={data.lines}
       existingInvoice={data.existingInvoice}
       settlement={settlement}
+      splitChecks={splitChecks}
       // Display only: every wallet limit is re-checked under a lock by the
       // action, which reads the balance from the ledger itself.
       wallet={data.wallet}
@@ -73,6 +88,18 @@ export default async function PosBillPage({
             }
           : null
       }
+      serviceChargeConfig={data.serviceChargeConfig}
+      staff={data.staff}
+      // M18 (split bill / service charge / tips) is restaurant-only — see
+      // lib/settings/business-profile.ts's loadServiceChargeConfig for the
+      // actual enforcement; this just keeps the Split-bill button and tip
+      // input off the screen for every other tenant type.
+      isRestaurant={ctx.tenant.industry === 'restaurant'}
+      // Bill-level comp (M18 #5) is manager/owner only — see
+      // lib/actions/billing.ts's resolveCompInput for the actual
+      // enforcement; this just keeps the comp control off a cashier's
+      // screen. Combined with isRestaurant above to gate the control itself.
+      isManager={isManager(ctx.role)}
       timeZone={ctx.tenant.timezone}
       currency={ctx.tenant.currency}
     />

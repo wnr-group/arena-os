@@ -24,12 +24,14 @@ const taxRateInput = z.object({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1, 'Name is required'),
   percent: z.coerce.number().min(0).max(100),
+  appliesTo: z.enum(['food', 'resources', 'both']).default('food'),
   isActive: z.boolean().default(true),
 })
 
 function revalidateTaxRatePaths() {
   revalidatePath('/settings/tax-rates')
   revalidatePath('/menu/items')
+  revalidatePath('/settings/resources/types')
 }
 
 export async function upsertTaxRate(input: z.input<typeof taxRateInput>): Promise<Result> {
@@ -41,6 +43,7 @@ export async function upsertTaxRate(input: z.input<typeof taxRateInput>): Promis
         tenantId: ctx.tenant.id,
         name: v.name,
         percent: v.percent.toFixed(2),
+        appliesTo: v.appliesTo,
         isActive: v.isActive,
       }
       if (v.id) {

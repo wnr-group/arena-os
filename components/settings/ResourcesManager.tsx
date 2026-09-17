@@ -19,22 +19,13 @@ import {
   Filter,
   ChevronDown,
   Loader2,
-  UploadCloud,
-  FileImage,
   QrCode,
 } from 'lucide-react'
-import { upsertResource, deleteResource, uploadResourceImage } from '@/lib/actions/resources'
+import { upsertResource, deleteResource } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
-
-function fileNameFromUrl(url: string): string {
-  try {
-    return decodeURIComponent(url.split('/').pop() || url)
-  } catch {
-    return url
-  }
-}
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 
 type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
 type ResourceStatus = 'available' | 'maintenance' | 'inactive'
@@ -61,7 +52,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 
 const STATUS_LABELS: Record<ResourceStatus, string> = {
   available: 'Available',
@@ -74,6 +65,7 @@ const STATUS_BADGE: Record<ResourceStatus, string> = {
   inactive: 'bg-muted text-muted-foreground',
 }
 
+/** Settings page for creating/editing individual bookable resources (tables, consoles, rooms, etc). */
 export function ResourcesManager({
   branchId,
   currency,
@@ -104,6 +96,7 @@ export function ResourcesManager({
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | ResourceStatus>('all')
 
+  /** Run a server action, surfacing its error via toast or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()
@@ -182,10 +175,10 @@ export function ResourcesManager({
   return (
     <div className="mt-8 space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon={Boxes} label="Total resources" value={stats.total} accent="bg-primary/10 text-primary" />
-        <StatCard icon={CheckCircle2} label="Available" value={stats.available} accent="bg-emerald-500/10 text-emerald-600" />
-        <StatCard icon={Wrench} label="Maintenance" value={stats.maintenance} accent="bg-amber-500/10 text-amber-600" />
-        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} accent="bg-muted text-muted-foreground" />
+        <StatCard icon={Boxes} label="Total resources" value={stats.total} tint="rose" />
+        <StatCard icon={CheckCircle2} label="Available" value={stats.available} tint="mint" />
+        <StatCard icon={Wrench} label="Maintenance" value={stats.maintenance} tint="amber" />
+        <StatCard icon={XCircle} label="Inactive" value={stats.inactive} tint="slate" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -259,7 +252,7 @@ export function ResourcesManager({
             </div>
 
             {filtersActive && (
-              <button type="button" onClick={resetFilters} className="text-sm font-medium uppercase tracking-wide text-primary hover:underline">
+              <button type="button" onClick={resetFilters} className="text-sm font-medium text-primary hover:underline">
                 Clear Filters
               </button>
             )}
@@ -285,7 +278,7 @@ export function ResourcesManager({
       ) : filteredResources.length === 0 ? (
         <p className="rounded-xl border border-dashed p-10 text-center text-base text-muted-foreground">
           No resources match your filters.{' '}
-          <button type="button" onClick={resetFilters} className="font-medium uppercase tracking-wide text-primary hover:underline">
+          <button type="button" onClick={resetFilters} className="font-medium text-primary hover:underline">
             Clear Filters
           </button>
         </p>
@@ -411,19 +404,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )
@@ -443,7 +437,7 @@ function TypeTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium uppercase tracking-wide transition ${
+      className={`relative shrink-0 whitespace-nowrap px-4 py-3 text-sm font-medium transition ${
         active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -593,10 +587,11 @@ function ResourceModal({
   const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
   const [override, setOverride] = useState(row?.rateOverride ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
-  const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
-  const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  // No per-resource upload anymore — a resource always shows its type's
+  // photo (ResourceVisual/table row already fall back to typeImageUrl).
+  // Kept as a plain value (not state) so an existing legacy override, if any,
+  // is preserved on save rather than silently cleared.
+  const imageUrl = row?.imageUrl ?? ''
   const [submitted, setSubmitted] = useState(false)
 
   const selectedType = types.find((t) => t.id === typeId)
@@ -617,23 +612,6 @@ function ResourceModal({
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
-
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    setUploadError(null)
-    setUploading(true)
-    const fd = new FormData()
-    fd.append('file', file)
-    const r = await uploadResourceImage(fd)
-    setUploading(false)
-    if (r.error) setUploadError(r.error)
-    else if (r.url) {
-      setImageUrl(r.url)
-      setFileName(file.name)
-    }
-  }
 
   function submit() {
     setSubmitted(true)
@@ -662,15 +640,15 @@ function ResourceModal({
   const actions = (
     <div className="mt-5 flex items-center justify-between gap-2">
       <button
-        className="rounded-lg border border-border px-4 py-2 text-sm font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         disabled={pending}
         onClick={onClose}
       >
         Cancel
       </button>
       <button
-        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium uppercase tracking-wide text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={pending || uploading}
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={pending}
         onClick={submit}
       >
         {pending && <Loader2 size={15} className="animate-spin" />}
@@ -703,8 +681,6 @@ function ResourceModal({
           </p>
 
           <div className="mt-4 space-y-3">
-            {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
-
             <div className={isRestaurant ? 'space-y-3' : 'grid grid-cols-2 gap-3'}>
               <div>
                 <label className={label}>
@@ -791,61 +767,13 @@ function ResourceModal({
                   />
                 </div>
 
-                <div>
-                  <label className={label}>Photo (optional override)</label>
-                  <label
-                    className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-                      uploading
-                        ? 'cursor-not-allowed border-border opacity-60'
-                        : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                    }`}
-                  >
-                    {uploading ? (
-                      <>
-                        <Loader2 size={20} className="animate-spin text-muted-foreground" />
-                        <span className="text-sm text-muted-foreground">Uploading…</span>
-                      </>
-                    ) : fileName ? (
-                      <>
-                        <FileImage size={20} className="text-primary" />
-                        <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
-                        <span className="text-xs text-muted-foreground">Click to replace</span>
-                      </>
-                    ) : (
-                      <>
-                        <UploadCloud size={20} className="text-muted-foreground" />
-                        <span className="text-sm font-medium">Click to upload a photo</span>
-                        <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
-                      </>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,image/gif"
-                      className="hidden"
-                      disabled={uploading}
-                      onChange={handleFile}
-                    />
-                  </label>
-                  {fileName && !uploading ? (
-                    <button
-                      type="button"
-                      className="mt-1 text-xs uppercase tracking-wide text-muted-foreground hover:text-destructive"
-                      onClick={() => {
-                        setImageUrl('')
-                        setFileName(null)
-                      }}
-                    >
-                      Remove — Use the Type&apos;s Default Photo
-                    </button>
+                <p className="text-xs text-muted-foreground">
+                  {selectedType?.imageUrl ? (
+                    <>Photo comes from the resource type — set it on <Link href="/settings/resources/types" className="font-medium text-primary hover:underline">{selectedType.name}</Link>.</>
                   ) : (
-                    !uploading &&
-                    selectedType?.imageUrl && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Currently showing the resource type&apos;s default photo.
-                      </p>
-                    )
+                    <>No photo yet — add one on the resource type to show it here.</>
                   )}
-                </div>
+                </p>
               </>
             )}
           </div>

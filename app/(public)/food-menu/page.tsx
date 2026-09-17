@@ -86,7 +86,7 @@ export default async function MenuPage({
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
+      className="flex min-h-screen flex-col bg-gradient-to-b from-accent/30 via-background/50 to-background/50 selection:bg-primary/20 selection:text-primary"
       style={accentColorStyle(branding.accentColor)}
     >
       <OrderCartProvider
@@ -94,7 +94,7 @@ export default async function MenuPage({
       >
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
-        <main className="flex-1 bg-background relative">
+        <main className="flex-1 bg-gradient-to-b from-accent/40 via-background to-background relative">
           {/* Layered premium ambient glow elements */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
             <div

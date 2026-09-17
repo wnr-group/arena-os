@@ -71,7 +71,7 @@ export default async function StationOrderPage({ params }: { params: Promise<{ s
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
+      className="flex min-h-screen flex-col bg-gradient-to-b from-accent/30 via-background/50 to-background/50 selection:bg-primary/20 selection:text-primary"
       style={accentColorStyle(branding.accentColor)}
     >
       <OrderCartProvider
@@ -79,7 +79,7 @@ export default async function StationOrderPage({ params }: { params: Promise<{ s
       >
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
-        <main className="flex-1 bg-background relative">
+        <main className="flex-1 bg-gradient-to-b from-accent/40 via-background to-background relative">
           <section className="relative overflow-hidden bg-gradient-to-b from-primary/5 via-transparent to-transparent">
             <div className="relative mx-auto max-w-4xl px-4 py-14 text-center sm:px-6 sm:py-20">
               <span className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-4 py-2 text-xs font-bold uppercase tracking-wider text-primary shadow-sm shadow-primary/10 backdrop-blur-md">

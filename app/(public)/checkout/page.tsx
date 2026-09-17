@@ -68,13 +68,13 @@ export default async function CheckoutPage() {
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-background/50 selection:bg-primary/20 selection:text-primary"
+      className="flex min-h-screen flex-col bg-gradient-to-b from-accent/30 via-background/50 to-background/50 selection:bg-primary/20 selection:text-primary"
       style={accentColorStyle(branding.accentColor)}
     >
       <OrderCartProvider>
         <OrderNavbar tenantName={tenant.name} icon={<Icon size={18} />} logoUrl={branding.logoUrl} />
 
-        <main className="flex-1 bg-background">
+        <main className="flex-1 bg-gradient-to-b from-accent/40 via-background to-background">
           <CheckoutClient
             currency={tenant.currency}
             venueName={tenant.name}

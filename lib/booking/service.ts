@@ -9,11 +9,13 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
 import { durationHours } from './availability'
 import { todayInZone } from './time'
 import { resolveBookingCustomer } from './customer'
-import { findLiveInvoice } from '@/lib/billing/invoice'
+import { findLiveBilling } from '@/lib/billing/invoice'
+import { getInvoiceSettlement } from '@/lib/billing/payments'
+import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -44,6 +46,7 @@ export type PricedBookingSlot = {
   slotTotal: string
   resourceName: string
   resourceTypeName: string
+  taxRatePercent: string
 }
 
 /**
@@ -74,9 +77,15 @@ export async function priceBookingSlots(
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       rateOverride: resources.hourlyRateOverride,
+      // Only a rate with appliesTo 'resources' or 'both' can ever be set here
+      // (enforced in lib/actions/resources.ts), so no re-check is needed at
+      // read time — unlike menu items, which snapshot from a live join too
+      // but read whatever's on the row unconditionally (loadFoodLines).
+      taxPercent: taxRates.percent,
     })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .leftJoin(taxRates, eq(taxRates.id, resourceTypes.taxRateId))
     .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, ids)))
 
   const byId = new Map(rows.map((r) => [r.id, r]))
@@ -84,6 +93,14 @@ export async function priceBookingSlots(
   for (const r of rows) {
     if (r.branchId !== input.branchId) throw new BookingError('A resource belongs to a different branch.')
   }
+
+  // Resource types with no tax_rate_id of their own fall back to the
+  // tenant's sole active 'resources'/'both' rate, if unambiguous — see
+  // resolveScopeDefaultTaxPercent. Skipped when every resource already has
+  // its own rate.
+  const defaultResourcesTaxPercent = rows.some((r) => r.taxPercent === null)
+    ? await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')
+    : null
 
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
@@ -101,6 +118,7 @@ export async function priceBookingSlots(
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
+      taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
     }
   })
 
@@ -133,6 +151,7 @@ async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: stri
   return `BK-${compact}-${String(value).padStart(3, '0')}`
 }
 
+/** Transactional core of creating a booking: validates the slots, locks for conflicts, and inserts the booking + its slots. */
 export async function createBookingCore(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
@@ -361,9 +380,46 @@ export async function requestBillCore(tx: Db, ctx: { tenantId: string }, booking
 }
 
 async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string): Promise<void> {
-  const existing = await findLiveInvoice(tx, tenantId, bookingId)
-  if (existing) {
-    throw new BookingError(`This table has already been billed as invoice ${existing.invoiceNumber} — nothing to move.`)
+  const existing = await findLiveBilling(tx, tenantId, bookingId)
+  if (existing?.kind === 'single') {
+    throw new BookingError(`This table has already been billed as invoice ${existing.invoice.invoiceNumber} — nothing to move.`)
+  }
+  if (existing?.kind === 'split') {
+    throw new BookingError(
+      `This table's bill has already been split into ${existing.checks.length} checks — nothing to move.`,
+    )
+  }
+}
+
+/**
+ * Refuse to complete a booking with money still owing (M18 #2). Covers both
+ * a normal single invoice and every check of a split bill — findLiveBilling
+ * already generalises the two, same as requireNoLiveInvoice above. A booking
+ * with no invoice at all (nothing was ever billed) is unaffected: this only
+ * blocks completion against a KNOWN, outstanding balance, never a booking
+ * that was simply never billed (e.g. a no-charge walk-through).
+ */
+export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId: string): Promise<void> {
+  const billing = await findLiveBilling(tx, tenantId, bookingId)
+  if (!billing) return
+
+  const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
+  for (const invoiceId of invoiceIds) {
+    const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
+    // findLiveBilling just proved this exact invoice exists in the SAME
+    // transaction — it cannot have vanished a moment later (same reasoning
+    // as lib/billing/data.ts's identical check). A null result is therefore
+    // an unexpected state, not a paid invoice, so this must fail closed
+    // rather than let `settlement?.payable` silently evaluate to undefined
+    // (falsy) and wave the booking through as if it were settled.
+    if (!settlement) throw new Error(`Settlement missing for invoice ${invoiceId}.`)
+    if (settlement.payable) {
+      throw new BookingError(
+        billing.kind === 'split'
+          ? "This table's bill has been split — settle every check before completing."
+          : 'This booking still has an outstanding balance — settle it before completing.',
+      )
+    }
   }
 }
 

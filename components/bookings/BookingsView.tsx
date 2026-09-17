@@ -12,6 +12,7 @@ import {
   Clock,
   Loader2,
   Plus,
+  RefreshCw,
   Search,
   ShoppingBag,
   UserCheck,
@@ -24,6 +25,7 @@ import { DepositButton } from './DepositButton'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -93,7 +95,7 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: 'No-show',
 }
 const SOURCE_BADGE: Record<string, string> = {
-  online: 'bg-violet-500/10 text-violet-600',
+  online: 'bg-accent text-primary',
   walk_in: 'bg-muted text-muted-foreground',
   staff: 'bg-muted text-muted-foreground',
 }
@@ -117,6 +119,7 @@ function minutesInZone(iso: string, tz: string): number {
   return h * 60 + map.minute
 }
 
+/** The daily bookings board: timeline of a branch's resources, walk-in creation, and status actions. */
 export function BookingsView({
   branchId,
   branchName,
@@ -184,6 +187,9 @@ export function BookingsView({
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
   const [pending, start] = useTransition()
   const [actingAction, setActingAction] = useState<string | null>(null)
+  // Separate from `pending` above (which tracks status-change/cancel actions)
+  // so refreshing the list never shows a spinner on an unrelated row button.
+  const [refreshing, startRefresh] = useTransition()
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -250,6 +256,7 @@ export function BookingsView({
   }, [bookingsList, search, statusFilter])
 
   const span = Math.max(60, closeMin - openMin)
+  /** Convert a minute-of-day into a left-offset percentage across the timeline's open/close span. */
   const pct = (min: number) => ((clamp(min) - openMin) / span) * 100
   function clamp(min: number) {
     return Math.min(closeMin, Math.max(openMin, min))
@@ -322,6 +329,16 @@ export function BookingsView({
             <ChevronRight size={16} />
           </Link>
           <button
+            onClick={() => startRefresh(() => router.refresh())}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
+            aria-label="Refresh bookings"
+            title="Refresh"
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+          <button
             onClick={() => openNew()}
             disabled={resources.length === 0}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
@@ -331,7 +348,7 @@ export function BookingsView({
           <button
             onClick={() => setOrderDialog({})}
             disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-base font-medium transition hover:bg-muted disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
           >
             <ShoppingBag size={16} /> Take order
           </button>
@@ -445,10 +462,10 @@ export function BookingsView({
       {view === 'bookings' && (
         <div className="mt-6 space-y-6">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <StatCard icon={CalendarDays} label="Total bookings" value={bookingStats.total} accent="bg-primary/10 text-primary" />
-            <StatCard icon={Clock} label="Confirmed" value={bookingStats.confirmed} accent="bg-blue-500/10 text-blue-600" />
-            <StatCard icon={UserCheck} label="Checked in" value={bookingStats.checkedIn} accent="bg-emerald-500/10 text-emerald-600" />
-            <StatCard icon={CheckCircle2} label="Completed" value={bookingStats.completed} accent="bg-muted text-muted-foreground" />
+            <StatCard icon={CalendarDays} label="Total bookings" value={bookingStats.total} tint="rose" />
+            <StatCard icon={Clock} label="Confirmed" value={bookingStats.confirmed} tint="mint" />
+            <StatCard icon={UserCheck} label="Checked in" value={bookingStats.checkedIn} tint="mint" />
+            <StatCard icon={CheckCircle2} label="Completed" value={bookingStats.completed} tint="slate" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -712,7 +729,7 @@ export function BookingsView({
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                                     it.voidStatus === 'comped'
-                                      ? 'bg-violet-500/10 text-violet-600'
+                                      ? 'bg-accent text-primary'
                                       : 'bg-destructive/10 text-destructive'
                                   }`}
                                   title={it.voidReason ?? undefined}
@@ -822,19 +839,20 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  accent,
+  tint,
 }: {
-  icon: ComponentType<{ size?: number }>
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   value: string | number
-  accent: string
+  tint: StatTint
 }) {
+  const { card, icon } = STAT_TINT_CLASSES[tint]
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-md hover:shadow-primary/5 sm:p-5">
-      <div className={`inline-flex size-9 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${accent}`}>
-        <Icon size={18} />
+    <div className={`group rounded-xl border p-4 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5 ${card}`}>
+      <div className="inline-flex size-9 items-center justify-center rounded-lg bg-white transition-transform duration-300 group-hover:scale-110">
+        <Icon size={18} className={icon} />
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{label}</p>
     </div>
   )

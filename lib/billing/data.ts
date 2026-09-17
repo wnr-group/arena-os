@@ -1,9 +1,10 @@
 import 'server-only'
-import { and, eq, inArray, max, min, ne } from 'drizzle-orm'
+import { and, asc, eq, inArray, max, min, ne } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { bookings, bookingSlots, branches, customers, invoices, orderItems, orders, resources } from '@/db/schema'
+import { bookings, bookingSlots, branches, customers, invoices, memberships, orderItems, orders, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import {
+  findLiveBilling,
   findLiveInvoice,
   isBillableBookingStatus,
   loadBillLines,
@@ -18,7 +19,8 @@ import { loyaltyTenderState, type LoyaltyRule } from './loyalty'
 import { getInvoiceSettlement, type InvoiceSettlement } from './payments'
 import { walletTenderState } from './wallet-payments'
 import { loadInvoiceReceipt, type InvoiceReceipt } from './receipt'
-import { priceBill, type BillLine, type PricingResult } from './pricing'
+import { priceBill, type BillLine, type PricingResult, type ServiceChargeConfig } from './pricing'
+import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
 
 /**
  * Everything the POS bill screen renders, loaded in ONE RLS-scoped transaction
@@ -44,16 +46,39 @@ export type BillableBookingHeader = {
   resourceNames: string[]
 }
 
+/** One check of a split bill (M18 #2) — the same shape a normal invoice's
+ *  display data has, plus its position in the split. */
+export type CheckView = {
+  invoiceId: string
+  invoiceNumber: string
+  seq: number
+  status: string
+  lines: BillLine[]
+  settlement: InvoiceSettlement
+  /** This check's OWN wallet spend limit — capped at its own remaining
+   *  balance, not the whole split's, since each check settles independently. */
+  wallet: { balance: number; maxSpendable: number } | null
+}
+
 export type BillableBooking = {
   booking: BillableBookingHeader
   lines: BillLine[]
-  /** Set when the booking already carries a live (non-void) invoice. */
+  /** Set when the booking already carries a live (non-void) SINGLE invoice —
+   *  null when the booking has never been billed, OR when it's been split
+   *  (see `splitChecks` instead; the two are mutually exclusive). */
   existingInvoice: ExistingInvoice | null
   /**
    * What that invoice costs, what has been tendered and what is left — the
    * authoritative figures behind the payment panel. Null until a bill exists.
    */
   settlement: InvoiceSettlement | null
+  /**
+   * Every check of a split bill (M18 #2), ordered by bill_group_seq — null
+   * for a booking that was never split. Mutually exclusive with
+   * `existingInvoice`/`settlement`: a booking is either unbilled, billed as
+   * one invoice, or split into N checks, never more than one of the three.
+   */
+  splitChecks: CheckView[] | null
   /**
    * The membership benefit this bill is entitled to (AROS-61) — DISPLAY ONLY.
    *
@@ -75,6 +100,16 @@ export type BillableBooking = {
    * server-side when the bill is raised.
    */
   loyalty: { balance: number; rule: LoyaltyRule } | null
+  /**
+   * The tenant's service charge config (M18 #3), for the pre-bill live
+   * preview only — DISPLAY ONLY, same trust model as `membership` above.
+   * Once a bill exists (single or split), the FROZEN serviceChargePercent
+   * on that invoice/check is what actually applied; this is meaningless at
+   * that point and the screen doesn't read it.
+   */
+  serviceChargeConfig: ServiceChargeConfig
+  /** Active staff, for the tip-recipient picker on the payment panel(s). */
+  staff: { id: string; name: string }[]
 }
 
 /**
@@ -118,13 +153,41 @@ export async function getBillableForBooking(
     // orders, and a billed order has deliberately dropped out of that (see
     // loadInvoiceLines' doc comment), so re-running it here would make the
     // food section vanish from a bill that already charged for it.
-    const existingInvoice = await findLiveInvoice(tx, ctx.tenant.id, row.id)
-    const lines = existingInvoice
-      ? await loadInvoiceLines(tx, ctx.tenant.id, existingInvoice.id)
-      : await loadBillLines(tx, ctx.tenant.id, row.id, ctx.tenant.timezone)
+    const liveBilling = await findLiveBilling(tx, ctx.tenant.id, row.id)
+    const existingInvoice = liveBilling?.kind === 'single' ? liveBilling.invoice : null
     const settlement = existingInvoice
       ? await getInvoiceSettlement(tx, ctx.tenant.id, existingInvoice.id)
       : null
+
+    // A split bill's checks are loaded sequentially — same "one connection,
+    // one query at a time" discipline as loadBillLines above — each with its
+    // own frozen lines and settlement, exactly like the single-invoice case
+    // just does N times over.
+    let splitChecks: CheckView[] | null = null
+    if (liveBilling?.kind === 'split') {
+      splitChecks = []
+      for (const c of liveBilling.checks) {
+        const checkSettlement = await getInvoiceSettlement(tx, ctx.tenant.id, c.id)
+        // findLiveBilling just read this exact invoice id inside the SAME
+        // transaction — it cannot have vanished a moment later.
+        if (!checkSettlement) throw new Error(`Settlement missing for check invoice ${c.id}.`)
+        splitChecks.push({
+          invoiceId: c.id,
+          invoiceNumber: c.invoiceNumber,
+          seq: c.billGroupSeq,
+          status: c.status,
+          lines: await loadInvoiceLines(tx, ctx.tenant.id, c.id),
+          settlement: checkSettlement,
+          wallet: await walletTenderState(tx, ctx.tenant.id, c.id),
+        })
+      }
+    }
+
+    const lines = existingInvoice
+      ? await loadInvoiceLines(tx, ctx.tenant.id, existingInvoice.id)
+      : splitChecks
+        ? splitChecks.flatMap((c) => c.lines)
+        : await loadBillLines(tx, ctx.tenant.id, row.id, ctx.tenant.timezone)
 
     // The window shown in the header spans the same ACTIVE slots that produced
     // the lines, so header and body can never disagree.
@@ -160,6 +223,20 @@ export async function getBillableForBooking(
       ? await walletTenderState(tx, ctx.tenant.id, existingInvoice.id)
       : null
 
+    // Live config for the pre-bill preview (M18 #3) — meaningless once a
+    // bill exists, see the field's own doc comment.
+    const serviceChargeConfig = await loadServiceChargeConfig(tx, ctx.tenant.id)
+
+    // Every active staff member, for the tip-recipient picker — not
+    // branch-filtered, since an owner/manager (often branchId=null) should
+    // still be a valid recipient at a single-branch tenant.
+    const staffRows = await tx
+      .select({ id: memberships.id, name: memberships.fullName })
+      .from(memberships)
+      .where(and(eq(memberships.tenantId, ctx.tenant.id), eq(memberships.status, 'active')))
+      .orderBy(asc(memberships.fullName))
+    const staff = staffRows.map((s) => ({ id: s.id, name: s.name ?? 'Unnamed staff' }))
+
     return {
       booking: {
         id: row.id,
@@ -184,9 +261,12 @@ export async function getBillableForBooking(
       lines,
       existingInvoice,
       settlement,
+      splitChecks,
       membership,
       wallet,
       loyalty,
+      serviceChargeConfig,
+      staff,
     }
   })
 }
@@ -234,40 +314,41 @@ export async function listBookingBillingStates(
 ): Promise<Record<string, BookingBillingState>> {
   if (bookingIds.length === 0) return {}
   return withUser(ctx.user.id, async (tx) => {
-    const [foodRows, invoiceRows] = await Promise.all([
-      // Same shape/filter as loadFoodLines, batched across every booking.
-      tx
-        .select({
-          bookingId: orders.bookingId,
-          itemId: orderItems.id,
-          itemName: orderItems.itemName,
-          unitPrice: orderItems.unitPrice,
-          taxRate: orderItems.taxRate,
-          qty: orderItems.qty,
-        })
-        .from(orderItems)
-        .innerJoin(orders, eq(orders.id, orderItems.orderId))
-        .where(
-          and(
-            eq(orders.tenantId, ctx.tenant.id),
-            inArray(orders.bookingId, bookingIds),
-            eq(orders.status, 'open'),
-            eq(orders.acceptanceStatus, 'accepted'),
-            eq(orderItems.voidStatus, 'active'),
-          ),
+    // Sequential, not Promise.all: these share ONE transaction client, and a
+    // Postgres connection cannot run two queries at once (pg deprecates it and
+    // removes it in v9).
+    // Same shape/filter as loadFoodLines, batched across every booking.
+    const foodRows = await tx
+      .select({
+        bookingId: orders.bookingId,
+        itemId: orderItems.id,
+        itemName: orderItems.itemName,
+        unitPrice: orderItems.unitPrice,
+        taxRate: orderItems.taxRate,
+        qty: orderItems.qty,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(
+        and(
+          eq(orders.tenantId, ctx.tenant.id),
+          inArray(orders.bookingId, bookingIds),
+          eq(orders.status, 'open'),
+          eq(orders.acceptanceStatus, 'accepted'),
+          eq(orderItems.voidStatus, 'active'),
         ),
-      // Same shape/filter as findLiveInvoice, batched across every booking.
-      tx
-        .select({ bookingId: invoices.bookingId })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.tenantId, ctx.tenant.id),
-            inArray(invoices.bookingId, bookingIds),
-            ne(invoices.status, 'void'),
-          ),
+      )
+    // Same shape/filter as findLiveInvoice, batched across every booking.
+    const invoiceRows = await tx
+      .select({ bookingId: invoices.bookingId })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.tenantId, ctx.tenant.id),
+          inArray(invoices.bookingId, bookingIds),
+          ne(invoices.status, 'void'),
         ),
-    ])
+      )
 
     const linesByBooking = new Map<string, BillLine[]>()
     for (const r of foodRows) {

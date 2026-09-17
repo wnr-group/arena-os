@@ -15,7 +15,7 @@ import { and, eq, inArray, ne } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
+import { auditLog, bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
 import { durationHours } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
@@ -25,7 +25,7 @@ import {
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
 import { cancelPendingOrdersForBilledBooking } from '@/lib/orders/service'
-import { loadInvoicePrefix } from '@/lib/settings/business-profile'
+import { loadInvoicePrefix, loadServiceChargeConfig } from '@/lib/settings/business-profile'
 import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
 import {
   commitRedemption,
@@ -35,13 +35,55 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
-import { priceBill, round2, type BillLine, type PricingResult } from './pricing'
+import {
+  computeServiceCharge,
+  mergeTaxBreakup,
+  priceBill,
+  round2,
+  type BillLine,
+  type PricingResult,
+  type ServiceChargeResult,
+} from './pricing'
 import { consumePromoUse, normalizePromoCode, validatePromo } from './promo'
 
 type Db = NodePgDatabase<typeof schema>
 
 /** Billing rule violations the cashier should see verbatim. */
 export class BillingError extends Error {}
+
+/**
+ * Bill-level comp/discount audit trail (M18 #5).
+ *
+ * No shared audit module exists in this codebase (see lib/orders/service.ts's
+ * writeAudit for the same note) — each domain keeps its own private copy.
+ * Exported (unlike the others) because lib/billing/split.ts's split-bill
+ * comp path is the same feature, same transaction shape, same table, and
+ * genuinely the same domain — not a cross-cutting reuse.
+ */
+export type AuditActor = { tenantId: string; membershipId: string }
+
+/** Append one durable, append-only row to `audit_log` for `entry`, attributed to `actor`. */
+export async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: {
+    action: string
+    entityType: string
+    entityId: string
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
 
 /**
  * Booking states a bill may be raised for — "confirmed/checked-in" from the
@@ -51,6 +93,7 @@ export class BillingError extends Error {}
  */
 export const BILLABLE_BOOKING_STATUSES = ['confirmed', 'checked_in'] as const
 
+/** True when a booking in `status` may have a bill raised against it (see BILLABLE_BOOKING_STATUSES above). */
 export function isBillableBookingStatus(status: string): boolean {
   return (BILLABLE_BOOKING_STATUSES as readonly string[]).includes(status)
 }
@@ -136,6 +179,7 @@ export async function loadBookingLines(
       rateApplied: bookingSlots.rateApplied,
       resourceName: bookingSlots.resourceName,
       resourceTypeName: bookingSlots.resourceTypeName,
+      taxRatePercent: bookingSlots.taxRatePercent,
     })
     .from(bookingSlots)
     .where(
@@ -153,12 +197,11 @@ export async function loadBookingLines(
     sourceId: s.id,
     qty: durationHours(s.startsAt, s.endsAt),
     unitPrice: Number(s.rateApplied),
-    // No tax rate source exists yet: `tax_rates` is unbuilt (docs/DATA-MODEL.md
-    // "M1 — Settings") and `resource_types` carries no tax column, so there is
-    // nothing to read a percentage from. 0 keeps the arithmetic honest instead
-    // of inventing a rate. Once tax_rates lands, resolve it here — priceBill
-    // already does the whole multi-rate CGST/SGST split.
-    taxPercent: 0,
+    // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
+    // priceBookingSlots) from the resource type's own tax rate — same
+    // discipline rate_applied already uses. 0 means no 'resources'/'both'
+    // tax rate was configured for that type at booking time.
+    taxPercent: Number(s.taxRatePercent),
   }))
 }
 
@@ -434,6 +477,62 @@ export async function findLiveInvoice(
   return row ?? null
 }
 
+/** One booking's live billing state — either a normal single invoice, or every
+ *  check of a split bill (M18 #2), sharing one bill_group_id. */
+export type LiveBilling =
+  | { kind: 'single'; invoice: ExistingInvoice }
+  | { kind: 'split'; billGroupId: string; checks: (ExistingInvoice & { billGroupSeq: number })[] }
+
+/**
+ * The booking's full live billing state, generalising findLiveInvoice to also
+ * recognise a split bill (migration 0089): a booking may still only ever have
+ * ONE live billing episode, but that episode is now either a single invoice
+ * (bill_group_id null, exactly today's shape) or every check of a split
+ * (several invoices sharing one bill_group_id). Used wherever code must
+ * refuse a second bill/split against an already-billed booking — see
+ * issueInvoiceForBooking, issueSplitBillForBooking (lib/billing/split.ts) and
+ * requireNoLiveInvoice (lib/booking/service.ts).
+ *
+ * Ordered by bill_group_seq so a split's checks always come back "Check 1,
+ * Check 2, …" — the order the UI and every caller expects.
+ */
+export async function findLiveBilling(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<LiveBilling | null> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      billGroupId: invoices.billGroupId,
+      billGroupSeq: invoices.billGroupSeq,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.tenantId, tenantId),
+        eq(invoices.bookingId, bookingId),
+        ne(invoices.status, 'void'),
+      ),
+    )
+    .orderBy(invoices.billGroupSeq)
+
+  if (rows.length === 0) return null
+  if (rows[0].billGroupId === null) {
+    // Invariant (enforced by every writer): a booking is never both a plain
+    // invoice AND a split at once, so a null bill_group_id here means every
+    // row is — there is only ever one.
+    return { kind: 'single', invoice: rows[0] }
+  }
+  return {
+    kind: 'split',
+    billGroupId: rows[0].billGroupId,
+    checks: rows.map((r) => ({ id: r.id, invoiceNumber: r.invoiceNumber, status: r.status, billGroupSeq: r.billGroupSeq! })),
+  }
+}
+
 /**
  * Next invoice number for the tenant, atomically.
  *
@@ -469,6 +568,16 @@ export type IssueInvoiceInput = {
    * decided server-side from the tenant's rule and the ledger balance.
    */
   redeemPoints?: number
+  /**
+   * Bill-level comp/discount (M18 #5) — a manager-authorised write-off on
+   * top of everything else. `membershipId` is who authorised it (frozen onto
+   * the invoice and the audit_log row), NOT re-derived here — the caller
+   * (lib/actions/billing.ts) has already checked isManager(ctx.role) and
+   * ctx.tenant.industry === 'restaurant' before this ever arrives; this
+   * function does not re-gate, only re-caps the amount and requires the
+   * reason, same trust boundary as every other input here.
+   */
+  comp?: { amount: number; reason: string; membershipId: string }
 }
 
 export type IssuedInvoice = {
@@ -492,16 +601,42 @@ export type IssuedInvoice = {
   deposits: DepositCarryResult
 }
 
+/** What prepareBookingBill hands both issueInvoiceForBooking and
+ *  issueSplitBillForBooking (lib/billing/split.ts) — everything the two
+ *  paths share before they diverge on promo/loyalty (normal bill only) vs.
+ *  splitting (no promo/loyalty in v1 — see lib/billing/split.ts's header). */
+export type PreparedBill = {
+  booking: { id: string; bookingNumber: string; branchId: string; customerId: string | null; status: string }
+  billedOrderIds: string[]
+  lines: BillLine[]
+  /** priced with NO discount — the base subtotal a membership % applies against. */
+  gross: PricingResult
+  membership: AppliedMembershipBenefit | null
+  membershipDiscount: number
+  /** M18 #3 — computed on gross.subtotal (pre-discount), the tenant's
+   *  business_profiles config resolved fresh inside this transaction. */
+  serviceCharge: ServiceChargeResult
+}
+
 /**
- * Raise the invoice for a booking. Everything below runs in the caller's
- * transaction, so a failure at any step leaves no invoice, no items and no
- * consumed sequence number.
+ * Steps 1–4a of raising a bill, shared verbatim by issueInvoiceForBooking and
+ * issueSplitBillForBooking: lock the booking, refuse a second live bill
+ * (plain OR split — see findLiveBilling), capture+load the billable lines,
+ * and resolve the automatic membership benefit. Promo codes and loyalty
+ * redemption are NOT here — they stay in issueInvoiceForBooking only, since
+ * a split bill applies membership (automatic) but not a manually-chosen
+ * discount (v1 scope decision, see lib/billing/split.ts).
+ *
+ * Pure extraction from what used to be issueInvoiceForBooking's own steps
+ * 1–4a: same locking, same order of operations, same error messages for the
+ * single-invoice case — verified against scripts/test-billing-flow.ts and
+ * friends with zero behaviour change.
  */
-export async function issueInvoiceForBooking(
+export async function prepareBookingBill(
   tx: Db,
   tenant: { id: string; timezone: string },
-  input: IssueInvoiceInput,
-): Promise<IssuedInvoice> {
+  bookingId: string,
+): Promise<PreparedBill> {
   // ── 1. lock the booking ───────────────────────────────────────────────────
   // SELECT … FOR UPDATE is what makes double-billing impossible: a second
   // cashier's transaction blocks here until the first commits, and then sees the
@@ -516,7 +651,7 @@ export async function issueInvoiceForBooking(
       status: bookings.status,
     })
     .from(bookings)
-    .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, tenant.id)))
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenant.id)))
     .for('update')
     .limit(1)
 
@@ -527,9 +662,14 @@ export async function issueInvoiceForBooking(
   }
 
   // ── 2. already billed? ────────────────────────────────────────────────────
-  const existing = await findLiveInvoice(tx, tenant.id, booking.id)
-  if (existing) {
-    throw new BillingError(`This booking has already been billed (${existing.invoiceNumber}).`)
+  const existing = await findLiveBilling(tx, tenant.id, booking.id)
+  if (existing?.kind === 'single') {
+    throw new BillingError(`This booking has already been billed (${existing.invoice.invoiceNumber}).`)
+  }
+  if (existing?.kind === 'split') {
+    throw new BillingError(
+      `This booking's bill has already been split into ${existing.checks.length} checks — settle them individually.`,
+    )
   }
 
   // ── 3. lines, entirely from server-side data ──────────────────────────────
@@ -580,6 +720,31 @@ export async function issueInvoiceForBooking(
     gross.subtotal,
   )
   const membershipDiscount = membership?.discountAmount ?? 0
+
+  // ── 4b. service charge (M18 #3) ───────────────────────────────────────────
+  // Computed on gross.subtotal — the PRE-DISCOUNT figure — deliberately: a
+  // membership/promo/loyalty discount is a concession on the food, not on
+  // the venue's own service charge. Config is read fresh inside this same
+  // transaction, never cached, so a mid-service change to the % or its tax
+  // rate can never apply to a bill already in flight.
+  const serviceChargeConfig = await loadServiceChargeConfig(tx, tenant.id)
+  const serviceCharge = computeServiceCharge(gross.subtotal, serviceChargeConfig)
+
+  return { booking, billedOrderIds, lines, gross, membership, membershipDiscount, serviceCharge }
+}
+
+/**
+ * Raise the invoice for a booking. Everything below runs in the caller's
+ * transaction, so a failure at any step leaves no invoice, no items and no
+ * consumed sequence number.
+ */
+export async function issueInvoiceForBooking(
+  tx: Db,
+  tenant: { id: string; timezone: string },
+  input: IssueInvoiceInput,
+): Promise<IssuedInvoice> {
+  const { booking, billedOrderIds, lines, gross, membership, membershipDiscount, serviceCharge } =
+    await prepareBookingBill(tx, tenant, input.bookingId)
 
   // What a promo or a keyed-in discount may still take off. A membership that
   // covers the whole bill leaves nothing for either.
@@ -641,17 +806,54 @@ export async function issueInvoiceForBooking(
   }
   const loyaltyDiscount = loyalty?.discount ?? 0
 
-  // The combined figure. Membership + (promo | keyed-in) + loyalty — capped once
-  // more at the subtotal so no combination can drive the bill negative, belt and
-  // braces with priceBill's own cap.
+  // ── 4d. bill-level comp (M18 #5) ──────────────────────────────────────────
+  // LAST in precedence — on top of membership, promo/keyed discount AND
+  // loyalty redemption. A comp is a deliberate final write-off ("waive
+  // what's left"), not a discount the customer qualified for, so it takes
+  // whatever the other three left rather than competing with them. Capped at
+  // the remainder for the same reason every discount above is: the combined
+  // total must never exceed the subtotal even before priceBill's own cap.
+  // Authorization (manager + restaurant tenant) already happened in the
+  // caller (lib/actions/billing.ts) — this only re-validates the reason and
+  // re-caps the amount, the same trust boundary as `discount` above.
+  const remainingAfterLoyalty = round2(gross.subtotal - membershipDiscount - discount - loyaltyDiscount)
+  let compAmount = 0
+  let compReason: string | null = null
+  if (input.comp && input.comp.amount > 0) {
+    if (!input.comp.reason || input.comp.reason.trim() === '') {
+      throw new BillingError('A reason is required to comp or discount a bill.')
+    }
+    compAmount = Math.min(round2(input.comp.amount), Math.max(0, remainingAfterLoyalty))
+    compReason = input.comp.reason.trim()
+  }
+
+  // The combined figure. Membership + (promo | keyed-in) + loyalty + comp —
+  // capped once more at the subtotal so no combination can drive the bill
+  // negative, belt and braces with priceBill's own cap.
   const totalDiscount = Math.min(
-    round2(membershipDiscount + discount + loyaltyDiscount),
+    round2(membershipDiscount + discount + loyaltyDiscount + compAmount),
     gross.subtotal,
   )
 
   // priceBill owns every rupee: line rounding, discount-before-GST, the
   // per-rate CGST/SGST split and the total. Nothing is recomputed here.
   const pricing = priceBill({ lines, discount: totalDiscount })
+
+  // ── 4d. fold the service charge in (M18 #3) ───────────────────────────────
+  // subtotal/discount/taxableValue stay FOOD-ONLY (unchanged meaning, zero
+  // risk to every existing reader of those columns). Service charge is
+  // additive: its own amount and its own tax (already computed on gross
+  // subtotal by prepareBookingBill) are folded into taxTotal/taxBreakup/
+  // total, exactly the numbers a printed GST receipt needs to already
+  // include — a customer should see ONE "GST total", not a food one plus a
+  // separate service-charge one to add by hand.
+  const taxTotal = round2(pricing.taxTotal + serviceCharge.tax)
+  const taxBreakup = mergeTaxBreakup(pricing.taxBreakup, {
+    percent: serviceCharge.taxPercent,
+    cgst: serviceCharge.cgst,
+    sgst: serviceCharge.sgst,
+  })
+  const total = round2(pricing.taxableValue + serviceCharge.amount + taxTotal)
 
   // Take the use only now, with the bill certain to be written. It is one
   // statement and it re-checks the limit under a row lock, so the last use of a
@@ -675,7 +877,7 @@ export async function issueInvoiceForBooking(
   // would sit at 'issued' forever while the receipt — which derives its PAID
   // badge from total-minus-captured — printed PAID, and the two would disagree.
   // Any non-zero total still starts at 'issued'.
-  const settledOnIssue = paise(pricing.total) === 0
+  const settledOnIssue = paise(total) === 0
 
   const [invoice] = await tx
     .insert(invoices)
@@ -701,36 +903,81 @@ export async function issueInvoiceForBooking(
       loyaltyPointValue: (loyalty?.pointValue ?? 0).toFixed(2),
       subtotal: pricing.subtotal.toFixed(2),
       discount: pricing.discount.toFixed(2),
-      taxTotal: pricing.taxTotal.toFixed(2),
-      // Mapped straight from priceBill onto the stored TaxBreakupLine shape —
-      // `percent` is the column's `rate`. No `taxable`: see TaxBreakupLine.
-      taxBreakup: pricing.taxBreakup.map((g) => ({
+      taxTotal: taxTotal.toFixed(2),
+      // Mapped straight from priceBill (plus the service charge's own group,
+      // folded in above) onto the stored TaxBreakupLine shape — `percent` is
+      // the column's `rate`. No `taxable`: see TaxBreakupLine.
+      taxBreakup: taxBreakup.map((g) => ({
         rate: g.percent,
         cgst: g.cgst.toFixed(2),
         sgst: g.sgst.toFixed(2),
       })),
-      total: pricing.total.toFixed(2),
+      total: total.toFixed(2),
       status: settledOnIssue ? 'paid' : 'issued',
       issuedAt: new Date(),
+      // Frozen snapshot of the config as it was when this bill was raised
+      // (M18 #3) — never re-read from live settings on a reprint, same
+      // discipline as membershipDiscount/membershipDiscountPercent above.
+      serviceChargePercent: serviceCharge.percent.toFixed(2),
+      serviceChargeAmount: serviceCharge.amount.toFixed(2),
+      serviceChargeTaxPercent: serviceCharge.taxPercent.toFixed(2),
+      // Bill-level comp (M18 #5) — one component of `discount` above, never
+      // an extra amount alongside it. See the audit_log write below.
+      compAmount: compAmount.toFixed(2),
+      compReason,
+      compedByMembershipId: compAmount > 0 ? (input.comp?.membershipId ?? null) : null,
     })
     .returning({ id: invoices.id })
+
+  // Durable, append-only record of who comped this bill, how much, and why —
+  // written in the SAME transaction as the invoice, so a comp can never exist
+  // without its audit row (or the reverse). See writeAudit's own doc comment.
+  if (compAmount > 0 && input.comp) {
+    await writeAudit(tx, { tenantId: tenant.id, membershipId: input.comp.membershipId }, {
+      action: 'invoice.comp',
+      entityType: 'invoice',
+      entityId: invoice.id,
+      before: { invoice_number: invoiceNumber, subtotal: gross.subtotal.toFixed(2) },
+      after: {
+        invoice_number: invoiceNumber,
+        amount: compAmount.toFixed(2),
+        reason: compReason,
+        booking_id: booking.id,
+      },
+    })
+  }
 
   // ── 6. items — the historical snapshot ────────────────────────────────────
   // Every number the invoice was built from is frozen onto the row, so a later
   // price change can never move a past bill.
-  await tx.insert(invoiceItems).values(
-    pricing.items.map((item) => ({
+  const itemRows = pricing.items.map((item) => ({
+    tenantId: tenant.id,
+    invoiceId: invoice.id,
+    kind: item.kind,
+    sourceId: item.sourceId ?? null,
+    description: item.description,
+    qty: item.qty.toFixed(2),
+    unitPrice: item.unitPrice.toFixed(2),
+    taxRate: item.taxPercent.toFixed(2),
+    lineTotal: item.lineTotal.toFixed(2),
+  }))
+  // Service charge (M18 #3) has no single order_items/booking_slots row to
+  // point sourceId at — it's derived from the whole bill's subtotal, not
+  // ordered — so it's its own synthetic line, same shape a food line has.
+  if (paise(serviceCharge.amount) > 0) {
+    itemRows.push({
       tenantId: tenant.id,
       invoiceId: invoice.id,
-      kind: item.kind,
-      sourceId: item.sourceId ?? null,
-      description: item.description,
-      qty: item.qty.toFixed(2),
-      unitPrice: item.unitPrice.toFixed(2),
-      taxRate: item.taxPercent.toFixed(2),
-      lineTotal: item.lineTotal.toFixed(2),
-    })),
-  )
+      kind: 'service_charge',
+      sourceId: null,
+      description: `Service charge (${serviceCharge.percent}%)`,
+      qty: '1.00',
+      unitPrice: serviceCharge.amount.toFixed(2),
+      taxRate: serviceCharge.taxPercent.toFixed(2),
+      lineTotal: serviceCharge.amount.toFixed(2),
+    })
+  }
+  await tx.insert(invoiceItems).values(itemRows)
 
   // ── 7. mark the food orders billed ────────────────────────────────────────
   // The other half of double-billing prevention: loadFoodLines only reads

@@ -56,7 +56,7 @@ const STATUS_BADGE: Record<TableStatus, string> = {
   seated: 'bg-blue-500/10 text-blue-600',
   ordered: 'bg-amber-500/10 text-amber-600',
   served: 'bg-emerald-500/10 text-emerald-600',
-  bill_requested: 'bg-violet-500/10 text-violet-600',
+  bill_requested: 'bg-accent text-primary',
   needs_cleaning: 'bg-rose-500/10 text-rose-600',
 }
 
@@ -65,7 +65,7 @@ const STATUS_TILE: Record<TableStatus, string> = {
   seated: 'border-blue-500/30 bg-gradient-to-b from-blue-500/[0.07] to-transparent hover:border-blue-500/50',
   ordered: 'border-amber-500/30 bg-gradient-to-b from-amber-500/[0.07] to-transparent hover:border-amber-500/50',
   served: 'border-emerald-500/30 bg-gradient-to-b from-emerald-500/[0.07] to-transparent hover:border-emerald-500/50',
-  bill_requested: 'border-violet-500/30 bg-gradient-to-b from-violet-500/[0.07] to-transparent hover:border-violet-500/50',
+  bill_requested: 'border-primary/30 bg-gradient-to-b from-primary/[0.07] to-transparent hover:border-primary/50',
   needs_cleaning: 'border-rose-500/30 bg-gradient-to-b from-rose-500/[0.07] to-transparent hover:border-rose-500/50',
 }
 
@@ -78,7 +78,7 @@ const STATUS_ACCENT: Record<TableStatus, string> = {
   seated: 'bg-blue-500',
   ordered: 'bg-amber-500',
   served: 'bg-emerald-500',
-  bill_requested: 'bg-violet-500',
+  bill_requested: 'bg-primary',
   needs_cleaning: 'bg-rose-500',
 }
 
@@ -89,6 +89,7 @@ function elapsedLabel(since: string, now: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
 }
 
+/** Restaurant floor plan: table statuses, occupancy, and quick actions per table. */
 export function FloorView({
   branchId,
   currency,
@@ -126,7 +127,9 @@ export function FloorView({
   const [now, setNow] = useState(() => Date.now())
   const [seatTarget, setSeatTarget] = useState<TableRow | null>(null)
   const [selected, setSelected] = useState<TableRow | null>(null)
-  const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string } | null>(null)
+  const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string; coverCount: number | null } | null>(
+    null,
+  )
   const [transferTarget, setTransferTarget] = useState<TableRow | null>(null)
   const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null)
   const [splitTarget, setSplitTarget] = useState<TableRow | null>(null)
@@ -280,11 +283,11 @@ export function FloorView({
           tableId={seatTarget.id}
           tableName={seatTarget.name}
           onClose={() => setSeatTarget(null)}
-          onSeated={(bookingId) => {
+          onSeated={(bookingId, coverCount) => {
             setSeatTarget(null)
             router.refresh()
             toast.success(`${seatTarget.name} seated.`)
-            setOrderDialog({ bookingId, bookingLabel: seatTarget.name })
+            setOrderDialog({ bookingId, bookingLabel: seatTarget.name, coverCount })
           }}
         />
       )}
@@ -344,7 +347,13 @@ export function FloorView({
 
             <div className="mt-4 flex flex-wrap gap-2">
               <button
-                onClick={() => setOrderDialog({ bookingId: liveSelected.bookingId!, bookingLabel: liveSelected.name })}
+                onClick={() =>
+                  setOrderDialog({
+                    bookingId: liveSelected.bookingId!,
+                    bookingLabel: liveSelected.name,
+                    coverCount: liveSelected.coverCount,
+                  })
+                }
                 disabled={menuItems.length === 0}
                 className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
@@ -444,7 +453,7 @@ export function FloorView({
                                 <span
                                   className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                                     it.voidStatus === 'comped'
-                                      ? 'bg-violet-500/10 text-violet-600'
+                                      ? 'bg-accent text-primary'
                                       : 'bg-destructive/10 text-destructive'
                                   }`}
                                   title={it.voidReason ?? undefined}
@@ -549,6 +558,7 @@ export function FloorView({
           happyHours={happyHours}
           popularItemIds={popularItemIds}
           canToggle86={canToggle86}
+          seatCount={orderDialog.coverCount}
           timeZone={timeZone}
           onClose={() => setOrderDialog(null)}
           onCreated={() => {

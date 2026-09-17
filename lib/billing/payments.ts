@@ -10,12 +10,18 @@
  * the branch, the tenant and the collecting membership are all derived here.
  */
 import { and, eq, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type * as schema from '@/db/schema'
 import { invoices, memberships, payments } from '@/db/schema'
 import { settleInvoicePaid } from './loyalty'
 import { paise, round2 } from './pricing'
+
+/** A second join alias onto `memberships` — one payment row can reference TWO
+ *  different staff members (collectedBy and, separately, who a tip is for),
+ *  so listInvoicePayments needs two independent joins onto the same table. */
+const tipRecipients = alias(memberships, 'tip_recipients')
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -56,6 +62,10 @@ export type RecordedPayment = {
   status: string
   collectedByName: string | null
   createdAt: Date
+  /** M18 #3 — tip collected alongside this ONE tender. '0.00' when none. */
+  tipAmount: string
+  /** Null when the tip was left unattributed/pooled. */
+  tipRecipientName: string | null
 }
 
 export type InvoiceSettlement = {
@@ -70,6 +80,16 @@ export type InvoiceSettlement = {
   payments: RecordedPayment[]
   /** True when the invoice can still take money right now. */
   payable: boolean
+  /** Sum of every captured payment's tipAmount (M18 #3) — display only,
+   *  NOT part of total/paid/balance: a tip is extra money on top, never
+   *  counted toward settling the bill. */
+  tipTotal: number
+  /** Bill-level comp/discount (M18 #5), if any — display only. Already
+   *  folded into `total` at issue time (it's one component of the invoice's
+   *  `discount`, same as membership/loyalty), never a separate deduction to
+   *  apply here. '0.00'/null when this bill was never comped. */
+  compAmount: number
+  compReason: string | null
 }
 
 /** Every payment recorded against an invoice, newest last. */
@@ -86,9 +106,12 @@ export async function listInvoicePayments(
       status: payments.status,
       collectedByName: memberships.fullName,
       createdAt: payments.createdAt,
+      tipAmount: payments.tipAmount,
+      tipRecipientName: tipRecipients.fullName,
     })
     .from(payments)
     .leftJoin(memberships, eq(memberships.id, payments.collectedBy))
+    .leftJoin(tipRecipients, eq(tipRecipients.id, payments.tipRecipientMembershipId))
     .where(and(eq(payments.tenantId, tenantId), eq(payments.invoiceId, invoiceId)))
     .orderBy(payments.createdAt)
 }
@@ -131,6 +154,8 @@ export async function getInvoiceSettlement(
       status: invoices.status,
       total: invoices.total,
       bookingId: invoices.bookingId,
+      compAmount: invoices.compAmount,
+      compReason: invoices.compReason,
     })
     .from(invoices)
     .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId)))
@@ -146,6 +171,11 @@ export async function getInvoiceSettlement(
 
   const total = round2(Number(invoice.total))
   const balance = round2(total - paid)
+  // Same status filter as capturedTotal's own SQL sum — a pending/failed/
+  // refunded row's tip was never actually collected.
+  const tipTotal = round2(
+    rows.filter((r) => r.status === 'captured').reduce((sum, r) => sum + Number(r.tipAmount), 0),
+  )
 
   return {
     invoiceId: invoice.id,
@@ -157,6 +187,9 @@ export async function getInvoiceSettlement(
     balance,
     payments: rows,
     payable: invoice.status === PAYABLE_INVOICE_STATUS && paise(balance) > 0,
+    tipTotal,
+    compAmount: round2(Number(invoice.compAmount)),
+    compReason: invoice.compReason,
   }
 }
 
@@ -172,25 +205,39 @@ export const recordPaymentInputSchema = z.object({
   method: z.enum(POS_PAYMENT_METHODS, {
     errorMap: () => ({ message: 'Choose cash, card or UPI.' }),
   }),
-  amount: z.coerce
-    .number({ invalid_type_error: 'Enter a valid amount.' })
-    .finite('Enter a valid amount.')
-    .positive('Enter an amount greater than zero.')
-    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
-  /**
-   * Retry token. A double-clicked button or a retried request carries the
-   * SAME key, and the second attempt returns the first result rather than
-   * taking the money twice. Optional so server-side callers that are
-   * already idempotent by other means need not supply one.
-   */
-  idempotencyKey: z.string().trim().min(8).max(128).optional(),
+  amount: z.coerce
+    .number({ invalid_type_error: 'Enter a valid amount.' })
+    .finite('Enter a valid amount.')
+    .positive('Enter an amount greater than zero.')
+    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.'),
+  /**
+   * Retry token. A double-clicked button or a retried request carries the
+   * SAME key, and the second attempt returns the first result rather than
+   * taking the money twice. Optional so server-side callers that are
+   * already idempotent by other means need not supply one.
+   */
+  idempotencyKey: z.string().trim().min(8).max(128).optional(),
+  // Tip (M18 #3) — collected alongside THIS tender, deliberately separate
+  // from `amount`: never validated against or counted toward the invoice
+  // balance below.
+  tipAmount: z.coerce
+    .number({ invalid_type_error: 'Enter a valid tip amount.' })
+    .finite('Enter a valid tip amount.')
+    .nonnegative('Tip cannot be negative.')
+    .max(MAX_PAYMENT_AMOUNT, 'That tip is too large.')
+    .optional(),
+  /** Which staff member the tip is for. Optional — left blank, the tip is
+   *  pooled/unattributed, still valid. */
+  tipRecipientMembershipId: z.string().uuid().optional(),
 })
 
-export type RecordPaymentInput = {
-  invoiceId: string
-  method: PosPaymentMethod
-  amount: number
-  idempotencyKey?: string
+export type RecordPaymentInput = {
+  invoiceId: string
+  method: PosPaymentMethod
+  amount: number
+  idempotencyKey?: string
+  tipAmount?: number
+  tipRecipientMembershipId?: string
 }
 
 export type RecordPaymentResult = {
@@ -199,10 +246,10 @@ export type RecordPaymentResult = {
   balance: number
   invoiceStatus: string
   settled: boolean
-  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
-  bookingId: string | null
-  /** True when this call recognised itself as a retry and took no money. */
-  deduplicated?: boolean
+  /** Read off the invoice so the caller can revalidate /pos/[bookingId]. */
+  bookingId: string | null
+  /** True when this call recognised itself as a retry and took no money. */
+  deduplicated?: boolean
 }
 
 /**
@@ -243,48 +290,48 @@ export async function recordPaymentForInvoice(
     .for('update')
     .limit(1)
 
-  if (!invoice) throw new PaymentError('Invoice not found.')
-
-  // ── 1b. have we already taken this exact tender? ──────────────────────────
-  // Checked AFTER the invoice lock, which is what makes it race-free: two
-  // simultaneous submissions of one click serialise on that lock, so the
-  // second sees the first's row rather than a stale absence. The unique index
-  // on (tenant_id, idempotency_key) is the backstop if they ever did not.
-  //
-  // A recognised retry is NOT an error — it returns what the first call
-  // returned, which is what a cashier who clicked twice expects to see.
-  if (input.idempotencyKey) {
-    const [existing] = await tx
-      .select({ id: payments.id, invoiceId: payments.invoiceId })
-      .from(payments)
-      .where(
-        and(
-          eq(payments.tenantId, actor.tenantId),
-          eq(payments.idempotencyKey, input.idempotencyKey),
-        ),
-      )
-      .limit(1)
-
-    if (existing) {
-      // A key is minted per attempt, so reuse against a DIFFERENT invoice
-      // means the client is confused — refuse rather than silently ignore.
-      if (existing.invoiceId !== invoice.id) {
-        throw new PaymentError('That payment reference has already been used.')
-      }
-      const paidNow = await capturedTotal(tx, actor.tenantId, invoice.id)
-      const invoiceTotal = round2(Number(invoice.total))
-      return {
-        paymentId: existing.id,
-        paid: paidNow,
-        balance: round2(invoiceTotal - paidNow),
-        invoiceStatus: invoice.status,
-        settled: paise(paidNow) >= paise(invoiceTotal),
-        bookingId: invoice.bookingId,
-        deduplicated: true,
-      }
-    }
-  }
-
+  if (!invoice) throw new PaymentError('Invoice not found.')
+
+  // ── 1b. have we already taken this exact tender? ──────────────────────────
+  // Checked AFTER the invoice lock, which is what makes it race-free: two
+  // simultaneous submissions of one click serialise on that lock, so the
+  // second sees the first's row rather than a stale absence. The unique index
+  // on (tenant_id, idempotency_key) is the backstop if they ever did not.
+  //
+  // A recognised retry is NOT an error — it returns what the first call
+  // returned, which is what a cashier who clicked twice expects to see.
+  if (input.idempotencyKey) {
+    const [existing] = await tx
+      .select({ id: payments.id, invoiceId: payments.invoiceId })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.tenantId, actor.tenantId),
+          eq(payments.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1)
+
+    if (existing) {
+      // A key is minted per attempt, so reuse against a DIFFERENT invoice
+      // means the client is confused — refuse rather than silently ignore.
+      if (existing.invoiceId !== invoice.id) {
+        throw new PaymentError('That payment reference has already been used.')
+      }
+      const paidNow = await capturedTotal(tx, actor.tenantId, invoice.id)
+      const invoiceTotal = round2(Number(invoice.total))
+      return {
+        paymentId: existing.id,
+        paid: paidNow,
+        balance: round2(invoiceTotal - paidNow),
+        invoiceStatus: invoice.status,
+        settled: paise(paidNow) >= paise(invoiceTotal),
+        bookingId: invoice.bookingId,
+        deduplicated: true,
+      }
+    }
+  }
+
   // ── 2. can this invoice still take money? ─────────────────────────────────
   if (invoice.status === 'paid') throw new PaymentError('This invoice is already paid.')
   if (invoice.status === 'void') throw new PaymentError('This invoice has been voided.')
@@ -312,6 +359,21 @@ export async function recordPaymentForInvoice(
     )
   }
 
+  // ── 4b. tip (M18 #3) — deliberately NOT part of the balance rule above ────
+  // A tip is extra money handed over alongside the tender, never counted
+  // toward what settles the bill — so it is validated independently of
+  // `amount`/`remaining` entirely, and never touches the overpayment check.
+  const tipAmount = round2(input.tipAmount ?? 0)
+  if (tipAmount < 0) throw new PaymentError('Tip cannot be negative.')
+  if (input.tipRecipientMembershipId) {
+    const [recipient] = await tx
+      .select({ id: memberships.id })
+      .from(memberships)
+      .where(and(eq(memberships.id, input.tipRecipientMembershipId), eq(memberships.tenantId, actor.tenantId)))
+      .limit(1)
+    if (!recipient) throw new PaymentError('That staff member was not found.')
+  }
+
   // ── 5. insert the tender ──────────────────────────────────────────────────
   // tenant_id, branch_id and collected_by come from the server: the context and
   // the locked invoice row. Nothing here is client-supplied.
@@ -323,11 +385,25 @@ export async function recordPaymentForInvoice(
       invoiceId: invoice.id,
       method: input.method,
       amount: amount.toFixed(2),
-      status: 'captured',
-      collectedBy: actor.membershipId,
-      idempotencyKey: input.idempotencyKey ?? null,
-    })
+      status: 'captured',
+      collectedBy: actor.membershipId,
+      idempotencyKey: input.idempotencyKey ?? null,
+      tipAmount: tipAmount.toFixed(2),
+      tipRecipientMembershipId: input.tipRecipientMembershipId ?? null,
+    })
     .returning({ id: payments.id })
+
+  // The invoice's own tip_amount is a running AGGREGATE, incremented here —
+  // in the SAME transaction as the payment insert, so it can never drift
+  // from the sum of its payments' own tip_amount. The idempotency check in
+  // step 1b above returns EARLY on a retried tender, before this runs, so a
+  // double-clicked "Record payment" can never double-count its tip.
+  if (paise(tipAmount) > 0) {
+    await tx
+      .update(invoices)
+      .set({ tipAmount: sql`${invoices.tipAmount} + ${tipAmount}` })
+      .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId)))
+  }
 
   // ── 6. settle the invoice, only once the money is actually recorded ───────
   const newPaid = round2(alreadyPaid + amount)

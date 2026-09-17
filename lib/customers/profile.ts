@@ -233,10 +233,11 @@ export async function getCustomerProfile(
     await expireLapsed(tx, tenantId, customerId)
     const membershipRows = await listCustomerMemberships(tx, tenantId, customerId)
 
-    const [balance, points] = await Promise.all([
-      walletBalance(tx, tenantId, customerId),
-      loyaltyPoints(tx, tenantId, customerId),
-    ])
+    // Sequential, not Promise.all: these share ONE transaction client, and a
+    // Postgres connection cannot run two queries at once (pg deprecates it and
+    // removes it in v9).
+    const balance = await walletBalance(tx, tenantId, customerId)
+    const points = await loyaltyPoints(tx, tenantId, customerId)
 
     return {
       customer,

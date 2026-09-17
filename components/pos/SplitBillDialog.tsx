@@ -1,0 +1,463 @@
+'use client'
+
+import { useEffect, useRef, useState, useTransition } from 'react'
+import { Loader2, Users, Receipt, LayoutGrid, X } from 'lucide-react'
+import { previewSplitBill, issueSplitBill } from '@/lib/actions/billing'
+import type { CheckPricing } from '@/lib/billing/split'
+import { formatMoney } from '@/lib/format'
+
+export type SplitLineItem = {
+  sourceId: string
+  description: string
+  qty: number
+  unitPrice: number
+  lineTotal: number
+}
+
+const btn = 'rounded-lg px-3.5 py-2.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+
+type Mode = 'even' | 'seat' | 'item'
+
+/** Modal for splitting a restaurant bill into independent checks (even/by-seat/by-item), with a live preview before committing. */
+export function SplitBillDialog({
+  bookingId,
+  items,
+  currency,
+  canComp,
+  onClose,
+  onSplit,
+}: {
+  bookingId: string
+  /** Every billable food line, for the "by item" tap-to-assign picker. */
+  items: SplitLineItem[]
+  currency: string
+  /** Bill-level comp/discount (M18 #5) is restaurant + manager/owner only —
+   *  the server re-checks both regardless (lib/actions/billing.ts's
+   *  resolveCompInput), this just keeps the control off an ineligible
+   *  cashier's screen. */
+  canComp: boolean
+  onClose: () => void
+  onSplit: (checkCount: number) => void
+}) {
+  const [mode, setMode] = useState<Mode>('even')
+  const [evenCount, setEvenCount] = useState(2)
+  const [itemCheckCount, setItemCheckCount] = useState(2)
+  // Applied to the whole bill BEFORE splitting, apportioned pro-rata across
+  // every check (v1 scope, see lib/billing/split.ts's module header) — same
+  // as the membership discount already works.
+  const [compText, setCompText] = useState('')
+  const [compReason, setCompReason] = useState('')
+  // sourceId -> 0-based check index. Reset whenever the check count shrinks
+  // below an already-assigned index, so a stale assignment can never point
+  // at a check that no longer exists.
+  const [assignments, setAssignments] = useState<Record<string, number>>({})
+  const [preview, setPreview] = useState<CheckPricing[] | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewing, startPreview] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [pending, start] = useTransition()
+  /**
+   * Which pricing-relevant input the CURRENT `preview` actually reflects, so
+   * confirm() can refuse to fire against a stale preview (e.g. the cashier
+   * bumped evenCount or retyped the comp after the last successful preview,
+   * but never re-ran it). Null whenever there is no preview that matches
+   * the inputs right now.
+   */
+  const [previewSignature, setPreviewSignature] = useState<string | null>(null)
+  /** Bumped on every runPreview() call (and on every pricing-input change);
+   *  a response is applied only if this still matches the id it was issued
+   *  under, so an older, slower request can never overwrite a newer one. */
+  const requestIdRef = useRef(0)
+
+  useEffect(() => {
+    const original = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = original
+    }
+  }, [])
+
+  function assign(sourceId: string, checkIndex: number) {
+    setAssignments((prev) => ({ ...prev, [sourceId]: checkIndex }))
+  }
+
+  function changeItemCheckCount(next: number) {
+    const clamped = Math.max(2, Math.min(20, next))
+    setItemCheckCount(clamped)
+    setAssignments((prev) => {
+      const cleaned: Record<string, number> = {}
+      for (const [id, idx] of Object.entries(prev)) {
+        if (idx < clamped) cleaned[id] = idx
+      }
+      return cleaned
+    })
+  }
+
+  const allAssigned = items.length > 0 && items.every((i) => assignments[i.sourceId] !== undefined)
+
+  const compAmount = Number(compText)
+  const compValid = compText.trim() === '' || (Number.isFinite(compAmount) && compAmount >= 0)
+  const compReasonMissing = canComp && compValid && compAmount > 0 && compReason.trim() === ''
+  // Only travels when the manager actually typed a positive, valid amount —
+  // an empty/zero comp field must behave exactly like it does not exist.
+  const compInput =
+    canComp && compValid && compText.trim() !== '' && compAmount > 0
+      ? { compAmount, compReason: compReason.trim() }
+      : {}
+
+  /** The exact request body previewSplitBill/issueSplitBill would take for the CURRENT inputs — one place, so the two can never drift apart. */
+  function buildInput() {
+    return mode === 'even'
+      ? { bookingId, mode: 'even' as const, checkCount: evenCount, ...compInput }
+      : mode === 'seat'
+        ? { bookingId, mode: 'seat' as const, ...compInput }
+        : { bookingId, mode: 'item' as const, checkCount: itemCheckCount, assignments, ...compInput }
+  }
+
+  // What actually affects the PRICED totals shown below — deliberately
+  // narrower than buildInput(): compReason's wording never changes a single
+  // number, only whether one was given at all (resolveCompInput requires a
+  // reason once compAmount > 0), so its full text is collapsed to a
+  // boolean here. That keeps this signature stable while the cashier is
+  // still typing the reason, instead of invalidating the preview on every
+  // keystroke.
+  const pricingSignature = JSON.stringify({
+    mode,
+    evenCount,
+    itemCheckCount,
+    assignments,
+    compAmount: compInput.compAmount ?? 0,
+    hasCompReason: compReason.trim() !== '',
+  })
+
+  /** Ask the server for a read-only preview of the current inputs, without committing anything. */
+  function runPreview() {
+    setPreviewError(null)
+    setPreview(null)
+    setPreviewSignature(null)
+    const id = ++requestIdRef.current
+    const input = buildInput()
+    const signature = pricingSignature
+    startPreview(async () => {
+      const r = await previewSplitBill(input)
+      // A newer request (a manual re-preview, or an input change below) has
+      // since started — this response is obsolete even if it resolves last,
+      // so it must never overwrite whatever that newer request produces.
+      if (requestIdRef.current !== id) return
+      if (r.error || !r.checks) {
+        setPreviewError(r.error ?? 'Could not preview the split.')
+        return
+      }
+      setPreview(r.checks)
+      setPreviewSignature(signature)
+    })
+  }
+
+  // Re-preview whenever anything that affects the priced totals changes —
+  // not just `mode`: bumping evenCount, re-assigning an item, or editing the
+  // comp amount must invalidate whatever preview is on screen immediately,
+  // and bump requestIdRef so a still-in-flight request for the OLD inputs
+  // can never land afterward and repaint stale totals. Seat mode has no
+  // manual "Preview" button, so it re-previews itself; even/item mode just
+  // go blank until the cashier clicks Preview again.
+  useEffect(() => {
+    setPreview(null)
+    setPreviewError(null)
+    setPreviewSignature(null)
+    requestIdRef.current++
+    if (mode === 'seat') runPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pricingSignature])
+
+  /** Validate the comp reason (if any), then commit the split via issueSplitBill. */
+  function confirm() {
+    if (pending) return
+    if (compReasonMissing) {
+      setError('Enter a reason for the comp or discount.')
+      return
+    }
+    setError(null)
+    start(async () => {
+      const r = await issueSplitBill(buildInput())
+      if (r.error || !r.checkCount) {
+        setError(r.error ?? 'Could not split the bill.')
+        return
+      }
+      onSplit(r.checkCount)
+    })
+  }
+
+  // Requires a SUCCESSFUL preview that still matches the current inputs
+  // (previewSignature === pricingSignature) — a stale or in-flight preview
+  // (both leave previewSignature null, see runPreview/the effect above)
+  // cannot enable this, so a cashier can never confirm a split whose issued
+  // checks would differ from what's actually on screen.
+  const canConfirm =
+    !pending &&
+    !compReasonMissing &&
+    compValid &&
+    preview !== null &&
+    previewSignature === pricingSignature &&
+    ((mode === 'even' && evenCount >= 2) || mode === 'seat' || (mode === 'item' && allAssigned))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border p-5">
+          <h2 className="text-lg font-semibold">Split the bill</h2>
+          <button onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex gap-1.5 border-b border-border px-5 pt-3">
+          <ModeTab active={mode === 'even'} onClick={() => setMode('even')} icon={<Receipt size={14} />}>
+            Even
+          </ModeTab>
+          <ModeTab active={mode === 'seat'} onClick={() => setMode('seat')} icon={<Users size={14} />}>
+            By seat
+          </ModeTab>
+          <ModeTab active={mode === 'item'} onClick={() => setMode('item')} icon={<LayoutGrid size={14} />}>
+            By item
+          </ModeTab>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {/* ── bill-level comp/discount (M18 #5) ──
+              Restaurant + manager/owner only, applied to the whole bill
+              BEFORE splitting and apportioned pro-rata across every check —
+              same as the membership discount already works. The server
+              re-checks isManager(ctx.role) and the restaurant gate
+              regardless of canComp. */}
+          {canComp && (
+            <div className="mb-4 rounded-md border border-dashed p-3">
+              <label htmlFor="split-comp" className="text-sm font-medium">
+                Comp / discount whole bill
+              </label>
+              <input
+                id="split-comp"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={compText}
+                onChange={(e) => setCompText(e.target.value)}
+                placeholder="0.00"
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {!compValid && <p className="mt-1 text-xs text-destructive">Enter zero or more.</p>}
+              {compAmount > 0 && (
+                <>
+                  <textarea
+                    value={compReason}
+                    onChange={(e) => setCompReason(e.target.value)}
+                    placeholder="Reason (required) — e.g. service recovery, VIP, staff meal"
+                    rows={2}
+                    className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  {compReasonMissing && (
+                    <p className="mt-1 text-xs text-destructive">A reason is required to comp or discount a bill.</p>
+                  )}
+                </>
+              )}
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Applied to the whole bill before splitting, apportioned across every check. Logged to the audit trail.
+              </p>
+            </div>
+          )}
+
+          {mode === 'even' && (
+            <div>
+              <p className="text-sm text-muted-foreground">Divide the whole bill evenly.</p>
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+                  onClick={() => setEvenCount((n) => Math.max(2, n - 1))}
+                >
+                  −
+                </button>
+                <span className="w-24 text-center text-base font-semibold">{evenCount} checks</span>
+                <button
+                  type="button"
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+                  onClick={() => setEvenCount((n) => Math.min(20, n + 1))}
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  onClick={runPreview}
+                  disabled={previewing}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  {previewing && <Loader2 size={14} className="animate-spin" />}
+                  Preview
+                </button>
+              </div>
+            </div>
+          )}
+
+          {mode === 'seat' && (
+            <div>
+              <p className="text-sm text-muted-foreground">
+                One check per tagged seat. Items without a seat are shared evenly across every seat&apos;s check.
+              </p>
+              {previewing && (
+                <p className="mt-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" /> Checking tagged seats…
+                </p>
+              )}
+            </div>
+          )}
+
+          {mode === 'item' && (
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">Tap each item to assign it to a check.</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted"
+                    onClick={() => changeItemCheckCount(itemCheckCount - 1)}
+                  >
+                    −
+                  </button>
+                  <span className="text-sm font-medium">{itemCheckCount} checks</span>
+                  <button
+                    type="button"
+                    className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted"
+                    onClick={() => changeItemCheckCount(itemCheckCount + 1)}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {items.map((item) => (
+                  <div key={item.sourceId} className="rounded-lg border border-border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">
+                        {item.description}
+                        <span className="ml-2 text-xs text-muted-foreground">×{item.qty}</span>
+                      </p>
+                      <span className="text-sm font-semibold tabular-nums">{formatMoney(item.lineTotal, currency)}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {Array.from({ length: itemCheckCount }, (_, i) => i).map((idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => assign(item.sourceId, idx)}
+                          aria-pressed={assignments[item.sourceId] === idx}
+                          className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                            assignments[item.sourceId] === idx
+                              ? 'border-primary bg-primary/10 text-primary'
+                              : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                          }`}
+                        >
+                          Check {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-3">
+                {!allAssigned && (
+                  <p className="text-xs text-destructive">Assign every item to a check before previewing.</p>
+                )}
+                <button
+                  type="button"
+                  onClick={runPreview}
+                  disabled={previewing || !allAssigned}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  {previewing && <Loader2 size={14} className="animate-spin" />}
+                  Preview
+                </button>
+              </div>
+            </div>
+          )}
+
+          {previewError && (
+            <p className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {previewError}
+            </p>
+          )}
+
+          {preview && preview.length > 0 && (
+            <div className="mt-5 border-t border-border pt-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {preview.map((c) => (
+                  <div key={c.seq} className="rounded-lg border border-border p-3">
+                    <p className="text-sm font-medium">{c.label}</p>
+                    <p className="mt-1 text-lg font-semibold tabular-nums">{formatMoney(c.total, currency)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatMoney(c.subtotal, currency)} + {formatMoney(c.taxTotal, currency)} tax
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <p className="mx-5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
+
+        <div className="flex gap-2 border-t border-border p-5">
+          <button type="button" className={`${btn} flex-1 border border-border hover:bg-muted`} onClick={onClose} disabled={pending}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={`${btn} flex flex-1 items-center justify-center gap-1.5 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
+            onClick={confirm}
+            disabled={!canConfirm}
+          >
+            {pending && <Loader2 size={16} className="animate-spin" />}
+            {pending ? 'Splitting…' : 'Split bill'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ModeTab({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-2 text-sm font-medium transition ${
+        active
+          ? 'border-primary text-primary'
+          : 'border-transparent text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
+  )
+}

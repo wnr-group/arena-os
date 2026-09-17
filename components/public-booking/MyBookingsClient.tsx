@@ -124,7 +124,7 @@ export function MyBookingsClient({ timezone }: { timezone: string }) {
     <div className="mx-auto max-w-lg px-4 py-12 sm:px-6 sm:py-16">
       {/* Premium header */}
       <div className="text-center">
-        <span className="relative mx-auto flex size-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/25 ring-4 ring-primary/10">
+        <span className="relative mx-auto flex size-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-primary to-primary-hover text-primary-foreground shadow-lg shadow-primary/25 ring-4 ring-primary/10">
           <Ticket size={28} />
           <span className="absolute -right-1.5 -top-1.5 flex size-6 items-center justify-center rounded-full bg-background text-primary shadow ring-1 ring-border">
             <Sparkles size={12} />
@@ -237,7 +237,7 @@ export function MyBookingsClient({ timezone }: { timezone: string }) {
                     href={`/b/${booking.bookingToken}`}
                     className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm transition hover:border-primary/40 hover:bg-primary/5"
                   >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent text-primary">
                       <Gamepad2 size={17} />
                     </span>
                     <div className="min-w-0 flex-1">

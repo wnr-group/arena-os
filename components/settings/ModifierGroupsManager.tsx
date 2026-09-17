@@ -35,7 +35,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
 
 /** "Choose exactly 1", "Choose up to 3", "Choose 1–3" — the plain-English
@@ -47,6 +47,7 @@ function selectSummary(minSelect: number, maxSelect: number): string {
   return `Choose ${minSelect}–${maxSelect}`
 }
 
+/** Settings page for creating/editing modifier groups and their options (M17 #8). */
 export function ModifierGroupsManager({ currency, groups }: { currency: string; groups: ModifierGroupRow[] }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -56,6 +57,7 @@ export function ModifierGroupsManager({ currency, groups }: { currency: string; 
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null)
   const [deletingOptionId, setDeletingOptionId] = useState<string | null>(null)
 
+  /** Run a server action, surfacing its error via toast/state or refreshing + calling onSuccess. */
   const run: Run = (fn, onSuccess, onSettled) => {
     start(async () => {
       const r = await fn()
@@ -358,7 +360,7 @@ function GroupModal({
 
         <div className="mt-5 flex gap-2">
           <button
-            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             disabled={pending}
             onClick={onClose}
           >
@@ -464,7 +466,7 @@ function OptionModal({
 
         <div className="mt-5 flex gap-2">
           <button
-            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium uppercase tracking-wide text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-lg border border-border px-3.5 py-2.5 text-base font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             disabled={pending}
             onClick={onClose}
           >

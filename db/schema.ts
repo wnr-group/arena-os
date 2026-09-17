@@ -25,6 +25,7 @@ import {
   index,
   primaryKey,
   foreignKey,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 
 // ── enums ────────────────────────────────────────────────────────────────────
@@ -158,6 +159,10 @@ export const resourceTypes = pgTable(
     capacity: integer('capacity'),
     color: text('color'),
     imageUrl: text('image_url'),
+    // Migration 0092 — mirrors menuItems.taxRateId's FK shape (nullable, SET
+    // NULL on delete). Only a rate with appliesTo 'resources' or 'both' may be
+    // assigned here; enforced in lib/actions/resources.ts, not by the FK.
+    taxRateId: uuid('tax_rate_id').references((): AnyPgColumn => taxRates.id, { onDelete: 'set null' }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -304,6 +309,13 @@ export const bookingSlots = pgTable(
     endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
     rateApplied: numeric('rate_applied', { precision: 10, scale: 2 }).notNull().default('0'),
     slotTotal: numeric('slot_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    // Migration 0092 — snapshot of the resource type's tax rate at booking
+    // time, same discipline as rateApplied/resourceName/resourceTypeName
+    // above and orderItems.taxRate for food: never re-derived from live
+    // config on read, so a rate change tomorrow can't reprice a booking taken
+    // today. 0 (the default) means "no resources tax configured," identical
+    // to the pre-0092 hardcoded behaviour in loadBookingLines.
+    taxRatePercent: numeric('tax_rate_percent', { precision: 5, scale: 2 }).notNull().default('0'),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),
@@ -544,7 +556,14 @@ export const payslips = pgTable(
   ],
 )
 
-// ── tax rates (migration 0009) ───────────────────────────────────────────────
+// ── tax rates (migration 0009; appliesTo added in migration 0092) ────────────
+/** What a tax_rates row is eligible to be attached to (migration 0092) — gates
+ *  the tax-rate picker on menu items ('food'/'both') and resource types
+ *  ('resources'/'both') so an owner can't put a devices-only GST slab on a
+ *  menu item or vice versa. Existing rows default to 'food', since that was
+ *  the only thing a tax rate could be attached to before this column existed. */
+export const taxRateAppliesTo = pgEnum('tax_rate_applies_to', ['food', 'resources', 'both'])
+
 export const taxRates = pgTable(
   'tax_rates',
   {
@@ -554,6 +573,7 @@ export const taxRates = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     percent: numeric('percent', { precision: 5, scale: 2 }).notNull(),
+    appliesTo: taxRateAppliesTo('applies_to').notNull().default('food'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -793,6 +813,11 @@ export const orderItems = pgTable(
     voidReason: text('void_reason'),
     voidedBy: uuid('voided_by').references(() => memberships.id, { onDelete: 'set null' }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
+    // Seat/guest tagging (migration 0088, M18 #1) — optional 1-based seat
+    // number within the booking's cover_count, set by the waiter at order
+    // time so a bill can later be split "by who ordered what". Null =
+    // unassigned/shared. Snapshot only; never read by pricing.
+    seatNo: smallint('seat_no'),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
@@ -1095,6 +1120,12 @@ export const businessProfiles = pgTable('business_profiles', {
   /** Feeds invoice numbering. Capped at 4 chars — see the migration's CHECK. */
   invoicePrefix: text('invoice_prefix').notNull().default('INV'),
   placeOfSupply: text('place_of_supply'),
+  // Service charge (migration 0090, M18 #3). 0 = off. serviceChargeTaxRateId
+  // ties the rate to one of the tenant's OWN tax_rates rather than a
+  // free-typed number — null means the service charge is deliberately
+  // untaxed, not unconfigured.
+  serviceChargePercent: numeric('service_charge_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+  serviceChargeTaxRateId: uuid('service_charge_tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -1554,6 +1585,37 @@ export const invoices = pgTable(
     status: invoiceStatus('status').notNull().default('draft'),
     placeOfSupply: text('place_of_supply'),
     issuedAt: timestamp('issued_at', { withTimezone: true }),
+    // Bill splitting (migration 0089, M18 #2). Null for every normal, unsplit
+    // invoice. When set, all invoices sharing a billGroupId together cover a
+    // booking's billable lines exactly once each — see lib/billing/split.ts.
+    billGroupId: uuid('bill_group_id'),
+    // 1-based position within billGroupId, for display ordering only
+    // ("Check 2 of 3") — invoiceNumber is still assigned normally per check.
+    billGroupSeq: smallint('bill_group_seq'),
+    // Service charge (migration 0090, M18 #3) — a frozen snapshot of the
+    // business_profiles config as it was when this bill was raised, same
+    // discipline as membershipDiscount/membershipDiscountPercent. Already
+    // folded into taxTotal/taxBreakup/total above, never a separate figure
+    // to add on top — see lib/billing/invoice.ts.
+    serviceChargePercent: numeric('service_charge_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    serviceChargeAmount: numeric('service_charge_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    serviceChargeTaxPercent: numeric('service_charge_tax_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    // Running aggregate of tipAmount across this invoice's own captured
+    // payments (M18 #3) — incremented transactionally alongside each
+    // tip-bearing payment insert, never independently computed. NOT part of
+    // total/balance: a tip is extra money on top, never counted toward
+    // settling the bill. See lib/billing/payments.ts.
+    tipAmount: numeric('tip_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    // Bill-level comp/discount (migration 0091, M18 #5) — a manager-
+    // authorised write-off on top of the whole bill. One component of
+    // `discount` above (like membershipDiscount/loyaltyDiscount), never an
+    // extra amount alongside it. Restaurant tenants only — 0 for every other
+    // industry. See lib/billing/invoice.ts.
+    compAmount: numeric('comp_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    compReason: text('comp_reason'),
+    compedByMembershipId: uuid('comped_by_membership_id').references(() => memberships.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1561,6 +1623,7 @@ export const invoices = pgTable(
     unique('invoices_tenant_number_key').on(t.tenantId, t.invoiceNumber),
     // Target of the composite FKs on invoice_items and payments.
     unique('invoices_tenant_id_key').on(t.tenantId, t.id),
+    index('idx_invoices_bill_group').on(t.tenantId, t.billGroupId).where(sql`${t.billGroupId} is not null`),
     foreignKey({
       name: 'invoices_booking_tenant_fkey',
       columns: [t.tenantId, t.bookingId],
@@ -1594,9 +1657,11 @@ export const invoiceItems = pgTable(
     invoiceId: uuid('invoice_id').notNull(),
     // Mirrors invoice_items_kind_check. 'wallet_topup' (migration 0028) is money
     // received in ADVANCE, not revenue — kept distinct so reporting can exclude
-    // it from sales.
+    // it from sales. 'service_charge' (migration 0090, M18 #3) is the venue's
+    // own add-on, kept distinct from 'adjustment' so reporting can separate
+    // "what did we sell" from "what did we add on top".
     kind: text('kind')
-      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup'>()
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge'>()
       .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),
@@ -1638,6 +1703,15 @@ export const payments = pgTable(
     gatewayPaymentId: text('gateway_payment_id'),
     gatewaySignature: text('gateway_signature'),
     collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+
+    // Tip (migration 0090, M18 #3) — collected alongside this ONE tender,
+    // deliberately separate from `amount`: never counted toward the invoice
+    // balance. tipRecipientMembershipId is nullable — an unattributed/pooled
+    // tip is still valid, still traceable to the table via invoiceId.
+    tipAmount: numeric('tip_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    tipRecipientMembershipId: uuid('tip_recipient_membership_id').references(() => memberships.id, {
+      onDelete: 'set null',
+    }),
 
     /**
 

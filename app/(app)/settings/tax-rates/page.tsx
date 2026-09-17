@@ -22,6 +22,7 @@ export default async function TaxRatesSettingsPage() {
           id: t.id,
           name: t.name,
           percent: t.percent,
+          appliesTo: t.appliesTo,
           isActive: t.isActive,
         }))}
       />

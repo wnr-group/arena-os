@@ -26,7 +26,7 @@ export default async function PublicLayout({ children }: { children: React.React
   const happyHour = await getLiveHappyHourBanner(tenant.id, tenant.timezone)
 
   return (
-    <div className={`min-h-screen bg-background text-foreground ${publicSiteFont.className}`}>
+    <div className={`min-h-screen bg-accent text-foreground ${publicSiteFont.className}`}>
       {children}
       <HappyHourFloatingWidget happyHour={happyHour} currency={tenant.currency} />
     </div>

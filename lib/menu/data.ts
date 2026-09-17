@@ -12,6 +12,7 @@ import {
   menuItemModifierGroups,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 
 export { listTaxRates } from '@/lib/tax-rates/data'
 
@@ -25,10 +26,18 @@ export function listMenuCategories(ctx: ActiveContext) {
   )
 }
 
-/** Menu items joined with their category name and (optional) tax rate. */
-export function listMenuItems(ctx: ActiveContext) {
-  return withUser(ctx.user.id, (tx) =>
-    tx
+/**
+ * Menu items joined with their category name and (optional) tax rate.
+ *
+ * An item with no tax_rate_id of its own still backfills the tenant's auto
+ * default (lib/tax-rates/resolve.ts) onto its taxPercent here — this is what
+ * TakeOrderDialog's cart preview and every other menu-items consumer read,
+ * so it has to already reflect what createOrderCore (lib/orders/service.ts)
+ * will actually charge, not the raw (possibly null) column.
+ */
+export async function listMenuItems(ctx: ActiveContext) {
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
       .select({
         id: menuItems.id,
         name: menuItems.name,
@@ -47,8 +56,19 @@ export function listMenuItems(ctx: ActiveContext) {
       .innerJoin(menuCategories, eq(menuCategories.id, menuItems.categoryId))
       .leftJoin(taxRates, eq(taxRates.id, menuItems.taxRateId))
       .where(eq(menuItems.tenantId, ctx.tenant.id))
-      .orderBy(asc(menuItems.categoryId), asc(menuItems.sortOrder), asc(menuItems.name)),
-  )
+      .orderBy(asc(menuItems.categoryId), asc(menuItems.sortOrder), asc(menuItems.name))
+
+    if (rows.some((r) => r.taxPercent === null)) {
+      const defaultTaxPercent = await resolveScopeDefaultTaxPercent(tx, ctx.tenant.id, 'food')
+      if (defaultTaxPercent !== null) {
+        for (const r of rows) {
+          if (r.taxPercent === null) r.taxPercent = defaultTaxPercent
+        }
+      }
+    }
+
+    return rows
+  })
 }
 
 /**

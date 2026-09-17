@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
 import { ConfirmDialogProvider } from '@/components/ui/ConfirmDialog'
+import { dashboardFallbackFont } from '@/lib/fonts'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -9,13 +10,14 @@ export const metadata: Metadata = {
     'Multi-tenant booking, POS and operations platform for gaming cafes, studios and experience centres.',
 }
 
+/** App-wide root layout: base HTML shell, global styles, toaster and confirm-dialog providers. */
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="en" className={dashboardFallbackFont.variable}>
       <body>
         <ConfirmDialogProvider>
           {children}

@@ -3,11 +3,12 @@
 import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Loader2, ReceiptText } from 'lucide-react'
+import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
 import { createInvoiceForBooking } from '@/lib/actions/billing'
-import { priceBill, type BillLine } from '@/lib/billing/pricing'
+import { computeServiceCharge, priceBill, round2, type BillLine, type ServiceChargeConfig } from '@/lib/billing/pricing'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { PaymentPanel, type SettlementView } from './PaymentPanel'
+import { SplitBillDialog } from './SplitBillDialog'
 
 type BookingHeader = {
   id: string
@@ -23,6 +24,17 @@ type BookingHeader = {
 }
 type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
 
+/** One check of a split bill (M18 #2) — mirrors lib/billing/data.ts's
+ *  CheckView, with Dates already serialised the same way `settlement` is. */
+export type SplitCheckView = {
+  invoiceId: string
+  invoiceNumber: string
+  seq: number
+  label: string
+  settlement: SettlementView
+  wallet: { balance: number; maxSpendable: number } | null
+}
+
 const input =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
 const KIND_LABEL: Record<string, string> = {
@@ -31,16 +43,23 @@ const KIND_LABEL: Record<string, string> = {
   membership: 'Membership',
   adjustment: 'Adjustment',
   wallet_topup: 'Wallet top-up',
+  service_charge: 'Service charge',
 }
 
+/** The POS bill screen for one booking — raise/split the bill pre-issue, or settle it (PaymentPanel) once issued. */
 export function BillScreen({
   booking,
   lines,
   existingInvoice,
   settlement,
+  splitChecks,
   membership,
   wallet,
   loyalty,
+  serviceChargeConfig,
+  staff,
+  isRestaurant,
+  isManager,
   timeZone,
   currency,
 }: {
@@ -49,6 +68,10 @@ export function BillScreen({
   existingInvoice: ExistingInvoice | null
   /** Present once a bill exists — drives the payment panel. */
   settlement: SettlementView | null
+  /** Present once the bill has been SPLIT (M18 #2) — one entry per check,
+   *  each with its own independent payment panel. Mutually exclusive with
+   *  `existingInvoice`/`settlement`. */
+  splitChecks: SplitCheckView[] | null
   /**
    * The membership benefit this bill is entitled to (AROS-61), resolved
    * server-side from the customer's purchased snapshot. DISPLAY ONLY — the
@@ -63,6 +86,21 @@ export function BillScreen({
    * what is still owed and takes the debit.
    */
   loyalty: { balance: number; pointValue: number; minRedeemPoints: number } | null
+  /** The tenant's service charge config (M18 #3), for the pre-bill preview
+   *  only — meaningless once a bill/split exists (the frozen amount is
+   *  already part of `lines` then). */
+  serviceChargeConfig: ServiceChargeConfig
+  /** Active staff, for the tip-recipient picker on each payment panel. */
+  staff: { id: string; name: string }[]
+  /** M18 (split bill / service charge / tips) is restaurant-only. The Split
+   *  bill button and every payment panel's tip input are hidden for every
+   *  other tenant type — actual enforcement is server-side (the split
+   *  actions check this, and service charge always computes to zero). */
+  isRestaurant: boolean
+  /** Bill-level comp/discount (M18 #5) is manager/owner only. Hides the
+   *  control for a cashier — the server re-checks isManager(ctx.role)
+   *  regardless, this is UX only, same discipline as isRestaurant above. */
+  isManager: boolean
   timeZone: string
   currency: string
 }) {
@@ -70,8 +108,17 @@ export function BillScreen({
   const [discountText, setDiscountText] = useState('')
   const [promoCode, setPromoCode] = useState('')
   const [redeemText, setRedeemText] = useState('')
+  // Bill-level comp/discount (M18 #5) — restaurant + manager only (see
+  // canComp below). Deliberately separate from `discountText`: a comp is a
+  // manager-authorised write-off with a mandatory reason and an audit
+  // trail, not an ordinary keyed-in discount.
+  const [compText, setCompText] = useState('')
+  const [compReason, setCompReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  const [splitOpen, setSplitOpen] = useState(false)
+
+  const canComp = isRestaurant && isManager
 
   const discount = Number(discountText)
   const discountValid = discountText === '' || (Number.isFinite(discount) && discount >= 0)
@@ -96,8 +143,31 @@ export function BillScreen({
         ? 'Enter a whole number of points.'
         : `Only ${loyalty?.balance ?? 0} points available.`
 
-  // Mirrors the server precedence exactly (lib/billing/loyalty.ts):
-  // membership → promo/keyed-in → loyalty, all before GST.
+  // What membership + the keyed-in discount + loyalty leave for a comp to
+  // take (M18 #5) — comp is LAST in precedence, same as the server
+  // (lib/billing/invoice.ts). Used both for the preview below and to cap
+  // the "Full comp" convenience button.
+  const remainingBeforeComp = useMemo(() => {
+    const gross = priceBill({ lines })
+    const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
+    const typed = discountValid ? Math.min(discount || 0, afterMembership) : 0
+    const afterTyped = Math.max(0, afterMembership - typed)
+    const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
+    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
+    return Math.max(0, round2(afterTyped - loyaltyOff))
+  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+
+  const compAmount = Number(compText)
+  const compValid = compText.trim() === '' || (Number.isFinite(compAmount) && compAmount >= 0)
+  // Only restaurant managers can comp at all — a cashier's or another
+  // industry's typed figure here (impossible via the hidden UI, but belt and
+  // braces for the preview) never reduces the preview.
+  const compCapped = canComp && compValid ? Math.min(compAmount || 0, remainingBeforeComp) : 0
+  const compReasonMissing = compCapped > 0 && compReason.trim() === ''
+
+  // Mirrors the server precedence exactly (lib/billing/loyalty.ts and, last,
+  // lib/billing/invoice.ts's M18 #5 step): membership → promo/keyed-in →
+  // loyalty → comp, all before GST.
   const preview = useMemo(() => {
     const gross = priceBill({ lines })
     const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
@@ -105,24 +175,53 @@ export function BillScreen({
     const afterTyped = Math.max(0, afterMembership - typed)
     const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
     const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
-    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff })
-  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff + compCapped })
+  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty, compCapped])
 
   const loyaltyPreviewDiscount = Math.max(
     0,
-    preview.discount - membershipDiscount - (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0),
+    preview.discount -
+      membershipDiscount -
+      (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0) -
+      compCapped,
   )
 
   const bookingItems = preview.items.filter((i) => i.kind === 'booking')
   const foodItems = preview.items.filter((i) => i.kind === 'food')
+  // Present only once a bill/split already exists — `lines` then came from
+  // the frozen invoice_items, which include the service-charge line that
+  // was written at issue time (see lib/billing/invoice.ts). Pre-bill,
+  // `lines` never has one yet — see serviceChargePreview below instead.
+  const serviceChargeItems = preview.items.filter((i) => i.kind === 'service_charge')
   const gst = preview.taxBreakup.reduce(
     (acc, g) => ({ cgst: acc.cgst + g.cgst, sgst: acc.sgst + g.sgst }),
     { cgst: 0, sgst: 0 },
   )
 
-  const blocked = Boolean(existingInvoice) || !booking.billable || lines.length === 0
+  // PRE-BILL preview only (M18 #3) — computed client-side purely so the
+  // cashier sees the line and the grand total move before raising the
+  // bill; issueInvoiceForBooking re-resolves the config and recomputes this
+  // server-side, same trust model as the discount preview above.
+  const serviceChargePreview = computeServiceCharge(preview.subtotal, serviceChargeConfig)
+  const grandTotal = round2(preview.taxableValue + serviceChargePreview.amount + preview.taxTotal + serviceChargePreview.tax)
+
+  const blocked = Boolean(existingInvoice) || Boolean(splitChecks) || !booking.billable || lines.length === 0
+  const canSplit = isRestaurant && !existingInvoice && !splitChecks && booking.billable && lines.length > 0
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, currency)
 
+  // The by-item split picker's source list — same gross per-item value the
+  // split math itself reads (priceBill's items are priced BEFORE any
+  // discount, so this is identical regardless of what's typed above).
+  const itemsForSplit = useMemo(
+    () =>
+      preview.items
+        .filter((i) => i.kind === 'food' && i.sourceId)
+        .map((i) => ({ sourceId: i.sourceId as string, description: i.description, qty: i.qty, unitPrice: i.unitPrice, lineTotal: i.lineTotal })),
+    [preview.items],
+  )
+
+  /** Validate the pre-bill inputs client-side, then raise the invoice via createInvoiceForBooking. */
   function generate() {
     if (blocked || pending) return
     if (!discountValid) {
@@ -131,6 +230,14 @@ export function BillScreen({
     }
     if (!redeemValid) {
       setError(redeemError ?? 'Check the points to redeem.')
+      return
+    }
+    if (canComp && compText.trim() !== '' && !compValid) {
+      setError('Enter a comp amount of zero or more.')
+      return
+    }
+    if (compReasonMissing) {
+      setError('Enter a reason for the comp or discount.')
       return
     }
     setError(null)
@@ -142,6 +249,10 @@ export function BillScreen({
         promoCode: promoCode.trim() || undefined,
         // Only a COUNT of points travels. No rupee value, no balance.
         redeemPoints: redeemText.trim() === '' ? undefined : redeemPoints,
+        // Bill-level comp (M18 #5) — the server re-checks isManager(ctx.role)
+        // and the restaurant gate regardless of what canComp shows here.
+        compAmount: canComp && compText.trim() !== '' ? compAmount : undefined,
+        compReason: canComp && compText.trim() !== '' ? compReason.trim() : undefined,
       })
       if (r.error || !r.invoiceId) {
         setError(r.error ?? 'Could not raise the bill.')
@@ -199,20 +310,60 @@ export function BillScreen({
           </Link>
         </Notice>
       )}
-      {!existingInvoice && !booking.billable && (
+      {splitChecks && (
+        <Notice tone="info">
+          Split into {splitChecks.length} checks. Each is settled independently below — the table
+          closes once every check is paid.
+        </Notice>
+      )}
+      {!existingInvoice && !splitChecks && !booking.billable && (
         <Notice tone="warn">This booking cannot be billed in its current status.</Notice>
       )}
-      {!existingInvoice && booking.billable && lines.length === 0 && (
+      {!existingInvoice && !splitChecks && booking.billable && lines.length === 0 && (
         <Notice tone="warn">This booking has nothing to bill.</Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
 
+      {splitChecks ? (
+        <div className="mt-6 space-y-6">
+          <LineTable title="Booking charges" items={bookingItems} money={money} />
+          {foodItems.length > 0 && <LineTable title="Food & beverage" items={foodItems} money={money} />}
+          {serviceChargeItems.length > 0 && (
+            <LineTable title="Service charge" items={serviceChargeItems} money={money} />
+          )}
+
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Checks ({splitChecks.length})
+            </p>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {splitChecks.map((c) => (
+                <div key={c.invoiceId}>
+                  <p className="mb-1.5 text-sm font-medium">{c.label}</p>
+                  <PaymentPanel
+                    key={c.settlement.paid}
+                    settlement={c.settlement}
+                    wallet={c.wallet}
+                    staff={staff}
+                    isRestaurant={isRestaurant}
+                    timeZone={timeZone}
+                    currency={currency}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_20rem]">
         {/* ── lines ── */}
         <div className="space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
           {foodItems.length > 0 && (
             <LineTable title="Food & beverage" items={foodItems} money={money} />
+          )}
+          {serviceChargeItems.length > 0 && (
+            <LineTable title="Service charge" items={serviceChargeItems} money={money} />
           )}
         </div>
 
@@ -225,6 +376,8 @@ export function BillScreen({
             key={settlement.paid}
             settlement={settlement}
             wallet={wallet}
+            staff={staff}
+            isRestaurant={isRestaurant}
             timeZone={timeZone}
             currency={currency}
           />
@@ -311,6 +464,60 @@ export function BillScreen({
             </div>
           )}
 
+          {/* ── bill-level comp/discount (M18 #5) ──
+              Restaurant + manager/owner only. The server re-checks both
+              (lib/actions/billing.ts's resolveCompInput) regardless of what
+              canComp hides here, and writes an audit_log row with the
+              actor, amount and reason whenever this is used. */}
+          {canComp && (
+            <div className="rounded-md border border-dashed p-3">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="comp" className="text-sm font-medium">
+                  Comp / discount whole bill
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setCompText(remainingBeforeComp.toFixed(2))}
+                  disabled={blocked || pending || remainingBeforeComp <= 0}
+                  className="text-xs font-medium text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Full comp
+                </button>
+              </div>
+              <input
+                id="comp"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={compText}
+                onChange={(e) => setCompText(e.target.value)}
+                disabled={blocked || pending}
+                placeholder="0.00"
+                className={`mt-1 ${input}`}
+              />
+              {!compValid && <p className="mt-1 text-xs text-destructive">Enter zero or more.</p>}
+              {compCapped > 0 && (
+                <>
+                  <textarea
+                    value={compReason}
+                    onChange={(e) => setCompReason(e.target.value)}
+                    disabled={blocked || pending}
+                    placeholder="Reason (required) — e.g. service recovery, VIP, staff meal"
+                    rows={2}
+                    className={`mt-2 ${input}`}
+                  />
+                  {compReasonMissing && (
+                    <p className="mt-1 text-xs text-destructive">A reason is required to comp or discount a bill.</p>
+                  )}
+                </>
+              )}
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Applied last, on top of the discount above — capped at what remains and logged to the audit trail.
+              </p>
+            </div>
+          )}
+
           <dl className="space-y-1.5 border-t pt-4 text-sm">
             <Total k="Subtotal" v={money(preview.subtotal)} />
             <Total k="Discount" v={`− ${money(preview.discount)}`} />
@@ -330,30 +537,63 @@ export function BillScreen({
                 muted
               />
             )}
+            {compCapped > 0 && <Total k="Comp / discount" v={`− ${money(compCapped)}`} muted />}
             <Total k="Taxable value" v={money(preview.taxableValue)} muted />
             <Total k="CGST" v={money(gst.cgst)} muted />
             <Total k="SGST" v={money(gst.sgst)} muted />
             <Total k="GST total" v={money(preview.taxTotal)} />
+            {serviceChargePreview.amount > 0 && (
+              <Total
+                k={`Service charge (${serviceChargePreview.percent}%)`}
+                v={money(serviceChargePreview.amount + serviceChargePreview.tax)}
+                muted
+              />
+            )}
             <div className="flex justify-between gap-4 border-t pt-2 text-base font-semibold">
               <dt>Grand total</dt>
-              <dd>{money(preview.total)}</dd>
+              <dd>{money(grandTotal)}</dd>
             </div>
           </dl>
 
           <button
             onClick={generate}
-            disabled={blocked || pending || !discountValid}
+            disabled={blocked || pending || !discountValid || !compValid || compReasonMissing}
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
             {pending ? 'Generating…' : 'Generate bill'}
           </button>
+          {canSplit && (
+            <button
+              type="button"
+              onClick={() => setSplitOpen(true)}
+              disabled={pending}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            >
+              <Split size={16} /> Split bill
+            </button>
+          )}
           <p className="text-center text-xs text-muted-foreground">
             Totals are recalculated on the server when the bill is raised.
           </p>
         </aside>
         )}
       </div>
+      )}
+
+      {splitOpen && (
+        <SplitBillDialog
+          bookingId={booking.id}
+          items={itemsForSplit}
+          currency={currency}
+          canComp={canComp}
+          onClose={() => setSplitOpen(false)}
+          onSplit={() => {
+            setSplitOpen(false)
+            router.refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

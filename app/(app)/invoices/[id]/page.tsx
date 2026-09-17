@@ -19,6 +19,7 @@ const KIND_LABEL: Record<string, string> = {
   membership: 'Membership',
   adjustment: 'Adjustment',
   wallet_topup: 'Wallet top-up',
+  service_charge: 'Service charge',
 }
 const METHOD_LABEL: Record<string, string> = {
   cash: 'Cash',
@@ -52,6 +53,7 @@ export default async function InvoiceReceiptPage({
 
   const { invoice, items, payments, business, customer } = receipt
   const tz = ctx.tenant.timezone
+  /** Format a rupee amount for display in the tenant's own currency. */
   const money = (v: string | number) => formatMoney(v, ctx.tenant.currency)
   const invoiceDate = invoice.issuedAt ?? invoice.createdAt
   // Everything that actually reached the till, refunded or not — a receipt that
@@ -268,6 +270,11 @@ export default async function InvoiceReceiptPage({
                           : `${money(p.refunded)} refunded`}
                       </span>
                     )}
+                    {Number(p.tipAmount) > 0 && (
+                      <span className="ml-1.5 text-xs text-muted-foreground">
+                        +{money(p.tipAmount)} tip{p.tipRecipientName ? ` for ${p.tipRecipientName}` : ''}
+                      </span>
+                    )}
                   </span>
                   <span
                     className={`tabular-nums ${p.status === 'refunded' ? 'text-muted-foreground line-through' : ''}`}
@@ -281,6 +288,11 @@ export default async function InvoiceReceiptPage({
           <div className="mt-3 space-y-1 border-t pt-3 text-sm">
             <Row k="Total Paid" v={money(receipt.paidTotal)} />
             {hasRefunds && <Row k="Refunded" v={`− ${money(receipt.refundsTotal)}`} />}
+            {/* Tip is extra money on top — never part of Grand Total/Balance
+                above, shown separately so it's never mistaken for revenue. */}
+            {Number(invoice.tipAmount) > 0 && (
+              <Row k="Tips collected" v={money(invoice.tipAmount)} />
+            )}
             {receipt.fullyPaid ? (
               <div className="flex justify-between gap-4 font-bold text-emerald-700">
                 <dt>Balance</dt>

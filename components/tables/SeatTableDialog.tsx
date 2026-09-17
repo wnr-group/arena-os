@@ -9,6 +9,7 @@ const input = 'w-full rounded-md border bg-background px-3 py-2 text-base outlin
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 
+/** Modal for seating a walk-in party at a table: guest count, optional name/phone, then a booking. */
 export function SeatTableDialog({
   branchId,
   tableId,
@@ -20,7 +21,7 @@ export function SeatTableDialog({
   tableId: string
   tableName: string
   onClose: () => void
-  onSeated: (bookingId: string) => void
+  onSeated: (bookingId: string, coverCount: number) => void
 }) {
   const [coverCount, setCoverCount] = useState('2')
   const [customerName, setCustomerName] = useState('')
@@ -48,7 +49,7 @@ export function SeatTableDialog({
         customerPhone: customerPhone.trim() || undefined,
       })
       if (r.error) setError(r.error)
-      else if (r.bookingId) onSeated(r.bookingId)
+      else if (r.bookingId) onSeated(r.bookingId, covers)
     })
   }
 
