@@ -114,8 +114,8 @@ export type PnlReport = {
     refunds: number
     /** Distinct invoices money moved against (paid or refunded). */
     invoiceCount: number
-    /** `net` split by what the money was for; the four sum to `net`. Same basis
-     *  as Revenue & Bookings. */
+    /** `net` split by what the money was for; the four sum to `net` to the
+     *  paise (`net` is authoritative — see Revenue & Bookings). Same basis. */
     bookingRevenue: number
     foodRevenue: number
     membershipRevenue: number

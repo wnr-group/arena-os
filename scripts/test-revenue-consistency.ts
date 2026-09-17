@@ -334,6 +334,40 @@ async function main() {
     check('…and reports the service charge — ₹100', p.revenue.serviceCharge === 100)
   }
 
+  console.log('\n── a discounted service-charge bill reconciles ──')
+  {
+    await wipe()
+    // ₹1000 food @5% GST, ₹200 off, + a ₹100 service charge @18% GST.
+    // The discount applies to the FOOD only, never the charge (it is levied
+    // after the discount): GST = (1000−200)×5% + 100×18% = 40 + 18 = 58;
+    // total = 1000 − 200 + 58 + 100 = 958.
+    await bill({
+      lines: [{ kind: 'food', description: 'Disc SC platter', amount: 1000, taxPercent: 5 }],
+      discount: 200,
+      serviceCharge: { amount: 100, taxPercent: 18 },
+      paid: 958,
+    })
+    const t = (await dashboard()).revenueTotals
+    check('net is the ₹958 collected', t.net === 958)
+    check('gross is the ₹1000 food subtotal', t.gross === 1000)
+    check('the discount is the ₹200 — off the food only', t.discount === 200)
+    check('tax is ₹58 (food 40 + service 18)', t.tax === 58)
+    check('service charge is the full ₹100 — undiscounted', t.serviceCharge === 100)
+    check(
+      'net === gross − discount + tax + service charge',
+      round2(t.gross - t.discount + t.tax + t.serviceCharge) === t.net,
+    )
+    // The charge takes NO share of the discount: food owes (1000−200)×1.05 =
+    // 840, the charge owes 100×1.18 = 118, and 840 + 118 = 958. A regression
+    // that discounted the charge would drop this below net.
+    check('food is credited ₹840 (800 net × its 5% GST)', t.foodRevenue === 840)
+    check('the service charge is credited its own ₹118', t.serviceChargeRevenue === 118)
+    check(
+      'the sources still add back to net exactly',
+      round2(t.bookingRevenue + t.foodRevenue + t.membershipRevenue + t.serviceChargeRevenue) === t.net,
+    )
+  }
+
   // ══ 2. FOOD ══════════════════════════════════════════════════════════════
   console.log('\n── food ──')
   {

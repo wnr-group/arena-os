@@ -285,25 +285,33 @@ async function main() {
   }
 
   // ══ 8. a split bill (M18) — several checks on one booking ═════════════════
-  console.log('\n── a split bill aggregates every check ──')
-  {
-    const bookingId = await makeBooking(A, 1000)
+  // Two ₹500 checks sharing one bill_group_id, as issueSplitBillForBooking
+  // writes them. Inserted directly because issueInvoiceForBooking refuses a
+  // second live invoice for a booking.
+  const splitChecks = async (bookingId: string) => {
     const groupId = randomUUID()
-    // Two ₹500 checks sharing one bill_group_id, as issueSplitBillForBooking
-    // writes them. Inserted directly because issueInvoiceForBooking refuses a
-    // second live invoice for a booking.
+    const n = ++seq
+    // Insert check 2 FIRST, so a "first row the query returns wins" bug would
+    // pick the wrong representative — only a true MIN(invoice_number) passes.
+    const c2 = await owner.query<{ id: string }>(
+      `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,status,subtotal,
+         tax_total,total,bill_group_id,bill_group_seq)
+       values ($1,$2,$3,$4,'issued','500','0','500',$5,2) returning id`,
+      [A.tenantId, A.branchId, `SP-${n}-2`, bookingId, groupId])
     const c1 = await owner.query<{ id: string }>(
       `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,status,subtotal,
          tax_total,total,bill_group_id,bill_group_seq)
        values ($1,$2,$3,$4,'issued','500','0','500',$5,1) returning id`,
-      [A.tenantId, A.branchId, `SP-${++seq}-1`, bookingId, groupId])
-    await owner.query(
-      `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,status,subtotal,
-         tax_total,total,bill_group_id,bill_group_seq)
-       values ($1,$2,$3,$4,'issued','500','0','500',$5,2)`,
-      [A.tenantId, A.branchId, `SP-${seq}-2`, bookingId, groupId])
+      [A.tenantId, A.branchId, `SP-${n}-1`, bookingId, groupId])
+    return { c1: c1.rows[0].id, c2: c2.rows[0].id, first: `SP-${n}-1` }
+  }
+
+  console.log('\n── a split bill aggregates every check ──')
+  {
+    const bookingId = await makeBooking(A, 1000)
+    const { c1, first } = await splitChecks(bookingId)
     // Settle the first check, leave the second unpaid.
-    await pay(A, c1.rows[0].id, 500)
+    await pay(A, c1, 500)
 
     const s = await stateOf(A, bookingId)
     check('one check paid, one unpaid reads "partially_paid" for the booking',
@@ -311,7 +319,31 @@ async function main() {
     check('…totals are the whole table: ₹1000 billed, ₹500 paid, ₹500 due',
       s?.total === 1000 && s?.paid === 500 && s?.balance === 500)
     check('…and it reports 2 checks', s?.invoiceCount === 2)
-    check('…linking the first check deterministically', s?.invoiceNumber === `SP-${seq}-1`)
+    check('…linking the first check by MIN(number), not row order', s?.invoiceNumber === first)
+  }
+
+  console.log('\n── a refund on one check of a split ──')
+  {
+    const bookingId = await makeBooking(A, 1000)
+    const { c1, c2 } = await splitChecks(bookingId)
+    const p1 = await pay(A, c1, 500)
+    const p2 = await pay(A, c2, 500)
+    check('both checks paid reads "paid"', (await stateOf(A, bookingId))?.status === 'paid')
+
+    // Refund ONE check in full: the booking still holds the other check's money,
+    // so it is partially — not fully — refunded.
+    await refund(A, p1.paymentId!, 500)
+    const s1 = await stateOf(A, bookingId)
+    check('one check refunded, one still paid reads "partially_refunded"',
+      s1?.status === 'partially_refunded')
+    check('…₹500 back, ₹500 still held', s1?.refunded === 500 && s1?.paid === 500)
+
+    // Refund the other check too: nothing is held, so the whole booking reads
+    // refunded.
+    await refund(A, p2.paymentId!, 500)
+    const s2 = await stateOf(A, bookingId)
+    check('both checks refunded reads "refunded"', s2?.status === 'refunded')
+    check('…₹1000 back, nothing held', s2?.refunded === 1000 && s2?.paid === 0)
   }
 
   // ══ 9. batching and isolation ════════════════════════════════════════════

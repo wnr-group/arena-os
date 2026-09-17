@@ -86,9 +86,6 @@ import { sql, type SQL } from 'drizzle-orm'
  * split.
  */
 
-/** Payment states that are money in the till. */
-export const CAPTURED_PAYMENT_STATUS = 'captured'
-
 /**
  * What ONE invoice line contributed to its bill: its value less its pro-rata
  * share of the invoice discount, plus GST at its own rate.

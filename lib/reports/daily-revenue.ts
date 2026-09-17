@@ -59,8 +59,10 @@ export type DailyRevenueRow = {
   refunds: number
   /** Distinct invoices money moved against (paid or refunded). */
   invoiceCount: number
-  /** `net`, split by what the money was for. The four sum to `net` exactly
-   *  (adjustment lines are counted with food). */
+  /** `net`, split by what the money was for (adjustment lines counted with
+   *  food). The four sum to `net` to the paise; on a day of partially-collected
+   *  bills the independently-rounded shares can land a paise apart, and `net`
+   *  (summed from the actual tender amounts) is the authoritative figure. */
   bookingRevenue: number
   foodRevenue: number
   membershipRevenue: number

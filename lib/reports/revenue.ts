@@ -31,7 +31,8 @@ export type DashboardDay = {
   /** Money refunded on this day (already subtracted from `net`). */
   refunds: number
   invoices: number
-  /** `net` split by what the money was for; the four sum back to it. */
+  /** `net` split by what the money was for; the four sum back to it to the
+   *  paise (`net` is authoritative on partially-collected days). */
   bookingRevenue: number
   foodRevenue: number
   membershipRevenue: number
