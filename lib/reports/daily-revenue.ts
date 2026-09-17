@@ -1,57 +1,87 @@
 import 'server-only'
-import { and, asc, eq, gte, lte } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { branches, vDailyRevenue } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
+import { cashMovements, movementForKind, movementRefundsOut, movementShareOf } from './revenue-basis'
 import type { CsvColumn } from './csv'
 import type { DateRange } from './date-range'
 
 /**
- * Daily revenue, read through the security-barrier view (AROS-64).
+ * Daily PAID revenue, aggregated LIVE from `payments`.
  *
  * ── WHAT IT READS ───────────────────────────────────────────────────────────
- * public.v_daily_revenue, and only that. Never mv_daily_revenue: a
- * materialized view does not enforce RLS, arena_app has no grant on it, and
- * the barrier view is what re-applies auth_tenant_ids(). See
- * db/migrations/0038_reporting.sql.
+ * Captured payments joined to their invoices, through the shared definition in
+ * ./revenue-basis.ts — money taken, dated by when it was taken, split across
+ * booking / food / membership by each kind's share of the bill.
+ *
+ * Two things changed here, in order:
+ *
+ *   1. It used to read public.v_daily_revenue, over the MATERIALIZED
+ *      mv_daily_revenue. Nothing schedules the refresh that rebuilds it, so
+ *      anything billed since the last manual run was missing while Food and
+ *      Membership — live queries — showed it. That snapshot is no longer read
+ *      by anything in the product, though it and scripts/refresh-reports.ts
+ *      are left in place.
+ *   2. It then counted an invoice as revenue the moment it was RAISED. It now
+ *      counts money only when it is CAPTURED, so an unpaid bill contributes
+ *      nothing and a part-paid one contributes only what was collected.
  *
  * ── HOW IT IS SCOPED ────────────────────────────────────────────────────────
  * Through withUser(), like every other tenant read in this codebase, so the
- * database — not this function — decides which rows exist. ownerDb bypasses
- * RLS and must never appear on this path. The explicit tenant_id filter below
- * is a second lock and an index hint, not the guarantee.
+ * database — not this function — decides which rows exist. RLS on `invoices`
+ * is the guarantee; ownerDb bypasses RLS and must never appear on this path.
+ * The explicit tenant_id predicate is a second lock.
  *
  * The role check mirrors the sibling report (lib/reports/employees.ts is
- * guarded at the page): reports are owner/manager per ARCHITECTURE.md §3. It
- * is a product rule, deliberately kept out of the SQL so the shared view stays
- * usable by AROS-65/66/67.
+ * guarded at the page): reports are owner/manager per ARCHITECTURE.md §3.
  */
 
 export type DailyRevenueRow = {
-  /** `YYYY-MM-DD` — the branch's local calendar day, already bucketed. */
+  /** `YYYY-MM-DD` — the branch's local calendar day the money was taken on. */
   day: string
   branchId: string
   branchName: string | null
-  /** SUM(invoices.subtotal) — before discount, before tax. */
+  /** The collected share of the invoices' subtotal — before discount and tax,
+   *  net of refunds. */
   gross: number
-  /** SUM(invoices.discount) — every kind, already combined on the invoice. */
+  /** The collected share of the invoices' discount, net of refunds. */
   discount: number
-  /** SUM(invoices.tax_total). */
+  /** The collected share of the invoices' tax, net of refunds. */
   tax: number
-  /** SUM(invoices.total) — what was actually billed. */
+  /** The collected share of the invoices' service charge, net of refunds. */
+  serviceCharge: number
+  /** THE FIGURE: rupees captured on this day, minus rupees refunded on it. */
   net: number
+  /** Rupees returned to customers on this day (the size of the day's refunds).
+   *  Already subtracted from `net`; shown so a busy refund day is legible. */
+  refunds: number
+  /** Distinct invoices money moved against (paid or refunded). */
   invoiceCount: number
+  /** `net`, split by what the money was for (adjustment lines counted with
+   *  food). The four sum to `net` to the paise; on a day of partially-collected
+   *  bills the independently-rounded shares can land a paise apart, and `net`
+   *  (summed from the actual tender amounts) is the authoritative figure. */
+  bookingRevenue: number
+  foodRevenue: number
+  membershipRevenue: number
+  serviceChargeRevenue: number
 }
 
 export type DailyRevenueTotals = {
   gross: number
   discount: number
   tax: number
+  serviceCharge: number
   net: number
+  refunds: number
   invoiceCount: number
   days: number
+  bookingRevenue: number
+  foodRevenue: number
+  membershipRevenue: number
+  serviceChargeRevenue: number
 }
 
 export class ReportAccessError extends Error {}
@@ -59,11 +89,11 @@ export class ReportAccessError extends Error {}
 /**
  * One row per (branch, day) inside `range`, oldest first.
  *
- * The filter is applied to the aggregated `day` column — a plain date compared
- * against plain dates, so there is no timezone conversion at query time and no
- * off-by-one at either end (see lib/reports/date-range.ts for why the range is
- * inclusive). idx_mv_daily_revenue_tenant_day covers (tenant_id, day); adding
- * a branch narrows it onto mv_daily_revenue_key instead.
+ * The filter compares the branch-local day against plain dates, inclusive at
+ * both ends (see lib/reports/date-range.ts for why). idx_invoices_branch
+ * covers (tenant_id, branch_id); at the volumes this reports on the aggregate
+ * is trivial, and a dedicated (tenant_id, issued_at) index is the thing to add
+ * if that ever stops being true.
  */
 export async function getDailyRevenue(
   ctx: ActiveContext,
@@ -75,45 +105,60 @@ export async function getDailyRevenue(
   await requireEntitlement(ctx, 'module.reports')
   const { range, branchId } = options
 
-  const rows = await withUser(ctx.user.id, (tx) =>
-    tx
-      .select({
-        day: vDailyRevenue.day,
-        branchId: vDailyRevenue.branchId,
-        branchName: branches.name,
-        gross: vDailyRevenue.gross,
-        discount: vDailyRevenue.discount,
-        tax: vDailyRevenue.tax,
-        net: vDailyRevenue.net,
-        invoiceCount: vDailyRevenue.invoiceCount,
-      })
-      .from(vDailyRevenue)
-      // Left, not inner: a deleted branch must not make its revenue vanish
-      // from a historical report. `branches` is itself RLS-scoped.
-      .leftJoin(branches, eq(branches.id, vDailyRevenue.branchId))
-      .where(
-        and(
-          eq(vDailyRevenue.tenantId, ctx.tenant.id),
-          gte(vDailyRevenue.day, range.start),
-          lte(vDailyRevenue.day, range.end),
-          branchId ? eq(vDailyRevenue.branchId, branchId) : undefined,
-        ),
-      )
-      .orderBy(asc(vDailyRevenue.day), asc(branches.name)),
+  // One GROUP BY in Postgres — at most one row per branch per day out.
+  const result = await withUser(ctx.user.id, (tx) =>
+    tx.execute(sql`
+      select m.local_day::text                                        as day,
+             m.branch_id::text                                        as branch_id,
+             m.branch_name                                            as branch_name,
+             sum(${movementShareOf(sql`subtotal`)})::float            as gross,
+             sum(${movementShareOf(sql`discount`)})::float            as discount,
+             sum(${movementShareOf(sql`tax_total`)})::float           as tax,
+             sum(${movementShareOf(sql`service_charge`)})::float      as service_charge,
+             sum(m.amount)::float                                     as net,
+             sum(${movementRefundsOut})::float                        as refunds,
+             count(distinct m.invoice_id)::int                        as invoice_count,
+             coalesce(sum(${movementForKind('booking')}), 0)::float        as booking_revenue,
+             coalesce(sum(${movementForKind('food')}), 0)::float           as food_revenue,
+             coalesce(sum(${movementForKind('membership')}), 0)::float     as membership_revenue,
+             coalesce(sum(${movementForKind('service_charge')}), 0)::float as service_charge_revenue
+        from ${cashMovements(ctx.tenant.id, range, branchId)} m
+       group by m.local_day, m.branch_id, m.branch_name
+       order by day asc, branch_name asc
+    `),
   )
+  const rows = result.rows as {
+    day: string
+    branch_id: string
+    branch_name: string | null
+    gross: number
+    discount: number
+    tax: number
+    service_charge: number
+    net: number
+    refunds: number
+    invoice_count: number
+    booking_revenue: number
+    food_revenue: number
+    membership_revenue: number
+    service_charge_revenue: number
+  }[]
 
-  // numeric arrives as a string (exact, no float rounding on the way out of
-  // Postgres); the report layer wants numbers. Same conversion the invoice
-  // views already do — see app/(app)/invoices/[id]/page.tsx.
   return rows.map((r) => ({
     day: r.day,
-    branchId: r.branchId,
-    branchName: r.branchName,
-    gross: Number(r.gross),
-    discount: Number(r.discount),
-    tax: Number(r.tax),
-    net: Number(r.net),
-    invoiceCount: r.invoiceCount,
+    branchId: r.branch_id,
+    branchName: r.branch_name,
+    gross: round2(Number(r.gross)),
+    discount: round2(Number(r.discount)),
+    tax: round2(Number(r.tax)),
+    serviceCharge: round2(Number(r.service_charge)),
+    net: round2(Number(r.net)),
+    refunds: round2(Number(r.refunds)),
+    invoiceCount: Number(r.invoice_count),
+    bookingRevenue: round2(Number(r.booking_revenue)),
+    foodRevenue: round2(Number(r.food_revenue)),
+    membershipRevenue: round2(Number(r.membership_revenue)),
+    serviceChargeRevenue: round2(Number(r.service_charge_revenue)),
   }))
 }
 
@@ -125,14 +170,24 @@ export async function getDailyRevenue(
  * the length of the range.
  */
 export function sumDailyRevenue(rows: readonly DailyRevenueRow[]): DailyRevenueTotals {
-  const totals = { gross: 0, discount: 0, tax: 0, net: 0, invoiceCount: 0, days: 0 }
+  const totals = {
+    gross: 0, discount: 0, tax: 0, serviceCharge: 0, net: 0, refunds: 0,
+    invoiceCount: 0, days: 0,
+    bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0, serviceChargeRevenue: 0,
+  }
   const days = new Set<string>()
   for (const r of rows) {
     totals.gross += r.gross
     totals.discount += r.discount
     totals.tax += r.tax
+    totals.serviceCharge += r.serviceCharge
     totals.net += r.net
+    totals.refunds += r.refunds
     totals.invoiceCount += r.invoiceCount
+    totals.bookingRevenue += r.bookingRevenue
+    totals.foodRevenue += r.foodRevenue
+    totals.membershipRevenue += r.membershipRevenue
+    totals.serviceChargeRevenue += r.serviceChargeRevenue
     days.add(r.day)
   }
   totals.days = days.size
@@ -143,7 +198,13 @@ export function sumDailyRevenue(rows: readonly DailyRevenueRow[]): DailyRevenueT
     gross: round2(totals.gross),
     discount: round2(totals.discount),
     tax: round2(totals.tax),
+    serviceCharge: round2(totals.serviceCharge),
     net: round2(totals.net),
+    refunds: round2(totals.refunds),
+    bookingRevenue: round2(totals.bookingRevenue),
+    foodRevenue: round2(totals.foodRevenue),
+    membershipRevenue: round2(totals.membershipRevenue),
+    serviceChargeRevenue: round2(totals.serviceChargeRevenue),
   }
 }
 
@@ -161,6 +222,8 @@ export const DAILY_REVENUE_CSV_COLUMNS: readonly CsvColumn<DailyRevenueRow>[] = 
   { header: 'Gross', value: (r) => r.gross.toFixed(2) },
   { header: 'Discount', value: (r) => r.discount.toFixed(2) },
   { header: 'Tax', value: (r) => r.tax.toFixed(2) },
+  { header: 'Service charge', value: (r) => r.serviceCharge.toFixed(2) },
+  { header: 'Refunds', value: (r) => r.refunds.toFixed(2) },
   { header: 'Net', value: (r) => r.net.toFixed(2) },
 ]
 

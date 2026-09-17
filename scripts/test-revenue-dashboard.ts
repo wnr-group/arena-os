@@ -117,19 +117,54 @@ async function main() {
   }
 
   let invoiceSeq = 0
+  /**
+   * An invoice AND the money taken against it.
+   *
+   * Revenue is captured payments now (lib/reports/revenue-basis.ts), so a
+   * fixture that only raises bills would report zero everywhere. `paid`
+   * defaults to the full total — the ordinary case — and `paidAt` defaults to
+   * the issue instant, since the till normally settles on the spot.
+   */
   async function makeInvoice(
     t: { tenantId: string; branchId: string },
-    v: { status: string; issuedAt: string | null; subtotal: number; discount: number; tax: number; total: number },
+    v: {
+      status: string
+      issuedAt: string | null
+      subtotal: number
+      discount: number
+      tax: number
+      total: number
+      /** Captured tender. Omit for "paid in full"; 0 means nothing collected. */
+      paid?: number
+      /** When the money was taken, if not at the moment of issue. */
+      paidAt?: string
+      /** A booking line, so the payment can be apportioned to a source. */
+      kind?: 'booking' | 'food' | 'membership'
+    },
   ) {
     invoiceSeq++
-    await owner.query(
+    const inv = await owner.query<{ id: string }>(
       `insert into invoices (tenant_id, branch_id, invoice_number, status, issued_at, subtotal, discount, tax_total, total)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
       [
         t.tenantId, t.branchId, `RBI-${String(invoiceSeq).padStart(4, '0')}`, v.status, v.issuedAt,
         v.subtotal.toFixed(2), v.discount.toFixed(2), v.tax.toFixed(2), v.total.toFixed(2),
       ],
     )
+    await owner.query(
+      `insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,tax_rate,line_total)
+       values ($1,$2,$3,'line',1,$4,0,$4)`,
+      [t.tenantId, inv.rows[0].id, v.kind ?? 'booking', v.subtotal.toFixed(2)],
+    )
+    const paid = v.paid ?? v.total
+    if (paid > 0) {
+      await owner.query(
+        `insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at)
+         values ($1,$2,$3,'cash',$4,'captured',$5)`,
+        [t.tenantId, t.branchId, inv.rows[0].id, paid.toFixed(2), v.paidAt ?? v.issuedAt],
+      )
+    }
+    return inv.rows[0].id
   }
 
   const A = await makeTenant('rbd-a', 'owner@rbd-a.test')
@@ -200,14 +235,24 @@ async function main() {
   // ── invoices: revenue comes from AROS-64, statuses exercised here too ─────
   await makeInvoice(A, { status: 'issued', issuedAt: ist(D1, '12:05'), subtotal: 1000, discount: 100, tax: 45, total: 945 })
   await makeInvoice(A, { status: 'paid',   issuedAt: ist(D1, '21:10'), subtotal: 500, discount: 0, tax: 25, total: 525 })
-  await makeInvoice(A, { status: 'draft',  issuedAt: null,             subtotal: 999, discount: 0, tax: 0, total: 999 })
+  await makeInvoice(A, { status: 'draft',  issuedAt: null,             subtotal: 999, discount: 0, tax: 0, total: 999, paid: 0 })
   await makeInvoice(A, { status: 'void',   issuedAt: ist(D1, '13:00'), subtotal: 888, discount: 0, tax: 0, total: 888 })
   await makeInvoice(A, { status: 'issued', issuedAt: ist(D2, '17:30'), subtotal: 300, discount: 0, tax: 15, total: 315 })
+  // Billed and NOT collected: contributes nothing on a cash basis. Placed on
+  // D2 so D1's expectations stay exactly what they were when the basis was
+  // accrual — every D1 bill above is settled in full.
+  await makeInvoice(A, { status: 'issued', issuedAt: ist(D2, '18:00'), subtotal: 400, discount: 0, tax: 0, total: 400, paid: 0 })
+  // Part paid: only the ₹120 actually taken counts.
+  await makeInvoice(A, { status: 'issued', issuedAt: ist(D2, '19:00'), subtotal: 500, discount: 0, tax: 0, total: 500, paid: 120 })
+
   // Tenant B — same days, must never leak into A.
   await makeBooking(B, { status: 'confirmed', slots: [{ resourceId: RB1, startsAt: ist(D1, '10:00'), endsAt: ist(D1, '20:00') }] })
   await makeInvoice(B, { status: 'paid', issuedAt: ist(D1, '15:00'), subtotal: 7777, discount: 0, tax: 0, total: 7777 })
 
-  await owner.query('select public.refresh_daily_revenue()')
+  // Deliberately NOT refreshing mv_daily_revenue. Revenue is aggregated live
+  // from `invoices` (lib/reports/revenue-basis.ts), so every figure below must
+  // be right without a refresh — refreshing here would re-hide the staleness
+  // bug this suite exists to catch.
 
   const ctxFor = (t: { userId: string; membershipId: string }, tenantId: string, role: string): ActiveContext =>
     ({
@@ -238,16 +283,38 @@ async function main() {
   check('D1 tax = 70', day(D1).tax === 70)
   check('D1 net = 1470 = SUM(invoice.total)', day(D1).net === 1470)
   check('D1 counts 2 invoices — draft and void excluded', day(D1).invoices === 2)
-  check('D2 net = 315', day(D2).net === 315)
+  // D2: ₹315 settled in full, ₹400 billed and not collected (adds nothing),
+  // ₹500 billed with only ₹120 taken (adds ₹120).
+  check('D2 net = 435 — the 315 plus 120 of a part-paid bill', day(D2).net === 435)
+  check('…the ₹400 unpaid bill adds nothing', day(D2).net !== 835)
+  check('…and the part-paid one adds only what was taken', day(D2).net !== 935)
   check('D3 has no revenue', day(D3).net === 0 && day(D3).invoices === 0)
-  check('period net = 1785', data.revenueTotals.net === 1785)
+  check('period net = 1905', data.revenueTotals.net === 1905)
 
+  // Revenue is money, so it reconciles against CAPTURED PAYMENTS, not against
+  // what was billed. Voided invoices are excluded on both sides.
   const srcNet = await owner.query<{ net: string }>(
-    `select coalesce(sum(total),0)::text net from invoices
+    `select coalesce(sum(p.amount),0)::text net
+       from payments p join invoices i on i.id = p.invoice_id
+      where p.tenant_id = $1 and p.status = 'captured' and i.status <> 'void'`,
+    [A.tenantId],
+  )
+  check('period net reconciles with SUM(captured payments) at source',
+    data.revenueTotals.net === Number(srcNet.rows[0].net))
+
+  // Billed-but-unpaid is the gap the cash basis exists to exclude.
+  const billed = await owner.query<{ total: string }>(
+    `select coalesce(sum(total),0)::text total from invoices
       where tenant_id = $1 and status in ('issued','paid') and issued_at is not null`,
     [A.tenantId],
   )
-  check('period net reconciles with SUM(invoices.total) at source', data.revenueTotals.net === Number(srcNet.rows[0].net))
+  check('…and it is LESS than everything billed, so the check has teeth',
+    data.revenueTotals.net < Number(billed.rows[0].total))
+
+  // The three sources add back up to the money, with nothing double counted.
+  const t = data.revenueTotals
+  check('booking + food + membership === net',
+    Math.abs(t.bookingRevenue + t.foodRevenue + t.membershipRevenue - t.net) < 0.01)
 
   // ── booking count ─────────────────────────────────────────────────────────
   console.log('\n── bookings ──')
@@ -341,7 +408,7 @@ async function main() {
   console.log('\n── authorization ──')
   check('an owner may read the dashboard', data.days.length === 3)
   const mgr = await getRevenueDashboard(ctxAManager, { range })
-  check('a manager may read the dashboard', mgr.revenueTotals.net === 1785)
+  check('a manager may read the dashboard', mgr.revenueTotals.net === 1905)
   let cashierRefused = false
   try {
     await getRevenueDashboard(ctxCashier, { range })
@@ -362,9 +429,9 @@ async function main() {
   const csv = dashboardCsv(data)
   const lines = csv.trimEnd().split('\r\n')
   check('the export has a header plus one row per day in range', lines.length === 4)
-  check('…with the documented headers', lines[0] === 'Date,Invoices,Gross,Discount,Tax,Net,Bookings,Booked minutes,Available minutes,Occupancy %')
-  check('…D1 values match the screen', lines[1] === `${D1},2,1500.00,100.00,70.00,1470.00,4,360,2160,16.7`)
-  check('…D3 exports zeros, not blanks', lines[3] === `${D3},0,0.00,0.00,0.00,0.00,0,0,2160,0.0`)
+  check('…with the documented headers', lines[0] === 'Date,Invoices,Gross,Discount,Tax,Service charge,Refunds,Net,Bookings,Booked minutes,Available minutes,Occupancy %')
+  check('…D1 values match the screen', lines[1] === `${D1},2,1500.00,100.00,70.00,0.00,0.00,1470.00,4,360,2160,16.7`)
+  check('…D3 exports zeros, not blanks', lines[3] === `${D3},0,0.00,0.00,0.00,0.00,0.00,0.00,0,0,2160,0.0`)
   check('…no other tenant’s figure appears anywhere', !csv.includes('7777'))
   const closedCsv = dashboardCsv(await getRevenueDashboard(ctxA, { range: { start: D1, end: D1 } }))
   check('a one-day export contains exactly that day', closedCsv.trimEnd().split('\r\n').length === 2)
@@ -397,9 +464,10 @@ async function main() {
      ),
      d as (select gs::date as day from generate_series($3::date, $4::date, interval '1 day') gs)
      select d.day::text as day,
-            (select coalesce(sum(i.total),0) from invoices i
-              where i.tenant_id = $1 and i.status in ('issued','paid')
-                and (i.issued_at at time zone $2)::date = d.day)::text as net,
+            (select coalesce(sum(p.amount),0)
+               from payments p join invoices i on i.id = p.invoice_id
+              where p.tenant_id = $1 and p.status = 'captured' and i.status <> 'void'
+                and (p.created_at at time zone $2)::date = d.day)::text as net,
             (select count(*) from (
                select s.booking_id, min(s.starts_at) ms from all_slots s group by s.booking_id
              ) f where (f.ms at time zone $2)::date = d.day)::text as bookings,

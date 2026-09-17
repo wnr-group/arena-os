@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, lt } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   resourceTypes,
@@ -127,7 +127,20 @@ export function listTables(ctx: ActiveContext, branchId: string) {
   )
 }
 
-/** Active booking slots for a branch on a given local date, with booking info. */
+/**
+ * Active booking slots for a branch on a given local date, with booking info.
+ *
+ * OVERLAP, not "starts on this day". A booking running 22:00→02:00 occupies its
+ * resource on BOTH days, so it belongs on both timelines; filtering on
+ * startsAt alone hid it from the second one and left the page showing a table
+ * as free while the availability picker — which does test overlap — refused to
+ * book it. Same predicate, same reason, as lib/actions/availability.ts.
+ *
+ * A slot that carries over therefore appears on each day it touches. The
+ * timeline positions it by its portion WITHIN the displayed day (see
+ * BookingsView), so it renders flush to the left edge rather than at the hour
+ * it originally started.
+ */
 export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
   const dayStart = zonedTimeToUtc(dateStr, '00:00', tz)
   const dayEnd = zonedTimeToUtc(addDays(dateStr, 1), '00:00', tz)
@@ -156,8 +169,8 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
           eq(bookingSlots.tenantId, ctx.tenant.id),
           eq(bookings.branchId, branchId),
           eq(bookingSlots.active, true),
-          gte(bookingSlots.startsAt, dayStart),
           lt(bookingSlots.startsAt, dayEnd),
+          gt(bookingSlots.endsAt, dayStart),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt)),

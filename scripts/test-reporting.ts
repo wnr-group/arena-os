@@ -103,13 +103,15 @@ async function main() {
       discount: number
       tax: number
       total: number
+      /** Captured tender. Omit for "paid in full"; 0 leaves a receivable. */
+      paid?: number
     },
   ) {
     invoiceSeq++
-    await owner.query(
+    const inv = await owner.query<{ id: string }>(
       `insert into invoices
          (tenant_id, branch_id, invoice_number, status, issued_at, subtotal, discount, tax_total, total)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
       [
         tenantId,
         branchId,
@@ -122,6 +124,26 @@ async function main() {
         v.total.toFixed(2),
       ],
     )
+    // Revenue is CAPTURED PAYMENTS now (lib/reports/revenue-basis.ts), so a
+    // fixture that only raised bills would report zero everywhere.
+    //
+    // The tender carries the SAME instant as the invoice, deliberately: these
+    // cases are about which LOCAL DAY an instant buckets into, and keeping the
+    // two timestamps identical means they still test exactly that — only the
+    // column the bucketing reads has moved from issued_at to created_at.
+    await owner.query(
+      `insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,tax_rate,line_total)
+       values ($1,$2,'booking','line',1,$3,0,$3)`,
+      [tenantId, inv.rows[0].id, v.subtotal.toFixed(2)],
+    )
+    const paid = v.paid ?? v.total
+    if (v.issuedAt !== null && paid > 0) {
+      await owner.query(
+        `insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at)
+         values ($1,$2,$3,'cash',$4,'captured',$5)`,
+        [tenantId, branchId, inv.rows[0].id, paid.toFixed(2), v.issuedAt],
+      )
+    }
   }
 
   const A = await makeTenant('rpt-a', 'owner@rpt-a.test')
@@ -155,7 +177,10 @@ async function main() {
   // Another tenant, same day — must never appear in A's report.
   await makeInvoice(B.tenantId, B1, { status: 'issued', issuedAt: '2026-03-10T06:00:00Z', subtotal: 7777, discount: 77, tax: 7, total: 7707 })
 
-  await owner.query('select public.refresh_daily_revenue()')
+  // Deliberately NOT refreshing mv_daily_revenue. Revenue is aggregated live
+  // from `invoices` (lib/reports/revenue-basis.ts), so every figure below must
+  // be right without a refresh — refreshing here would re-hide the staleness
+  // bug this suite exists to catch.
 
   // ── the context a report page would hand the reader ───────────────────────
   const ctxFor = (t: typeof A, tenantId: string, role = 'owner'): ActiveContext =>
@@ -364,8 +389,8 @@ async function main() {
   const revenueCsv = toCsv(rowsA, DAILY_REVENUE_CSV_COLUMNS)
   const revenueLines = revenueCsv.trimEnd().split('\r\n')
   check('the revenue export has a header plus one line per row', revenueLines.length === rowsA.length + 1)
-  check('…with the documented columns', revenueLines[0] === 'Day,Branch,Invoices,Gross,Discount,Tax,Net')
-  check('…money at 2dp, unformatted, so a spreadsheet reads it as a number', revenueLines.some((l) => l.includes(',1500.00,100.00,70.00,1470.00')))
+  check('…with the documented columns', revenueLines[0] === 'Day,Branch,Invoices,Gross,Discount,Tax,Service charge,Refunds,Net')
+  check('…money at 2dp, unformatted, so a spreadsheet reads it as a number', revenueLines.some((l) => l.includes(',1500.00,100.00,70.00,0.00,0.00,1470.00')))
 
   console.log('\n── access + infrastructure ──')
   const cashierCtx = ctxFor(A, A.tenantId, 'cashier')

@@ -1,13 +1,38 @@
-'use client'
+import { redirect } from 'next/navigation'
+import { getCurrentUser } from '@/lib/auth/session'
+import { currentTenantSlug } from '@/lib/tenant/context'
+import { LoginForm } from './LoginForm'
 
-import { useActionState } from 'react'
-import { login, type LoginState } from '@/lib/actions/auth'
-import { cn } from '@/lib/utils/cn'
-
-const initial: LoginState = {}
-
-export default function LoginPage() {
-  const [state, formAction, pending] = useActionState(login, initial)
+/**
+ * The staff sign-in page.
+ *
+ * ── WHY THIS IS A SERVER COMPONENT ──────────────────────────────────────────
+ *
+ * Someone already signed in has no business seeing a sign-in form. They used
+ * to: pressing Back from the dashboard landed here, showed the form, and Back
+ * again returned to the dashboard — which reads like the session is being
+ * bypassed even though it never was. (It was not: the session stayed valid the
+ * whole time, so returning to the dashboard was correct. What was wrong is
+ * that this page rendered at all.)
+ *
+ * Half the fix is in lib/actions/auth.ts, which now REPLACES this entry in the
+ * history stack instead of pushing past it, so Back from the dashboard skips
+ * it. This is the other half, and the durable one: the check runs however the
+ * page is reached — Back, a bookmark, a typed URL, a restored tab.
+ *
+ * The test is `getCurrentUser()`, the real session lookup, NOT the cookie
+ * presence check proxy.ts uses for routing. A stale or revoked cookie must
+ * still get the form rather than be bounced to a dashboard that would only
+ * send it back here.
+ */
+export default async function LoginPage() {
+  const user = await getCurrentUser()
+  if (user) {
+    // Same destination the login action itself picks: a tenant subdomain goes
+    // to the workspace, the root/admin domain to the platform panel.
+    const slug = await currentTenantSlug()
+    redirect(slug ? '/dashboard' : '/admin')
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center px-6">
@@ -17,56 +42,8 @@ export default function LoginPage() {
           <p className="mt-1 text-sm text-muted-foreground">Sign in to your workspace</p>
         </div>
 
-        <form action={formAction} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="email" className="text-sm font-medium">
-              Email
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              className={inputClass}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              className={inputClass}
-            />
-          </div>
-
-          {state.error && (
-            <p className="text-sm text-destructive" role="alert">
-              {state.error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={pending}
-            className={cn(
-              'w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground',
-              'transition hover:opacity-90 disabled:opacity-50',
-            )}
-          >
-            {pending ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+        <LoginForm />
       </div>
     </main>
   )
 }
-
-const inputClass =
-  'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'

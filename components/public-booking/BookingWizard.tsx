@@ -57,7 +57,8 @@ export function BookingWizard({
   const [typeId, setTypeId] = useState<string | null>(validInitialTypeId)
   const [date, setDate] = useState(today)
   const [duration, setDuration] = useState(60)
-  const [slots, setSlots] = useState<PublicSlotOption[] | null>(null)
+  /** The whole working day; `resourceId` is null when no unit is free then. */
+  const [slots, setSlots] = useState<{ startsAt: string; resourceId: string | null }[] | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [slot, setSlot] = useState<PublicSlotOption | null>(null)
   const [name, setName] = useState('')
@@ -86,7 +87,16 @@ export function BookingWizard({
         setSlots([])
         return
       }
-      setSlots(r.starts ?? [])
+      // The whole working day, with the free times carrying their unit —
+      // taken ones are shown disabled rather than dropped, so an afternoon
+      // with one booking in it still reads as a day (see
+      // getPublicAvailableStartsForType).
+      const byStart = new Map((r.starts ?? []).map((s) => [s.startsAt, s.resourceId]))
+      const grid = (r.allStarts ?? []).map((startsAt) => ({
+        startsAt,
+        resourceId: byStart.get(startsAt) ?? null,
+      }))
+      setSlots(grid.length > 0 ? grid : (r.starts ?? []).map((s) => ({ ...s })))
     })
     return () => {
       cancelled = true
@@ -281,15 +291,20 @@ export function BookingWizard({
             ) : (
               <div className="grid grid-cols-3 gap-2">
                 {slots.map((s) => {
+                  const isTaken = s.resourceId === null
                   const isSelected = slot?.startsAt === s.startsAt
                   return (
                     <button
                       key={s.startsAt}
-                      onClick={() => setSlot(s)}
-                      className={`rounded-xl border px-2 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-95 ${
-                        isSelected
-                          ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                          : 'border-border bg-card text-foreground hover:border-primary/40'
+                      disabled={isTaken}
+                      title={isTaken ? 'Not available' : undefined}
+                      onClick={() => !isTaken && setSlot({ startsAt: s.startsAt, resourceId: s.resourceId! })}
+                      className={`rounded-xl border px-2 py-3 text-sm font-semibold tabular-nums transition-all duration-200 ${
+                        isTaken
+                          ? 'cursor-not-allowed border-dashed border-border bg-muted/40 text-muted-foreground line-through'
+                          : isSelected
+                            ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20 active:scale-95'
+                            : 'border-border bg-card text-foreground hover:border-primary/40 active:scale-95'
                       }`}
                     >
                       {timeInZone(s.startsAt, timeZone)}

@@ -5,7 +5,7 @@ import { isManager } from '@/lib/auth/roles'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { getPnlReport, pnlCsvRows } from '@/lib/reports/pnl'
 import { resolveDateRange } from '@/lib/reports/date-range'
-import { formatMoney, prettyDate } from '@/lib/format'
+import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
 import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
@@ -55,14 +55,6 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
   ]
 
   const maxCategory = Math.max(...report.expenses.byCategory.map((c) => c.amount), 0)
-
-  // The snapshot cannot contain everything in the window if it was rebuilt on a
-  // venue-calendar day before the window ends. Compared as calendar dates in the
-  // venue's zone, which is the same basis mv_daily_revenue buckets `day` on —
-  // comparing a raw instant against a 'YYYY-MM-DD' would drift by the offset.
-  const revenueStale =
-    report.revenueRefreshedAt === null ||
-    todayInZone(tz, report.revenueRefreshedAt) < range.end
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
@@ -149,21 +141,6 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
           too LOW. Warned about only when the snapshot actually predates the end
           of the chosen range — that is when it can be missing whole days of
           income, rather than just the last few minutes of today. */}
-      {revenueStale && (
-        <p className="mt-3 flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
-          <Info size={16} className="mt-0.5 shrink-0" aria-hidden />
-          <span>
-            {report.revenueRefreshedAt
-              ? `Revenue was last brought up to date on ${prettyDate(todayInZone(tz, report.revenueRefreshedAt), tz)}, before the end of this range.`
-              : 'Revenue has never been brought up to date on this database.'}{' '}
-            Expenses and payroll are current, so any invoice raised since then is missing from
-            revenue and the net profit above is understated. Run{' '}
-            <code className="rounded bg-muted px-1 py-0.5">npm run reports:refresh</code> for a
-            true figure.
-          </span>
-        </p>
-      )}
-
       {/* ── expense breakdown ───────────────────────────────────────────── */}
       <section className="mt-6 rounded-xl border border-border bg-card">
         <h2 className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-semibold">
@@ -207,16 +184,12 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
         )}
       </section>
 
-      {/* The revenue line comes from a pre-aggregated snapshot while expenses
-          and payroll are read live, so a P&L can briefly mix fresh and stale
-          figures. The revenue dashboard discloses the same thing; on a NET
-          number it matters more, because the staleness lands in the profit. */}
       <p className="mt-4 text-xs text-muted-foreground">
-        Revenue counts invoices that were issued or paid, at the amount billed, and comes from a
-        pre-aggregated snapshot (refreshed by{' '}
-        <code className="rounded bg-muted px-1 py-0.5">npm run reports:refresh</code>). Expenses and
-        payroll are read live, so invoices raised since the last refresh are not yet in the net.
-        Expenses are dated by when they were spent. All figures are for {ctx.tenant.name} only.
+        Revenue counts money actually taken — captured payments, dated by when they were
+        received, so a booking played on a future date counts in the period it was paid for, and
+        a bill nobody has settled counts for nothing. Revenue, expenses and payroll are all read
+        live. Expenses are dated by when they were spent. All figures are for {ctx.tenant.name}{' '}
+        only.
       </p>
     </div>
   )

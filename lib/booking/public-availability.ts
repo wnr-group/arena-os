@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, lt } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
@@ -212,8 +212,17 @@ export async function getPublicAvailableStarts(
         and(
           eq(bookingSlots.resourceId, resourceId),
           eq(bookingSlots.active, true),
-          gte(bookingSlots.startsAt, dayStart),
+          // OVERLAP, not "starts on this day".
+          //
+          // Filtering on startsAt alone made every slot that begins BEFORE the
+          // day and runs into it invisible here — an overnight booking, or a
+          // multi-day hold on a resource. Availability then offered a unit the
+          // booking_slots_no_overlap exclusion constraint promptly refused, so
+          // the till was told a table was free and the booking failed with
+          // "that time was just taken". A second unit of the same type could
+          // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
+          gt(bookingSlots.endsAt, dayStart),
         ),
       )
 
@@ -367,10 +376,21 @@ export type PublicTypeSlot = { start: Date; resourceId: string }
  * offered; createPublicBooking (lib/actions/public-booking.ts) re-validates
  * that exact resource+slot at submit time, so a stale read here can only
  * ever fail closed (the exclusion constraint), never double-book.
+ *
+ * Returns `allStarts` alongside `starts` for the same reason
+ * getPublicAvailableStarts() does: a picker that lists only the bookable times
+ * silently deletes the rest of the day, so an afternoon blocked by one booking
+ * and its buffer looks like a broken page rather than a busy one. The caller
+ * renders every candidate and disables the ones missing from `starts`.
+ *
+ * `allStarts` is the working day alone — what the opening hours and the chosen
+ * duration allow, ignoring every booking and buffer. It is therefore the same
+ * grid `starts` was filtered out of, which is what makes "shown but disabled"
+ * line up with clock time.
  */
 export async function getPublicAvailableStartsForType(
   input: PublicTypeAvailabilityInput,
-): Promise<{ starts: PublicTypeSlot[] } | { error: string }> {
+): Promise<{ starts: PublicTypeSlot[]; allStarts: Date[] } | { error: string }> {
   const { tenantId, branchId, resourceTypeId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
@@ -411,8 +431,17 @@ export async function getPublicAvailableStartsForType(
         and(
           inArray(bookingSlots.resourceId, resourceIds),
           eq(bookingSlots.active, true),
-          gte(bookingSlots.startsAt, dayStart),
+          // OVERLAP, not "starts on this day".
+          //
+          // Filtering on startsAt alone made every slot that begins BEFORE the
+          // day and runs into it invisible here — an overnight booking, or a
+          // multi-day hold on a resource. Availability then offered a unit the
+          // booking_slots_no_overlap exclusion constraint promptly refused, so
+          // the till was told a table was free and the booking failed with
+          // "that time was just taken". A second unit of the same type could
+          // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
+          gt(bookingSlots.endsAt, dayStart),
         ),
       )
 
@@ -442,6 +471,13 @@ export async function getPublicAvailableStartsForType(
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([start, resourceId]) => ({ start: new Date(start), resourceId }))
 
-    return { starts }
+    // No buffer here on purpose: a buffer belongs to a booking, and this grid
+    // has none to sit beside. Passing one would shorten the day itself.
+    const allStarts = availableStartTimes(date, timeZone, hours ?? DEFAULT_HOURS, [], {
+      durationMinutes,
+      slotMinutes: 30,
+    })
+
+    return { starts, allStarts }
   })
 }

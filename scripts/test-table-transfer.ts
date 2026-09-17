@@ -21,7 +21,7 @@
  */
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
-import { and, eq, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { seatTableSessionCore, transferTableCore, mergeTablesCore, splitTableCore, BookingError } from '../lib/booking/service'
 import { createOrderCore } from '../lib/orders/service'

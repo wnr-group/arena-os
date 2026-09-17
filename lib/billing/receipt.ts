@@ -20,11 +20,11 @@ import { and, asc, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import type { TaxBreakupLine } from '@/db/schema'
-import { branches, customers, invoiceItems, invoices, tenants } from '@/db/schema'
+import { branches, customers, invoiceItems, invoices, promoCodes, tenants } from '@/db/schema'
 import { capturedTotal, listInvoicePayments, paise, type RecordedPayment } from './payments'
 import { loadBusinessProfile } from '@/lib/settings/business-profile'
 import { refundsByPayment } from './refunds'
-import { round2 } from './pricing'
+import { round2, type PricingResult } from './pricing'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -85,6 +85,16 @@ export type InvoiceReceipt = {
     membershipDiscountPercent: string
     membershipPlanName: string | null
     /**
+     * The promo code this bill honoured, and the part of `discount` it took
+     * off. Null when no code was used — or when the code row was hard-deleted,
+     * which the composite FK turns into a null reference rather than a dangling
+     * one. Codes are DEACTIVATED rather than deleted and their `code` is never
+     * edited (see lib/actions/promo-codes.ts), so a reprint years later names
+     * the same code the customer was quoted.
+     */
+    promoCode: string | null
+    promoDiscount: string
+    /**
      * The loyalty half of `discount`, as applied. Read off the invoice's own
      * snapshot — never from today's loyalty_settings — so a reprint years later
      * shows the rate that was actually honoured.
@@ -134,6 +144,90 @@ function sumStored(values: (string | null | undefined)[]): string {
 }
 
 /**
+ * An issued invoice's OWN pricing, in the shape priceBill() returns.
+ *
+ * For screens that show a bill both before and after it is raised. Before, the
+ * figures come from priceBill(); after, they must come from here — because the
+ * two are not interchangeable:
+ *
+ *   * `invoice_items.qty` is numeric(10,2), so a 1h20m slot is stored as 1.33.
+ *     Re-multiplying 1.33 × ₹400 gives ₹532, not the ₹533.33 that was charged.
+ *     The stored `line_total` is the only true figure.
+ *   * a re-price knows nothing about the discount that was applied, so every
+ *     GST amount and the grand total come out too high.
+ *
+ * Same rule as the rest of this file, therefore: nothing here is recomputed.
+ * `taxableValue` is the one subtraction — subtotal − discount, both stored, the
+ * same arithmetic priceBill did when the bill was raised (invoices carries no
+ * taxable_value column to read instead).
+ *
+ * Returns null when the invoice does not exist or belongs to another tenant.
+ */
+export async function loadIssuedPricing(
+  tx: Db,
+  tenantId: string,
+  invoiceId: string,
+): Promise<PricingResult | null> {
+  const [row] = await tx
+    .select({
+      id: invoices.id,
+      subtotal: invoices.subtotal,
+      discount: invoices.discount,
+      taxTotal: invoices.taxTotal,
+      taxBreakup: invoices.taxBreakup,
+      total: invoices.total,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId)))
+    .limit(1)
+
+  if (!row) return null
+
+  const items = await tx
+    .select({
+      kind: invoiceItems.kind,
+      description: invoiceItems.description,
+      sourceId: invoiceItems.sourceId,
+      qty: invoiceItems.qty,
+      unitPrice: invoiceItems.unitPrice,
+      taxRate: invoiceItems.taxRate,
+      lineTotal: invoiceItems.lineTotal,
+    })
+    .from(invoiceItems)
+    .where(and(eq(invoiceItems.tenantId, tenantId), eq(invoiceItems.invoiceId, row.id)))
+    .orderBy(asc(invoiceItems.createdAt))
+
+  const subtotal = round2(Number(row.subtotal))
+  const discount = round2(Number(row.discount))
+  const stored = (row.taxBreakup ?? []) as TaxBreakupLine[]
+
+  return {
+    subtotal,
+    discount,
+    taxableValue: round2(subtotal - discount),
+    // `percent` is priceBill's name for the column's `rate` — the same mapping
+    // issueInvoiceForBooking made when it wrote the row, read back.
+    taxBreakup: stored.map((g) => ({
+      percent: Number(g.rate ?? 0),
+      cgst: round2(Number(g.cgst ?? 0)),
+      sgst: round2(Number(g.sgst ?? 0)),
+    })),
+    taxTotal: round2(Number(row.taxTotal)),
+    total: round2(Number(row.total)),
+    items: items.map((i) => ({
+      description: i.description,
+      kind: i.kind,
+      sourceId: i.sourceId ?? undefined,
+      qty: Number(i.qty),
+      unitPrice: Number(i.unitPrice),
+      taxPercent: Number(i.taxRate),
+      // Read, never qty × unitPrice — see the note above.
+      lineTotal: round2(Number(i.lineTotal)),
+    })),
+  }
+}
+
+/**
  * Load everything the GST receipt prints.
  *
  * Returns null when the invoice does not exist OR belongs to another tenant —
@@ -153,6 +247,7 @@ export async function loadInvoiceReceipt(
       customerId: invoices.customerId,
       subtotal: invoices.subtotal,
       discount: invoices.discount,
+      compAmount: invoices.compAmount,
       membershipDiscount: invoices.membershipDiscount,
       membershipDiscountPercent: invoices.membershipDiscountPercent,
       membershipPlanName: invoices.membershipPlanName,
@@ -160,6 +255,7 @@ export async function loadInvoiceReceipt(
       loyaltyDiscount: invoices.loyaltyDiscount,
       loyaltyPointValue: invoices.loyaltyPointValue,
       loyaltyPointsEarned: invoices.loyaltyPointsEarned,
+      promoCode: promoCodes.code,
       taxTotal: invoices.taxTotal,
       taxBreakup: invoices.taxBreakup,
       total: invoices.total,
@@ -182,6 +278,12 @@ export async function loadInvoiceReceipt(
     .innerJoin(tenants, eq(tenants.id, invoices.tenantId))
     .innerJoin(branches, eq(branches.id, invoices.branchId))
     .leftJoin(customers, eq(customers.id, invoices.customerId))
+    // Composite, matching the invoices_promo_fk the row was written under, so
+    // the join can no more reach another tenant's promo than the FK could.
+    .leftJoin(
+      promoCodes,
+      and(eq(promoCodes.tenantId, invoices.tenantId), eq(promoCodes.id, invoices.promoCodeId)),
+    )
     // Tenant filter in the application layer as well as RLS — the same
     // belt-and-braces the rest of lib/billing uses.
     .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId)))
@@ -237,6 +339,28 @@ export async function loadInvoiceReceipt(
     igst: g.igst ? round2(Number(g.igst)).toFixed(2) : null,
   }))
 
+  // The promo's share of `discount`. The invoice snapshots WHICH code was
+  // honoured but not what it took off, because a promo is never an amount
+  // alongside the discount — `discount` is the sum of its parts (membership,
+  // loyalty, a manager comp, and the promo), and every other part is stored.
+  // Subtracting them all leaves the promo's exactly: a code REPLACES a keyed-in
+  // figure rather than stacking with it (step 4d of issueInvoiceForBooking), so
+  // when an invoice cites a code the remainder is all of it. The comp
+  // (comp_amount, M18 #5) MUST be subtracted too — otherwise a bill carrying
+  // both a promo and a comp would print the comp on the "Promo" line and
+  // overstate it. Subtraction of stored values — nothing here is repriced.
+  const promoDiscount = row.promoCode
+    ? Math.max(
+        0,
+        round2(
+          Number(row.discount) -
+            Number(row.membershipDiscount) -
+            Number(row.loyaltyDiscount) -
+            Number(row.compAmount),
+        ),
+      )
+    : 0
+
   const total = round2(Number(row.total))
   const balance = round2(total - paid)
 
@@ -255,6 +379,8 @@ export async function loadInvoiceReceipt(
       loyaltyDiscount: row.loyaltyDiscount,
       loyaltyPointValue: row.loyaltyPointValue,
       loyaltyPointsEarned: row.loyaltyPointsEarned,
+      promoCode: row.promoCode,
+      promoDiscount: promoDiscount.toFixed(2),
       taxTotal: row.taxTotal,
       taxBreakup,
       total: row.total,

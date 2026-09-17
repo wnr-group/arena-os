@@ -35,7 +35,18 @@ const availabilityInput = z.object({
 })
 
 export type PublicSlotOption = { startsAt: string; resourceId: string }
-export type AvailabilityResult = { starts?: PublicSlotOption[]; error?: string }
+export type AvailabilityResult = {
+  /** Bookable start times, each with the unit it would be assigned. */
+  starts?: PublicSlotOption[]
+  /**
+   * Every start time the working hours and the chosen duration allow, bookable
+   * or not — so the picker can show a whole day and disable what is taken,
+   * rather than silently deleting an afternoon. Same contract the
+   * single-resource page has had (getPublicResourceAvailability).
+   */
+  allStarts?: string[]
+  error?: string
+}
 
 /** Step 4 of the booking wizard: open start times for one resource type. */
 export async function getPublicAvailability(
@@ -65,7 +76,10 @@ export async function getPublicAvailability(
   })
   if ('error' in result) return result
 
-  return { starts: result.starts.map((s) => ({ startsAt: s.start.toISOString(), resourceId: s.resourceId })) }
+  return {
+    starts: result.starts.map((s) => ({ startsAt: s.start.toISOString(), resourceId: s.resourceId })),
+    allStarts: result.allStarts.map((d) => d.toISOString()),
+  }
 }
 
 const resourceAvailabilityInput = z.object({

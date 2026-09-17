@@ -46,7 +46,7 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
     { key: 'itemName', label: 'Item' },
     { key: 'quantity', label: 'Qty sold' },
     { key: 'invoices', label: 'Invoices' },
-    { key: 'grossRevenue', label: 'Gross revenue' },
+    { key: 'grossRevenue', label: 'Paid revenue' },
   ]
   const membershipCols: CsvColumn<(typeof memberships)[number]>[] = [
     { key: 'planName', label: 'Plan' },
@@ -71,7 +71,7 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Items sold" value={formatQty(totals.foodQuantity)} hint="Billed food & drink lines" />
         <StatCard
-          label="Food gross"
+          label="Food revenue (paid)"
           value={money(totals.foodGrossRevenue)}
           hint="Before invoice discounts and GST"
         />
@@ -106,7 +106,7 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
                   <th className="px-4 py-3 font-semibold">Item</th>
                   <th className="px-4 py-3 text-right font-semibold">Qty sold</th>
                   <th className="px-4 py-3 text-right font-semibold">Invoices</th>
-                  <th className="px-4 py-3 text-right font-semibold">Gross revenue</th>
+                  <th className="px-4 py-3 text-right font-semibold">Paid revenue</th>
                   <th className="px-4 py-3 font-semibold">Share</th>
                 </tr>
               </thead>

@@ -113,16 +113,38 @@ async function main() {
   }
   await wipe()
 
-  /** An invoice on a given day, in the tenant's zone (Asia/Kolkata = +05:30). */
+  /**
+   * An invoice on a given day, in the tenant's zone (Asia/Kolkata = +05:30),
+   * AND the money taken against it.
+   *
+   * Revenue is captured payments now, so a bill with no tender contributes
+   * nothing. `paid` defaults to the full total; pass 0 for a receivable.
+   */
   let invSeq = 0
-  async function invoice(t: typeof tA, day: string, total: string, status = 'issued') {
+  async function invoice(t: typeof tA, day: string, total: string, status = 'issued', paid?: string) {
     invSeq++
-    await owner.query(
+    const inv = await owner.query<{ id: string }>(
       `insert into invoices (tenant_id, branch_id, invoice_number, status,
                              subtotal, discount, tax_total, total, issued_at)
-       values ($1,$2,$3,$4::invoice_status,$5,0,0,$5, ($6 || ' 12:00')::timestamp at time zone 'Asia/Kolkata')`,
+       values ($1,$2,$3,$4::invoice_status,$5,0,0,$5, ($6 || ' 12:00')::timestamp at time zone 'Asia/Kolkata')
+       returning id`,
       [t.tenantId, t.branchId, `INV-PNL-${invSeq}`, status, total, day],
     )
+    await owner.query(
+      `insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,tax_rate,line_total)
+       values ($1,$2,'booking','line',1,$3,0,$3)`,
+      [t.tenantId, inv.rows[0].id, total],
+    )
+    const amount = paid ?? total
+    if (Number(amount) > 0) {
+      await owner.query(
+        `insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at)
+         values ($1,$2,$3,'cash',$4,'captured',
+                 ($5 || ' 12:00')::timestamp at time zone 'Asia/Kolkata')`,
+        [t.tenantId, t.branchId, inv.rows[0].id, amount, day],
+      )
+    }
+    return inv.rows[0].id
   }
 
   async function category(t: typeof tA, name: string) {
@@ -178,7 +200,7 @@ async function main() {
   await invoice(tA, '2026-03-15', '5000.00', 'paid')
   await invoice(tA, '2026-03-31', '1000.00', 'issued')
   // Must NOT count: draft/void, and days outside the range.
-  await invoice(tA, '2026-03-10', '9999.00', 'draft')
+  await invoice(tA, '2026-03-10', '9999.00', 'draft', '0')
   await invoice(tA, '2026-02-28', '7777.00', 'issued')
   await invoice(tA, '2026-04-01', '8888.00', 'issued')
 
@@ -202,12 +224,10 @@ async function main() {
   await expense(tB, bCat, '2026-03-10', '54321.00')
   await payslip(tB, tB.manager.membershipId, '2026-03', '99999.00', '9999.00')
 
-  // Revenue is read from v_daily_revenue, which sits on a MATERIALIZED view.
-  // It does not see the invoices above until it is refreshed — the same reason
-  // scripts/test-revenue-dashboard.ts refreshes, and the same staleness the
-  // reports UI discloses ("npm run reports:refresh"). Expenses and payroll are
-  // live tables, so only this line needs it.
-  await owner.query('select public.refresh_daily_revenue()')
+  // Deliberately NOT refreshing mv_daily_revenue before reading. Revenue is
+  // aggregated live from `invoices` now (lib/reports/revenue-basis.ts), so the
+  // figures below have to be right without it — refreshing here would hide
+  // exactly the staleness bug this suite is meant to catch.
 
   const ctxFor = (t: typeof tA, who: 'owner' | 'manager' | 'cashier') =>
     ({
@@ -233,7 +253,7 @@ async function main() {
 
   const r = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
 
-  check('revenue counts issued + paid only', r.revenue.net === 10000)
+  check('revenue is the money captured, not the money billed', r.revenue.net === 10000)
   check('…excluding the draft invoice', r.revenue.net !== 19999)
   check('…and counts the invoices', r.revenue.invoiceCount === 3)
   check('expenses total 3000', r.expenses.total === 3000)
@@ -318,34 +338,69 @@ async function main() {
   )
   check('both reports count the same payslips', r.payroll.payslipCount === payrollReport.totals.payslipCount)
 
-  // ══ revenue staleness (migration 0050) ════════════════════════════════════
-  // Revenue is a snapshot; expenses and payroll are live. The report has to be
-  // able to say how old the snapshot is, or a manager cannot tell a genuine
-  // loss from an un-refreshed one.
-  console.log('\n── the revenue snapshot reports its own age ──')
+  // ══ revenue is LIVE ═══════════════════════════════════════════════════════
+  // It used to come from the mv_daily_revenue snapshot while expenses and
+  // payroll were read live, so netProfit was understated by every invoice
+  // raised since the last manual refresh — and nothing schedules one. This
+  // suite used to hide that by refreshing before it read.
+  //
+  // The assertion is the opposite one now: a bill raised AFTER the last
+  // refresh must already be in the profit line, and refreshing must change
+  // nothing at all.
+  console.log('\n── revenue is live, not a snapshot ──')
 
-  check('the report carries a refresh timestamp', r.revenueRefreshedAt instanceof Date)
+  const beforeNew = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+  const liveId = await invoice(tA, '2026-03-20', '500.00', 'issued')
+  const afterNew = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+
   check(
-    '…and it is the real one, not the epoch sentinel',
-    r.revenueRefreshedAt !== null && r.revenueRefreshedAt.getTime() > 0,
+    'an invoice raised with no refresh in between lands in revenue immediately',
+    round2(afterNew.revenue.net - beforeNew.revenue.net) === 500,
   )
-  // The suite refreshed just before reading, so the stamp must be recent. A
-  // stamp that never moves is the failure this guards: the log has to be
-  // written BY the refresh, not seeded once and left.
   check(
-    '…written by the refresh itself, so it is current',
-    r.revenueRefreshedAt !== null && Date.now() - r.revenueRefreshedAt.getTime() < 10 * 60_000,
+    '…and moves net profit by exactly the same amount',
+    round2(afterNew.netProfit - beforeNew.netProfit) === 500,
+  )
+  check(
+    '…counted once, not twice',
+    afterNew.revenue.invoiceCount === beforeNew.revenue.invoiceCount + 1,
   )
 
-  const beforeRefresh = r.revenueRefreshedAt!
   await owner.query('select public.refresh_daily_revenue()')
   const afterRefresh = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
   check(
-    'a second refresh moves the timestamp forward',
-    afterRefresh.revenueRefreshedAt !== null &&
-      afterRefresh.revenueRefreshedAt.getTime() >= beforeRefresh.getTime(),
+    'refreshing the old snapshot changes nothing — it is no longer read',
+    afterRefresh.netProfit === afterNew.netProfit &&
+      afterRefresh.revenue.net === afterNew.revenue.net,
   )
-  check('…and the figures are unchanged by it', afterRefresh.netProfit === r.netProfit)
+
+  // ── and an unpaid bill must NOT move the profit line ──
+  const beforeUnpaid = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+  const unpaidId = await invoice(tA, '2026-03-21', '900.00', 'issued', '0')
+  const afterUnpaid = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+  check(
+    'a bill raised and NOT collected adds nothing to revenue',
+    afterUnpaid.revenue.net === beforeUnpaid.revenue.net,
+  )
+  check('…nor to net profit', afterUnpaid.netProfit === beforeUnpaid.netProfit)
+
+  // ── a part payment contributes only what was taken ──
+  await owner.query(
+    `insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at)
+     values ($1,$2,$3,'cash','300.00','captured',
+             ('2026-03-21 12:00')::timestamp at time zone 'Asia/Kolkata')`,
+    [tA.tenantId, tA.branchId, unpaidId],
+  )
+  const afterPartial = await getPnlReport(ctxFor(tA, 'manager'), MARCH)
+  check(
+    'collecting ₹300 of a ₹900 bill adds exactly ₹300',
+    round2(afterPartial.revenue.net - beforeUnpaid.revenue.net) === 300,
+  )
+
+  // Put the period back as the rest of the suite found it.
+  await owner.query('delete from payments where invoice_id = any($1)', [[liveId, unpaidId]])
+  await owner.query('delete from invoice_items where invoice_id = any($1)', [[liveId, unpaidId]])
+  await owner.query('delete from invoices where id = any($1)', [[liveId, unpaidId]])
 
   // ══ CSV ═══════════════════════════════════════════════════════════════════
   console.log('\n── CSV export ──')

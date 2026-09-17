@@ -7,6 +7,7 @@ import { withUser } from '@/db'
 import { bookings } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill, isManager, type MemberRole } from '@/lib/auth/roles'
+import { previewPromoForBooking } from '@/lib/billing/data'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
 import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
@@ -21,6 +22,9 @@ import {
 import { zodErrorMessage } from '@/lib/utils/errors'
 
 type CreateInvoiceResult = { error?: string; invoiceId?: string; invoiceNumber?: string }
+
+/** What a code is worth on this bill, or why it cannot be used. */
+export type PromoPreviewResult = { error?: string; code?: string; discount?: number }
 
 /**
  * Errors a cashier is allowed to read. Anything else is a bug or a driver
@@ -60,6 +64,47 @@ const createInvoiceInput = z.object({
   compAmount: z.coerce.number().min(0, 'Comp amount cannot be negative.').finite().optional(),
   compReason: z.string().trim().max(500).optional(),
 })
+
+const previewPromoInput = z.object({
+  bookingId: z.string().uuid(),
+  promoCode: z.string().trim().min(1, 'Enter a promo code.').max(64),
+})
+
+/**
+ * Price a promo code against a booking WITHOUT raising the bill.
+ *
+ * The bill screen needs the rupee figure to show the cashier before they
+ * commit, and only the server can know it — the discount and its type live in
+ * the promo_codes row, and a percentage is a percentage of a subtotal that is
+ * itself re-read from the database. Nothing but the booking id and the typed
+ * code travels.
+ *
+ * Takes no use and writes nothing: validatePromo() is pure, so a cashier may
+ * preview the same code as often as they like. The use is consumed only by
+ * createInvoiceForBooking(), which re-validates from scratch — this preview is
+ * never trusted as an input to it.
+ */
+export async function previewPromoCodeForBooking(
+  input: z.input<typeof previewPromoInput>,
+): Promise<PromoPreviewResult> {
+  try {
+    const ctx = await requireContext()
+    // Same gate as raising the bill: previewing a code reveals what it is
+    // worth, so it is for the people who are allowed to apply it.
+    if (!canBill(ctx.role)) {
+      throw new AuthError('You do not have permission to raise a bill.')
+    }
+    const v = previewPromoInput.parse(input)
+
+    const promo = await previewPromoForBooking(ctx, v.bookingId, v.promoCode)
+    // The reason is the cashier-readable text validatePromo() already produces
+    // ("Promo code has expired."), the same words the bill would fail with.
+    if (!promo.ok) return { error: promo.reason }
+    return { code: promo.code, discount: promo.discount }
+  } catch (e) {
+    return { error: fail(e).error }
+  }
+}
 
 /**
  * Bill-level comp/discount (M18 #5) — shared gate for both the unsplit and

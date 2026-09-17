@@ -1,6 +1,6 @@
 'use server'
 
-import { redirect } from 'next/navigation'
+import { redirect, RedirectType } from 'next/navigation'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { ownerDb } from '@/db'
@@ -51,8 +51,13 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
 
   // On a tenant subdomain → the workspace; on the root/admin domain → the
   // platform admin panel (which itself checks the is_platform_admin flag).
+  //
+  // REPLACE, not push: a pushed redirect leaves /login sitting in the history
+  // stack, so Back from the dashboard returns to a sign-in form the visitor
+  // has already satisfied. Replacing drops it, and app/login/page.tsx turns
+  // away anyone who reaches it some other way.
   const slug = await currentTenantSlug()
-  redirect(slug ? '/dashboard' : '/admin')
+  redirect(slug ? '/dashboard' : '/admin', RedirectType.replace)
 }
 
 export async function signOut(): Promise<void> {

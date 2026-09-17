@@ -28,6 +28,7 @@ import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
+import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
 type Resource = {
@@ -75,6 +76,28 @@ export type OrderItemLine = {
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
+/**
+ * Payment badges. "Unbilled" is the absence of an invoice rather than a state
+ * of one, so it is styled quietly — it is the normal condition of a booking
+ * that has not reached the till yet, not something to chase.
+ */
+const PAYMENT_BADGE: Record<string, string> = {
+  paid: 'bg-emerald-600 text-white',
+  partially_paid: 'bg-amber-500 text-white',
+  issued: 'bg-rose-600 text-white',
+  partially_refunded: 'bg-orange-500 text-white',
+  refunded: 'bg-zinc-600 text-white',
+  unbilled: 'bg-muted text-muted-foreground',
+}
+const PAYMENT_LABELS: Record<string, string> = {
+  paid: 'Paid',
+  partially_paid: 'Part paid',
+  issued: 'Unpaid',
+  partially_refunded: 'Part refunded',
+  refunded: 'Refunded',
+  unbilled: 'Unbilled',
+}
+
 const STATUS_STYLE: Record<string, string> = {
   confirmed: 'bg-blue-500/85 text-white',
   checked_in: 'bg-emerald-500/85 text-white',
@@ -106,20 +129,6 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 type View = 'timeline' | 'bookings'
 
-function minutesInZone(iso: string, tz: string): number {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(iso))
-  const map: Record<string, number> = {}
-  for (const p of parts) if (p.type !== 'literal') map[p.type] = Number(p.value)
-  const h = map.hour === 24 ? 0 : map.hour
-  return h * 60 + map.minute
-}
-
-/** The daily bookings board: timeline of a branch's resources, walk-in creation, and status actions. */
 export function BookingsView({
   branchId,
   branchName,
@@ -141,6 +150,7 @@ export function BookingsView({
   ordersByBooking,
   venueName,
   depositStates,
+  paymentStates,
   canRequestVoidComp,
   canToggle86,
 }: {
@@ -165,6 +175,24 @@ export function BookingsView({
   venueName: string
   /** bookingId → deposit state, read from payment_intents (AROS-49). */
   depositStates: Record<string, 'pending' | 'paid'>
+  /**
+   * bookingId → where the booking stands with the till. Absent means no live
+   * invoice: either it has not been billed yet, or its bill was voided.
+   * Figures are the invoice's own, captured payments only — the same ones the
+   * payment panel and the receipt show.
+   */
+  paymentStates: Record<
+    string,
+    {
+      status: 'issued' | 'partially_paid' | 'paid' | 'partially_refunded' | 'refunded'
+      invoiceId: string
+      invoiceNumber: string
+      total: number
+      paid: number
+      balance: number
+      refunded: number
+    }
+  >
   /** Gates the void/comp button — a UI nicety only; requestVoidOrderItem
    *  re-checks the role server-side regardless (M17 #6). A manager/owner's
    *  request is applied immediately; anyone else's goes to the approval
@@ -261,6 +289,22 @@ export function BookingsView({
   function clamp(min: number) {
     return Math.min(closeMin, Math.max(openMin, min))
   }
+
+  // Midnight of the displayed day, as an instant. Slots are positioned
+  // RELATIVE to it, so one that began yesterday comes out negative and one
+  // running past midnight comes out over 1440 — clamp() then pins each to the
+  // edge of the day's window. Using minutes-of-day instead would put a booking
+  // that started at 22:00 yesterday at the far RIGHT of today's timeline,
+  // which is exactly backwards.
+  // The project's own zone helper, the same one NewBookingDialog uses to turn
+  // a picked time into an instant — no second conversion to get subtly wrong.
+  const dayStartMs = useMemo(
+    () => zonedTimeToUtc(date, '00:00', timeZone).getTime(),
+    [date, timeZone],
+  )
+
+  /** Minutes from the start of the displayed day; may be < 0 or > 1440. */
+  const minutesIntoDay = (iso: string) => (new Date(iso).getTime() - dayStartMs) / 60_000
 
   const firstHour = Math.floor(openMin / 60)
   const lastHour = Math.ceil(closeMin / 60)
@@ -426,9 +470,13 @@ export function BookingsView({
                       />
                     ))}
                     {rowSlots.map((s) => {
-                      const left = pct(minutesInZone(s.startsAt, timeZone))
-                      const right = pct(minutesInZone(s.endsAt, timeZone) || closeMin)
+                      const left = pct(minutesIntoDay(s.startsAt))
+                      const right = pct(minutesIntoDay(s.endsAt))
                       const width = Math.max(2, right - left)
+                      // Started before today, or runs past midnight — worth
+                      // saying, since the times below are the booking's own.
+                      const carriedIn = minutesIntoDay(s.startsAt) < 0
+                      const runsOver = minutesIntoDay(s.endsAt) > 1440
                       return (
                         <span
                           key={s.slotId}
@@ -445,7 +493,9 @@ export function BookingsView({
                             {s.customerName || 'Walk-in'}
                           </span>
                           <span className="block truncate opacity-90">
+                            {carriedIn && '↤ '}
                             {timeInZone(s.startsAt, timeZone)}–{timeInZone(s.endsAt, timeZone)}
+                            {runsOver && ' ↦'}
                           </span>
                         </span>
                       )
@@ -508,6 +558,7 @@ export function BookingsView({
                     <th className="px-4 py-3 font-medium">Resources</th>
                     <th className="px-4 py-3 font-medium">Time</th>
                     <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Payment</th>
                     <th className="px-4 py-3 font-medium">Total</th>
                     <th className="px-4 py-3 text-right font-medium">Actions</th>
                   </tr>
@@ -515,7 +566,7 @@ export function BookingsView({
                 <tbody className="divide-y divide-border">
                   {filteredBookings.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-4 py-10 text-center text-base text-muted-foreground">
+                      <td colSpan={8} className="px-4 py-10 text-center text-base text-muted-foreground">
                         {bookingsList.length === 0 ? 'No bookings for this day.' : 'No bookings match your filters.'}
                       </td>
                     </tr>
@@ -548,6 +599,35 @@ export function BookingsView({
                         >
                           {STATUS_LABELS[b.status] ?? b.status}
                         </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {(() => {
+                          const p = paymentStates[b.bookingId]
+                          const key = p?.status ?? 'unbilled'
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span
+                                className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-sm font-medium ${
+                                  PAYMENT_BADGE[key]
+                                }`}
+                              >
+                                {PAYMENT_LABELS[key]}
+                              </span>
+                              {/* What went back, or what is still owed — a
+                                  part-paid bill should say how much rather
+                                  than just "part paid". */}
+                              {p && p.refunded > 0 ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(p.refunded, currency)} refunded
+                                </span>
+                              ) : p && p.status !== 'paid' ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(p.balance, currency)} due
+                                </span>
+                              ) : null}
+                            </div>
+                          )
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{formatMoney(b.total, currency)}</td>
                       <td className="px-4 py-3">
@@ -617,6 +697,38 @@ export function BookingsView({
               {Number(selected.deposit) > 0 && (
                 <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
               )}
+              {/* Billed figures come off the invoice, not from the booking:
+                  the bill is what was actually charged, discounts and all. */}
+              <Row
+                k="Payment"
+                v={
+                  PAYMENT_LABELS[paymentStates[selected.bookingId]?.status ?? 'unbilled']
+                }
+              />
+              {paymentStates[selected.bookingId] && (
+                <>
+                  <Row
+                    k="Billed"
+                    v={formatMoney(paymentStates[selected.bookingId].total, currency)}
+                  />
+                  <Row
+                    k="Paid"
+                    v={formatMoney(paymentStates[selected.bookingId].paid, currency)}
+                  />
+                  {paymentStates[selected.bookingId].refunded > 0 && (
+                    <Row
+                      k="Refunded"
+                      v={formatMoney(paymentStates[selected.bookingId].refunded, currency)}
+                    />
+                  )}
+                  {paymentStates[selected.bookingId].balance > 0 && (
+                    <Row
+                      k="Balance due"
+                      v={formatMoney(paymentStates[selected.bookingId].balance, currency)}
+                    />
+                  )}
+                </>
+              )}
             </dl>
 
             {/* Online deposit. The button sends only a booking id — the amount
@@ -637,6 +749,17 @@ export function BookingsView({
             )}
 
             <div className="mt-4 flex flex-wrap gap-2">
+              {/* Once a bill exists its receipt is the authority on what was
+                  charged and what is still owed, so link straight to it. */}
+              {paymentStates[selected.bookingId] && (
+                <Link
+                  href={`/invoices/${paymentStates[selected.bookingId].invoiceId}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
+                >
+                  <ReceiptText size={15} />{' '}
+                  {paymentStates[selected.bookingId].invoiceNumber}
+                </Link>
+              )}
               {/* Only the statuses lib/billing/invoice.ts will actually bill.
                   The action re-checks — hiding a link is not authorization. */}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (

@@ -205,12 +205,32 @@ async function main() {
   const ctxA = ctxFor(A, A.tenantId, 'owner')
   const ctxB = ctxFor(B, B.tenantId, 'owner')
 
-  /** Bill a booking through the real POS path, then stamp the invoice's day. */
-  async function billBooking(t: typeof A, bookingId: string, day: string, hhmm = '20:00') {
+  /**
+   * Bill a booking through the real POS path, settle it, and stamp both the
+   * invoice and the tender onto `day`.
+   *
+   * Revenue is captured payments now, so billing alone would report nothing.
+   * `paid` defaults to the full total; pass 0 to leave a receivable.
+   */
+  async function billBooking(
+    t: typeof A,
+    bookingId: string,
+    day: string,
+    hhmm = '20:00',
+    paid?: number,
+  ) {
     const r = await withUser(t.userId, (tx) =>
       issueInvoiceForBooking(tx, { id: t.tenantId, timezone: TZ }, { bookingId }),
     )
     await ownerPool.query(`update invoices set issued_at = $2 where id = $1`, [r.invoiceId, ist(day, hhmm)])
+    const amount = paid ?? r.pricing.total
+    if (amount > 0) {
+      await ownerPool.query(
+        `insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at)
+         values ($1,$2,$3,'cash',$4,'captured',$5)`,
+        [t.tenantId, t.branchId, r.invoiceId, amount.toFixed(2), ist(day, hhmm)],
+      )
+    }
     return r
   }
 
@@ -238,9 +258,13 @@ async function main() {
   await makeOrder(A, bk4, [{ name: 'Unbilled Wings', qty: 4, unitPrice: 60, taxRate: 5 }])
 
   // D2: a bill that is later VOIDED — its food must drop out of the report.
+  // Left unsettled, because voidInvoiceRecord() refuses to strike off an
+  // invoice that still holds captured money (it must be refunded first — see
+  // lib/billing/refunds.ts). A paid-then-refunded-then-voided bill is covered
+  // in scripts/test-revenue-consistency.ts.
   const bk5 = await makeBooking(A, ist(D2, '18:00'))
   await makeOrder(A, bk5, [{ name: 'Voided Pizza', qty: 5, unitPrice: 200, taxRate: 5 }])
-  const inv5 = await billBooking(A, bk5, D2)
+  const inv5 = await billBooking(A, bk5, D2, '20:00', 0)
   await withUser(A.userId, (tx) =>
     voidInvoiceRecord(tx, { tenantId: A.tenantId, membershipId: A.membershipId }, { invoiceId: inv5.invoiceId, reason: 'test void' }),
   )
@@ -281,6 +305,13 @@ async function main() {
     await ownerPool.query(`update customer_memberships set created_at = $2 where id = $1`, [r.membershipId, ist(day, '12:00')])
     if (r.invoiceId) {
       await ownerPool.query(`update invoices set issued_at = $2 where id = $1`, [r.invoiceId, ist(day, '12:00')])
+      // purchaseMembership() tenders the invoice in its own transaction, so the
+      // payment exists already — it just carries "now" rather than the fixture's
+      // day. Move it, so the money lands in the window under test.
+      await ownerPool.query(
+        `update payments set created_at = $2 where invoice_id = $1`,
+        [r.invoiceId, ist(day, '12:00')],
+      )
     }
     return r
   }
@@ -302,16 +333,18 @@ async function main() {
   console.log('\n── food sales ──')
   check('"Chicken, Large" sold across two invoices is ONE row', report.food.filter((f) => f.itemName === 'Chicken, Large').length === 1)
   check('…with qty 3 (2 + 1)', food('Chicken, Large')?.quantity === 3)
-  check('…and gross 300.00 (3 × 100)', food('Chicken, Large')?.grossRevenue === 300)
+  // 3 × ₹100 = ₹300 of food, plus the 5% GST collected on it = ₹315. The
+  // figure is money TAKEN, so the tax the customer handed over is in it.
+  check('…and revenue 315.00 (₹300 + 5% GST)', food('Chicken, Large')?.grossRevenue === 315)
   check('…spanning 2 invoices', food('Chicken, Large')?.invoices === 2)
   check('Coke totals qty 5 across both days (3 + 2)', food('Coke')?.quantity === 5)
-  check('…and gross 200.00 (5 × 40)', food('Coke')?.grossRevenue === 200)
+  check('…and revenue 224.00 (₹200 + 12% GST)', food('Coke')?.grossRevenue === 224)
   check('a CANCELLED order is never billed, so never reported', !food('Ghost Fries'))
   check('an OPEN, unbilled order is not a sale', !food('Unbilled Wings'))
   check('a VOIDED invoice removes its food from the report', !food('Voided Pizza'))
   check('an item billed outside the range is excluded', !food('Out Of Range Momo'))
   check('food totals: qty 8', report.totals.foodQuantity === 8)
-  check('food totals: gross 500.00', report.totals.foodGrossRevenue === 500)
+  check('food totals: revenue 539.00 (315 + 224)', report.totals.foodGrossRevenue === 539)
 
   // Double-count guard: the SAME sale exists as order_items AND invoice_items.
   const rawOrderQty = await ownerPool.query<{ q: string }>(
@@ -323,16 +356,41 @@ async function main() {
   check('order_items also holds these rows (3) — the double-count trap is real', Number(rawOrderQty.rows[0].q) === 3)
   check('…and the report counts the sale exactly once, not twice', food('Chicken, Large')?.quantity === 3)
 
-  // Reconciliation straight off the invoice lines.
-  const srcFood = await ownerPool.query<{ q: string; rev: string }>(
-    `select coalesce(sum(ii.qty),0)::text q, coalesce(sum(ii.line_total),0)::text rev
+  // Quantity still reconciles against the invoice LINES: plates billed is an
+  // operational count and is never apportioned by what was collected.
+  const srcFood = await ownerPool.query<{ q: string }>(
+    `select coalesce(sum(ii.qty),0)::text q
        from invoice_items ii join invoices i on i.id = ii.invoice_id
-      where ii.tenant_id = $1 and ii.kind = 'food' and i.status in ('issued','paid')
-        and (i.issued_at at time zone $2)::date between $3::date and $4::date`,
+       join public.payments p on p.invoice_id = i.id and p.status = 'captured'
+      where ii.tenant_id = $1 and ii.kind = 'food' and i.status <> 'void'
+        and (p.created_at at time zone $2)::date between $3::date and $4::date`,
     [A.tenantId, TZ, D1, D2],
   )
   check('food qty reconciles with the source invoice lines', report.totals.foodQuantity === Number(srcFood.rows[0].q))
-  check('food gross reconciles with SUM(invoice_items.line_total)', report.totals.foodGrossRevenue === Number(srcFood.rows[0].rev))
+
+  // Revenue reconciles against MONEY: each payment apportioned to its food
+  // lines by their share of the bill.
+  const srcFoodMoney = await ownerPool.query<{ rev: string }>(
+    `with owed as (
+       select ii.invoice_id, ii.kind,
+              (ii.line_total - inv.discount * ii.line_total / nullif(inv.subtotal,0))
+                * (1 + ii.tax_rate / 100) as amt
+         from invoice_items ii join invoices inv on inv.id = ii.invoice_id),
+     shares as (
+       select invoice_id,
+              sum(amt) filter (where kind = 'food') as food_lines,
+              sum(amt) as all_lines
+         from owed group by invoice_id)
+     select coalesce(sum(p.amount * s.food_lines / nullif(s.all_lines,0)),0)::text rev
+       from payments p
+       join invoices i on i.id = p.invoice_id
+       join shares s on s.invoice_id = i.id
+      where p.tenant_id = $1 and p.status = 'captured' and i.status <> 'void'
+        and (p.created_at at time zone $2)::date between $3::date and $4::date`,
+    [A.tenantId, TZ, D1, D2],
+  )
+  check('food revenue reconciles with the apportioned captured payments',
+    Math.abs(report.totals.foodGrossRevenue - Number(srcFoodMoney.rows[0].rev)) < 0.01)
 
   // ── memberships ───────────────────────────────────────────────────────────
   console.log('\n── membership sales ──')
@@ -352,8 +410,9 @@ async function main() {
       where cm.tenant_id = $1 and i.status in ('issued','paid')`,
     [A.tenantId],
   )
-  check('membership revenue equals the linked invoices’ total', report.totals.membershipRevenue === Number(srcMembership.rows[0].inv))
   check('…and equals the captured payments against them', report.totals.membershipRevenue === Number(srcMembership.rows[0].paid))
+  check('membership revenue equals the linked invoices’ total, because all were settled',
+    report.totals.membershipRevenue === Number(srcMembership.rows[0].inv))
 
   // Expired and cancelled memberships remain historical sales.
   await ownerPool.query(`update customer_memberships set status = 'expired' where id = $1`, [soldGold1.membershipId])
@@ -405,8 +464,9 @@ async function main() {
   check('tenant B sees its own 50 chickens', bReport.food.find((f) => f.itemName === 'Chicken, Large')?.quantity === 50)
   check('tenant A never sees B’s 50', food('Chicken, Large')?.quantity === 3)
   check('tenant B sees only its own membership sale', bReport.totals.membershipsSold === 1)
-  check('tenant B’s food total is its own', bReport.totals.foodGrossRevenue === 5000)
-  check('tenant A’s food total excludes B entirely', report.totals.foodGrossRevenue === 500)
+  // 50 × ₹100 = ₹5000, plus 5% GST = ₹5250.
+  check('tenant B’s food total is its own', bReport.totals.foodGrossRevenue === 5250)
+  check('tenant A’s food total excludes B entirely', report.totals.foodGrossRevenue === 539)
 
   // ── authorization ─────────────────────────────────────────────────────────
   console.log('\n── authorization ──')
@@ -434,7 +494,7 @@ async function main() {
   const foodCsv = toCsv(report.food, FOOD_SALES_CSV_COLUMNS)
   const foodLines = foodCsv.trimEnd().split('\r\n')
   check('food CSV headers are Item,Qty sold,Invoices,Gross revenue', foodLines[0] === 'Item,Qty sold,Invoices,Gross revenue')
-  check('…an item name containing a comma is quoted', foodCsv.includes('"Chicken, Large",3,2,300.00'))
+  check('…an item name containing a comma is quoted', foodCsv.includes('"Chicken, Large",3,2,315.00'))
   check('…one line per item plus the header', foodLines.length === report.food.length + 1)
   check('…and no other tenant’s quantity appears', !foodCsv.includes(',50,'))
   const memberCsv = toCsv(report.memberships, MEMBERSHIP_SALES_CSV_COLUMNS)

@@ -203,11 +203,18 @@ export default async function InvoiceReceiptPage({
             {Number(invoice.discount) > 0 && (
               <Row k="Discount" v={`− ${money(invoice.discount)}`} />
             )}
-            {/* The membership half of that discount, from the invoice's own
-                snapshot (AROS-61) — never from the customer's current
-                membership or the live plan, so a reprint years later still
-                explains the figure. Indented because it itemises the line
-                above rather than adding to it. */}
+            {/* The parts of that discount, each from the invoice's own snapshot
+                — never from the customer's current membership, the live plan or
+                today's promo table, so a reprint years later still explains the
+                figure. Indented because they itemise the line above rather than
+                adding to it. */}
+            {invoice.promoCode && Number(invoice.promoDiscount) > 0 && (
+              <Row
+                k={`Promo · ${invoice.promoCode}`}
+                v={`− ${money(invoice.promoDiscount)}`}
+                indent
+              />
+            )}
             {Number(invoice.loyaltyDiscount) > 0 && (
               <Row
                 k={`Loyalty · ${invoice.loyaltyPointsRedeemed} points`}
