@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
-import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, Flame, PackageCheck, PackageX } from 'lucide-react'
+import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, PackageCheck, PackageX } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
 import { setMenuItemAvailability } from '@/lib/actions/menu'
 import { formatMoney } from '@/lib/format'
@@ -72,7 +72,6 @@ export function TakeOrderDialog({
   menuItems,
   happyHours,
   timeZone,
-  popularItemIds,
   canToggle86,
   seatCount,
   onClose,
@@ -86,9 +85,9 @@ export function TakeOrderDialog({
   menuItems: MenuItemOption[]
   happyHours: HappyHourRule[]
   timeZone: string
-  /** Top-ordered item ids for the branch (lib/menu/data.ts::listMostOrderedItemIds)
-   *  — rendered as a quick-tap "Popular" row so a waiter can fire the usual
-   *  round without searching. Optional: omit for callers with no order history yet. */
+  /** Top-ordered item ids for the branch (lib/menu/data.ts::listMostOrderedItemIds).
+   *  Accepted for compatibility with existing callers but no longer rendered —
+   *  the "Popular" quick-add row was removed from this screen. */
   popularItemIds?: string[]
   /** Shows the inline 86/un-86 toggle on each item — a UI nicety only;
    *  setMenuItemAvailability re-checks canManageKitchen() server-side
@@ -120,6 +119,10 @@ export function TakeOrderDialog({
   // when it's left at "Shared" (the default), so tagging stays fully optional.
   const [activeSeat, setActiveSeat] = useState<number | null>(null)
   const showSeatPicker = Boolean(seatCount && seatCount >= 2)
+  // Below lg, the cart lives in a bottom sheet (toggled from the summary bar)
+  // instead of a permanent third column — there just isn't room for three
+  // panels side by side until the viewport is wide enough.
+  const [mobileCartOpen, setMobileCartOpen] = useState(false)
 
   function handleTap(item: MenuItemOption) {
     if (item.status && item.status !== 'available') return
@@ -180,15 +183,6 @@ export function TakeOrderDialog({
     })
   }, [items, search, categoryFilter])
 
-  // Only shown on the unfiltered default view — once a waiter is searching
-  // or has picked a category, the popular row would just be noise above the
-  // list they already narrowed down.
-  const popularItems = useMemo(() => {
-    if (!popularItemIds || search.trim() || categoryFilter !== 'all') return []
-    const byId = new Map(items.map((m) => [m.id, m]))
-    return popularItemIds.map((id) => byId.get(id)).filter((m): m is MenuItemOption => Boolean(m))
-  }, [popularItemIds, items, search, categoryFilter])
-
   /** A line's per-unit price including every chosen modifier's delta — happy
    *  hour only ever discounts the base item, never an add-on. */
   function lineUnitPrice(line: CartLine): number {
@@ -241,8 +235,24 @@ export function TakeOrderDialog({
     })
   }
 
+  // Decrementing to 0 removes the line — previously this floored at 1 via
+  // Math.max(1, ...), which silently ate every tap on "-" once qty reached 1
+  // (the reported bug: decreasing "worked" only down to 1, then did nothing).
   function updateQty(key: string, delta: number) {
-    setCart((lines) => lines.map((l) => (l.key === key ? { ...l, qty: Math.max(1, l.qty + delta) } : l)))
+    setCart((lines) =>
+      lines.flatMap((l) => {
+        if (l.key !== key) return [l]
+        const nextQty = l.qty + delta
+        return nextQty <= 0 ? [] : [{ ...l, qty: nextQty }]
+      }),
+    )
+  }
+
+  /** Total quantity of a menu item across every cart line (any modifiers/seat) — a
+   *  quick-glance badge on the item grid so a waiter can see what's already ordered
+   *  without switching to the cart. */
+  function cartQtyForItem(menuItemId: string): number {
+    return cart.filter((l) => l.menuItemId === menuItemId).reduce((sum, l) => sum + l.qty, 0)
   }
 
   function updateInstructions(key: string, value: string) {
@@ -277,26 +287,164 @@ export function TakeOrderDialog({
     })
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="relative grid max-h-[92vh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-2xl border border-border bg-card shadow-2xl md:grid-cols-[1.2fr_1fr]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-3 z-10 rounded-full border border-border/60 bg-background/90 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition hover:text-foreground"
-        >
-          <X size={16} />
-        </button>
+  /** Shared between the permanent desktop column and the mobile bottom sheet
+   *  — same cart, same handlers, just mounted in whichever container fits
+   *  the current breakpoint (see the two usages below). */
+  const cartContent = (
+    <>
+      <div className="hidden shrink-0 items-center justify-between px-4 pt-4 lg:flex xl:px-5">
+        <p className="inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <ShoppingCart size={14} /> Order ({cart.length})
+        </p>
+      </div>
 
-        {/* Item picker */}
-        <div className="order-2 p-6 pt-8 md:order-1">
-          <h2 className="text-xl font-semibold">Take order</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.'}
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 xl:px-5">
+        {cart.length === 0 ? (
+          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+            Tap items to add them to the order.
           </p>
+        ) : (
+          cart.map((line) => {
+            const applied = priced(line.price)
+            const unit = lineUnitPrice(line)
+            return (
+              <div key={line.key} className="rounded-lg border border-border bg-card p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-medium">
+                      {line.name}
+                      {line.seatNo !== null && (
+                        <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                          Seat {line.seatNo}
+                        </span>
+                      )}
+                    </p>
+                    {line.modifiers.length > 0 && (
+                      <p className="truncate text-sm text-muted-foreground">
+                        {line.modifiers.map((m) => m.optionName).join(', ')}
+                      </p>
+                    )}
+                    <p className="text-sm text-muted-foreground">
+                      {applied && (
+                        <span className="mr-1.5 line-through">{formatMoney(line.price, currency)}</span>
+                      )}
+                      {formatMoney(unit, currency)} each
+                      {applied && (
+                        <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                          <Zap size={10} /> {applied.rule.name}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeLine(line.key)}
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label={`Remove ${line.name}`}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="inline-flex items-center rounded-md border border-border">
+                    <button
+                      type="button"
+                      onClick={() => updateQty(line.key, -1)}
+                      className="px-2.5 py-1.5 text-muted-foreground transition hover:text-foreground"
+                      aria-label={`Decrease quantity of ${line.name}`}
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <span className="w-8 text-center text-sm font-medium">{line.qty}</span>
+                    <button
+                      type="button"
+                      onClick={() => updateQty(line.key, 1)}
+                      className="px-2.5 py-1.5 text-muted-foreground transition hover:text-foreground"
+                      aria-label={`Increase quantity of ${line.name}`}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <span className="text-base font-semibold">{formatMoney(unit * line.qty, currency)}</span>
+                </div>
+                <input
+                  className="mt-2 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+                  placeholder="Special instructions (optional)"
+                  value={line.specialInstructions}
+                  onChange={(e) => updateInstructions(line.key, e.target.value)}
+                />
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      <div className="shrink-0 border-t border-border p-4 xl:px-5">
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between text-muted-foreground">
+            <span>Subtotal</span>
+            <span>{formatMoney(totals.subtotal, currency)}</span>
+          </div>
+          <div className="flex justify-between text-muted-foreground">
+            <span>Tax</span>
+            <span>{formatMoney(totals.tax, currency)}</span>
+          </div>
+          <div className="flex justify-between text-base font-semibold text-foreground">
+            <span>Total</span>
+            <span>{formatMoney(totals.total, currency)}</span>
+          </div>
+        </div>
+
+        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+
+        <div className="mt-3 flex gap-2">
+          <button
+            className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
+            disabled={pending || cart.length === 0}
+            onClick={submit}
+          >
+            {pending && <Loader2 size={16} className="animate-spin" />}
+            {pending ? 'Placing…' : 'Place order'}
+          </button>
+          <button className={`${btn} border`} disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </>
+  )
+
+  const totalQty = cart.reduce((n, l) => n + l.qty, 0)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/60 backdrop-blur-sm lg:items-center lg:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex h-full w-full flex-col overflow-hidden bg-card shadow-2xl lg:h-[92vh] lg:max-w-[1360px] lg:rounded-2xl lg:border lg:border-border"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Take order"
+      >
+        {/* Header — title, seat picker, search, and (below lg) category chips */}
+        <div className="shrink-0 border-b border-border bg-card/95 px-4 py-3 backdrop-blur-sm sm:px-6 sm:py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold sm:text-xl">Take order</h2>
+              <p className="mt-0.5 truncate text-sm text-muted-foreground">
+                {bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.'}
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="shrink-0 rounded-full border border-border/60 bg-background/90 p-2 text-muted-foreground shadow-sm transition hover:text-foreground"
+            >
+              <X size={16} />
+            </button>
+          </div>
 
           {showSeatPicker && (
             <div className="mt-3">
@@ -323,32 +471,7 @@ export function TakeOrderDialog({
             </p>
           )}
 
-          {popularItems.length > 0 && (
-            <div className="mt-4">
-              <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <Flame size={13} /> Popular
-              </p>
-              <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1">
-                {popularItems.map((item) => {
-                  const outOfStock = item.status === 'out_of_stock'
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleTap(item)}
-                      disabled={outOfStock}
-                      title={outOfStock ? '86\'d — currently out of stock' : undefined}
-                      className="shrink-0 whitespace-nowrap rounded-full border border-border px-3 py-1.5 text-sm font-medium transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-transparent"
-                    >
-                      {item.name}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className="relative mt-4">
+          <div className="relative mt-3">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} />
             <input
               className={`${input} pl-10`}
@@ -358,8 +481,11 @@ export function TakeOrderDialog({
             />
           </div>
 
+          {/* Below lg, categories live here as scrollable chips; at lg+ they move
+              into the sidebar instead, which is what keeps a long category list
+              from turning into a wall of wrapped chips. */}
           {categories.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-3 flex gap-1.5 overflow-x-auto pb-0.5 lg:hidden">
               <CategoryChip active={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')}>
                 All
               </CategoryChip>
@@ -370,209 +496,159 @@ export function TakeOrderDialog({
               ))}
             </div>
           )}
+        </div>
 
-          <div className="mt-3 max-h-[50vh] space-y-1.5 overflow-y-auto pr-1 md:max-h-[60vh]">
+        {/* Body: category sidebar (lg+) | item grid | cart column (lg+) */}
+        <div className="flex min-h-0 flex-1">
+          {categories.length > 0 && (
+            <div className="hidden w-48 shrink-0 overflow-y-auto border-r border-border p-3 lg:block xl:w-56">
+              <SidebarCategoryButton active={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')}>
+                All items
+              </SidebarCategoryButton>
+              {categories.map((c) => (
+                <SidebarCategoryButton key={c.id} active={categoryFilter === c.id} onClick={() => setCategoryFilter(c.id)}>
+                  {c.name}
+                </SidebarCategoryButton>
+              ))}
+            </div>
+          )}
+
+          <div className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-6">
             {filteredItems.length === 0 ? (
-              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              <p className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
                 No menu items match.
               </p>
             ) : (
-              filteredItems.map((item) => {
-                const applied = priced(item.price)
-                const outOfStock = item.status === 'out_of_stock'
-                const isToggling = togglingId === item.id
-                const hasModifiers = Boolean(item.modifierGroups && item.modifierGroups.length > 0)
-                return (
-                <div key={item.id} className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleTap(item)}
-                    disabled={outOfStock}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-medium">
-                        {item.name}
-                        {outOfStock && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
-                            86&apos;d
-                          </span>
-                        )}
-                        {!outOfStock && hasModifiers && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
-                            Customizable
-                          </span>
-                        )}
-                      </p>
-                      <p className="truncate text-sm text-muted-foreground">{item.categoryName}</p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <div className="flex flex-col items-end">
-                        {applied && (
-                          <span className="text-xs text-muted-foreground line-through">
-                            {formatMoney(item.price, currency)}
-                          </span>
-                        )}
-                        <span className={`text-base font-semibold ${applied ? 'text-amber-600 dark:text-amber-400' : ''}`}>
-                          {formatMoney(applied ? applied.unitPrice : item.price, currency)}
-                        </span>
-                      </div>
-                      {!outOfStock && (
-                        <span className="rounded-md bg-primary/10 p-1.5 text-primary">
-                          <Plus size={14} />
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                  {canToggle86 && (
-                    <button
-                      type="button"
-                      onClick={() => toggle86(item)}
-                      disabled={isToggling}
-                      title={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
-                      aria-label={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
-                      className={`shrink-0 rounded-lg border border-border p-2.5 transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                        outOfStock ? 'text-emerald-600 hover:bg-emerald-500/10' : 'text-amber-600 hover:bg-amber-500/10'
-                      }`}
-                    >
-                      {isToggling ? (
-                        <Loader2 size={15} className="animate-spin" />
-                      ) : outOfStock ? (
-                        <PackageCheck size={15} />
-                      ) : (
-                        <PackageX size={15} />
-                      )}
-                    </button>
-                  )}
-                </div>
-                )
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Cart */}
-        <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
-          <p className="inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            <ShoppingCart size={14} /> Order ({cart.length})
-          </p>
-
-          <div className="mt-3 max-h-[35vh] space-y-2 overflow-y-auto pr-1 md:max-h-[48vh] md:flex-1">
-            {cart.length === 0 ? (
-              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                Tap items to add them to the order.
-              </p>
-            ) : (
-              cart.map((line) => {
-                const applied = priced(line.price)
-                const unit = lineUnitPrice(line)
-                return (
-                <div key={line.key} className="rounded-lg border border-border bg-card p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-medium">
-                        {line.name}
-                        {line.seatNo !== null && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
-                            Seat {line.seatNo}
-                          </span>
-                        )}
-                      </p>
-                      {line.modifiers.length > 0 && (
-                        <p className="truncate text-sm text-muted-foreground">
-                          {line.modifiers.map((m) => m.optionName).join(', ')}
-                        </p>
-                      )}
-                      <p className="text-sm text-muted-foreground">
-                        {applied && (
-                          <span className="mr-1.5 line-through">{formatMoney(line.price, currency)}</span>
-                        )}
-                        {formatMoney(unit, currency)} each
-                        {applied && (
-                          <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-                            <Zap size={10} /> {applied.rule.name}
-                          </span>
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeLine(line.key)}
-                      className="text-muted-foreground hover:text-destructive"
-                      aria-label={`Remove ${line.name}`}
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="inline-flex items-center rounded-md border border-border">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {filteredItems.map((item) => {
+                  const applied = priced(item.price)
+                  const outOfStock = item.status === 'out_of_stock'
+                  const isToggling = togglingId === item.id
+                  const hasModifiers = Boolean(item.modifierGroups && item.modifierGroups.length > 0)
+                  const qtyInCart = cartQtyForItem(item.id)
+                  return (
+                    <div key={item.id} className="group relative">
                       <button
                         type="button"
-                        onClick={() => updateQty(line.key, -1)}
-                        className="px-2.5 py-1.5 text-muted-foreground transition hover:text-foreground"
-                        aria-label={`Decrease quantity of ${line.name}`}
+                        onClick={() => handleTap(item)}
+                        disabled={outOfStock}
+                        className="flex h-full w-full flex-col justify-between gap-3 rounded-xl border border-border bg-card p-3.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md active:translate-y-0 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:border-border disabled:hover:shadow-sm"
                       >
-                        <Minus size={14} />
+                        <div>
+                          <p className="text-sm font-semibold leading-snug">{item.name}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.categoryName}</p>
+                          {(outOfStock || hasModifiers) && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {outOfStock && (
+                                <span className="inline-flex items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
+                                  86&apos;d
+                                </span>
+                              )}
+                              {!outOfStock && hasModifiers && (
+                                <span className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                                  Customizable
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-end justify-between gap-2">
+                          <div className="flex flex-col">
+                            {applied && (
+                              <span className="text-xs text-muted-foreground line-through">
+                                {formatMoney(item.price, currency)}
+                              </span>
+                            )}
+                            <span className={`text-sm font-semibold ${applied ? 'text-amber-600 dark:text-amber-400' : ''}`}>
+                              {formatMoney(applied ? applied.unitPrice : item.price, currency)}
+                            </span>
+                          </div>
+                          {!outOfStock && (
+                            <span className="shrink-0 rounded-lg bg-primary/10 p-1.5 text-primary transition group-hover:bg-primary group-hover:text-primary-foreground">
+                              <Plus size={14} />
+                            </span>
+                          )}
+                        </div>
                       </button>
-                      <span className="w-8 text-center text-sm font-medium">{line.qty}</span>
-                      <button
-                        type="button"
-                        onClick={() => updateQty(line.key, 1)}
-                        className="px-2.5 py-1.5 text-muted-foreground transition hover:text-foreground"
-                        aria-label={`Increase quantity of ${line.name}`}
-                      >
-                        <Plus size={14} />
-                      </button>
+                      {qtyInCart > 0 && (
+                        <span className="pointer-events-none absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold text-primary-foreground shadow">
+                          {qtyInCart}
+                        </span>
+                      )}
+                      {canToggle86 && (
+                        <button
+                          type="button"
+                          onClick={() => toggle86(item)}
+                          disabled={isToggling}
+                          title={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
+                          aria-label={outOfStock ? 'Un-86 — mark available' : '86 — mark out of stock'}
+                          className={`absolute -left-1.5 -top-1.5 rounded-full border border-border bg-card p-1 shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                            outOfStock ? 'text-emerald-600 hover:bg-emerald-500/10' : 'text-amber-600 hover:bg-amber-500/10'
+                          }`}
+                        >
+                          {isToggling ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : outOfStock ? (
+                            <PackageCheck size={12} />
+                          ) : (
+                            <PackageX size={12} />
+                          )}
+                        </button>
+                      )}
                     </div>
-                    <span className="text-base font-semibold">{formatMoney(unit * line.qty, currency)}</span>
-                  </div>
-                  <input
-                    className="mt-2 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
-                    placeholder="Special instructions (optional)"
-                    value={line.specialInstructions}
-                    onChange={(e) => updateInstructions(line.key, e.target.value)}
-                  />
-                </div>
-                )
-              })
+                  )
+                })}
+              </div>
             )}
           </div>
 
-          <div className="mt-3 space-y-1 border-t border-border pt-3 text-sm">
-            <div className="flex justify-between text-muted-foreground">
-              <span>Subtotal</span>
-              <span>{formatMoney(totals.subtotal, currency)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Tax</span>
-              <span>{formatMoney(totals.tax, currency)}</span>
-            </div>
-            <div className="flex justify-between text-base font-semibold text-foreground">
-              <span>Total</span>
-              <span>{formatMoney(totals.total, currency)}</span>
-            </div>
+          <div className="hidden w-[380px] shrink-0 flex-col border-l border-border bg-gradient-to-b from-muted/30 to-transparent lg:flex">
+            {cartContent}
           </div>
-
-          {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-
-          <div className="mt-3 flex gap-2">
-            <button
-              className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
-              disabled={pending || cart.length === 0}
-              onClick={submit}
-            >
-              {pending && <Loader2 size={16} className="animate-spin" />}
-              {pending ? 'Placing…' : 'Place order'}
-            </button>
-            <button className={`${btn} border`} disabled={pending} onClick={onClose}>
-              Cancel
-            </button>
-          </div>
-          <p className="mt-2 text-center text-xs text-muted-foreground">
-            Any happy-hour discount is confirmed by the server when the order is placed.
-          </p>
         </div>
+
+        {/* Below lg the cart isn't a permanent column — this bar surfaces it as
+            a bottom sheet instead, so it never has to compete for space with
+            a long menu. */}
+        {cart.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setMobileCartOpen(true)}
+            className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-primary px-4 py-3 text-primary-foreground shadow-[0_-4px_12px_rgba(0,0,0,0.12)] lg:hidden"
+          >
+            <span className="inline-flex items-center gap-2 text-sm font-semibold">
+              <ShoppingCart size={16} />
+              {totalQty} item{totalQty === 1 ? '' : 's'}
+            </span>
+            <span className="text-sm font-bold">View order · {formatMoney(totals.total, currency)}</span>
+          </button>
+        )}
       </div>
+
+      {mobileCartOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end bg-black/50 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileCartOpen(false)}
+        >
+          <div
+            className="flex max-h-[88vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border/60 bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border p-4">
+              <h3 className="text-base font-semibold">Your order</h3>
+              <button
+                type="button"
+                onClick={() => setMobileCartOpen(false)}
+                aria-label="Close cart"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            {cartContent}
+          </div>
+        </div>
+      )}
 
       {pickerItem && (
         <ModifierPickerDialog
@@ -654,7 +730,7 @@ function ModifierPickerDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
@@ -745,6 +821,24 @@ function CategoryChip({ active, onClick, children }: { active: boolean; onClick:
         active
           ? 'border-primary bg-primary/10 text-primary'
           : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** The lg+ sidebar's category row — a vertical list scales to any number of
+ *  categories without wrapping into a multi-line wall of chips the way the
+ *  mobile CategoryChip row would. */
+function SidebarCategoryButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`mb-1 block w-full truncate rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+        active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
       }`}
     >
       {children}
