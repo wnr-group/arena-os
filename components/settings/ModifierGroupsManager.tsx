@@ -12,6 +12,7 @@ import {
 } from '@/lib/actions/modifiers'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
+import { DISPLAY_NAME_ERROR, DISPLAY_NAME_PATTERN } from '@/lib/utils/display-name'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 export type ModifierOptionRow = { id: string; name: string; priceDelta: string; sortOrder: number }
@@ -35,8 +36,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
-const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
 
 /** "Choose exactly 1", "Choose up to 3", "Choose 1–3" — the plain-English
  *  summary of a group's min/max, shown wherever the raw numbers would
@@ -268,7 +268,7 @@ function GroupModal({
   if (!trimmedName) errors.name = 'Name is required.'
   else if (trimmedName.length < 2) errors.name = 'Name must be at least 2 characters.'
   else if (trimmedName.length > 100) errors.name = 'Name must be at most 100 characters.'
-  else if (!NAME_PATTERN.test(trimmedName)) errors.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
+  else if (!DISPLAY_NAME_PATTERN.test(trimmedName)) errors.name = DISPLAY_NAME_ERROR
   if (minSelect === '' || Number.isNaN(minNum) || !Number.isInteger(minNum) || minNum < 0) {
     errors.minSelect = 'Min must be a whole number of zero or more.'
   }

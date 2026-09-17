@@ -33,7 +33,7 @@ export default async function RunningTabPage({
   const tab = await getRunningTab(ctx, bookingId)
   if (!tab) notFound()
 
-  const { booking, pricing, existingInvoice } = tab
+  const { booking, pricing, existingInvoice, taxDrift } = tab
   const money = (v: string | number) => formatMoney(v, ctx.tenant.currency)
   const now = new Date()
 
@@ -85,6 +85,24 @@ export default async function RunningTabPage({
             </p>
           </div>
         </header>
+
+        {/* Advisory, and screen-only: a tab is an estimate, and this says why
+            one of its lines may not use the rate the menu shows today. It is
+            `no-print` because the customer's copy should carry the figures,
+            not the shop's bookkeeping note. */}
+        {taxDrift.length > 0 && (
+          <div className="no-print mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+            <span className="font-medium">Ordered before a tax rate changed.</span> These
+            lines will bill at the rate stored when they were ordered:
+            <ul className="mt-1 list-disc pl-5">
+              {taxDrift.map((d) => (
+                <li key={d.description}>
+                  {d.description} — {d.chargedPercent}%, menu is now {d.currentPercent}%
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {existingInvoice ? (
           <section className="print-keep py-8 text-center">

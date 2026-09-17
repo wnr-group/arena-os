@@ -25,8 +25,13 @@ export type DashboardDay = {
   gross: number
   discount: number
   tax: number
+  /** Money captured on this day. */
   net: number
   invoices: number
+  /** `net` split by what the money was for; the three sum back to it. */
+  bookingRevenue: number
+  foodRevenue: number
+  membershipRevenue: number
   /** Booking-side figures for the same local day. */
   bookings: number
   bookedMinutes: number
@@ -68,14 +73,24 @@ export async function getRevenueDashboard(
   // nothing happened on. This is presentation shaping over rows Postgres has
   // ALREADY aggregated — at most one row per branch per day — not aggregation
   // of source rows in JS.
-  const revenueByDay = new Map<string, { gross: number; discount: number; tax: number; net: number; invoices: number }>()
+  const revenueByDay = new Map<
+    string,
+    { gross: number; discount: number; tax: number; net: number; invoices: number
+      bookingRevenue: number; foodRevenue: number; membershipRevenue: number }
+  >()
   for (const r of revenueByBranch) {
-    const acc = revenueByDay.get(r.day) ?? { gross: 0, discount: 0, tax: 0, net: 0, invoices: 0 }
+    const acc = revenueByDay.get(r.day) ?? {
+      gross: 0, discount: 0, tax: 0, net: 0, invoices: 0,
+      bookingRevenue: 0, foodRevenue: 0, membershipRevenue: 0,
+    }
     acc.gross += r.gross
     acc.discount += r.discount
     acc.tax += r.tax
     acc.net += r.net
     acc.invoices += r.invoiceCount
+    acc.bookingRevenue += r.bookingRevenue
+    acc.foodRevenue += r.foodRevenue
+    acc.membershipRevenue += r.membershipRevenue
     revenueByDay.set(r.day, acc)
   }
 
@@ -91,6 +106,9 @@ export async function getRevenueDashboard(
       tax: round2(rev?.tax ?? 0),
       net: round2(rev?.net ?? 0),
       invoices: rev?.invoices ?? 0,
+      bookingRevenue: round2(rev?.bookingRevenue ?? 0),
+      foodRevenue: round2(rev?.foodRevenue ?? 0),
+      membershipRevenue: round2(rev?.membershipRevenue ?? 0),
       bookings: bk?.bookings ?? 0,
       bookedMinutes: bk?.bookedMinutes ?? 0,
       availableMinutes: bk?.availableMinutes ?? 0,

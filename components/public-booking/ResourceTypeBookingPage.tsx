@@ -90,7 +90,16 @@ export function ResourceTypeBookingPage({
   const [step, setStep] = useState<Step>('select')
   const [date, setDate] = useState(today)
   const [duration, setDuration] = useState(initialDuration)
-  const [slots, setSlots] = useState<PublicSlotOption[] | null>(null)
+  /**
+   * Every start time of the working day, each carrying the unit it would be
+   * assigned — or null when nothing of this type is free then.
+   *
+   * The free times alone are not enough to render with: dropping the taken
+   * ones deletes whole stretches of the afternoon, and a day with one booking
+   * in it reads as a broken page rather than a busy one. Same shape the
+   * single-resource page has always used.
+   */
+  const [slots, setSlots] = useState<{ startsAt: string; resourceId: string | null }[] | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [slotsError, setSlotsError] = useState<string | null>(null)
   const [selectedSlot, setSelectedSlot] = useState<PublicSlotOption | null>(null)
@@ -135,7 +144,16 @@ export function ResourceTypeBookingPage({
         setSlots([])
         return
       }
-      setSlots(r.starts ?? [])
+      // allStarts is the working day; starts is what is actually free. Merge
+      // them so position in the list always matches clock time.
+      const byStart = new Map((r.starts ?? []).map((s) => [s.startsAt, s.resourceId]))
+      const grid = (r.allStarts ?? []).map((startsAt) => ({
+        startsAt,
+        resourceId: byStart.get(startsAt) ?? null,
+      }))
+      // Fall back to the bookable times if an older response carries no grid,
+      // so the picker degrades to its previous behaviour rather than emptying.
+      setSlots(grid.length > 0 ? grid : (r.starts ?? []).map((s) => ({ ...s })))
     })
     return () => {
       cancelled = true
@@ -378,9 +396,35 @@ export function ResourceTypeBookingPage({
                       <EmptyNotice>{slotsError}</EmptyNotice>
                     ) : !visibleSlots || visibleSlots.length === 0 ? (
                       <EmptyNotice>No slots fit this duration today. Try a shorter duration or another day.</EmptyNotice>
+                    ) : visibleSlots.every((s) => s.resourceId === null) ? (
+                      <div className="space-y-2">
+                        <EmptyNotice>
+                          Every start time is taken for this duration. Try a shorter one or another day.
+                        </EmptyNotice>
+                        <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                          {visibleSlots.map((s) => (
+                            <div
+                              key={s.startsAt}
+                              className="flex w-full items-center justify-between rounded-xl border border-dashed border-border bg-muted/40 px-4 py-3 text-sm font-semibold tabular-nums text-muted-foreground"
+                            >
+                              <span>
+                                {time12(s.startsAt, tenant.timezone)} –{' '}
+                                {time12(
+                                  new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString(),
+                                  tenant.timezone,
+                                )}
+                              </span>
+                              <span className="text-xs font-medium">Not available</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     ) : (
                       <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
                         {visibleSlots.map((s) => {
+                          // No unit free at this time — shown, never offered,
+                          // so the day reads continuously.
+                          const isTaken = s.resourceId === null
                           const isSelected = selectedSlot?.startsAt === s.startsAt
                           const startsAt = selectedSlot?.startsAt ?? null
                           const inRange =
@@ -389,16 +433,28 @@ export function ResourceTypeBookingPage({
                           return (
                             <button
                               key={s.startsAt}
-                              onClick={() => setSelectedSlot(s)}
-                              className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
+                              disabled={isTaken}
+                              onClick={() =>
+                                !isTaken && setSelectedSlot({ startsAt: s.startsAt, resourceId: s.resourceId! })
+                              }
+                              className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold tabular-nums transition-all duration-200 ${
+                                isTaken
+                                  ? 'cursor-not-allowed border-dashed border-border bg-muted/40 text-muted-foreground'
+                                  : 'active:scale-[0.99]'
+                              } ${
                                 isSelected
                                   ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
                                   : inRange
                                     ? 'border-primary/50 bg-primary/10 text-primary'
-                                    : 'border-border bg-card text-foreground hover:border-primary/40'
+                                    : isTaken
+                                      ? ''
+                                      : 'border-border bg-card text-foreground hover:border-primary/40'
                               }`}
                             >
-                              {time12(s.startsAt, tenant.timezone)} – {time12(rangeEnd, tenant.timezone)}
+                              <span>
+                                {time12(s.startsAt, tenant.timezone)} – {time12(rangeEnd, tenant.timezone)}
+                              </span>
+                              {isTaken && <span className="text-xs font-medium">Not available</span>}
                             </button>
                           )
                         })}

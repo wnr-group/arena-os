@@ -1,17 +1,12 @@
 import 'server-only'
 import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
-import {
-  expenseCategories,
-  expenses,
-  payslips,
-  reportRefreshLog,
-  vDailyRevenue,
-} from '@/db/schema'
+import { expenseCategories, expenses, payslips } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { ReportAccessError } from './daily-revenue'
+import { collectionRatio, paidForKind, paidRevenueFilter, paidRevenueJoins } from './revenue-basis'
 import type { DateRange } from './date-range'
 
 /**
@@ -76,20 +71,22 @@ import type { DateRange } from './date-range'
  * Consequence worth knowing: `netProfit` is only a true like-for-like figure
  * when the range is whole months. The UI says so when it is not.
  *
- * ── THE OTHER LIKE-FOR-LIKE CAVEAT: REVENUE IS A SNAPSHOT ───────────────────
+ * ── ALL THREE SIDES ARE LIVE, AND ALL THREE ARE CASH ────────────────────────
  *
- * Revenue comes from a materialized view that something has to refresh
- * (scripts/refresh-reports.ts); expenses and payroll are read live. So an
- * invoice raised since the last refresh is missing from revenue while the wage
- * bill and the spend beside it are current, and `netProfit` is understated by
- * exactly that much.
+ * Revenue used to come from the mv_daily_revenue snapshot while expenses and
+ * payroll were read live, so `netProfit` was understated by every invoice
+ * raised since the last manual refresh — and nothing schedules one.
  *
- * `revenueRefreshedAt` reports when the snapshot was last rebuilt (migration
- * 0050) so the page can say how old it is. That does not make the number
- * fresher — only a scheduled refresh would, and 0043 notes this project has no
- * scheduler — but it turns a silently wrong profit into a visibly dated one,
- * which is the difference between a manager mis-deciding and a manager knowing
- * to hit refresh.
+ * Revenue is now CAPTURED PAYMENTS, through the shared definition in
+ * ./revenue-basis.ts — the identical one Revenue & Bookings and the Food and
+ * Membership reports use, so the two reports cannot disagree on what revenue
+ * means. An unpaid bill adds nothing to profit; a part-paid one adds only what
+ * was collected.
+ *
+ * That also puts revenue on the same footing as the costs it is netted
+ * against: expenses are dated by when they were SPENT, so pairing them with
+ * money actually RECEIVED is the like-for-like comparison. All three sides are
+ * read at the same instant and the figure needs no caveat about its age.
  */
 
 export type PnlExpenseCategoryRow = {
@@ -102,13 +99,18 @@ export type PnlExpenseCategoryRow = {
 export type PnlReport = {
   range: DateRange
   revenue: {
-    /** SUM(invoices.total) for issued+paid invoices — what was actually billed. */
+    /** Rupees actually captured in the period — the P&L's income line. */
     net: number
-    /** SUM(invoices.subtotal), before discount and tax. Context, not the P&L line. */
+    /** The collected share of the invoices' subtotal. Context, not the P&L line. */
     gross: number
     discount: number
     tax: number
+    /** Distinct invoices money was taken against. */
     invoiceCount: number
+    /** `net` split by what the money was for. Same basis as Revenue & Bookings. */
+    bookingRevenue: number
+    foodRevenue: number
+    membershipRevenue: number
   }
   expenses: {
     total: number
@@ -126,13 +128,6 @@ export type PnlReport = {
   }
   /** revenue.net − expenses.total − payroll.total */
   netProfit: number
-  /**
-   * When mv_daily_revenue was last rebuilt, or null if it never has been.
-   *
-   * The revenue line is a snapshot while expenses and payroll are live, so this
-   * is how stale the profit figure's income half is. See the note below.
-   */
-  revenueRefreshedAt: Date | null
 }
 
 /**
@@ -187,25 +182,33 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
 
   return withUser(ctx.user.id, async (tx) => {
     // ── revenue ───────────────────────────────────────────────────────────
-    // Aggregated by the database over the barrier view. The explicit tenant_id
-    // predicate is a second lock and an index hint (idx_mv_daily_revenue_tenant_day),
-    // never the guarantee — the view's auth_tenant_ids() is.
-    const [revenueRow] = await tx
-      .select({
-        gross: sql<string>`coalesce(sum(${vDailyRevenue.gross}), 0)`,
-        discount: sql<string>`coalesce(sum(${vDailyRevenue.discount}), 0)`,
-        tax: sql<string>`coalesce(sum(${vDailyRevenue.tax}), 0)`,
-        net: sql<string>`coalesce(sum(${vDailyRevenue.net}), 0)`,
-        invoiceCount: sql<number>`coalesce(sum(${vDailyRevenue.invoiceCount}), 0)::int`,
-      })
-      .from(vDailyRevenue)
-      .where(
-        and(
-          eq(vDailyRevenue.tenantId, ctx.tenant.id),
-          gte(vDailyRevenue.day, range.start),
-          lte(vDailyRevenue.day, range.end),
-        ),
-      )
+    // Captured payments, through the SAME definition Revenue & Bookings and
+    // the sales reports use (./revenue-basis.ts). Nothing here may drift from
+    // that file, which is why none of the rules are restated.
+    const revenueResult = await tx.execute(sql`
+      select coalesce(sum(i.subtotal * ${collectionRatio}), 0)::float  as gross,
+             coalesce(sum(i.discount * ${collectionRatio}), 0)::float  as discount,
+             coalesce(sum(i.tax_total * ${collectionRatio}), 0)::float as tax,
+             coalesce(sum(p.amount), 0)::float                          as net,
+             count(distinct i.id)::int                                  as invoice_count,
+             coalesce(sum(${paidForKind('booking')}), 0)::float         as booking_revenue,
+             coalesce(sum(${paidForKind('food')}), 0)::float            as food_revenue,
+             coalesce(sum(${paidForKind('membership')}), 0)::float      as membership_revenue
+      ${paidRevenueJoins}
+       where ${paidRevenueFilter(ctx.tenant.id, range)}
+    `)
+    const revenueRow = revenueResult.rows[0] as
+      | {
+          gross: number
+          discount: number
+          tax: number
+          net: number
+          invoice_count: number
+          booking_revenue: number
+          food_revenue: number
+          membership_revenue: number
+        }
+      | undefined
 
     // ── expenses: the grand total ─────────────────────────────────────────
     const expenseWhere = and(
@@ -262,25 +265,6 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         ),
       )
 
-    // ── how stale is the revenue half? ────────────────────────────────────
-    // Revenue is a snapshot; expenses and payroll are live. Reporting the age
-    // of the snapshot is what lets the page distinguish "you are down this
-    // month" from "the income side has not been rebuilt since Tuesday". One
-    // global row (migration 0050) — a refresh covers every tenant at once, so
-    // there is no tenant predicate to apply here.
-    const [refreshRow] = await tx
-      .select({ refreshedAt: reportRefreshLog.refreshedAt })
-      .from(reportRefreshLog)
-      .where(eq(reportRefreshLog.viewName, 'mv_daily_revenue'))
-      .limit(1)
-
-    // 'epoch' is the seed 0050 writes for a database that has never refreshed
-    // since the migration ran. Reported as "unknown" rather than as 1970.
-    const refreshedAt =
-      refreshRow?.refreshedAt && refreshRow.refreshedAt.getTime() > 0
-        ? refreshRow.refreshedAt
-        : null
-
     const revenueNet = round2(Number(revenueRow?.net ?? 0))
     const expenseTotal = round2(Number(expenseRow?.total ?? 0))
     const payrollTotal = round2(Number(payrollRow?.total ?? 0))
@@ -292,7 +276,10 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         gross: round2(Number(revenueRow?.gross ?? 0)),
         discount: round2(Number(revenueRow?.discount ?? 0)),
         tax: round2(Number(revenueRow?.tax ?? 0)),
-        invoiceCount: revenueRow?.invoiceCount ?? 0,
+        invoiceCount: Number(revenueRow?.invoice_count ?? 0),
+        bookingRevenue: round2(Number(revenueRow?.booking_revenue ?? 0)),
+        foodRevenue: round2(Number(revenueRow?.food_revenue ?? 0)),
+        membershipRevenue: round2(Number(revenueRow?.membership_revenue ?? 0)),
       },
       expenses: {
         total: expenseTotal,
@@ -313,7 +300,6 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
       // Rounded once, from three figures that are each already exact to 2dp,
       // so the displayed total always equals the displayed lines subtracted.
       netProfit: round2(revenueNet - expenseTotal - payrollTotal),
-      revenueRefreshedAt: refreshedAt,
     }
   })
 }

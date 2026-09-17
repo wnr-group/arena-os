@@ -4,8 +4,15 @@ import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
-import { createInvoiceForBooking } from '@/lib/actions/billing'
-import { computeServiceCharge, priceBill, round2, type BillLine, type ServiceChargeConfig } from '@/lib/billing/pricing'
+import { createInvoiceForBooking, previewPromoCodeForBooking } from '@/lib/actions/billing'
+import {
+  computeServiceCharge,
+  priceBill,
+  round2,
+  type BillLine,
+  type PricingResult,
+  type ServiceChargeConfig,
+} from '@/lib/billing/pricing'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { PaymentPanel, type SettlementView } from './PaymentPanel'
 import { SplitBillDialog } from './SplitBillDialog'
@@ -52,6 +59,8 @@ export function BillScreen({
   lines,
   existingInvoice,
   settlement,
+  issuedPricing,
+  taxDrift,
   splitChecks,
   membership,
   wallet,
@@ -72,6 +81,24 @@ export function BillScreen({
    *  each with its own independent payment panel. Mutually exclusive with
    *  `existingInvoice`/`settlement`. */
   splitChecks: SplitCheckView[] | null
+  /**
+   * The issued invoice's own stored pricing. Present once a bill exists, and
+   * from that moment it is what the screen shows — the client-side preview
+   * below cannot reproduce an issued bill (stored qty is 2dp, and a re-price
+   * knows nothing of the discount that was applied), so re-pricing here would
+   * put different line totals, GST and grand total on screen from the ones on
+   * the invoice and the receipt.
+   */
+  issuedPricing: PricingResult | null
+  /**
+   * Food lines whose stored tax rate no longer matches the menu item's. An
+   * order freezes the rate when it is taken, so one placed before a rate
+   * changed still bills at the old one — correct for a tax document, but
+   * invisible without this. Advisory only: nothing here changes what is
+   * charged, it just puts the discrepancy in front of the till while re-taking
+   * the line is still free.
+   */
+  taxDrift: { description: string; chargedPercent: number; currentPercent: number }[]
   /**
    * The membership benefit this bill is entitled to (AROS-61), resolved
    * server-side from the customer's purchased snapshot. DISPLAY ONLY — the
@@ -107,6 +134,12 @@ export function BillScreen({
   const router = useRouter()
   const [discountText, setDiscountText] = useState('')
   const [promoCode, setPromoCode] = useState('')
+  // What the server says the typed code is worth on THIS bill. Null until the
+  // cashier applies one, and cleared the moment the text changes again, so a
+  // stale figure can never sit under a different code.
+  const [appliedPromo, setAppliedPromo] = useState<{ code: string; discount: number } | null>(null)
+  const [promoError, setPromoError] = useState<string | null>(null)
+  const [promoPending, startPromo] = useTransition()
   const [redeemText, setRedeemText] = useState('')
   // Bill-level comp/discount (M18 #5) — restaurant + manager only (see
   // canComp below). Deliberately separate from `discountText`: a comp is a
@@ -143,60 +176,92 @@ export function BillScreen({
         ? 'Enter a whole number of points.'
         : `Only ${loyalty?.balance ?? 0} points available.`
 
-  // What membership + the keyed-in discount + loyalty leave for a comp to
-  // take (M18 #5) — comp is LAST in precedence, same as the server
-  // (lib/billing/invoice.ts). Used both for the preview below and to cap
-  // the "Full comp" convenience button.
+  // What membership + the promo-or-keyed-in discount + loyalty leave for a
+  // comp to take (M18 #5) — comp is LAST, same as the server
+  // (lib/billing/invoice.ts). Used for the preview and to cap "Full comp".
   const remainingBeforeComp = useMemo(() => {
     const gross = priceBill({ lines })
     const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
-    const typed = discountValid ? Math.min(discount || 0, afterMembership) : 0
-    const afterTyped = Math.max(0, afterMembership - typed)
+    const promoOff = appliedPromo ? Math.min(appliedPromo.discount, afterMembership) : 0
+    const typed = appliedPromo || !discountValid ? 0 : Math.min(discount || 0, afterMembership)
+    const afterCodes = Math.max(0, afterMembership - promoOff - typed)
     const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
-    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
-    return Math.max(0, round2(afterTyped - loyaltyOff))
-  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty])
+    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterCodes)
+    return Math.max(0, round2(afterCodes - loyaltyOff))
+  }, [
+    lines,
+    discount,
+    discountValid,
+    membershipDiscount,
+    appliedPromo,
+    redeemPoints,
+    redeemValid,
+    redeemText,
+    loyalty,
+  ])
 
   const compAmount = Number(compText)
   const compValid = compText.trim() === '' || (Number.isFinite(compAmount) && compAmount >= 0)
   // Only restaurant managers can comp at all — a cashier's or another
-  // industry's typed figure here (impossible via the hidden UI, but belt and
-  // braces for the preview) never reduces the preview.
+  // industry's typed figure never reduces the preview.
   const compCapped = canComp && compValid ? Math.min(compAmount || 0, remainingBeforeComp) : 0
   const compReasonMissing = compCapped > 0 && compReason.trim() === ''
 
-  // Mirrors the server precedence exactly (lib/billing/loyalty.ts and, last,
-  // lib/billing/invoice.ts's M18 #5 step): membership → promo/keyed-in →
-  // loyalty → comp, all before GST.
-  const preview = useMemo(() => {
+  // Mirrors the server precedence exactly (lib/billing/loyalty.ts):
+  // membership → promo/keyed-in → loyalty, all before GST.
+  //
+  // Returns the components as well as the pricing, so the breakdown below
+  // itemises the very figures that went into the total instead of inferring
+  // them back out of it.
+  const { preview, promoDiscount, keyedDiscount, loyaltyPreviewDiscount } = useMemo(() => {
     const gross = priceBill({ lines })
     const afterMembership = Math.max(0, gross.subtotal - membershipDiscount)
-    const typed = discountValid ? Math.min(discount || 0, afterMembership) : 0
-    const afterTyped = Math.max(0, afterMembership - typed)
+    // The server REPLACES a keyed-in discount with the promo's value rather
+    // than stacking the two (lib/billing/invoice.ts, step 4b), so the preview
+    // drops the typed figure the moment a code is applied.
+    const promoOff = appliedPromo ? Math.min(appliedPromo.discount, afterMembership) : 0
+    const typed = appliedPromo || !discountValid ? 0 : Math.min(discount || 0, afterMembership)
+    const afterCodes = Math.max(0, afterMembership - promoOff - typed)
     const wanted = redeemValid && redeemText.trim() !== '' ? redeemPoints : 0
-    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterTyped)
-    return priceBill({ lines, discount: membershipDiscount + typed + loyaltyOff + compCapped })
-  }, [lines, discount, discountValid, membershipDiscount, redeemPoints, redeemValid, redeemText, loyalty, compCapped])
+    const loyaltyOff = Math.min(wanted * (loyalty?.pointValue ?? 0), afterCodes)
+    return {
+      preview: priceBill({
+        lines,
+        discount: membershipDiscount + promoOff + typed + loyaltyOff + compCapped,
+      }),
+      promoDiscount: promoOff,
+      keyedDiscount: typed,
+      loyaltyPreviewDiscount: loyaltyOff,
+    }
+  }, [
+    lines,
+    discount,
+    discountValid,
+    membershipDiscount,
+    appliedPromo,
+    redeemPoints,
+    redeemValid,
+    redeemText,
+    loyalty,
+    compCapped,
+  ])
 
-  const loyaltyPreviewDiscount = Math.max(
-    0,
-    preview.discount -
-      membershipDiscount -
-      (discountValid ? Math.min(discount || 0, Math.max(0, preview.subtotal - membershipDiscount)) : 0) -
-      compCapped,
-  )
+  const promoEntered = promoCode.trim() !== ''
+  // A typed discount that the applied promo has just displaced. Worth saying
+  // out loud, otherwise the figure in the box above looks ignored.
+  const keyedDiscountOverridden =
+    Boolean(appliedPromo) && discountValid && (discount || 0) > 0
 
-  const bookingItems = preview.items.filter((i) => i.kind === 'booking')
-  const foodItems = preview.items.filter((i) => i.kind === 'food')
-  // Present only once a bill/split already exists — `lines` then came from
-  // the frozen invoice_items, which include the service-charge line that
-  // was written at issue time (see lib/billing/invoice.ts). Pre-bill,
-  // `lines` never has one yet — see serviceChargePreview below instead.
-  const serviceChargeItems = preview.items.filter((i) => i.kind === 'service_charge')
-  const gst = preview.taxBreakup.reduce(
-    (acc, g) => ({ cgst: acc.cgst + g.cgst, sgst: acc.sgst + g.sgst }),
-    { cgst: 0, sgst: 0 },
-  )
+  // What the screen renders: the invoice's frozen figures once it exists,
+  // the live preview until then. Never a re-price of an issued bill.
+  const pricing = issuedPricing ?? preview
+
+  const bookingItems = pricing.items.filter((i) => i.kind === 'booking')
+  const foodItems = pricing.items.filter((i) => i.kind === 'food')
+  // Present only once a bill/split already exists — `lines` then came from the
+  // frozen invoice_items, which include the service-charge line written at
+  // issue time. Pre-bill there is none yet; serviceChargePreview covers that.
+  const serviceChargeItems = pricing.items.filter((i) => i.kind === 'service_charge')
 
   // PRE-BILL preview only (M18 #3) — computed client-side purely so the
   // cashier sees the line and the grand total move before raising the
@@ -215,13 +280,43 @@ export function BillScreen({
   // discount, so this is identical regardless of what's typed above).
   const itemsForSplit = useMemo(
     () =>
-      preview.items
+      pricing.items
         .filter((i) => i.kind === 'food' && i.sourceId)
-        .map((i) => ({ sourceId: i.sourceId as string, description: i.description, qty: i.qty, unitPrice: i.unitPrice, lineTotal: i.lineTotal })),
-    [preview.items],
+        .map((i) => ({
+          sourceId: i.sourceId as string,
+          description: i.description,
+          qty: i.qty,
+          unitPrice: i.unitPrice,
+          lineTotal: i.lineTotal,
+        })),
+    [pricing.items],
   )
 
-  /** Validate the pre-bill inputs client-side, then raise the invoice via createInvoiceForBooking. */
+  // Typing a new code invalidates whatever was applied: the totals fall back
+  // to no promo until the server has priced the new one.
+  function changePromoCode(next: string) {
+    setPromoCode(next.toUpperCase())
+    setAppliedPromo(null)
+    setPromoError(null)
+  }
+
+  // Prices the code server-side. Records nothing — the use is taken only when
+  // the bill is raised — so this is safe to repeat.
+  function applyPromo() {
+    const code = promoCode.trim()
+    if (!code || blocked || pending || promoPending) return
+    setPromoError(null)
+    startPromo(async () => {
+      const r = await previewPromoCodeForBooking({ bookingId: booking.id, promoCode: code })
+      if (r.error || r.discount === undefined || !r.code) {
+        setAppliedPromo(null)
+        setPromoError(r.error ?? 'Could not apply that promo code.')
+        return
+      }
+      setAppliedPromo({ code: r.code, discount: r.discount })
+    })
+  }
+
   function generate() {
     if (blocked || pending) return
     if (!discountValid) {
@@ -232,12 +327,11 @@ export function BillScreen({
       setError(redeemError ?? 'Check the points to redeem.')
       return
     }
-    if (canComp && compText.trim() !== '' && !compValid) {
-      setError('Enter a comp amount of zero or more.')
-      return
-    }
-    if (compReasonMissing) {
-      setError('Enter a reason for the comp or discount.')
+    // A typed-but-unapplied code would still be honoured by the server while
+    // the totals on screen showed full price. Price it first, so what the
+    // cashier confirms is what the customer is charged.
+    if (promoEntered && !appliedPromo) {
+      setError('Apply the promo code to see what it takes off.')
       return
     }
     setError(null)
@@ -323,6 +417,25 @@ export function BillScreen({
         <Notice tone="warn">This booking has nothing to bill.</Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
+      {taxDrift.length > 0 && (
+        <Notice tone="warn">
+          <span className="font-medium">Tax rates have changed since these were ordered.</span>{' '}
+          This bill charges the rate stored on the order, which is the rate that
+          applied when the food was served:
+          <ul className="mt-1 list-disc pl-5">
+            {taxDrift.map((d) => (
+              <li key={d.description}>
+                {d.description} — billing at {d.chargedPercent}%, the menu is now{' '}
+                {d.currentPercent}%
+              </li>
+            ))}
+          </ul>
+          <span className="mt-1 block">
+            To charge the current rate, void the line and take it again before
+            raising the bill.
+          </span>
+        </Notice>
+      )}
 
       {splitChecks ? (
         <div className="mt-6 space-y-6">
@@ -370,17 +483,34 @@ export function BillScreen({
         {/* ── settle: once a bill exists the pricing is frozen, so the discount
              form gives way to the payment panel ── */}
         {settlement ? (
-          // Keyed on what has been taken so the amount field re-defaults to the
-          // new balance after each tender.
-          <PaymentPanel
-            key={settlement.paid}
-            settlement={settlement}
-            wallet={wallet}
-            staff={staff}
-            isRestaurant={isRestaurant}
-            timeZone={timeZone}
-            currency={currency}
-          />
+          <div className="space-y-4">
+            {/* The bill as issued. Every figure is read off the invoice, so it
+                agrees with the GST receipt and with the balance the panel below
+                is collecting — the three cannot drift apart. */}
+            {issuedPricing && (
+              <aside className="space-y-3 rounded-lg border p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Bill
+                </h2>
+                <TotalRows pricing={issuedPricing} money={money} />
+                <p className="text-center text-xs text-muted-foreground">
+                  Frozen when the bill was raised. The GST invoice itemises the
+                  discount.
+                </p>
+              </aside>
+            )}
+            {/* Keyed on what has been taken so the amount field re-defaults to
+                the new balance after each tender. */}
+            <PaymentPanel
+              key={settlement.paid}
+              settlement={settlement}
+              wallet={wallet}
+              staff={staff}
+              isRestaurant={isRestaurant}
+              timeZone={timeZone}
+              currency={currency}
+            />
+          </div>
         ) : (
         <aside className="space-y-4 rounded-lg border p-4">
           <div>
@@ -408,26 +538,55 @@ export function BillScreen({
             <label htmlFor="promo" className="text-sm font-medium">
               Promo code
             </label>
-            <input
-              id="promo"
-              value={promoCode}
-              onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
-              disabled={blocked || pending}
-              placeholder="e.g. WELCOME10"
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
-              className={`mt-1 ${input} disabled:cursor-not-allowed disabled:opacity-60`}
-            />
-            {/* The server resolves the code, decides the discount and records
-                the use. An invalid code fails the whole bill rather than
-                quietly charging full price. The preview above cannot know the
-                promo's value, so it shows the typed discount only. */}
-            <p className="mt-1 text-xs text-muted-foreground">
-              {promoCode.trim()
-                ? 'The promo discount is applied by the server when the bill is raised.'
-                : 'Overrides the discount above when applied.'}
-            </p>
+            <div className="mt-1 flex gap-2">
+              <input
+                id="promo"
+                value={promoCode}
+                onChange={(e) => changePromoCode(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter in this field means "apply", not "raise the bill".
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    applyPromo()
+                  }
+                }}
+                disabled={blocked || pending}
+                placeholder="e.g. WELCOME10"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                className={`${input} disabled:cursor-not-allowed disabled:opacity-60`}
+              />
+              <button
+                type="button"
+                onClick={applyPromo}
+                disabled={
+                  blocked || pending || promoPending || !promoEntered || Boolean(appliedPromo)
+                }
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+              >
+                {promoPending && <Loader2 size={14} className="animate-spin" />}
+                {appliedPromo ? 'Applied' : 'Apply'}
+              </button>
+            </div>
+            {/* The figure below is the server's — the same validatePromo() the
+                invoice uses, against the same base — so the totals move by
+                exactly what the customer will be charged. Applying burns no
+                use; raising the bill does that, re-validating from scratch. */}
+            {promoError ? (
+              <p className="mt-1 text-xs text-destructive">{promoError}</p>
+            ) : appliedPromo ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {appliedPromo.code} applied · {money(promoDiscount)} off
+                {keyedDiscountOverridden && ' · replaces the discount above'}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {promoEntered
+                  ? 'Apply the code to include it in the totals below.'
+                  : 'Overrides the discount above when applied.'}
+              </p>
+            )}
           </div>
 
           {/* ── loyalty redemption ──
@@ -518,17 +677,31 @@ export function BillScreen({
             </div>
           )}
 
-          <dl className="space-y-1.5 border-t pt-4 text-sm">
-            <Total k="Subtotal" v={money(preview.subtotal)} />
-            <Total k="Discount" v={`− ${money(preview.discount)}`} />
-            {/* Itemises the line above rather than adding to it: the membership
-                benefit is one component of the discount, applied before GST. */}
+          <TotalRows
+            pricing={preview}
+            money={money}
+            className="border-t pt-4"
+            serviceCharge={serviceChargePreview}
+            total={grandTotal}
+          >
+            {/* These itemise the Discount line rather than adding to it: each is
+                one component of it, all applied before GST. */}
             {membership && (
               <Total
                 k={`${membership.planName} member · ${membership.discountPercent}%`}
                 v={`− ${money(membership.discountAmount)}`}
                 muted
               />
+            )}
+            {appliedPromo && (
+              <Total
+                k={`Promo · ${appliedPromo.code}`}
+                v={`− ${money(promoDiscount)}`}
+                muted
+              />
+            )}
+            {keyedDiscount > 0 && (
+              <Total k="Keyed-in discount" v={`− ${money(keyedDiscount)}`} muted />
             )}
             {loyaltyPreviewDiscount > 0 && (
               <Total
@@ -538,26 +711,19 @@ export function BillScreen({
               />
             )}
             {compCapped > 0 && <Total k="Comp / discount" v={`− ${money(compCapped)}`} muted />}
-            <Total k="Taxable value" v={money(preview.taxableValue)} muted />
-            <Total k="CGST" v={money(gst.cgst)} muted />
-            <Total k="SGST" v={money(gst.sgst)} muted />
-            <Total k="GST total" v={money(preview.taxTotal)} />
-            {serviceChargePreview.amount > 0 && (
-              <Total
-                k={`Service charge (${serviceChargePreview.percent}%)`}
-                v={money(serviceChargePreview.amount + serviceChargePreview.tax)}
-                muted
-              />
-            )}
-            <div className="flex justify-between gap-4 border-t pt-2 text-base font-semibold">
-              <dt>Grand total</dt>
-              <dd>{money(grandTotal)}</dd>
-            </div>
-          </dl>
+          </TotalRows>
 
           <button
             onClick={generate}
-            disabled={blocked || pending || !discountValid || !compValid || compReasonMissing}
+            disabled={
+              blocked ||
+              pending ||
+              promoPending ||
+              !discountValid ||
+              !compValid ||
+              compReasonMissing ||
+              (promoEntered && !appliedPromo)
+            }
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
@@ -645,6 +811,66 @@ function LineTable({
         </div>
       )}
     </section>
+  )
+}
+
+/**
+ * Subtotal → discount → GST → grand total, from ONE PricingResult.
+ *
+ * Shared by the preview and the issued bill on purpose: the two states differ
+ * only in where the figures come from, never in how they are added up or
+ * labelled, so there is no second implementation to drift.
+ *
+ * `children` slot in directly under the Discount line to itemise it.
+ */
+function TotalRows({
+  pricing,
+  money,
+  className = '',
+  serviceCharge,
+  total,
+  children,
+}: {
+  pricing: PricingResult
+  money: (n: number) => string
+  className?: string
+  /**
+   * The PRE-BILL service charge preview (M18 #3). Passed only before a bill
+   * exists: once one does, the charge is a frozen invoice LINE and is already
+   * inside `pricing`, so passing it here would count it twice.
+   */
+  serviceCharge?: { percent: number; amount: number; tax: number }
+  /** Overrides the grand total — used with `serviceCharge`, which sits outside `pricing`. */
+  total?: number
+  children?: React.ReactNode
+}) {
+  // Aggregating the per-rate split the way the receipt does — stored amounts
+  // summed, never re-derived from a percentage.
+  const gst = pricing.taxBreakup.reduce(
+    (acc, g) => ({ cgst: acc.cgst + g.cgst, sgst: acc.sgst + g.sgst }),
+    { cgst: 0, sgst: 0 },
+  )
+  return (
+    <dl className={`space-y-1.5 text-sm ${className}`}>
+      <Total k="Subtotal" v={money(pricing.subtotal)} />
+      <Total k="Discount" v={`− ${money(pricing.discount)}`} />
+      {children}
+      <Total k="Taxable value" v={money(pricing.taxableValue)} muted />
+      <Total k="CGST" v={money(gst.cgst)} muted />
+      <Total k="SGST" v={money(gst.sgst)} muted />
+      <Total k="GST total" v={money(pricing.taxTotal)} />
+      {serviceCharge && serviceCharge.amount > 0 && (
+        <Total
+          k={`Service charge (${serviceCharge.percent}%)`}
+          v={money(serviceCharge.amount + serviceCharge.tax)}
+          muted
+        />
+      )}
+      <div className="flex justify-between gap-4 border-t pt-2 text-base font-semibold">
+        <dt>Grand total</dt>
+        <dd>{money(total ?? pricing.total)}</dd>
+      </div>
+    </dl>
   )
 }
 

@@ -4,11 +4,12 @@ import { useEffect, useMemo, useState, useTransition, type ComponentType } from 
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, Clock, CheckCircle2, XCircle, Percent, Loader2, PauseCircle, PlayCircle } from 'lucide-react'
-import { upsertHappyHour, deleteHappyHour } from '@/lib/actions/happy-hours'
+import { upsertHappyHour, deleteHappyHour, setHappyHourActive } from '@/lib/actions/happy-hours'
 import { activeHappyHours } from '@/lib/happy-hours/apply'
 import { formatMoney } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
+import { DISPLAY_NAME_ERROR, DISPLAY_NAME_PATTERN } from '@/lib/utils/display-name'
 
 type DiscountType = 'percentage' | 'fixed'
 type HappyHourRow = {
@@ -33,8 +34,7 @@ const inputInvalid = 'border-destructive focus:border-destructive focus:ring-des
 const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
-const NAME_PATTERN = /^[\p{L}\p{N} &'.,()-]+$/u
+  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
 
 function formatTime(t: string) {
   const [h, m] = t.split(':').map(Number)
@@ -111,18 +111,12 @@ export function HappyHoursManager({
     return { total, live, disabled, percentage }
   }, [happyHours, now, timezone])
 
+  // One column, one call. Sending the whole row back would re-validate fields
+  // nobody is changing — and would overwrite an edit made elsewhere since this
+  // page loaded.
   async function applyToggle(row: HappyHourRow, next: boolean) {
     setTogglingId(row.id)
-    const r = await upsertHappyHour({
-      id: row.id,
-      name: row.name,
-      daysOfWeek: row.daysOfWeek,
-      startTime: row.startTime,
-      endTime: row.endTime,
-      discountType: row.discountType,
-      discountValue: Number(row.discountValue),
-      isActive: next,
-    })
+    const r = await setHappyHourActive(row.id, next)
     setTogglingId(null)
     if (r.error) toast.error(r.error)
     else router.refresh()
@@ -346,8 +340,7 @@ function HappyHourModal({
     if (!trimmedName) e.name = 'Name is required.'
     else if (trimmedName.length < 2) e.name = 'Name must be at least 2 characters.'
     else if (trimmedName.length > 100) e.name = 'Name must be at most 100 characters.'
-    else if (!NAME_PATTERN.test(trimmedName))
-      e.name = "Name can only contain letters, numbers, spaces, and & - ' . , ( )"
+    else if (!DISPLAY_NAME_PATTERN.test(trimmedName)) e.name = DISPLAY_NAME_ERROR
     if (daysOfWeek.length === 0) e.days = 'Select at least one day.'
     if (startTime && endTime && endTime <= startTime) e.time = 'End time must be after start time.'
     if (discountValue === '') e.discountValue = 'Discount value is required.'

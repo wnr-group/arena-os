@@ -52,7 +52,16 @@ const voidInput = z.object({
  */
 export async function refundPayment(
   input: z.input<typeof refundInput>,
-): Promise<ActionResult & { refundId?: string; fullyRefunded?: boolean }> {
+): Promise<
+  ActionResult & {
+    refundId?: string
+    fullyRefunded?: boolean
+    /** Rupees still refundable on that payment, 2dp. */
+    remainingRefundable?: string
+    /** Rupees refunded against it in total, 2dp. */
+    refundedTotal?: string
+  }
+> {
   try {
     const ctx = await requireManager()
     const v = refundInput.parse(input)
@@ -64,7 +73,16 @@ export async function refundPayment(
     revalidatePath(`/invoices/${result.invoiceId}`)
     if (result.bookingId) revalidatePath(`/pos/${result.bookingId}`)
 
-    return { success: true, refundId: result.refundId, fullyRefunded: result.fullyRefunded }
+    // recordRefund() has already worked these out from the LOCKED row; passing
+    // them back means the confirmation quotes the server's figures rather than
+    // the browser's idea of what it just did.
+    return {
+      success: true,
+      refundId: result.refundId,
+      fullyRefunded: result.fullyRefunded,
+      remainingRefundable: result.remainingRefundable.toFixed(2),
+      refundedTotal: result.refundedTotal.toFixed(2),
+    }
   } catch (e) {
     return fail(e)
   }

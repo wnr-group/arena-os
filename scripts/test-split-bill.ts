@@ -25,7 +25,7 @@ import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { seatTableSessionCore, assertBookingFullyPaid, BookingError } from '../lib/booking/service'
 import { createOrderCore } from '../lib/orders/service'
-import { issueInvoiceForBooking, findLiveBilling, BillingError } from '../lib/billing/invoice'
+import { issueInvoiceForBooking, BillingError } from '../lib/billing/invoice'
 import { issueSplitBillForBooking, type SplitInput } from '../lib/billing/split'
 import { recordPaymentForInvoice, PaymentError } from '../lib/billing/payments'
 import { loadEnv } from './env'
@@ -255,7 +255,7 @@ async function main() {
     void o2
 
     const [wineItemId, pastaItemId] = ids
-    const result = await split(A, session.id, {
+    await split(A, session.id, {
       mode: 'item',
       checkCount: 2,
       assignments: { [wineItemId]: 0, [pastaItemId]: 1 },
@@ -285,7 +285,7 @@ async function main() {
     await order(A, session.id, [{ menuItemId: A.itemId5, qty: 1, seatNo: 2 }]) // Pasta, seat 2
     await order(A, session.id, [{ menuItemId: A.itemId5, qty: 1 }]) // shared Pasta, no seat
 
-    const result = await split(A, session.id, { mode: 'seat' })
+    await split(A, session.id, { mode: 'seat' })
     const rows = await invoiceRows(session.id)
     check('by-seat split writes 2 checks (seat 1 and seat 2)', rows.length === 2)
 

@@ -64,6 +64,13 @@ export default async function PosBillPage({
       lines={data.lines}
       existingInvoice={data.existingInvoice}
       settlement={settlement}
+      // The issued bill's own stored figures. Once this is present the screen
+      // shows it instead of re-pricing `lines`, so the line totals, the GST and
+      // the grand total are the ones actually charged.
+      issuedPricing={data.issuedPricing}
+      // Advisory: lines the bill will charge at a rate the menu no longer
+      // uses, because the order snapshotted it before the rate changed.
+      taxDrift={data.taxDrift}
       splitChecks={splitChecks}
       // Display only: every wallet limit is re-checked under a lock by the
       // action, which reads the balance from the ledger itself.

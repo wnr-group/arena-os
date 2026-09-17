@@ -8,6 +8,7 @@ import { todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
 import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
 import { listDepositStates } from '@/lib/payments/data'
+import { listBookingPaymentStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
@@ -58,6 +59,9 @@ export default async function BookingsPage({
   const modifiersByOrderItem = isRestaurant
     ? await listOrderItemModifierNames(ctx, orderItemIds)
     : new Map<string, string[]>()
+  // Where each booking stands with the till — billed, part-paid, settled.
+  const paymentStates = await listBookingPaymentStates(ctx, bookingIds)
+
   // Which bookings already have a deposit order open or settled (AROS-49).
   const depositRows = await listDepositStates(ctx, bookingIds)
   const depositStates: Record<string, 'pending' | 'paid'> = {}
@@ -178,6 +182,7 @@ export default async function BookingsPage({
       ordersByBooking={ordersByBooking}
       venueName={ctx.tenant.name}
       depositStates={depositStates}
+      paymentStates={paymentStates}
       canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
     />

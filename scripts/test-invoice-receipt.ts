@@ -9,6 +9,7 @@
  *   - GST comes from the stored tax_breakup, including multi-rate invoices
  *   - changing a resource's live price does not move an issued receipt
  *   - only captured payments count toward paid; balance never goes negative
+ *   - the promo code honoured is named, and its share of the discount adds up
  *   - a walk-in (null customer) loads cleanly
  *   - another tenant's invoice id is invisible
  *
@@ -96,7 +97,12 @@ async function main() {
 
   let seq = 0
   /** An issued invoice for `total` rupees; `withCustomer=false` gives a walk-in. */
-  async function makeInvoice(t: Actor, total: number, withCustomer = true) {
+  async function makeInvoice(
+    t: Actor,
+    total: number,
+    withCustomer = true,
+    extra: { promoCode?: string; discount?: number } = {},
+  ) {
     const n = ++seq
     let customerId: string | null = null
     if (withCustomer) {
@@ -118,7 +124,7 @@ async function main() {
       [t.tenantId, bk.rows[0].id, t.resourceId, start, new Date(start.getTime() + 2 * 3600_000),
        (total / 2).toFixed(2), total.toFixed(2)])
     const issued = await withUser(t.userId, (tx) =>
-      issueInvoiceForBooking(tx, { id: t.tenantId, timezone: TZ }, { bookingId: bk.rows[0].id }))
+      issueInvoiceForBooking(tx, { id: t.tenantId, timezone: TZ }, { bookingId: bk.rows[0].id, ...extra }))
     return { invoiceId: issued.invoiceId, invoiceNumber: issued.invoiceNumber, customerId, bookingId: bk.rows[0].id }
   }
 
@@ -255,6 +261,70 @@ async function main() {
        values ($1,$2,$3,'cash','5000.00','captured')`, [A.tenantId, A.branchId, inv.invoiceId])
     const over = await receiptOf(A, inv.invoiceId)
     check('C6 an over-captured invoice shows 0.00 due, never negative', over?.balanceDue === '0.00' && over?.fullyPaid === true)
+  }
+
+  // ── Case 6b — the promo code the bill honoured ────────────────────────────
+  // The receipt has to name the code, not just the rupees: "you said RECEIPT10
+  // gave me 10%" is otherwise unanswerable from the printed bill.
+  {
+    const promo = await ownerPool.query<{ id: string }>(
+      `insert into promo_codes (tenant_id,code,discount_type,discount_value,valid_from,valid_until,is_active)
+       values ($1,'RECEIPT10','percentage','10.00',now() - interval '1 day',now() + interval '1 day',true)
+       returning id`,
+      [A.tenantId],
+    )
+
+    const inv = await makeInvoice(A, 1000, true, { promoCode: 'RECEIPT10' })
+    const r = await receiptOf(A, inv.invoiceId)
+    check('C6b the receipt names the code that was honoured', r?.invoice.promoCode === 'RECEIPT10')
+    check('C6b …and its share of the discount is ₹100', r?.invoice.promoDiscount === '100.00')
+    check('C6b …which is the whole stored discount here', r?.invoice.discount === '100.00')
+    check(
+      'C6b the parts add up to the stored discount',
+      r !== null &&
+        (
+          Number(r.invoice.promoDiscount) +
+          Number(r.invoice.membershipDiscount) +
+          Number(r.invoice.loyaltyDiscount)
+        ).toFixed(2) === r.invoice.discount,
+    )
+
+    // A lower-cased spelling resolves to the same row, and the receipt prints
+    // the code AS STORED — what the manager created, and what the promo-codes
+    // screen lists.
+    const inv2 = await makeInvoice(A, 1000, true, { promoCode: '  receipt10  ' })
+    const r2 = await receiptOf(A, inv2.invoiceId)
+    check("C6b a ' receipt10 ' spelling still prints RECEIPT10", r2?.invoice.promoCode === 'RECEIPT10')
+
+    // History must not move when the code is retired or repriced — both are
+    // things a manager does to a live promo every season.
+    await ownerPool.query(
+      `update promo_codes set is_active=false, discount_value='50.00' where id=$1`,
+      [promo.rows[0].id],
+    )
+    const reprint = await receiptOf(A, inv.invoiceId)
+    check(
+      'C6b deactivating and repricing the code does not move the reprint',
+      reprint?.invoice.promoCode === 'RECEIPT10' &&
+        reprint?.invoice.promoDiscount === '100.00' &&
+        reprint?.invoice.discount === '100.00',
+    )
+
+    // A keyed-in discount is NOT a promo: nothing may attribute it to a code.
+    const keyed = await makeInvoice(A, 1000, true, { discount: 250 })
+    const rk = await receiptOf(A, keyed.invoiceId)
+    check('C6b a keyed-in discount cites no code', rk?.invoice.promoCode === null)
+    check(
+      'C6b …and reports 0.00 promo, with the ₹250 left in Discount',
+      rk?.invoice.promoDiscount === '0.00' && rk?.invoice.discount === '250.00',
+    )
+
+    const plain = await makeInvoice(A, 400)
+    const rp = await receiptOf(A, plain.invoiceId)
+    check(
+      'C6b an undiscounted invoice has no code and 0.00',
+      rp?.invoice.promoCode === null && rp?.invoice.promoDiscount === '0.00',
+    )
   }
 
   // ── Case 7 — tenant isolation ─────────────────────────────────────────────

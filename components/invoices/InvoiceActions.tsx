@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Ban, Loader2, RotateCcw, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { refundPayment, voidInvoice } from '@/lib/actions/refunds'
 import { round2 } from '@/lib/billing/pricing'
 import { formatMoney } from '@/lib/format'
@@ -138,9 +139,20 @@ function RefundDialog({
     start(async () => {
       const r = await refundPayment({ paymentId, amount, reason: reason.trim() })
       if (r.error) {
+        // Errors stay INSIDE the dialog: it remains open with the figures the
+        // manager was working from, so the amount can be corrected in place.
         setError(r.error)
         return
       }
+      // A refund used to close the dialog and refresh in silence, leaving the
+      // manager to re-read the page to find out whether money had moved. The
+      // figures below are the server's, taken from the locked payment row.
+      const method = METHOD_LABEL[selected?.method ?? ''] ?? selected?.method ?? 'payment'
+      toast.success(`${money(amount)} refunded`, {
+        description: r.fullyRefunded
+          ? `${method} payment fully refunded — ${money(r.refundedTotal ?? amount)} in total.`
+          : `${method} payment · ${money(r.remainingRefundable ?? 0)} still refundable.`,
+      })
       onClose()
       router.refresh()
     })
@@ -247,9 +259,18 @@ function VoidDialog({
     start(async () => {
       const r = await voidInvoice({ invoiceId, reason: reason.trim() })
       if (r.error) {
+        // Inline, like the refund dialog: the reason the manager typed is
+        // still on screen and the refusal is usually actionable ("refund the
+        // payment first").
         setError(r.error)
         return
       }
+      // Voiding strikes a bill off the books and drops it out of every report,
+      // so it should say so rather than just closing.
+      toast.success(
+        r.invoiceNumber ? `Invoice ${r.invoiceNumber} voided` : 'Invoice voided',
+        { description: 'Struck off — it no longer counts towards revenue.' },
+      )
       onClose()
       router.refresh()
     })

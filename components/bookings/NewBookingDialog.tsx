@@ -104,7 +104,17 @@ export function NewBookingDialog({
   const [checkingPhone, setCheckingPhone] = useState(false)
   const [phoneChecked, setPhoneChecked] = useState(false)
   const [existingCustomerName, setExistingCustomerName] = useState<string | null>(null)
-  const isNewCustomer = phoneChecked && !checkingPhone && !existingCustomerName
+  /**
+   * Whether staff still have to type a name.
+   *
+   * Keyed on whether a NAME is known, not on whether a customer row exists.
+   * `customers.name` is nullable, so a returning walk-in can be found with no
+   * name at all — and treating "found" as "named" dead-ended the form: the
+   * name field was hidden, the name stayed empty, and submit() returned
+   * silently on its own `!customerName` check with nothing on screen and no
+   * field to fix it in. The Book button simply did nothing, for ever.
+   */
+  const needsName = phoneChecked && !checkingPhone && !existingCustomerName
 
   useEffect(() => {
     setPhoneChecked(false)
@@ -112,17 +122,25 @@ export function NewBookingDialog({
     if (!isValidPhone(customerPhone)) return
     let cancelled = false
     setCheckingPhone(true)
-    lookupCustomerByPhone(customerPhone).then((r) => {
-      if (cancelled) return
-      setCheckingPhone(false)
-      setPhoneChecked(true)
-      if (r.found) {
-        setExistingCustomerName(r.name || 'Existing customer')
-        setCustomerName(r.name || '')
-      } else {
-        setCustomerName('')
-      }
-    })
+    lookupCustomerByPhone(customerPhone)
+      .then((r) => {
+        if (cancelled) return
+        setCheckingPhone(false)
+        setPhoneChecked(true)
+        // A blank or missing name is the same as no name: ask for one.
+        const known = r.found ? (r.name ?? '').trim() : ''
+        setExistingCustomerName(known || null)
+        setCustomerName(known)
+      })
+      .catch(() => {
+        if (cancelled) return
+        // The lookup is a convenience, not a gate. If it cannot run, fall back
+        // to asking for a name rather than leaving the form permanently
+        // mid-check with its button disabled and nothing explaining why.
+        setCheckingPhone(false)
+        setPhoneChecked(true)
+        setExistingCustomerName(null)
+      })
     return () => {
       cancelled = true
     }
@@ -131,7 +149,7 @@ export function NewBookingDialog({
   // Field-level messages shown right under each input, once the visitor has
   // left the field (or tried to submit) rather than the moment it's empty.
   const nameError =
-    isNewCustomer && (nameTouched || attemptedSubmit) && !customerName.trim() ? 'Customer name is required.' : null
+    needsName && (nameTouched || attemptedSubmit) && !customerName.trim() ? 'Customer name is required.' : null
   const phoneError =
     (phoneTouched || attemptedSubmit) && !customerPhone.trim()
       ? 'Phone number is required.'
@@ -151,12 +169,31 @@ export function NewBookingDialog({
   }
 
   function submit() {
-    if (!selectedSlot) return
-    setError(null)
+    // Every early return below now leaves a message behind. They used to
+    // return silently, so a click that could not proceed was indistinguishable
+    // from a broken button.
     setAttemptedSubmit(true)
-    if (!customerPhone.trim() || !isValidPhone(customerPhone)) return
-    if (!phoneChecked || checkingPhone) return
-    if (!customerName.trim()) return
+    setError(null)
+    if (!selectedSlot) {
+      setError('Pick a start time first.')
+      return
+    }
+    if (!customerPhone.trim() || !isValidPhone(customerPhone)) {
+      setError('Enter a valid 10-digit phone number.')
+      return
+    }
+    if (checkingPhone) {
+      setError('Still checking that phone number — try again in a moment.')
+      return
+    }
+    if (!phoneChecked) {
+      setError('Finish entering the phone number first.')
+      return
+    }
+    if (!customerName.trim()) {
+      setError('Customer name is required.')
+      return
+    }
     const endsAt = new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     start(async () => {
       const r = await createBooking({
@@ -215,7 +252,7 @@ export function NewBookingDialog({
             )}
           </div>
 
-          {isNewCustomer && (
+          {needsName && (
             <div>
               <label className={label}>
                 Customer name <span className="text-destructive">*</span>
@@ -294,10 +331,22 @@ export function NewBookingDialog({
 
           {slots !== null && (
             <div>
-              <label className={label}>Available start times ({date})</label>
-              {slots.length === 0 ? (
+              <label className={label}>Start times ({date})</label>
+              {/* The whole working day is laid out below whatever the answer
+                  is. Replacing the grid with a message when nothing is free
+                  hid the day itself — and a fully booked day is exactly when
+                  staff most need to see which times are taken and by how
+                  much, rather than an empty panel. */}
+              {slots.length === 0 && (
                 <p className="mt-1 text-sm text-muted-foreground">
-                  No free times for this resource type and duration. Try a shorter duration or another day.
+                  Nothing free for this duration — every time below is taken. Try a
+                  shorter duration or another day.
+                </p>
+              )}
+              {candidateTimes.length === 0 ? (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  A {duration}-minute booking does not fit inside this day&apos;s opening
+                  hours.
                 </p>
               ) : (
                 <div className="mt-2 grid grid-cols-4 gap-2">
@@ -322,7 +371,13 @@ export function NewBookingDialog({
                         key={c.startsAt}
                         onClick={() => isBookable && setSelectedSlot({ startsAt: c.startsAt, resourceId: c.resourceId! })}
                         disabled={isPast || !isBookable}
-                        title={isPast ? 'This time has already passed.' : !isBookable ? 'Not available.' : undefined}
+                        title={
+                          isPast
+                            ? 'This time has already passed.'
+                            : !isBookable
+                              ? `Not available — a ${duration}-minute booking from here would clash with an existing one (or its buffer).`
+                              : undefined
+                        }
                         className={`rounded-md border px-2 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:border-dashed disabled:text-muted-foreground/50 disabled:hover:bg-transparent ${
                           isSelected
                             ? 'border-primary bg-primary text-primary-foreground'
@@ -337,6 +392,12 @@ export function NewBookingDialog({
                   })}
                 </div>
               )}
+              {candidateTimes.length > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Dashed, faded times are not available — already booked, or too close
+                  to a booking for a {duration}-minute slot to fit.
+                </p>
+              )}
             </div>
           )}
 
@@ -344,7 +405,11 @@ export function NewBookingDialog({
 
           <button
             onClick={submit}
-            disabled={pending || !selectedSlot || checkingPhone}
+            // Only genuinely transient states disable the button. Anything a
+            // user has to FIX is left clickable so submit() can say what it is
+            // — a dead button explains nothing.
+            disabled={pending || checkingPhone}
+            title={checkingPhone ? 'Checking the phone number…' : undefined}
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending && selectedSlot && <Loader2 size={15} className="animate-spin" />}

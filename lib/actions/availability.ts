@@ -1,6 +1,6 @@
 'use server'
 
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, eq, gt, inArray, lt } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { resources, resourceTypes, workingHours, bookingSlots } from '@/db/schema'
@@ -62,8 +62,17 @@ export async function getAvailableStarts(
           and(
             eq(bookingSlots.resourceId, v.resourceId),
             eq(bookingSlots.active, true),
-            gte(bookingSlots.startsAt, dayStart),
+            // OVERLAP, not "starts on this day".
+            //
+            // Filtering on startsAt alone made every slot that begins BEFORE the
+            // day and runs into it invisible here — an overnight booking, or a
+            // multi-day hold on a resource. Availability then offered a unit the
+            // booking_slots_no_overlap exclusion constraint promptly refused, so
+            // the till was told a table was free and the booking failed with
+            // "that time was just taken". A second unit of the same type could
+            // never be allocated while such a slot sat on it.
             lt(bookingSlots.startsAt, dayEnd),
+            gt(bookingSlots.endsAt, dayStart),
           ),
         )
 
@@ -149,8 +158,17 @@ export async function getAvailableStartsForType(
           and(
             inArray(bookingSlots.resourceId, resourceIds),
             eq(bookingSlots.active, true),
-            gte(bookingSlots.startsAt, dayStart),
+            // OVERLAP, not "starts on this day".
+            //
+            // Filtering on startsAt alone made every slot that begins BEFORE the
+            // day and runs into it invisible here — an overnight booking, or a
+            // multi-day hold on a resource. Availability then offered a unit the
+            // booking_slots_no_overlap exclusion constraint promptly refused, so
+            // the till was told a table was free and the booking failed with
+            // "that time was just taken". A second unit of the same type could
+            // never be allocated while such a slot sat on it.
             lt(bookingSlots.startsAt, dayEnd),
+            gt(bookingSlots.endsAt, dayStart),
           ),
         )
 

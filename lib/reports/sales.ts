@@ -5,6 +5,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
+import { lineOwed, paidRevenueFilter, paidRevenueJoins } from './revenue-basis'
 import type { CsvColumn } from './csv'
 import type { DateRange } from './date-range'
 
@@ -36,14 +37,21 @@ import type { DateRange } from './date-range'
  *     billed plate, which is precisely the trap this choice avoids;
  *   * the HISTORICAL price, not today's menu price.
  *
- * ── WHAT "REVENUE" MEANS HERE ───────────────────────────────────────────────
- * `SUM(invoice_items.line_total)` = Σ qty × unit_price as billed: BEFORE any
- * invoice-level discount (promo, membership, loyalty) and BEFORE GST, because
- * lib/billing/pricing.ts applies those to the invoice as a whole and allocates
- * tax across rate groups — it never writes them back onto a line. There is no
- * per-line net to be had, and inventing a pro-rata split would be a business
- * rule nobody has agreed. So this is deliberately named GROSS, and it will not
- * add up to the net revenue on the AROS-65 dashboard. Documented on screen too.
+ * ── WHAT "REVENUE" MEANS HERE: MONEY TAKEN ──────────────────────────────────
+ * Captured payments, apportioned to food by food's share of the bill — the
+ * shared definition in ./revenue-basis.ts, the same one Revenue & Bookings and
+ * Profit & Loss use. An unpaid food bill therefore contributes NOTHING, and a
+ * part-paid one contributes only what was collected.
+ *
+ * It used to be `SUM(invoice_items.line_total)` for any issued-or-paid
+ * invoice: gross, and on an accrual basis. Both changed together, because a
+ * report headed "revenue" that counts bills nobody has paid is not revenue.
+ *
+ * QUANTITY is deliberately NOT apportioned. Three plates sold are three plates
+ * sold whether or not the bill has been settled — that is an operational fact
+ * about the kitchen, and pro-rating it would produce fractional plates. So
+ * `quantity` counts everything billed while `paidRevenue` counts only money.
+ * The two answer different questions and the screen labels them as such.
  *
  * ── ITEM IDENTITY ───────────────────────────────────────────────────────────
  * Grouped by `invoice_items.description` — the item name snapshotted when the
@@ -69,8 +77,9 @@ import type { DateRange } from './date-range'
 export type FoodSalesRow = {
   /** The item name as billed (historical snapshot). */
   itemName: string
+  /** Plates billed, settled or not — an operational count, never apportioned. */
   quantity: number
-  /** Σ line_total — before invoice-level discount and before GST. */
+  /** Money actually captured against this item. See the note above. */
   grossRevenue: number
   /** Distinct invoices this item appeared on. */
   invoices: number
@@ -122,28 +131,26 @@ export async function getSalesReport(
 
   return withUser(ctx.user.id, async (tx) => {
     // ── food ─────────────────────────────────────────────────────────────────
-    // Dated by the INVOICE's issued_at in the branch's local day — the same
-    // basis mv_daily_revenue uses (migration 0038), so a food sale lands on the
-    // same day as the revenue it is part of. The kitchen's own order timestamp
-    // is deliberately not used: the sale happens when it is billed.
+    // Dated by when the MONEY was taken, in the branch's local day — the same
+    // basis the revenue dashboard uses, so a food sale lands on the day its
+    // revenue does. The kitchen's own order timestamp is deliberately not
+    // used: this is a money report, not a service one.
+    //
+    // Each payment is apportioned to a food LINE by that line's share of the
+    // whole bill, so a payment settling a mixed booking-and-food invoice
+    // contributes to both in proportion and to neither twice.
     const food = await tx.execute(sql`
-      select ii.description                as item_name,
-             sum(ii.qty)::float            as quantity,
-             sum(ii.line_total)::float     as gross_revenue,
-             count(distinct ii.invoice_id)::int as invoices
-        from public.invoice_items ii
-        join public.invoices i
-          on i.id = ii.invoice_id
-         and i.tenant_id = ii.tenant_id
-        join public.branches b on b.id = i.branch_id
-        join public.tenants  t on t.id = i.tenant_id
-       where ii.tenant_id = ${tenantId}
+      select ii.description                      as item_name,
+             sum(ii.qty)::float                  as quantity,
+             sum(p.amount * ${lineOwed} / nullif(k.all_lines, 0))::float as gross_revenue,
+             count(distinct i.id)::int           as invoices
+      ${paidRevenueJoins}
+        join public.invoice_items ii
+          on ii.invoice_id = i.id
+         and ii.tenant_id = i.tenant_id
          and ii.kind = 'food'
-         and i.status in ('issued','paid')
-         and i.issued_at is not null
-         and ((i.issued_at at time zone coalesce(b.timezone, t.timezone))::date)
-             between ${range.start}::date and ${range.end}::date
-         ${branchId ? sql`and i.branch_id = ${branchId}` : sql``}
+        join public.invoices inv on inv.id = i.id
+       where ${paidRevenueFilter(tenantId, range, branchId)}
        group by ii.description
        order by gross_revenue desc, item_name
     `)
@@ -160,22 +167,55 @@ export async function getSalesReport(
     // A voided invoice un-sells the membership: same rule as revenue. A free
     // membership has no invoice at all (purchaseMembership only bills
     // when price > 0) and still counts, at zero revenue.
+    // Two different questions, so two different dates — and they are labelled
+    // as such on screen:
+    //
+    //   SOLD      memberships created in the window, dated by created_at. An
+    //             operational count; a free membership (no invoice at all)
+    //             still counts, at zero revenue.
+    //   REVENUE   money captured against the membership's invoice, dated by
+    //             when it was taken, through the shared basis. A membership
+    //             sold on credit therefore counts as sold and earns nothing
+    //             until it is paid for.
     const memberships = await tx.execute(sql`
-      select cm.plan_id::text                                as plan_id,
-             cm.plan_name                                    as plan_name,
-             count(*)::int                                   as sold,
-             sum(cm.price_paid)::float                       as revenue,
-             count(*) filter (where cm.status = 'cancelled')::int as cancelled
-        from public.customer_memberships cm
-        join public.tenants t on t.id = cm.tenant_id
-        left join public.invoices i
-          on i.id = cm.invoice_id
-         and i.tenant_id = cm.tenant_id
-       where cm.tenant_id = ${tenantId}
-         and (cm.invoice_id is null or i.status <> 'void')
-         and ((cm.created_at at time zone t.timezone)::date)
-             between ${range.start}::date and ${range.end}::date
-       group by cm.plan_id, cm.plan_name
+      with sold as (
+        select cm.plan_id, cm.plan_name,
+               count(*)::int as sold,
+               count(*) filter (where cm.status = 'cancelled')::int as cancelled
+          from public.customer_memberships cm
+          join public.tenants t on t.id = cm.tenant_id
+          left join public.invoices i
+            on i.id = cm.invoice_id
+           and i.tenant_id = cm.tenant_id
+         where cm.tenant_id = ${tenantId}
+           and (cm.invoice_id is null or i.status <> 'void')
+           and ((cm.created_at at time zone t.timezone)::date)
+               between ${range.start}::date and ${range.end}::date
+         group by cm.plan_id, cm.plan_name
+      ),
+      collected as (
+        select cm.plan_id, cm.plan_name,
+               sum(p.amount * ${lineOwed} / nullif(k.all_lines, 0))::float as revenue
+        ${paidRevenueJoins}
+          join public.invoice_items ii
+            on ii.invoice_id = i.id
+           and ii.tenant_id = i.tenant_id
+           and ii.kind = 'membership'
+          join public.invoices inv on inv.id = i.id
+          join public.customer_memberships cm
+            on cm.invoice_id = i.id
+           and cm.tenant_id = i.tenant_id
+         where ${paidRevenueFilter(tenantId, range, branchId)}
+         group by cm.plan_id, cm.plan_name
+      )
+      select coalesce(s.plan_id, c.plan_id)::text     as plan_id,
+             coalesce(s.plan_name, c.plan_name)       as plan_name,
+             coalesce(s.sold, 0)::int                 as sold,
+             coalesce(c.revenue, 0)::float            as revenue,
+             coalesce(s.cancelled, 0)::int            as cancelled
+        from sold s
+        full outer join collected c
+          on c.plan_id = s.plan_id and c.plan_name = s.plan_name
        order by revenue desc, plan_name
     `)
 

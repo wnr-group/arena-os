@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { ShoppingBag, ChefHat, BellRing, CheckCircle2, XCircle, Loader2, type LucideIcon } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
