@@ -198,8 +198,13 @@ async function main() {
     check('subtotal ₹802.33', after.subtotal === 802.33)
     check('the ₹100 discount survives the round trip', after.discount === 100)
     check('taxable value ₹702.33', after.taxableValue === 702.33)
-    check('GST is charged on the DISCOUNTED value: 5% group 2.63 + 2.63',
-      after.taxBreakup[1].percent === 5 && after.taxBreakup[1].cgst === 2.63 && after.taxBreakup[1].sgst === 2.63)
+    // ₹5.25 of GST on this group. The halves are NOT 2.63 + 2.63: priceBill
+    // rounds the half ONCE and gives the remainder to SGST, so they sum to the
+    // tax exactly rather than a paisa over it.
+    check('GST is charged on the DISCOUNTED value: 5% group 2.63 + 2.62',
+      after.taxBreakup[1].percent === 5 && after.taxBreakup[1].cgst === 2.63 && after.taxBreakup[1].sgst === 2.62)
+    check('…and the halves sum to the group tax exactly',
+      Math.round((after.taxBreakup[1].cgst + after.taxBreakup[1].sgst) * 100) === 525)
     check('…18% group 11.74 + 11.74',
       after.taxBreakup[2].percent === 18 && after.taxBreakup[2].cgst === 11.74 && after.taxBreakup[2].sgst === 11.74)
     check('GST total ₹28.73, not the ₹32.82 of an undiscounted re-price', after.taxTotal === 28.73)
