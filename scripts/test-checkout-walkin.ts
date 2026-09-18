@@ -42,7 +42,7 @@ const check = (l: string, c: boolean) => {
 
 async function main() {
   loadEnv()
-  const { startWalkin, checkoutWalkin, previewWalkinCheckout } = await import('../lib/actions/bookings')
+  const { startWalkin, extendWalkin, checkoutWalkin, previewWalkinCheckout } = await import('../lib/actions/bookings')
   const { createInvoiceForBooking } = await import('../lib/actions/billing')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -86,6 +86,7 @@ async function main() {
 
   const ownerUserId = await makeUserAndMembership(tenantId, 'owner', `owner@${slug}.test`)
   const kitchenUserId = await makeUserAndMembership(tenantId, 'kitchen_staff', `kitchen@${slug}.test`)
+  const floorStaffUserId = await makeUserAndMembership(tenantId, 'floor_staff', `floor@${slug}.test`)
   const restaurantOwnerId = await makeUserAndMembership(restaurantTenantId, 'owner', `owner@${restaurantSlug}.test`)
 
   const hourlyType = await owner.query<{ id: string }>(
@@ -113,6 +114,14 @@ async function main() {
     await owner.query<{ id: string }>(
       `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
        values ($1,$2,$3,'Station 3','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
+  const station4 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 4','available')
        on conflict (tenant_id,name) do update set status='available' returning id`,
       [tenantId, branchId, hourlyType.rows[0].id],
     )
@@ -292,6 +301,35 @@ async function main() {
       order.rows[0].id,
     ])
     check('…the food order is still open, not silently billed', orderStatus.rows[0]?.status === 'open')
+  }
+
+  // ══ 3c. floor_staff can start, extend AND check out a walk-in end-to-end
+  //       (M21 #7 — product-owner-confirmed exception to canBill) ═══════════
+  console.log('\n── floor_staff can start, extend, and check out a walk-in (M21 #7) ──')
+  {
+    await signInAs(floorStaffUserId, slug)
+
+    const started = await startWalkin({
+      branchId,
+      resourceId: station4,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'timed',
+      durationMin: 30,
+    })
+    check('floor_staff can start a walk-in', !started.error && Boolean(started.bookingId))
+    const bookingId = started.bookingId!
+
+    const extended = await extendWalkin({ bookingId, addMinutes: 15 })
+    check('floor_staff can extend a walk-in', !extended.error && Boolean(extended.committedEndAt))
+
+    const checkedOut = await checkoutWalkin({ bookingId })
+    check(
+      'floor_staff can check out a walk-in themselves — the deliberate M21 #7 exception to canBill',
+      !checkedOut.error && Boolean(checkedOut.invoiceId),
+    )
+
+    await signInAs(ownerUserId, slug)
   }
 
   // ══ 4. THE BUG FIX: the resource is bookable again after checkout ═══════════

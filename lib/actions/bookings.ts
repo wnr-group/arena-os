@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { canBill, canManageWalkins } from '@/lib/auth/roles'
+import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
   seatTableSessionCore,
@@ -232,12 +232,16 @@ export async function previewWalkinCheckout(
  * payment panel once an invoice exists — no separate "raise bill" click, no
  * online prepay.
  *
- * canManageWalkins alone isn't enough here despite gating start/extend: this
- * action raises a real GST invoice, and BILLING_ROLES (lib/auth/roles.ts) is
- * explicit that receptionist/floor_staff — both in WALKIN_ROLES — never
- * issue one, same as every other billing entry point (createInvoiceForBooking
- * et al.). So both gates apply: canManageWalkins for the walk-in itself,
- * canBill for the invoice this specific action also raises.
+ * DELIBERATE exception to the general billing gate (M21 #7, product-owner
+ * confirmed — see BILLING_ROLES's own doc comment in lib/auth/roles.ts):
+ * this DOES raise a real GST invoice, and receptionist/floor_staff — both in
+ * WALKIN_ROLES — are otherwise excluded from BILLING_ROLES because they
+ * never issue one anywhere else in the app (createInvoiceForBooking et al.
+ * all gate on canBill). Walk-in checkout is the one carve-out: on-shift
+ * floor staff who started or extended a session are trusted to close it out
+ * themselves too, rather than needing to hand off to a cashier. Gated on
+ * canManageWalkins alone, on purpose — do not add a canBill check here
+ * without revisiting that product decision first.
  *
  * The booking itself is NOT marked completed here — that stays gated on
  * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
@@ -251,9 +255,6 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
     }
     if (!canManageWalkins(ctx.role)) {
       throw new AuthError('You do not have permission to check out a walk-in.')
-    }
-    if (!canBill(ctx.role)) {
-      throw new AuthError('You do not have permission to raise a bill.')
     }
     const v = checkoutWalkinInput.parse(input)
 
