@@ -221,9 +221,11 @@ export async function loadBookingLines(
       // finalizes it — nothing to bill yet.
       if (s.endsAt === null) return false
       // A timed walk-in's ends_at is set from the start, but it isn't
-      // PRICED until checkout — billing it before then would charge ₹0
-      // instead of refusing outright, the exact "silent" failure mode M21
-      // #5 exists to prevent.
+      // PRICED until checkout — this filter keeps a read-only bill preview
+      // (lib/billing/data.ts) degrading gracefully rather than crashing.
+      // It is NOT what stops the invoice-issuing path from silently billing
+      // just the food and omitting the session charge — prepareBookingBill
+      // rejects that case explicitly, before it ever reaches this filter.
       if (isUncommittedTimed && Number(s.slotTotal) === 0) return false
       return true
     })
@@ -689,6 +691,8 @@ export async function prepareBookingBill(
       branchId: bookings.branchId,
       customerId: bookings.customerId,
       status: bookings.status,
+      channel: bookings.channel,
+      billingMode: bookings.billingMode,
     })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenant.id)))
@@ -710,6 +714,27 @@ export async function prepareBookingBill(
     throw new BillingError(
       `This booking's bill has already been split into ${existing.checks.length} checks — settle them individually.`,
     )
+  }
+
+  // A timed walk-in's slot has a committed ends_at from the moment it starts,
+  // but isn't PRICED until checkoutWalkinCore runs (M21 #5) — loadBookingLines
+  // silently drops that line below (so a read-only bill preview degrades
+  // gracefully instead of crashing), which is fine on its own: with NO other
+  // lines, the lines.length === 0 guard in step 3 still catches it. But with
+  // open food orders too, that guard never fires — this general billing path
+  // would raise an invoice for the food alone and silently omit the session
+  // charge entirely. Reject outright instead of letting the filter hide it.
+  if (booking.channel === 'walkin' && booking.billingMode === 'timed') {
+    const [slot] = await tx
+      .select({ slotTotal: bookingSlots.slotTotal })
+      .from(bookingSlots)
+      .where(
+        and(eq(bookingSlots.tenantId, tenant.id), eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.active, true)),
+      )
+      .limit(1)
+    if (slot && Number(slot.slotTotal) === 0) {
+      throw new BillingError('This timed walk-in has not been checked out yet — extend or check it out first.')
+    }
   }
 
   // ── 3. lines, entirely from server-side data ──────────────────────────────

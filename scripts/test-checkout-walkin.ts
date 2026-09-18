@@ -43,6 +43,7 @@ const check = (l: string, c: boolean) => {
 async function main() {
   loadEnv()
   const { startWalkin, checkoutWalkin, previewWalkinCheckout } = await import('../lib/actions/bookings')
+  const { createInvoiceForBooking } = await import('../lib/actions/billing')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
@@ -108,6 +109,14 @@ async function main() {
       [tenantId, branchId, hourlyType.rows[0].id],
     )
   ).rows[0].id
+  const station3 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 3','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
 
   const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
   async function signInAs(userId: string, tenantSlug: string) {
@@ -124,6 +133,8 @@ async function main() {
   const wipe = async () => {
     await owner.query('delete from invoice_items where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
     await owner.query('delete from invoices where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
+    await owner.query('delete from order_items where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
+    await owner.query('delete from orders where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
     await owner.query('delete from booking_slots where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
     await owner.query('delete from bookings where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
     await owner.query('delete from customers where tenant_id in ($1,$2)', [tenantId, restaurantTenantId])
@@ -234,6 +245,53 @@ async function main() {
     check('timed walk-in starts cleanly', !timed.error && Boolean(timed.bookingId))
     const r = await checkoutWalkin({ bookingId: timed.bookingId! })
     check('checkoutWalkin now succeeds for a timed walk-in whose committed end has not passed', !r.error)
+  }
+
+  // ══ 3b. an unpriced timed walk-in must not be billed via the GENERAL action,
+  //       even with food orders open on it ══════════════════════════════════
+  // Regression for the exact undercharge prepareBookingBill's explicit guard
+  // fixes: loadBookingLines silently drops the session line for an
+  // uncommitted timed walk-in, so with food orders also open the
+  // lines.length===0 guard never fires — createInvoiceForBooking would
+  // otherwise raise an invoice for the food alone, omitting the session
+  // charge entirely.
+  console.log('\n── general billing refuses an unpriced timed walk-in with food on it ──')
+  {
+    const timed = await startWalkin({
+      branchId,
+      resourceId: station3,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'timed',
+      durationMin: 30,
+    })
+    check('timed walk-in (for the general-billing regression) starts cleanly', !timed.error && Boolean(timed.bookingId))
+    const bookingId = timed.bookingId!
+
+    const order = await owner.query<{ id: string }>(
+      `insert into orders (tenant_id, branch_id, booking_id, order_number, status)
+       values ($1, $2, $3, $4, 'open') returning id`,
+      [tenantId, branchId, bookingId, `TESTORD-${bookingId.slice(0, 8)}`],
+    )
+    await owner.query(
+      `insert into order_items (tenant_id, order_id, item_name, unit_price, qty, line_total)
+       values ($1, $2, 'Cold Drink', 50.00, 1, 50.00)`,
+      [tenantId, order.rows[0].id],
+    )
+
+    const result = await createInvoiceForBooking({ bookingId })
+    check('createInvoiceForBooking refuses the unpriced session, not just an undercharged bill', Boolean(result.error))
+
+    const invoiceCount = await owner.query<{ n: string }>(
+      `select count(*)::text as n from invoices where booking_id = $1`,
+      [bookingId],
+    )
+    check('…and no invoice was raised at all (not even for the food alone)', invoiceCount.rows[0].n === '0')
+
+    const orderStatus = await owner.query<{ status: string }>(`select status from orders where id = $1`, [
+      order.rows[0].id,
+    ])
+    check('…the food order is still open, not silently billed', orderStatus.rows[0]?.status === 'open')
   }
 
   // ══ 4. THE BUG FIX: the resource is bookable again after checkout ═══════════
