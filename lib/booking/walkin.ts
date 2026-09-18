@@ -530,11 +530,21 @@ export async function previewWalkinCheckout(
  * timed): prices it (per-segment happy hour, 15-min round, 30-min minimum —
  * lib/billing/elapsed-time.ts) and writes the total onto the slot.
  *
- * Open tab: `ends_at` is stamped with the BILLABLE end (rounded), not the
- * operator's raw input, so the slot's own duration always matches what was
- * priced — and so the row finally satisfies "bounded", freeing the resource
- * from the GiST exclusion constraint's "still going" reading the moment this
- * commits.
+ * Open tab: `ends_at` is stamped with `priceEnd` — the operator's actual
+ * chosen end (defaulting to "now"), NOT the rounded/padded billable end.
+ * `priced.unitPrice` already bills the 30-min-minimum/15-min-round-up
+ * window internally (priceElapsedTime → billableEndTime), so the padding is
+ * fully reflected in `slot_total` without needing `ends_at` to carry it too.
+ * Storing the rounded end here instead would stretch the slot's occupancy
+ * PAST what the session actually used — a real risk once the padding pushes
+ * past a booking scheduled right after (which was legitimately allowed
+ * against the walk-in's true, un-padded occupancy when it started). That
+ * later insert would satisfy the GiST exclusion constraint right up until
+ * this checkout artificially claimed extra time it never actually held,
+ * then reject checkout itself with a misleading "That time was just taken"
+ * (23P01) while the genuine overlap persists. `priceEnd` keeps the row
+ * bounded (freeing the resource from the exclusion constraint's "still
+ * going" reading) without ever claiming more time than was truly occupied.
  *
  * Timed: `ends_at` is already the committed end (extendWalkinCore keeps it in
  * sync) and is left untouched here — only `slot_total` is new.
@@ -555,10 +565,9 @@ export async function checkoutWalkinCore(
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone)
 
   if (walkin.billingMode === 'open_tab') {
-    const billableEnd = billableEndTime(walkin.startsAt, priceEnd)
     await tx
       .update(bookingSlots)
-      .set({ endsAt: billableEnd, slotTotal: priced.unitPrice.toFixed(2) })
+      .set({ endsAt: priceEnd, slotTotal: priced.unitPrice.toFixed(2) })
       .where(eq(bookingSlots.id, walkin.slotId))
   } else {
     await tx.update(bookingSlots).set({ slotTotal: priced.unitPrice.toFixed(2) }).where(eq(bookingSlots.id, walkin.slotId))

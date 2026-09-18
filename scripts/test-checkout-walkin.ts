@@ -11,9 +11,14 @@
  *     only applies to an open tab
  *   - the elapsed session prices correctly (30-min minimum here) and the
  *     preview matches the real checkout to the paisa
- *   - checkout writes a bounded ends_at (rounded to the 15-min billable
- *     step) and a slot_total onto booking_slots — the exact fix for "That
- *     time was just taken" persisting forever on a checked-out open tab
+ *   - checkout writes a bounded ends_at onto booking_slots — the exact fix
+ *     for "That time was just taken" persisting forever on a checked-out
+ *     open tab — and it's the RAW elapsed end (priceEnd), not the rounded
+ *     15-min/30-min-minimum billable end slot_total was priced against:
+ *     stretching occupancy to match the padding could overlap a booking
+ *     that was legitimately allowed against this walk-in's true occupancy
+ *     when it started, turning that later insert's own success into THIS
+ *     checkout's failure instead
  *   - issueInvoiceForBooking is genuinely reused: an invoice is raised in
  *     the same transaction, with the elapsed-time line correctly priced
  *   - a second checkout attempt is refused (already checked out)
@@ -182,10 +187,14 @@ async function main() {
       [openTabBookingId],
     )
     check('booking_slots.ends_at is no longer null', slot.rows[0].ends_at !== null)
-    check('booking_slots.slot_total was written: 100.00', Number(slot.rows[0].slot_total) === 100)
+    check('booking_slots.slot_total was written: 100.00 (the 30-min-minimum billable price)', Number(slot.rows[0].slot_total) === 100)
     const elapsedMin =
       (new Date(slot.rows[0].ends_at!).getTime() - new Date(slot.rows[0].starts_at).getTime()) / 60_000
-    check('the stored duration is the 30-min billable minimum, not the raw ~10min elapsed', elapsedMin === 30)
+    // ends_at tracks the RAW elapsed time (~10min), not the 30-min billable
+    // minimum slot_total was priced against — a wide tolerance band, not the
+    // backdate's exact 10, since real wall-clock time also passed running
+    // the role-gate check and the preview call above.
+    check('the stored duration is the raw ~10min elapsed, not padded to the 30-min billable minimum', elapsedMin > 9 && elapsedMin < 20)
 
     const invoice = await owner.query<{ id: string; total: string; booking_id: string }>(
       `select id, total, booking_id from invoices where booking_id = $1`,
@@ -230,10 +239,10 @@ async function main() {
   // ══ 4. THE BUG FIX: the resource is bookable again after checkout ═══════════
   console.log('\n── the original bug: station1 must not be stuck forever ──')
   {
-    // The 30-min minimum from step 2 means the checked-out slot's own ends_at
-    // sits ~20 minutes in the FUTURE from here (started 10min ago, billed for
-    // the 30min minimum) — correctly still occupying the resource until then,
-    // not a bug. Pushing it further into the past isolates the actual claim
+    // Step 2's checkout already left ends_at in the past (it's the RAW
+    // elapsed end, not padded to the 30-min billable minimum) — this push
+    // just makes that deterministic instead of depending on exactly how much
+    // wall-clock time step 3 happened to take, isolating the actual claim
     // this step exists to prove (a BOUNDED ends_at, once it has passed, frees
     // the resource) from the pricing-accuracy assertions step 2 already made.
     await owner.query(
