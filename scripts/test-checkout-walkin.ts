@@ -207,8 +207,12 @@ async function main() {
     check('a second checkout on the same booking is refused', Boolean(again.error))
   }
 
-  // ══ 3. a TIMED walk-in is not eligible for this checkout path ═══════════════
-  console.log('\n── timed walk-ins are out of scope ──')
+  // ══ 3. a TIMED walk-in checks out too, once its committed end has arrived ═══
+  // (M21 #5 adds the countdown/extend/block-until-extended behavior around
+  // this — see scripts/test-extend-timed-walkin.ts for that whole story.
+  // This script stays open-tab-focused; this step only proves checkoutWalkin
+  // no longer flatly refuses billingMode='timed' the way M21 #4 shipped it.)
+  console.log('\n── a timed walk-in checks out too (M21 #5) ──')
   {
     const timed = await startWalkin({
       branchId,
@@ -216,11 +220,11 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'timed',
-      durationMin: 60,
+      durationMin: 30,
     })
     check('timed walk-in starts cleanly', !timed.error && Boolean(timed.bookingId))
     const r = await checkoutWalkin({ bookingId: timed.bookingId! })
-    check('checkoutWalkin refuses a timed walk-in (it already has a fixed end)', Boolean(r.error))
+    check('checkoutWalkin now succeeds for a timed walk-in whose committed end has not passed', !r.error)
   }
 
   // ══ 4. THE BUG FIX: the resource is bookable again after checkout ═══════════

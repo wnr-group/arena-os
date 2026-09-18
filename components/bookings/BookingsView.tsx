@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition, type ComponentType } from 'react'
+import { useEffect, useMemo, useState, useTransition, type ComponentType } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner'
 import { DepositButton } from './DepositButton'
 import { WalkinCheckoutDialog } from './WalkinCheckoutDialog'
+import { TimedWalkinDialog } from './TimedWalkinDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -29,6 +30,7 @@ import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
+import { formatCountdown } from '@/lib/booking/countdown'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
 type Resource = {
@@ -76,7 +78,7 @@ export type OrderItemLine = {
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
-/** A currently-checked-in walk-in (M21 #4) — never in `slots` above, since
+/** A currently-checked-in walk-in (M21 #4/#5) — never in `slots` above, since
  *  listDayBookings requires a bounded ends_at and an open tab has none until
  *  checkout finalizes it. */
 export type ActiveWalkin = {
@@ -87,10 +89,13 @@ export type ActiveWalkin = {
   resourceName: string
   resourceTypeName: string
   startsAt: string
-  /** Null for an open tab; set for a timed walk-in, which already bills
-   *  normally through /pos and needs no checkout step. */
+  /** Null for an open tab still running; the committed end (extensions
+   *  included) for a timed walk-in — drives its countdown badge. */
   endsAt: string | null
   billingMode: 'open_tab' | 'timed'
+  /** '0.00' until checkout prices the session — once it isn't, there's
+   *  nothing left to close/extend, only to pay. */
+  slotTotal: string
 }
 
 /**
@@ -229,6 +234,7 @@ export function BookingsView({
   const [view, setView] = useState<View>('timeline')
   const [selected, setSelected] = useState<Slot | null>(null)
   const [checkoutTarget, setCheckoutTarget] = useState<ActiveWalkin | null>(null)
+  const [timedTarget, setTimedTarget] = useState<ActiveWalkin | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
@@ -439,41 +445,57 @@ export function BookingsView({
         </div>
       </div>
 
-      {/* active walk-ins (M21 #4) — live right now, independent of the
+      {/* active walk-ins (M21 #4/#5) — live right now, independent of the
           selected day, since an open tab has no end time to place it on a
           day grid until it's closed out. */}
       {activeWalkins.length > 0 && (
         <div className="mt-5 rounded-lg border border-border bg-card p-4">
           <h2 className="text-sm font-semibold text-foreground">Active walk-ins</h2>
           <div className="mt-3 divide-y divide-border">
-            {activeWalkins.map((w) => (
-              <div key={w.bookingId} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">
-                    {w.resourceName} <span className="font-normal text-muted-foreground">· {w.resourceTypeName}</span>
-                  </p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {w.customerName || w.customerPhone || 'Walk-in'} · started {timeInZone(w.startsAt, timeZone)}
-                    {w.billingMode === 'timed' && w.endsAt && ` · ends ${timeInZone(w.endsAt, timeZone)}`}
-                  </p>
+            {activeWalkins.map((w) => {
+              // '0.00' until checkout prices the session — the same signal
+              // checkoutWalkinCore uses for a timed walk-in, since its slot's
+              // ends_at is set from the start and can't serve as the
+              // "already checked out?" flag the way it does for an open tab.
+              const isCheckedOut = w.billingMode === 'open_tab' ? w.endsAt !== null : Number(w.slotTotal) > 0
+              return (
+                <div key={w.bookingId} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {w.resourceName} <span className="font-normal text-muted-foreground">· {w.resourceTypeName}</span>
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {w.customerName || w.customerPhone || 'Walk-in'} · started {timeInZone(w.startsAt, timeZone)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {w.billingMode === 'timed' && !isCheckedOut && w.endsAt && <CountdownBadge endIso={w.endsAt} />}
+                    {isCheckedOut ? (
+                      <Link
+                        href={`/pos/${w.bookingId}`}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                      >
+                        <ReceiptText size={15} /> Pay
+                      </Link>
+                    ) : w.billingMode === 'open_tab' ? (
+                      <button
+                        onClick={() => setCheckoutTarget(w)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                      >
+                        <ReceiptText size={15} /> Close tab
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setTimedTarget(w)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                      >
+                        <Clock size={15} /> Extend / check out
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {w.billingMode === 'open_tab' ? (
-                  <button
-                    onClick={() => setCheckoutTarget(w)}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                  >
-                    <ReceiptText size={15} /> Close tab
-                  </button>
-                ) : (
-                  <Link
-                    href={`/pos/${w.bookingId}`}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                  >
-                    <ReceiptText size={15} /> Bill
-                  </Link>
-                )}
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -1006,7 +1028,38 @@ export function BookingsView({
           onClose={() => setCheckoutTarget(null)}
         />
       )}
+
+      {timedTarget && timedTarget.endsAt && (
+        <TimedWalkinDialog
+          booking={{ ...timedTarget, committedEndAt: timedTarget.endsAt }}
+          timeZone={timeZone}
+          currency={currency}
+          onClose={() => setTimedTarget(null)}
+        />
+      )}
     </div>
+  )
+}
+
+/** Live "time remaining"/"overdue by" badge for a timed walk-in (M21 #5) —
+ *  ticks off formatCountdown, re-derived from `endIso` every tick, so a page
+ *  reload just picks the same math back up rather than needing to restore
+ *  any state. */
+function CountdownBadge({ endIso }: { endIso: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 15_000)
+    return () => clearInterval(id)
+  }, [])
+  const { text, overdue } = formatCountdown(endIso, now)
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+        overdue ? 'bg-destructive/10 text-destructive' : 'bg-emerald-500/10 text-emerald-600'
+      }`}
+    >
+      <Clock size={11} /> {text}
+    </span>
   )
 }
 

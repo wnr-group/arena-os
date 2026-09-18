@@ -159,18 +159,17 @@ export function formatInvoiceNumber(prefix: string, period: string, value: numbe
  * booking was taken: `rate_applied`, `resource_name`, `resource_type_name`. We
  * bill from that snapshot rather than today's `resource_types.hourly_rate`, so a
  * price rise tomorrow cannot silently re-price a booking taken today — and for
- * a reserved booking or a TIMED walk-in, that keeps this identical to how the
- * slot was priced in the first place (rate × durationHours), so the bill
- * always agrees with the booking, down to the qty/unit-price decomposition a
- * cashier sees on screen (see scripts/test-billing-flow.ts's own assertion on
- * this exact shape).
+ * a plain RESERVED booking, that keeps this identical to how the slot was
+ * priced in the first place (rate × durationHours), so the bill always agrees
+ * with the booking, down to the qty/unit-price decomposition a cashier sees
+ * on screen (see scripts/test-billing-flow.ts's own assertion on this exact
+ * shape).
  *
- * An open-tab walk-in is the one exception: M21 #4's checkoutWalkinCore prices
- * it with priceElapsedTime — a per-segment happy-hour blend that a flat
- * rate×duration recomputation here cannot reproduce — and writes the result
- * onto `slot_total`. Detected via the booking's own channel/billing_mode
- * (never by comparing the numbers, which could coincidentally agree), that
- * one case bills as a single qty=1 line at the already-priced total instead.
+ * A walk-in (either mode) is the exception: checkoutWalkinCore (M21 #4 open
+ * tab, M21 #5 timed) prices it with priceElapsedTime — a per-segment
+ * happy-hour blend a flat rate×duration recomputation here cannot reproduce —
+ * and writes the result onto `slot_total`. That one case bills as a single
+ * qty=1 line at the already-priced total instead.
  *
  * Only ACTIVE slots are billed: the 0003 trigger clears `active` when a booking
  * is cancelled or marked no-show, so a released slot never reaches the till.
@@ -186,7 +185,14 @@ export async function loadBookingLines(
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
     .limit(1)
-  const isElapsedTimeWalkin = booking?.channel === 'walkin' && booking?.billingMode === 'open_tab'
+  const isWalkin = booking?.channel === 'walkin'
+  // A timed walk-in's slot is born with a real ends_at (the committed end),
+  // unlike an open tab's null-until-checkout — so "not yet checked out" for
+  // one has to be read off slot_total still sitting at 0 instead. Safe
+  // because a walk-in resource always has a nonzero rate
+  // (listWalkinResources excludes zero-rate types), so a real session can
+  // never legitimately price to exactly 0.
+  const isUncommittedTimed = isWalkin && booking?.billingMode === 'timed'
 
   const slots = await tx
     .select({
@@ -210,14 +216,22 @@ export async function loadBookingLines(
     .orderBy(bookingSlots.startsAt)
 
   return slots
-    // An open-tab walk-in slot has no ends_at (and no priced slot_total)
-    // until M21 #4's checkoutWalkinCore finalizes it — nothing to bill yet.
-    .filter((s): s is typeof s & { endsAt: Date } => s.endsAt !== null)
+    .filter((s): s is typeof s & { endsAt: Date } => {
+      // An open-tab walk-in slot has no ends_at until checkoutWalkinCore
+      // finalizes it — nothing to bill yet.
+      if (s.endsAt === null) return false
+      // A timed walk-in's ends_at is set from the start, but it isn't
+      // PRICED until checkout — billing it before then would charge ₹0
+      // instead of refusing outright, the exact "silent" failure mode M21
+      // #5 exists to prevent.
+      if (isUncommittedTimed && Number(s.slotTotal) === 0) return false
+      return true
+    })
     .map((s) => ({
       description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
-      ...(isElapsedTimeWalkin
+      ...(isWalkin
         ? // qty=1, unitPrice=the whole priced total — same "one computed
           // charge" shape priceElapsedTime itself returns, rather than a
           // qty/rate pair that would need to multiply back to that figure.

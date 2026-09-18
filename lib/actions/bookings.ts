@@ -20,11 +20,13 @@ import {
 import {
   startWalkinCore,
   checkoutWalkinCore,
+  extendWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
   WALKIN_MIN_DURATION_MINUTES,
   WALKIN_MAX_DURATION_MINUTES,
   WALKIN_DURATION_STEP_MINUTES,
+  WALKIN_EXTEND_MAX_MINUTES,
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { issueInvoiceForBooking, BillingError } from '@/lib/billing/invoice'
@@ -219,13 +221,15 @@ export async function previewWalkinCheckout(
 }
 
 /**
- * Close an open-tab walk-in (M21 #4): confirm its end time, price the
- * elapsed session, and raise the bill in one transaction — reusing
- * issueInvoiceForBooking so membership discount, loyalty, resource GST and
- * any open food orders fold in exactly as they would for any other booking.
- * The caller (the checkout dialog) then routes to /pos/[bookingId], which
- * already renders straight to the payment panel once an invoice exists —
- * no separate "raise bill" click, no online prepay.
+ * Close out a walk-in's session — an open tab's end time (M21 #4) or a timed
+ * session's committed end plus any extensions (M21 #5, blocked until the
+ * operator extends past "now" if it's already passed): price it and raise
+ * the bill in one transaction, reusing issueInvoiceForBooking so membership
+ * discount, loyalty, resource GST and any open food orders fold in exactly
+ * as they would for any other booking. The caller (the checkout dialog)
+ * then routes to /pos/[bookingId], which already renders straight to the
+ * payment panel once an invoice exists — no separate "raise bill" click, no
+ * online prepay.
  *
  * The booking itself is NOT marked completed here — that stays gated on
  * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
@@ -261,6 +265,46 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
       invoiceNumber: result.invoice.invoiceNumber,
     }
   } catch (e) {
+    return fail(e)
+  }
+}
+
+const extendWalkinInput = z.object({
+  bookingId: z.string().uuid(),
+  addMinutes: z.coerce.number().int().min(1).max(WALKIN_EXTEND_MAX_MINUTES),
+})
+
+type ExtendWalkinResult = { error?: string; bookingId?: string; committedEndAt?: string }
+
+/**
+ * Push a timed walk-in's committed end forward (M21 #5) — the countdown
+ * badge re-arms from whatever `committedEndAt` this returns. Same gate as
+ * starting/checking out a walk-in; no money moves here, only at checkout.
+ */
+export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Promise<ExtendWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to extend a walk-in.')
+    }
+    const v = extendWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) => extendWalkinCore(tx, { tenantId: ctx.tenant.id }, v))
+
+    revalidatePath('/bookings')
+    return result
+  } catch (e) {
+    // 23P01 here specifically means the extension would now overlap
+    // something else booked on this resource right after the OLD committed
+    // end — friendlier than the generic "pick another slot" wording, which
+    // reads oddly for an in-progress session that isn't being re-slotted.
+    const pg = pgError(e)
+    if (pg?.code === '23P01') {
+      return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
+    }
     return fail(e)
   }
 }

@@ -201,6 +201,7 @@ export default async function BookingsPage({
         startsAt: w.startsAt.toISOString(),
         endsAt: w.endsAt ? w.endsAt.toISOString() : null,
         billingMode: w.billingMode,
+        slotTotal: w.slotTotal,
       }))}
     />
   )
