@@ -42,7 +42,8 @@ const check = (l: string, c: boolean) => {
 
 async function main() {
   loadEnv()
-  const { startWalkin, extendWalkin, checkoutWalkin, previewWalkinCheckout } = await import('../lib/actions/bookings')
+  const { startWalkin, extendWalkin, checkoutWalkin, previewWalkinCheckout, cancelBooking, setBookingStatus } =
+    await import('../lib/actions/bookings')
   const { createInvoiceForBooking } = await import('../lib/actions/billing')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -122,6 +123,14 @@ async function main() {
     await owner.query<{ id: string }>(
       `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
        values ($1,$2,$3,'Station 4','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
+  const station5 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 5','available')
        on conflict (tenant_id,name) do update set status='available' returning id`,
       [tenantId, branchId, hourlyType.rows[0].id],
     )
@@ -357,6 +366,47 @@ async function main() {
       'station1 accepts a brand-new walk-in after its previous open tab was checked out (this failed with "That time was just taken" before M21 #4)',
       !secondWalkin.error && Boolean(secondWalkin.bookingId),
     )
+  }
+
+  // ══ 5. cancellation frees the station; no_show is refused for a walk-in
+  //       (M21 #8 QA pass) ═══════════════════════════════════════════════════
+  console.log('\n── a walk-in can be cancelled before checkout, but never marked no-show ──')
+  {
+    const started = await startWalkin({
+      branchId,
+      resourceId: station5,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'open_tab',
+    })
+    check('open tab (for cancellation) starts cleanly', !started.error && Boolean(started.bookingId))
+    const bookingId = started.bookingId!
+
+    // A walk-in is born already checked_in — "didn't show up" cannot apply.
+    const noShow = await setBookingStatus(bookingId, 'no_show')
+    check('marking a walk-in no-show is refused', Boolean(noShow.error))
+    const statusAfterRefusal = await owner.query<{ status: string }>(`select status from bookings where id = $1`, [
+      bookingId,
+    ])
+    check('…and its status is unchanged (still checked_in)', statusAfterRefusal.rows[0]?.status === 'checked_in')
+
+    const cancelled = await cancelBooking(bookingId)
+    check('cancelling the same walk-in before checkout succeeds', !cancelled.error)
+
+    const slotAfterCancel = await owner.query<{ active: boolean }>(
+      `select active from booking_slots where booking_id = $1`,
+      [bookingId],
+    )
+    check('…its booking_slots row is no longer active (the 0003 trigger frees it)', slotAfterCancel.rows[0]?.active === false)
+
+    const stationFree = await startWalkin({
+      branchId,
+      resourceId: station5,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'open_tab',
+    })
+    check('…so the station accepts a brand-new walk-in immediately', !stationFree.error && Boolean(stationFree.bookingId))
   }
 
   await wipe()

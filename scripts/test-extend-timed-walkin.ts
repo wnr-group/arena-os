@@ -109,6 +109,14 @@ async function main() {
       [tenantId, branchId, hourlyType.rows[0].id],
     )
   ).rows[0].id
+  const station4 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 4','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
 
   const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
   async function signInAs(userId: string, tenantSlug: string) {
@@ -291,6 +299,60 @@ async function main() {
     check('an open tab starts cleanly on a fresh station', !openTab.error && Boolean(openTab.bookingId))
     const r = await extendWalkin({ bookingId: openTab.bookingId!, addMinutes: 15 })
     check('extendWalkin refuses an open-tab walk-in (it has no committed end)', Boolean(r.error))
+  }
+
+  // ══ 6. double-book override: a walk-in and a future reservation coexist on
+  //       ONE station, and extending the walk-in is still bounded by the
+  //       reservation exactly like starting one would be (M21 #8 QA pass) ══
+  console.log('\n── walk-in + future reservation on one station ──')
+  {
+    // The reservation a walk-in's own start form would have warned about
+    // (hasUpcomingBooking) and let the operator override — 3h out, so a
+    // 30-min timed walk-in starting now genuinely does not overlap it yet.
+    const reservationStart = new Date(Date.now() + 3 * 60 * 60_000)
+    const reservationEnd = new Date(reservationStart.getTime() + 60 * 60_000)
+    const reservation = await owner.query<{ id: string }>(
+      `insert into bookings (tenant_id, branch_id, booking_number, status)
+       values ($1,$2,'BK-TESTFUTURE-001','confirmed') returning id`,
+      [tenantId, branchId],
+    )
+    await owner.query(
+      `insert into booking_slots (tenant_id, booking_id, resource_id, starts_at, ends_at, resource_name, resource_type_name)
+       values ($1,$2,$3,$4,$5,'Station 4','PS5')`,
+      [tenantId, reservation.rows[0].id, station4, reservationStart.toISOString(), reservationEnd.toISOString()],
+    )
+
+    const walkin = await startWalkin({
+      branchId,
+      resourceId: station4,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'timed',
+      durationMin: 30,
+    })
+    check('the override: a walk-in starts on a station with a later reservation', !walkin.error && Boolean(walkin.bookingId))
+
+    const slots = await owner.query<{ n: string }>(
+      `select count(*)::text as n from booking_slots where resource_id = $1 and active = true`,
+      [station4],
+    )
+    check('…both render as two separate ACTIVE slots on the same station', slots.rows[0].n === '2')
+
+    // Extending far enough to reach the reservation's start (3h out) must be
+    // refused — the reservation's own conflict protection still holds, not
+    // just at start time but for every later extend too.
+    const tooFar = await extendWalkin({ bookingId: walkin.bookingId!, addMinutes: 200 })
+    check('extending into the reservation\'s window is refused', Boolean(tooFar.error))
+    check(
+      '…with the extend-specific message, not the generic "just taken" one',
+      (tooFar.error ?? '').toLowerCase().includes('starting soon'),
+    )
+
+    // A short extend that stays clear of the reservation still works — the
+    // reservation is not blocking the station outright, only what would
+    // genuinely collide with it.
+    const shortExtend = await extendWalkin({ bookingId: walkin.bookingId!, addMinutes: 60 })
+    check('a short extend that stays clear of the reservation still succeeds', !shortExtend.error && Boolean(shortExtend.committedEndAt))
   }
 
   await wipe()

@@ -130,6 +130,17 @@ async function main() {
     )
   ).rows[0].id
 
+  // Untouched until step 6b, which needs a station with a REAL PAST session
+  // on it (not step 4/5's still-active ones) to backdate around.
+  const station5 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 5','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
+
   // A zero-rate "table" resource type — the seatTableSessionCore convention;
   // startWalkin must refuse it, same as it isn't a valid resourceId for
   // walk-ins per lib/booking/walkin.ts.
@@ -366,6 +377,61 @@ async function main() {
       mode: 'open_tab',
     })
     check('a second walk-in on the same (occupied) station is refused', Boolean(r.error))
+  }
+
+  // ══ 6b. backdating: a nudged-back start must still be caught if it lands
+  //        inside a station's REAL past occupancy — not just "is it free
+  //        right now" — and must still be allowed when it genuinely doesn't
+  //        collide (M21 #8 QA pass) ══════════════════════════════════════════
+  console.log('\n── backdated start vs a real past session on the same station ──')
+  {
+    // A finished walk-in that ran now−25min → now−10min — checked out
+    // (ends_at bounded, same shape checkoutWalkinCore leaves), so
+    // listWalkinResources reads station5 as free RIGHT NOW. Only a
+    // BACKDATED start actually crosses its window.
+    const ghostStart = new Date(Date.now() - 25 * 60_000)
+    const ghostEnd = new Date(Date.now() - 10 * 60_000)
+    const ghostBooking = await owner.query<{ id: string }>(
+      `insert into bookings (tenant_id, branch_id, booking_number, channel, status)
+       values ($1,$2,'BK-TESTGHOST-001','walkin','checked_in') returning id`,
+      [tenantId, branchId],
+    )
+    await owner.query(
+      `insert into booking_slots (tenant_id, booking_id, resource_id, starts_at, ends_at, slot_total, resource_name, resource_type_name)
+       values ($1,$2,$3,$4,$5,50.00,'Station 5','PS5')`,
+      [tenantId, ghostBooking.rows[0].id, station5, ghostStart.toISOString(), ghostEnd.toISOString()],
+    )
+
+    const picker = await listWalkinResources(branchId)
+    check(
+      'station5 reads as free RIGHT NOW — its only session already ended',
+      (picker.resources ?? []).find((x) => x.id === station5)?.isFree === true,
+    )
+
+    const colliding = await startWalkin({
+      branchId,
+      resourceId: station5,
+      phone: nextPhone(),
+      startAt: new Date(Date.now() - 20 * 60_000).toISOString(), // inside [-25min, -10min)
+      mode: 'open_tab',
+    })
+    check(
+      'backdating −20min collides with the real −25min..−10min session and is refused, not silently double-booked',
+      Boolean(colliding.error),
+    )
+    check(
+      '…with the same friendly message every other overlap gets, not a raw DB error',
+      (colliding.error ?? '').toLowerCase().includes('just taken'),
+    )
+
+    const clear = await startWalkin({
+      branchId,
+      resourceId: station5,
+      phone: nextPhone(),
+      startAt: new Date(Date.now() - 5 * 60_000).toISOString(), // after the −10min end — no overlap
+      mode: 'open_tab',
+    })
+    check('backdating −5min, which genuinely does not overlap, succeeds', !clear.error && Boolean(clear.bookingId))
   }
 
   // ══ 7. listWalkinResources reflects real occupancy ════════════════════════

@@ -528,7 +528,11 @@ export async function lookupCustomerByPhone(phone: string): Promise<CustomerLook
 
 type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
 
-/** Server action: transition a booking's status, gating 'completed' on a fully-paid bill and cancelling its open orders on 'cancelled'. */
+/**
+ * Server action: transition a booking's status, gating 'completed' on a
+ * fully-paid bill, refusing 'no_show' for a walk-in (M21 #8 QA pass — see
+ * below), and cancelling its open orders on 'cancelled'.
+ */
 export async function setBookingStatus(id: string, status: BookingStatus): Promise<Result> {
   try {
     const ctx = await requireContext()
@@ -541,6 +545,23 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
     await withUser(ctx.user.id, async (tx) => {
       if (status === 'completed') {
         await assertBookingFullyPaid(tx, ctx.tenant.id, id)
+      }
+
+      if (status === 'no_show') {
+        // A walk-in is born already `checked_in` (startWalkinCore) — the
+        // customer is physically present the moment the booking exists, so
+        // "didn't show up" cannot apply. The UI never offers this either
+        // (BookingsView's No-show button only shows for a 'confirmed'
+        // booking, which a walk-in never is), but hiding a button is
+        // convenience, never a guard — the action refuses it too.
+        const [row] = await tx
+          .select({ channel: bookings.channel })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (row?.channel === 'walkin') {
+          throw new BookingError('A walk-in cannot be marked no-show — it is already checked in.')
+        }
       }
 
       await tx.update(bookings).set(set).where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
