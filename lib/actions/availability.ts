@@ -1,6 +1,6 @@
 'use server'
 
-import { and, eq, gt, inArray, isNotNull, lt } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { resources, resourceTypes, workingHours, bookingSlots } from '@/db/schema'
@@ -72,14 +72,14 @@ export async function getAvailableStarts(
             // "that time was just taken". A second unit of the same type could
             // never be allocated while such a slot sat on it.
             lt(bookingSlots.startsAt, dayEnd),
-            gt(bookingSlots.endsAt, dayStart),
-            // M21: an open-tab walk-in has no ends_at yet — excluded here
-            // pending the walk-in availability story, same as `gt` above
-            // already excludes it at the SQL level.
-            isNotNull(bookingSlots.endsAt),
+            // An open-tab walk-in (M21) has no ends_at until checkout but is
+            // still genuinely occupying the resource — kept in this set (its
+            // synthetic end is clamped to dayEnd below) rather than filtered
+            // out as if it had already ended.
+            or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
           ),
         )
-        .then((rows) => rows.filter((r): r is { startsAt: Date; endsAt: Date } => r.endsAt !== null))
+        .then((rows) => rows.map((r) => ({ startsAt: r.startsAt, endsAt: r.endsAt ?? dayEnd })))
 
       const starts = availableStartTimes(v.date, tz, hours ?? DEFAULT_HOURS, existing, {
         durationMinutes: v.durationMinutes,
@@ -179,19 +179,18 @@ export async function getAvailableStartsForType(
             // "that time was just taken". A second unit of the same type could
             // never be allocated while such a slot sat on it.
             lt(bookingSlots.startsAt, dayEnd),
-            gt(bookingSlots.endsAt, dayStart),
-            // M21: an open-tab walk-in has no ends_at yet — excluded here
-            // pending the walk-in availability story, same as `gt` above
-            // already excludes it at the SQL level.
-            isNotNull(bookingSlots.endsAt),
+            // An open-tab walk-in (M21) has no ends_at until checkout but is
+            // still genuinely occupying the resource — kept in this set (its
+            // synthetic end is clamped to dayEnd below) rather than filtered
+            // out as if it had already ended.
+            or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
           ),
         )
 
       const existingByResource = new Map<string, Interval[]>()
       for (const row of existingRows) {
-        if (row.endsAt === null) continue
         const list = existingByResource.get(row.resourceId) ?? []
-        list.push({ startsAt: row.startsAt, endsAt: row.endsAt })
+        list.push({ startsAt: row.startsAt, endsAt: row.endsAt ?? dayEnd })
         existingByResource.set(row.resourceId, list)
       }
 
