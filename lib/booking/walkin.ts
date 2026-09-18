@@ -30,11 +30,13 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, taxRates } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, taxRates, happyHours } from '@/db/schema'
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
+import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 
@@ -152,6 +154,63 @@ export async function listWalkinResources(
       hasUpcomingBooking: hasUpcoming.has(r.id),
     }))
   })
+}
+
+export type ActiveWalkin = {
+  bookingId: string
+  bookingNumber: string
+  customerName: string | null
+  customerPhone: string | null
+  resourceId: string
+  resourceName: string
+  resourceTypeName: string
+  startsAt: Date
+  /** Null for an open tab (M21 #4 finalizes it at checkout); the committed
+   *  end already known for a timed walk-in — that one bills normally
+   *  through the existing /pos flow, no checkout step needed. */
+  endsAt: Date | null
+  billingMode: WalkinMode
+  rateApplied: string
+}
+
+/**
+ * Every currently-checked-in walk-in on this branch (M21 #4) — the "what's
+ * live right now" list a checkout dialog is launched from. Nothing before
+ * this ticket ever surfaced an open tab after it started: listDayBookings
+ * (the Bookings page's own data) explicitly filters to `ends_at is not null`,
+ * so an open tab — the exact booking this feature exists to close — was
+ * otherwise invisible anywhere in the app once started.
+ */
+export async function listActiveWalkins(ctx: ActiveContext, branchId: string): Promise<ActiveWalkin[]> {
+  const rows = await withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        bookingId: bookings.id,
+        bookingNumber: bookings.bookingNumber,
+        customerName: bookings.customerName,
+        customerPhone: bookings.customerPhone,
+        billingMode: bookings.billingMode,
+        resourceId: bookingSlots.resourceId,
+        resourceName: bookingSlots.resourceName,
+        resourceTypeName: bookingSlots.resourceTypeName,
+        startsAt: bookingSlots.startsAt,
+        endsAt: bookingSlots.endsAt,
+        rateApplied: bookingSlots.rateApplied,
+      })
+      .from(bookings)
+      .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
+      .where(
+        and(
+          eq(bookings.tenantId, ctx.tenant.id),
+          eq(bookings.branchId, branchId),
+          eq(bookings.channel, 'walkin'),
+          eq(bookings.status, 'checked_in'),
+          eq(bookingSlots.active, true),
+        ),
+      )
+      .orderBy(asc(bookingSlots.startsAt)),
+  )
+  return rows.map((r) => ({ ...r, billingMode: (r.billingMode as WalkinMode) ?? 'open_tab' }))
 }
 
 export type StartWalkinInput = {
@@ -279,4 +338,154 @@ export async function startWalkinCore(
   })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
+}
+
+/** How far from "now" a walk-in's confirmed checkout end may be nudged,
+ *  either direction — same shape as WALKIN_START_WINDOW_MINUTES, kept as its
+ *  own constant since start and checkout windows are conceptually separate
+ *  knobs even though they share a value today. */
+export const WALKIN_CHECKOUT_WINDOW_MINUTES = 30
+
+export type CheckoutWalkinInput = { bookingId: string; endAt?: string }
+
+type OpenTabForCheckout = { bookingId: string; slotId: string; startsAt: Date; rate: number }
+
+/**
+ * Validate `bookingId` is an open tab still awaiting checkout, and resolve +
+ * bounds-check the requested end time. Shared by previewWalkinCheckout (no
+ * lock — nothing is written) and checkoutWalkinCore (locks both rows, same
+ * discipline prepareBookingBill's own FOR UPDATE uses) so the two can never
+ * drift on what counts as valid.
+ */
+async function loadOpenTabForCheckout(
+  tx: Db,
+  ctx: { tenantId: string },
+  bookingId: string,
+  endAtInput: string | undefined,
+  lock: boolean,
+): Promise<{ open: OpenTabForCheckout; endAt: Date }> {
+  const bookingRows = lock
+    ? await tx
+        .select({ id: bookings.id, status: bookings.status, channel: bookings.channel, billingMode: bookings.billingMode })
+        .from(bookings)
+        .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+        .for('update')
+        .limit(1)
+    : await tx
+        .select({ id: bookings.id, status: bookings.status, channel: bookings.channel, billingMode: bookings.billingMode })
+        .from(bookings)
+        .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+        .limit(1)
+  const [booking] = bookingRows
+  if (!booking) throw new BookingError('Booking not found.')
+  if (booking.channel !== 'walkin' || booking.billingMode !== 'open_tab') {
+    throw new BookingError('This booking is not an open-tab walk-in.')
+  }
+  if (booking.status !== 'checked_in') {
+    throw new BookingError(`This walk-in is ${booking.status.replace('_', ' ')} — it can't be checked out.`)
+  }
+
+  const slotRows = lock
+    ? await tx
+        .select({ id: bookingSlots.id, startsAt: bookingSlots.startsAt, endsAt: bookingSlots.endsAt, rateApplied: bookingSlots.rateApplied })
+        .from(bookingSlots)
+        .where(and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true)))
+        .for('update')
+        .limit(1)
+    : await tx
+        .select({ id: bookingSlots.id, startsAt: bookingSlots.startsAt, endsAt: bookingSlots.endsAt, rateApplied: bookingSlots.rateApplied })
+        .from(bookingSlots)
+        .where(and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true)))
+        .limit(1)
+  const [slot] = slotRows
+  if (!slot) throw new BookingError('This walk-in has no active session to check out.')
+  if (slot.endsAt !== null) throw new BookingError('This session has already been checked out.')
+
+  const now = new Date()
+  const endAt = endAtInput ? new Date(endAtInput) : now
+  if (Number.isNaN(endAt.getTime())) throw new BookingError('Invalid end time.')
+  const windowMs = WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000
+  if (Math.abs(endAt.getTime() - now.getTime()) > windowMs) {
+    throw new BookingError(`End time must be within ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes of now.`)
+  }
+  if (endAt.getTime() <= slot.startsAt.getTime()) {
+    throw new BookingError('End time must be after the session started.')
+  }
+
+  const open: OpenTabForCheckout = {
+    bookingId: booking.id,
+    slotId: slot.id,
+    startsAt: slot.startsAt,
+    rate: Number(slot.rateApplied),
+  }
+  return { open, endAt }
+}
+
+/** Tenant's active happy-hour rules, in the shape priceElapsedTime expects —
+ *  same select shape lib/orders/service.ts's food pricing already uses. */
+async function loadActiveHappyHourRules(tx: Db, tenantId: string): Promise<HappyHourRule[]> {
+  return tx
+    .select({
+      id: happyHours.id,
+      name: happyHours.name,
+      daysOfWeek: happyHours.daysOfWeek,
+      startTime: happyHours.startTime,
+      endTime: happyHours.endTime,
+      discountType: happyHours.discountType,
+      discountValue: happyHours.discountValue,
+      isActive: happyHours.isActive,
+    })
+    .from(happyHours)
+    .where(and(eq(happyHours.tenantId, tenantId), eq(happyHours.isActive, true)))
+}
+
+/**
+ * Read-only preview of what checkoutWalkinCore would charge for `endAt` —
+ * for a checkout dialog's live-updating amount as the operator nudges the
+ * end time. No lock: nothing is written, and the real checkout re-validates
+ * and re-prices from scratch regardless, so a stale preview can only ever
+ * show a number that's about to be superseded, never one that gets charged.
+ */
+export async function previewWalkinCheckout(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string },
+  input: CheckoutWalkinInput,
+): Promise<{ total: number; billableEnd: string }> {
+  const { open, endAt } = await loadOpenTabForCheckout(tx, ctx, input.bookingId, input.endAt, false)
+  const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+  const priced = priceElapsedTime(open.startsAt, endAt, open.rate, rules, ctx.timezone)
+  return { total: priced.unitPrice, billableEnd: billableEndTime(open.startsAt, endAt).toISOString() }
+}
+
+/**
+ * Transactional core of closing an open-tab walk-in (M21 #4): confirms the
+ * end time, prices the elapsed session (per-segment happy hour, 15-min
+ * round, 30-min minimum — lib/billing/elapsed-time.ts), and writes it onto
+ * the slot. `ends_at` is stamped with the BILLABLE end (rounded), not the
+ * operator's raw input, so the slot's own duration always matches what was
+ * priced — and so the row finally satisfies "bounded", freeing the resource
+ * from the GiST exclusion constraint's "still going" reading the moment this
+ * commits.
+ *
+ * Deliberately does NOT flip `bookings.status` to 'completed' — that still
+ * goes through the existing setBookingStatus, gated on assertBookingFullyPaid,
+ * once the invoice this feeds (see lib/actions/bookings.ts's checkoutWalkin)
+ * is actually paid off.
+ */
+export async function checkoutWalkinCore(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string },
+  input: CheckoutWalkinInput,
+): Promise<{ bookingId: string; total: number }> {
+  const { open, endAt } = await loadOpenTabForCheckout(tx, ctx, input.bookingId, input.endAt, true)
+  const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+  const priced = priceElapsedTime(open.startsAt, endAt, open.rate, rules, ctx.timezone)
+  const billableEnd = billableEndTime(open.startsAt, endAt)
+
+  await tx
+    .update(bookingSlots)
+    .set({ endsAt: billableEnd, slotTotal: priced.unitPrice.toFixed(2) })
+    .where(eq(bookingSlots.id, open.slotId))
+
+  return { bookingId: open.bookingId, total: priced.unitPrice }
 }

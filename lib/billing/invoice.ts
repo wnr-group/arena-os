@@ -158,9 +158,19 @@ export function formatInvoiceNumber(prefix: string, period: string, value: numbe
  * Read from `booking_slots`, which already snapshots what was agreed when the
  * booking was taken: `rate_applied`, `resource_name`, `resource_type_name`. We
  * bill from that snapshot rather than today's `resource_types.hourly_rate`, so a
- * price rise tomorrow cannot silently re-price a booking taken today — and it
- * keeps this identical to how lib/actions/bookings.ts priced the slot in the
- * first place (rate × durationHours), so the bill always agrees with the booking.
+ * price rise tomorrow cannot silently re-price a booking taken today — and for
+ * a reserved booking or a TIMED walk-in, that keeps this identical to how the
+ * slot was priced in the first place (rate × durationHours), so the bill
+ * always agrees with the booking, down to the qty/unit-price decomposition a
+ * cashier sees on screen (see scripts/test-billing-flow.ts's own assertion on
+ * this exact shape).
+ *
+ * An open-tab walk-in is the one exception: M21 #4's checkoutWalkinCore prices
+ * it with priceElapsedTime — a per-segment happy-hour blend that a flat
+ * rate×duration recomputation here cannot reproduce — and writes the result
+ * onto `slot_total`. Detected via the booking's own channel/billing_mode
+ * (never by comparing the numbers, which could coincidentally agree), that
+ * one case bills as a single qty=1 line at the already-priced total instead.
  *
  * Only ACTIVE slots are billed: the 0003 trigger clears `active` when a booking
  * is cancelled or marked no-show, so a released slot never reaches the till.
@@ -171,12 +181,20 @@ export async function loadBookingLines(
   bookingId: string,
   timeZone: string,
 ): Promise<BillLine[]> {
+  const [booking] = await tx
+    .select({ channel: bookings.channel, billingMode: bookings.billingMode })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .limit(1)
+  const isElapsedTimeWalkin = booking?.channel === 'walkin' && booking?.billingMode === 'open_tab'
+
   const slots = await tx
     .select({
       id: bookingSlots.id,
       startsAt: bookingSlots.startsAt,
       endsAt: bookingSlots.endsAt,
       rateApplied: bookingSlots.rateApplied,
+      slotTotal: bookingSlots.slotTotal,
       resourceName: bookingSlots.resourceName,
       resourceTypeName: bookingSlots.resourceTypeName,
       taxRatePercent: bookingSlots.taxRatePercent,
@@ -192,16 +210,19 @@ export async function loadBookingLines(
     .orderBy(bookingSlots.startsAt)
 
   return slots
-    // M21: an open-tab walk-in slot has no ends_at until checkout finalizes
-    // it — elapsed-time billing for it lands in the price-elapsed engine
-    // story (AROS-195/196), not here.
+    // An open-tab walk-in slot has no ends_at (and no priced slot_total)
+    // until M21 #4's checkoutWalkinCore finalizes it — nothing to bill yet.
     .filter((s): s is typeof s & { endsAt: Date } => s.endsAt !== null)
     .map((s) => ({
       description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
-      qty: durationHours(s.startsAt, s.endsAt),
-      unitPrice: Number(s.rateApplied),
+      ...(isElapsedTimeWalkin
+        ? // qty=1, unitPrice=the whole priced total — same "one computed
+          // charge" shape priceElapsedTime itself returns, rather than a
+          // qty/rate pair that would need to multiply back to that figure.
+          { qty: 1, unitPrice: Number(s.slotTotal) }
+        : { qty: durationHours(s.startsAt, s.endsAt), unitPrice: Number(s.rateApplied) }),
       // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
       // priceBookingSlots) from the resource type's own tax rate — same
       // discipline rate_applied already uses. 0 means no 'resources'/'both'

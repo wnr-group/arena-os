@@ -19,12 +19,15 @@ import {
 } from '@/lib/booking/service'
 import {
   startWalkinCore,
+  checkoutWalkinCore,
+  previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
   WALKIN_MIN_DURATION_MINUTES,
   WALKIN_MAX_DURATION_MINUTES,
   WALKIN_DURATION_STEP_MINUTES,
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
+import { issueInvoiceForBooking, BillingError } from '@/lib/billing/invoice'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -34,7 +37,7 @@ type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
-  if (e instanceof AuthError || e instanceof BookingError) return { error: e.message }
+  if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const pg = pgError(e)
   // 23P01 = exclusion_violation: the exclusion constraint caught an overlap.
@@ -174,6 +177,89 @@ export async function listWalkinResources(
     }
     const resources = await listWalkinResourcesForBranch(ctx, branchId)
     return { resources }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const checkoutWalkinInput = z.object({
+  bookingId: z.string().uuid(),
+  // Absent means "now" — see checkoutWalkinCore's default.
+  endAt: z.string().datetime().optional(),
+})
+
+type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number; invoiceId?: string; invoiceNumber?: string }
+
+/**
+ * Read-only: what checkoutWalkin would charge for the given end time, for the
+ * checkout dialog's live-updating amount as the operator nudges the ±30-min
+ * slider. Same gate as starting a walk-in — closing one is the same
+ * capability. Writes nothing; the real checkoutWalkin re-derives this from
+ * scratch under a lock.
+ */
+export async function previewWalkinCheckout(
+  input: z.input<typeof checkoutWalkinInput>,
+): Promise<{ error?: string; total?: number; billableEnd?: string }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to check out a walk-in.')
+    }
+    const v = checkoutWalkinInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      previewWalkinCheckoutCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+    )
+    return result
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Close an open-tab walk-in (M21 #4): confirm its end time, price the
+ * elapsed session, and raise the bill in one transaction — reusing
+ * issueInvoiceForBooking so membership discount, loyalty, resource GST and
+ * any open food orders fold in exactly as they would for any other booking.
+ * The caller (the checkout dialog) then routes to /pos/[bookingId], which
+ * already renders straight to the payment panel once an invoice exists —
+ * no separate "raise bill" click, no online prepay.
+ *
+ * The booking itself is NOT marked completed here — that stays gated on
+ * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
+ * actually settles this invoice.
+ */
+export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>): Promise<CheckoutWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to check out a walk-in.')
+    }
+    const v = checkoutWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const checkout = await checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v)
+      const invoice = await issueInvoiceForBooking(
+        tx,
+        { id: ctx.tenant.id, timezone: ctx.tenant.timezone },
+        { bookingId: checkout.bookingId },
+      )
+      return { ...checkout, invoice }
+    })
+
+    revalidatePath('/bookings')
+    revalidatePath(`/pos/${result.bookingId}`)
+    return {
+      bookingId: result.bookingId,
+      total: result.total,
+      invoiceId: result.invoice.invoiceId,
+      invoiceNumber: result.invoice.invoiceNumber,
+    }
   } catch (e) {
     return fail(e)
   }

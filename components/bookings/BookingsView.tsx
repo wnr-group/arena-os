@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { DepositButton } from './DepositButton'
+import { WalkinCheckoutDialog } from './WalkinCheckoutDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -74,6 +75,23 @@ export type OrderItemLine = {
   modifiers: string[]
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
+
+/** A currently-checked-in walk-in (M21 #4) — never in `slots` above, since
+ *  listDayBookings requires a bounded ends_at and an open tab has none until
+ *  checkout finalizes it. */
+export type ActiveWalkin = {
+  bookingId: string
+  bookingNumber: string
+  customerName: string | null
+  customerPhone: string | null
+  resourceName: string
+  resourceTypeName: string
+  startsAt: string
+  /** Null for an open tab; set for a timed walk-in, which already bills
+   *  normally through /pos and needs no checkout step. */
+  endsAt: string | null
+  billingMode: 'open_tab' | 'timed'
+}
 
 /**
  * Payment badges. "Unbilled" is the absence of an invoice rather than a state
@@ -152,6 +170,7 @@ export function BookingsView({
   paymentStates,
   canRequestVoidComp,
   canToggle86,
+  activeWalkins,
 }: {
   branchId: string
   branchName: string
@@ -201,11 +220,15 @@ export function BookingsView({
    *  setMenuItemAvailability re-checks canManageKitchen() server-side
    *  regardless (M17 #7). */
   canToggle86: boolean
+  /** Live walk-ins on the branch, independent of the selected day — see
+   *  ActiveWalkin's own doc comment for why these never appear in `slots`. */
+  activeWalkins: ActiveWalkin[]
 }) {
   const router = useRouter()
   const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
   const [selected, setSelected] = useState<Slot | null>(null)
+  const [checkoutTarget, setCheckoutTarget] = useState<ActiveWalkin | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
@@ -415,6 +438,45 @@ export function BookingsView({
           </button>
         </div>
       </div>
+
+      {/* active walk-ins (M21 #4) — live right now, independent of the
+          selected day, since an open tab has no end time to place it on a
+          day grid until it's closed out. */}
+      {activeWalkins.length > 0 && (
+        <div className="mt-5 rounded-lg border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold text-foreground">Active walk-ins</h2>
+          <div className="mt-3 divide-y divide-border">
+            {activeWalkins.map((w) => (
+              <div key={w.bookingId} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {w.resourceName} <span className="font-normal text-muted-foreground">· {w.resourceTypeName}</span>
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {w.customerName || w.customerPhone || 'Walk-in'} · started {timeInZone(w.startsAt, timeZone)}
+                    {w.billingMode === 'timed' && w.endsAt && ` · ends ${timeInZone(w.endsAt, timeZone)}`}
+                  </p>
+                </div>
+                {w.billingMode === 'open_tab' ? (
+                  <button
+                    onClick={() => setCheckoutTarget(w)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  >
+                    <ReceiptText size={15} /> Close tab
+                  </button>
+                ) : (
+                  <Link
+                    href={`/pos/${w.bookingId}`}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  >
+                    <ReceiptText size={15} /> Bill
+                  </Link>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* view tabs */}
       <div className="mt-5 flex gap-5 border-b border-border">
@@ -933,6 +995,15 @@ export function BookingsView({
             }
             router.refresh()
           }}
+        />
+      )}
+
+      {checkoutTarget && (
+        <WalkinCheckoutDialog
+          booking={checkoutTarget}
+          timeZone={timeZone}
+          currency={currency}
+          onClose={() => setCheckoutTarget(null)}
         />
       )}
     </div>

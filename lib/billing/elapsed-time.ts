@@ -93,6 +93,20 @@ function ruleActiveAt(
 }
 
 /**
+ * The actual instant a session of [start, end) bills THROUGH — end rounded up
+ * to the next 15-minute step, with a 30-minute floor. This is what M21 #4's
+ * checkout writes onto `booking_slots.ends_at` (not the operator's raw chosen
+ * end), so the stored slot's own duration always matches what was billed —
+ * exported so a caller needing that instant (not just the price) doesn't
+ * re-derive the same rounding rule a second time.
+ */
+export function billableEndTime(start: Date, end: Date): Date {
+  const elapsedMinutes = Math.max(0, (end.getTime() - start.getTime()) / MINUTE_MS)
+  const billableMinutes = Math.max(MIN_BILLABLE_MINUTES, ceilToStep(elapsedMinutes, ROUND_TO_MINUTES))
+  return new Date(start.getTime() + billableMinutes * MINUTE_MS)
+}
+
+/**
  * Price an elapsed-time session (a walk-in's open tab, or any start→end
  * window on an hourly resource) into a single `kind: 'booking'` BillLine.
  *
@@ -107,10 +121,8 @@ export function priceElapsedTime(
   happyHours: HappyHourRule[],
   tenantTimezone: string,
 ): BillLine {
-  const elapsedMinutes = Math.max(0, (end.getTime() - start.getTime()) / MINUTE_MS)
-  const billableMinutes = Math.max(MIN_BILLABLE_MINUTES, ceilToStep(elapsedMinutes, ROUND_TO_MINUTES))
   const startMs = start.getTime()
-  const billableEndMs = startMs + billableMinutes * MINUTE_MS
+  const billableEndMs = billableEndTime(start, end).getTime()
 
   // Segment boundaries: the window's own edges, plus every happy-hour rule
   // edge that falls strictly inside it — the only instants the effective

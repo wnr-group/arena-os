@@ -1,9 +1,10 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
+import { canManageIncomingOrders, canManageKitchen, canManageWalkins } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
+import { listActiveWalkins } from '@/lib/booking/walkin'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
 import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
@@ -41,16 +42,21 @@ export default async function BookingsPage({
   // other industry gets neither the request button nor a modifier picker on
   // this cross-industry order screen, same scoping as /floor's own gate.
   const isRestaurant = ctx.tenant.industry === 'restaurant'
+  // Same gate as the walk-in start form (M21 #3) — a restaurant tenant uses
+  // Seat-a-party instead, so it never has an open tab to close.
+  const walkinsEnabled = !isRestaurant && canManageWalkins(ctx.role)
 
-  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] = await Promise.all([
-    listResources(ctx, branch.id),
-    getWorkingHours(ctx, branch.id),
-    listDayBookings(ctx, branch.id, date, tz),
-    listMenuItems(ctx),
-    listHappyHours(ctx),
-    listMostOrderedItemIds(ctx, branch.id),
-    isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
-  ])
+  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows, activeWalkins] =
+    await Promise.all([
+      listResources(ctx, branch.id),
+      getWorkingHours(ctx, branch.id),
+      listDayBookings(ctx, branch.id, date, tz),
+      listMenuItems(ctx),
+      listHappyHours(ctx),
+      listMostOrderedItemIds(ctx, branch.id),
+      isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
+      walkinsEnabled ? listActiveWalkins(ctx, branch.id) : Promise.resolve([]),
+    ])
   const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]
@@ -185,6 +191,17 @@ export default async function BookingsPage({
       paymentStates={paymentStates}
       canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
+      activeWalkins={activeWalkins.map((w) => ({
+        bookingId: w.bookingId,
+        bookingNumber: w.bookingNumber,
+        customerName: w.customerName,
+        customerPhone: w.customerPhone,
+        resourceName: w.resourceName,
+        resourceTypeName: w.resourceTypeName,
+        startsAt: w.startsAt.toISOString(),
+        endsAt: w.endsAt ? w.endsAt.toISOString() : null,
+        billingMode: w.billingMode,
+      }))}
     />
   )
 }
