@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { canManageWalkins } from '@/lib/auth/roles'
+import { canBill, canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
   seatTableSessionCore,
@@ -232,6 +232,13 @@ export async function previewWalkinCheckout(
  * payment panel once an invoice exists — no separate "raise bill" click, no
  * online prepay.
  *
+ * canManageWalkins alone isn't enough here despite gating start/extend: this
+ * action raises a real GST invoice, and BILLING_ROLES (lib/auth/roles.ts) is
+ * explicit that receptionist/floor_staff — both in WALKIN_ROLES — never
+ * issue one, same as every other billing entry point (createInvoiceForBooking
+ * et al.). So both gates apply: canManageWalkins for the walk-in itself,
+ * canBill for the invoice this specific action also raises.
+ *
  * The booking itself is NOT marked completed here — that stays gated on
  * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
  * actually settles this invoice.
@@ -244,6 +251,9 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
     }
     if (!canManageWalkins(ctx.role)) {
       throw new AuthError('You do not have permission to check out a walk-in.')
+    }
+    if (!canBill(ctx.role)) {
+      throw new AuthError('You do not have permission to raise a bill.')
     }
     const v = checkoutWalkinInput.parse(input)
 
