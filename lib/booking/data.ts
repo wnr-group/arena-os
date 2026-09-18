@@ -56,6 +56,7 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         typeName: resourceTypes.name,
         color: resourceTypes.color,
         bufferMinutes: resourceTypes.bufferMinutes,
+        typeCapacity: resourceTypes.capacity,
         typeRate: resourceTypes.hourlyRate,
         rateOverride: resources.hourlyRateOverride,
         imageUrl: resources.imageUrl,

@@ -16,6 +16,7 @@ export type WizardResource = {
    *  booking site shows per duration; ignores any per-unit override since a
    *  type-level booking can't know which unit it'll land on yet. */
   hourlyRate: string
+  capacity: number | null
 }
 
 /**
@@ -50,7 +51,7 @@ export function BookingWizard({
   const [tab, setTab] = useState<'walkin' | 'future'>(initialTab)
 
   return (
-    <div className="w-full px-4 py-8 sm:px-6 sm:py-10">
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <Link
         href="/bookings"
         className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"

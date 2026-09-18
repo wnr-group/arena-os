@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react'
 
 /** Shared chrome for a wizard step's content (M21 #3) — no border/shadow, so
  *  it reads as part of the page rather than a boxed-in card. */
@@ -35,9 +35,9 @@ export function WizardFooter({
           type="button"
           onClick={onBack}
           disabled={pending}
-          className="rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {backLabel}
+          <ArrowLeft size={15} /> {backLabel}
         </button>
       ) : (
         <span />
@@ -48,8 +48,9 @@ export function WizardFooter({
         disabled={nextDisabled || pending}
         className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {pending && <Loader2 size={15} className="animate-spin" />}
+        {pending ? <Loader2 size={15} className="animate-spin" /> : null}
         {nextLabel}
+        {!pending && <ArrowRight size={15} />}
       </button>
     </div>
   )
@@ -109,6 +110,19 @@ export function SelectableTile({
         </span>
       )}
     </button>
+  )
+}
+
+/** Placeholder for a SelectableTile while its options are still loading —
+ *  same border/padding/icon-slot shape so the grid doesn't reflow once the
+ *  real tiles arrive. */
+export function SelectableTileSkeleton() {
+  return (
+    <div className="animate-pulse rounded-xl border border-border bg-card p-4">
+      <div className="size-9 rounded-lg bg-muted" />
+      <div className="mt-3 h-3.5 w-3/4 rounded bg-muted" />
+      <div className="mt-2 h-3 w-1/2 rounded bg-muted" />
+    </div>
   )
 }
 

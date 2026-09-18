@@ -48,6 +48,7 @@ export default async function NewBookingPage({
       typeName: r.typeName,
       imageUrl: r.imageUrl ?? r.typeImageUrl,
       hourlyRate: r.typeRate,
+      capacity: r.typeCapacity,
     }))
 
   const today = todayInZone(ctx.tenant.timezone)

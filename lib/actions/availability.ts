@@ -108,6 +108,12 @@ export type TypeAvailabilityResponse = {
    * would be assigned to — first-free-unit-wins, same rule the public
    * booking flow uses (getPublicAvailableStartsForType). */
   starts?: { startsAt: string; resourceId: string }[]
+  /** Every candidate slot the working hours allow for this duration, ignoring
+   * existing bookings/buffers — same "full day grid" getPublicAvailableStartsForType
+   * returns, so the caller can render taken times shown-but-disabled rather
+   * than silently dropping them (matches the public resource booking page). */
+  allStarts?: string[]
+  isClosed?: boolean
 }
 
 /**
@@ -207,7 +213,14 @@ export async function getAvailableStartsForType(
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([startsAt, resourceId]) => ({ startsAt, resourceId }))
 
-      return { timeZone: tz, starts }
+      // No buffer here on purpose: a buffer belongs to a booking, and this
+      // grid has none to sit beside — same as getPublicAvailableStartsForType.
+      const allStarts = availableStartTimes(v.date, tz, resolvedHours, [], {
+        durationMinutes: v.durationMinutes,
+        slotMinutes: 30,
+      })
+
+      return { timeZone: tz, starts, allStarts: allStarts.map((d) => d.toISOString()), isClosed: resolvedHours.isClosed }
     })
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }

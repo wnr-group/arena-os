@@ -9,7 +9,17 @@ import { isValidPhone } from '@/lib/customers/phone'
 import { timeInZone } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { StepProgress } from './StepProgress'
-import { WizardCard, WizardFooter, SelectableTile, ChipRow, wizardInput, wizardLabel, wizardHint, wizardError } from './wizard-ui'
+import {
+  WizardCard,
+  WizardFooter,
+  SelectableTile,
+  SelectableTileSkeleton,
+  ChipRow,
+  wizardInput,
+  wizardLabel,
+  wizardHint,
+  wizardError,
+} from './wizard-ui'
 
 const STEPS = ['Station', 'Customer', 'Start & billing']
 
@@ -167,13 +177,19 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
 
             <div className="mt-5">
               {resources === null ? (
-                <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-                  <Loader2 size={16} className="animate-spin" /> {loadError ?? 'Loading stations…'}
-                </div>
+                loadError ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">{loadError}</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <SelectableTileSkeleton key={i} />
+                    ))}
+                  </div>
+                )
               ) : freeResources.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">No stations are free right now.</p>
               ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                   {freeResources.map((r) => (
                     <SelectableTile
                       key={r.id}

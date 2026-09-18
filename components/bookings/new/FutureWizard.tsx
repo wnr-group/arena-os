@@ -2,14 +2,22 @@
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { CalendarDays, Check, Clock, Gamepad2, Loader2 } from 'lucide-react'
+import { CalendarDays, Check, Clock, Gamepad2, Loader2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { getAvailableStartsForType } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { addDays } from '@/lib/booking/time'
-import { dateCardParts, durationLabel, time12, SectionLabel, EmptyNotice } from '@/components/public-booking/ResourceBookingPage'
+import {
+  dateCardParts,
+  durationLabel,
+  time12,
+  SectionLabel,
+  EmptyNotice,
+  DURATIONS,
+  SLOT_MINUTES,
+} from '@/components/public-booking/ResourceBookingPage'
 import { StepProgress } from './StepProgress'
 import { WizardCard, WizardFooter, SelectableTile, wizardInput, wizardLabel, wizardError } from './wizard-ui'
 import type { WizardResource } from './BookingWizard'
@@ -19,10 +27,13 @@ const STEPS = ['Devices', 'Slot', 'Customer', 'Confirm']
 /** Same window and duration set the public booking site uses — this step's
  *  layout mirrors that page exactly (see components/public-booking/ResourceBookingPage.tsx). */
 const DATE_WINDOW_DAYS = 7
-const DURATIONS = [30, 60, 90, 120, 180]
 
-type ResourceTypeOption = { id: string; name: string; hourlyRate: string }
+type ResourceTypeOption = { id: string; name: string; hourlyRate: string; capacity: number | null }
 type TimeSlot = { startsAt: string; resourceId: string }
+/** The whole working-day grid, taken slots included — mirrors the public
+ *  resource booking page's Slot type, but carries the assigned resourceId
+ *  (null when nothing of this type is free at that time). */
+type GridSlot = { startsAt: string; resourceId: string | null; available: boolean }
 
 /**
  * Future-booking wizard (M21 #3) — Devices → Slot → Customer → Confirm. Same
@@ -57,7 +68,12 @@ export function FutureWizard({
     const byType = new Map<string, ResourceTypeOption>()
     for (const r of resources) {
       if (!byType.has(r.resourceTypeId)) {
-        byType.set(r.resourceTypeId, { id: r.resourceTypeId, name: r.typeName, hourlyRate: r.hourlyRate })
+        byType.set(r.resourceTypeId, {
+          id: r.resourceTypeId,
+          name: r.typeName,
+          hourlyRate: r.hourlyRate,
+          capacity: r.capacity,
+        })
       }
     }
     return [...byType.values()]
@@ -75,10 +91,14 @@ export function FutureWizard({
   const dateOptions = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
   const [date, setDate] = useState(initialDate)
   const [duration, setDuration] = useState(60)
-  const [slots, setSlots] = useState<TimeSlot[] | null>(null)
+  const [slots, setSlots] = useState<GridSlot[] | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [slotsError, setSlotsError] = useState<string | null>(null)
+  const [isClosed, setIsClosed] = useState(false)
   const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null)
+  // Slots already in the past (only relevant for today) are dropped rather
+  // than shown disabled — same rule the public resource booking page uses.
+  const visibleSlots = slots ? slots.filter((s) => new Date(s.startsAt).getTime() >= Date.now()) : null
 
   // Times reload automatically for whichever type/date/duration is current —
   // same auto-refetch the public booking page uses, no explicit "find times"
@@ -89,6 +109,7 @@ export function FutureWizard({
     setSelectedSlot(null)
     setSlotsError(null)
     setSlots(null)
+    setIsClosed(false)
     setSlotsLoading(true)
     getAvailableStartsForType({ branchId, resourceTypeId, date, durationMinutes: duration }).then((r) => {
       if (cancelled) return
@@ -96,9 +117,19 @@ export function FutureWizard({
       if (r.error) {
         setSlotsError(r.error)
         setSlots([])
+        setIsClosed(false)
         return
       }
-      setSlots(r.starts ?? [])
+      // The whole working day, taken times included — shown disabled rather
+      // than dropped, same as the public resource booking page.
+      const availableByStart = new Map((r.starts ?? []).map((s) => [s.startsAt, s.resourceId]))
+      const grid = (r.allStarts ?? []).map((startsAt) => ({
+        startsAt,
+        resourceId: availableByStart.get(startsAt) ?? null,
+        available: availableByStart.has(startsAt),
+      }))
+      setSlots(grid)
+      setIsClosed(Boolean(r.isClosed))
     })
     return () => {
       cancelled = true
@@ -227,7 +258,7 @@ export function FutureWizard({
             {resourceTypes.length === 0 ? (
               <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
             ) : (
-              <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                 {resourceTypes.map((t) => (
                   <SelectableTile
                     key={t.id}
@@ -235,6 +266,14 @@ export function FutureWizard({
                     onClick={() => setResourceTypeId(t.id)}
                     icon={<Gamepad2 size={18} />}
                     title={t.name}
+                    subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / hr`}
+                    badge={
+                      t.capacity != null ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                          <Users size={12} /> Up to {t.capacity}
+                        </span>
+                      ) : undefined
+                    }
                   />
                 ))}
               </div>
@@ -326,37 +365,58 @@ export function FutureWizard({
               <section>
                 <SectionLabel icon={Clock}>Start times</SectionLabel>
                 <div className="mt-3">
-                  {slotsLoading ? (
-                    <div className="space-y-2">
-                      {Array.from({ length: 5 }).map((_, i) => (
+                  {isClosed ? (
+                    <EmptyNotice>This venue is closed on the selected date. Try another day.</EmptyNotice>
+                  ) : slotsLoading ? (
+                    <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                      {Array.from({ length: 6 }).map((_, i) => (
                         <div key={i} className="h-12 animate-pulse rounded-xl bg-muted" />
                       ))}
                     </div>
                   ) : slotsError ? (
                     <EmptyNotice>{slotsError}</EmptyNotice>
-                  ) : !slots || slots.length === 0 ? (
+                  ) : !visibleSlots || visibleSlots.length === 0 ? (
                     <EmptyNotice>Nothing free for this duration on this day. Try a shorter duration or another date.</EmptyNotice>
                   ) : (
-                    <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                      {slots.map((s) => {
-                        const isSelected = selectedSlot?.startsAt === s.startsAt
-                        const rangeEnd = new Date(new Date(s.startsAt).getTime() + duration * 60_000).toISOString()
-                        return (
-                          <button
-                            key={s.startsAt}
-                            type="button"
-                            onClick={() => setSelectedSlot(s)}
-                            className={`flex w-full items-center justify-center rounded-xl border px-4 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
-                              isSelected
-                                ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                                : 'border-border bg-card text-foreground hover:border-primary/40'
-                            }`}
-                          >
-                            {time12(s.startsAt, timeZone)} – {time12(rangeEnd, timeZone)}
-                          </button>
-                        )
-                      })}
-                    </div>
+                    <>
+                      <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                        {visibleSlots.map((s) => {
+                          const isSelected = selectedSlot?.startsAt === s.startsAt
+                          const inRange =
+                            !isSelected &&
+                            s.available &&
+                            selectedSlot &&
+                            endsAtIso &&
+                            s.startsAt >= selectedSlot.startsAt &&
+                            s.startsAt < endsAtIso
+                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
+                          return (
+                            <button
+                              key={s.startsAt}
+                              type="button"
+                              disabled={!s.available}
+                              onClick={() => s.available && s.resourceId && setSelectedSlot({ startsAt: s.startsAt, resourceId: s.resourceId })}
+                              className={`flex w-full items-center justify-center rounded-xl border px-4 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
+                                isSelected
+                                  ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
+                                  : !s.available
+                                    ? 'cursor-not-allowed border-border/40 bg-muted/40 text-muted-foreground/40 line-through'
+                                    : inRange
+                                      ? 'border-primary/50 bg-primary/10 text-primary'
+                                      : 'border-border bg-card text-foreground hover:border-primary/40'
+                              }`}
+                            >
+                              {time12(s.startsAt, timeZone)} – {time12(rangeEnd, timeZone)}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {visibleSlots.every((s) => !s.available) && (
+                        <p className="mt-3 text-sm text-muted-foreground">
+                          Every slot on this date is taken for this duration — try another date.
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </section>
@@ -372,6 +432,7 @@ export function FutureWizard({
                     k="Time"
                     v={endsAtIso ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}` : '—'}
                   />
+                  <SummaryRow k="Price" v={formatMoney(priceFor(duration), currency)} />
                 </dl>
               </div>
             )}
@@ -381,7 +442,7 @@ export function FutureWizard({
         )}
 
         {step === 2 && (
-          <div className="max-w-xl">
+          <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
             <h2 className="text-lg font-semibold">Who&apos;s this for?</h2>
 
             <div className="mt-5 space-y-4">
@@ -443,7 +504,7 @@ export function FutureWizard({
         )}
 
         {step === 3 && (
-          <div className="max-w-xl">
+          <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
             <h2 className="text-lg font-semibold">Confirm booking</h2>
             <p className="mt-1 text-sm text-muted-foreground">Check the details before booking.</p>
 
@@ -461,6 +522,10 @@ export function FutureWizard({
                 />
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
+                <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
+                  <span>Total</span>
+                  <span className="tabular-nums">{formatMoney(priceFor(duration), currency)}</span>
+                </div>
               </dl>
             </div>
 
