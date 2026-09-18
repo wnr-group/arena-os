@@ -45,10 +45,18 @@ import {
   Bell,
   Armchair,
   Layers,
+  AlarmClock,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
-import { canViewCustomers, canManageIncomingOrders, isManager, isOwner, type MemberRole } from '@/lib/auth/roles'
+import {
+  canViewCustomers,
+  canManageIncomingOrders,
+  canManageWalkins,
+  isManager,
+  isOwner,
+  type MemberRole,
+} from '@/lib/auth/roles'
 
 /**
  * `can` gates an entry on the member's role. Omit it for surfaces every member
@@ -83,6 +91,18 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bookings', label: 'Bookings', icon: CalendarDays },
+  // Live walk-in sessions board (M21 #6) — same walk-in gate as the start
+  // form/checkout actions (lib/actions/bookings.ts): non-restaurant industry
+  // (which uses Tables/Seat-a-party instead) and a role in WALKIN_ROLES.
+  // Every tenantIndustry value except 'restaurant' (db/schema.ts) is listed
+  // explicitly since `industries` below is an allowlist, not a denylist.
+  {
+    href: '/sessions',
+    label: 'Sessions',
+    icon: AlarmClock,
+    can: canManageWalkins,
+    industries: ['gaming_cafe', 'recording_studio', 'podcast_studio', 'dance_studio', 'vr_centre', 'other'],
+  },
   // Dine-in table service (M17) — restaurant tenants only.
   { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
