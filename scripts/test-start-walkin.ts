@@ -344,7 +344,12 @@ async function main() {
     const slot = await owner.query<{ ends_at: Date }>(`select ends_at from booking_slots where booking_id=$1`, [
       r.bookingId,
     ])
-    check('…the slot ends_at matches committed_end_at', slot.rows[0]?.ends_at?.getTime() === row.rows[0]?.committed_end_at?.getTime())
+    check(
+      '…the slot ends_at matches committed_end_at',
+      Boolean(slot.rows[0]) &&
+        Boolean(row.rows[0]) &&
+        slot.rows[0].ends_at.getTime() === row.rows[0].committed_end_at.getTime(),
+    )
   }
 
   // ══ 6. the exclusion constraint stops a genuine overlap ═══════════════════
