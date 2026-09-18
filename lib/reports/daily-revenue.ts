@@ -43,6 +43,9 @@ export type DailyRevenueRow = {
   day: string
   branchId: string
   branchName: string | null
+  /** M21 #7 — the underlying booking's channel; 'reserved' for a booking-less
+   *  counter sale too (see revenue-basis.ts's own note on why). */
+  channel: 'walkin' | 'reserved'
   /** The collected share of the invoices' subtotal — before discount and tax,
    *  net of refunds. */
   gross: number
@@ -97,20 +100,26 @@ export class ReportAccessError extends Error {}
  */
 export async function getDailyRevenue(
   ctx: ActiveContext,
-  options: { range: DateRange; branchId?: string | null },
+  options: { range: DateRange; branchId?: string | null; channel?: 'walkin' | 'reserved' | null },
 ): Promise<DailyRevenueRow[]> {
   requireReportAccess(ctx)
   // Module gate (M16 #2): the plan must include Reports. Authoritative —
   // the pages redirect for presentation, this is what actually refuses.
   await requireEntitlement(ctx, 'module.reports')
-  const { range, branchId } = options
+  const { range, branchId, channel } = options
 
-  // One GROUP BY in Postgres — at most one row per branch per day out.
+  // Grouped by channel too (M21 #7) — at most one row per (branch, day,
+  // channel) out. A caller that doesn't care folds the two channel rows
+  // for a day back together by summing (every existing caller already sums
+  // rows per day, so this is not a breaking change to the shape they read);
+  // one that does cares reads `channel` directly, or passes the `channel`
+  // filter above to narrow the whole query to one side.
   const result = await withUser(ctx.user.id, (tx) =>
     tx.execute(sql`
       select m.local_day::text                                        as day,
              m.branch_id::text                                        as branch_id,
              m.branch_name                                            as branch_name,
+             m.channel                                                as channel,
              sum(${movementShareOf(sql`subtotal`)})::float            as gross,
              sum(${movementShareOf(sql`discount`)})::float            as discount,
              sum(${movementShareOf(sql`tax_total`)})::float           as tax,
@@ -122,8 +131,8 @@ export async function getDailyRevenue(
              coalesce(sum(${movementForKind('food')}), 0)::float           as food_revenue,
              coalesce(sum(${movementForKind('membership')}), 0)::float     as membership_revenue,
              coalesce(sum(${movementForKind('service_charge')}), 0)::float as service_charge_revenue
-        from ${cashMovements(ctx.tenant.id, range, branchId)} m
-       group by m.local_day, m.branch_id, m.branch_name
+        from ${cashMovements(ctx.tenant.id, range, branchId, channel)} m
+       group by m.local_day, m.branch_id, m.branch_name, m.channel
        order by day asc, branch_name asc
     `),
   )
@@ -131,6 +140,7 @@ export async function getDailyRevenue(
     day: string
     branch_id: string
     branch_name: string | null
+    channel: 'walkin' | 'reserved'
     gross: number
     discount: number
     tax: number
@@ -148,6 +158,7 @@ export async function getDailyRevenue(
     day: r.day,
     branchId: r.branch_id,
     branchName: r.branch_name,
+    channel: r.channel,
     gross: round2(Number(r.gross)),
     discount: round2(Number(r.discount)),
     tax: round2(Number(r.tax)),
@@ -218,6 +229,7 @@ export function sumDailyRevenue(rows: readonly DailyRevenueRow[]): DailyRevenueT
 export const DAILY_REVENUE_CSV_COLUMNS: readonly CsvColumn<DailyRevenueRow>[] = [
   { header: 'Day', value: (r) => r.day },
   { header: 'Branch', value: (r) => r.branchName },
+  { header: 'Channel', value: (r) => (r.channel === 'walkin' ? 'Walk-in' : 'Reserved') },
   { header: 'Invoices', value: (r) => r.invoiceCount },
   { header: 'Gross', value: (r) => r.gross.toFixed(2) },
   { header: 'Discount', value: (r) => r.discount.toFixed(2) },

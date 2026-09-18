@@ -84,6 +84,18 @@ import { sql, type SQL } from 'drizzle-orm'
  * shared-pool shares, lib/billing/split.ts) are pooled food/booking value and
  * are counted with food, the only place they occur being a restaurant table
  * split.
+ *
+ * ── CHANNEL: WALK-IN VS RESERVED (M21 #7) ───────────────────────────────────
+ *
+ * Every movement also carries its invoice's booking's `channel` — 'walkin' or
+ * 'reserved' (bookings.channel's own two values, db/schema.ts), 'reserved' for
+ * a booking-less counter sale too. This is a WHOLE-MOVEMENT classification,
+ * not a per-line one: an invoice belongs to exactly one booking (or none), so
+ * every rupee of it — booking, food, whatever — is walk-in or reserved
+ * together. cashMovements() takes an optional `channel` filter to narrow a
+ * report to just one; querying unfiltered and summing rows grouped by
+ * `channel` gives the other side, and the two always reconcile to the
+ * unfiltered total (see lib/reports/revenue.ts's `channelTotals`).
  */
 
 /**
@@ -147,8 +159,22 @@ export function cashMovements(
   tenantId: string,
   range: { start: string; end: string },
   branchId?: string | null,
+  /**
+   * M21 #7 — restrict to invoices whose booking is this channel: 'walkin'
+   * (started from the walk-in flow, lib/booking/walkin.ts) or 'reserved'
+   * (everything else). A counter sale with NO booking at all (invoices.
+   * booking_id is nullable — a standalone food/membership sale) counts as
+   * 'reserved' by the same coalesce every other channel column in this
+   * codebase uses: bookings.channel's own default IS 'reserved', meaning
+   * "every non-walk-in booking" (db/schema.ts), and a sale with no booking
+   * is the degenerate case of that — never a third bucket, so walk-in +
+   * reserved always reconciles to the unfiltered total with no leftover.
+   */
+  channel?: 'walkin' | 'reserved' | null,
 ): SQL {
   const branchFilter = branchId ? sql`and i.branch_id = ${branchId}` : sql``
+  const channelExpr = sql`coalesce(bk.channel, 'reserved')`
+  const channelFilter = channel ? sql`and ${channelExpr} = ${channel}` : sql``
   const paymentLocalDay = sql`((p.created_at at time zone coalesce(b.timezone, t.timezone))::date)`
   const refundLocalDay = sql`((r.created_at at time zone coalesce(b.timezone, t.timezone))::date)`
   return sql`(
@@ -163,6 +189,7 @@ export function cashMovements(
       i.service_charge_amount                 as service_charge,
       i.total                                 as total,
       ${paymentLocalDay}                      as local_day,
+      ${channelExpr}                          as channel,
       coalesce(k.booking_lines, 0)            as booking_lines,
       coalesce(k.food_lines, 0)               as food_lines,
       coalesce(k.membership_lines, 0)         as membership_lines,
@@ -172,6 +199,7 @@ export function cashMovements(
     join public.invoices i on i.id = p.invoice_id and i.tenant_id = p.tenant_id
     join public.branches b on b.id = i.branch_id
     join public.tenants  t on t.id = i.tenant_id
+    left join public.bookings bk on bk.id = i.booking_id and bk.tenant_id = i.tenant_id
     left join (${invoiceKindShares}) k on k.invoice_id = i.id
     where p.tenant_id = ${tenantId}
       and p.status in ('captured', 'refunded')
@@ -179,6 +207,7 @@ export function cashMovements(
       and coalesce(k.topup_lines, 0) = 0
       and ${paymentLocalDay} between ${range.start}::date and ${range.end}::date
       ${branchFilter}
+      ${channelFilter}
 
     union all
 
@@ -193,6 +222,7 @@ export function cashMovements(
       i.service_charge_amount                 as service_charge,
       i.total                                 as total,
       ${refundLocalDay}                       as local_day,
+      ${channelExpr}                          as channel,
       coalesce(k.booking_lines, 0)            as booking_lines,
       coalesce(k.food_lines, 0)               as food_lines,
       coalesce(k.membership_lines, 0)         as membership_lines,
@@ -203,12 +233,14 @@ export function cashMovements(
     join public.invoices i on i.id = p.invoice_id and i.tenant_id = p.tenant_id
     join public.branches b on b.id = i.branch_id
     join public.tenants  t on t.id = i.tenant_id
+    left join public.bookings bk on bk.id = i.booking_id and bk.tenant_id = i.tenant_id
     left join (${invoiceKindShares}) k on k.invoice_id = i.id
     where r.tenant_id = ${tenantId}
       and i.status <> 'void'
       and coalesce(k.topup_lines, 0) = 0
       and ${refundLocalDay} between ${range.start}::date and ${range.end}::date
       ${branchFilter}
+      ${channelFilter}
   )`
 }
 
