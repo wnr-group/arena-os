@@ -283,11 +283,12 @@ export function WalkinWizard({
 
             <div className="mt-5 space-y-4">
               <div>
-                <label className={wizardLabel}>
+                <label htmlFor="walkin-customer-phone" className={wizardLabel}>
                   Phone <span className="text-destructive">*</span>
                 </label>
                 <div className="relative mt-1">
                   <input
+                    id="walkin-customer-phone"
                     className={wizardInput}
                     value={phone}
                     inputMode="tel"
@@ -313,8 +314,13 @@ export function WalkinWizard({
               </div>
 
               <div>
-                <label className={wizardLabel}>Name (optional)</label>
-                <input className={`${wizardInput} mt-1`} value={name} onChange={(e) => setName(e.target.value)} />
+                <label htmlFor="walkin-customer-name" className={wizardLabel}>Name (optional)</label>
+                <input
+                  id="walkin-customer-name"
+                  className={`${wizardInput} mt-1`}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
               </div>
             </div>
 

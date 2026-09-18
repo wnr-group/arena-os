@@ -448,11 +448,12 @@ export function FutureWizard({
 
             <div className="mt-5 space-y-4">
               <div>
-                <label className={wizardLabel}>
+                <label htmlFor="future-customer-phone" className={wizardLabel}>
                   Phone <span className="text-destructive">*</span>
                 </label>
                 <div className="relative mt-1">
                   <input
+                    id="future-customer-phone"
                     className={wizardInput}
                     value={customerPhone}
                     inputMode="tel"
@@ -479,10 +480,11 @@ export function FutureWizard({
 
               {needsName && (
                 <div>
-                  <label className={wizardLabel}>
+                  <label htmlFor="future-customer-name" className={wizardLabel}>
                     Customer name <span className="text-destructive">*</span>
                   </label>
                   <input
+                    id="future-customer-name"
                     className={`${wizardInput} mt-1`}
                     value={customerName}
                     required
