@@ -58,7 +58,6 @@ export default async function NewBookingPage({
   return (
     <BookingWizard
       branchId={branch.id}
-      branchName={branch.name}
       timeZone={ctx.tenant.timezone}
       currency={ctx.tenant.currency}
       today={today}
