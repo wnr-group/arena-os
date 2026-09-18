@@ -199,12 +199,19 @@ export function WalkinWizard({
       return
     }
     start(async () => {
+      // Derived fresh here, NOT from baseNow (which only exists to keep the
+      // stepper's displayed "now" from visibly creeping while the form sits
+      // open) — a wizard left open for a while must still submit a start
+      // time close to the actual moment of submission, both so the booking's
+      // own duration/pricing is right and so startWalkinCore's ±30-min
+      // window (lib/booking/walkin.ts) doesn't reject a perfectly good
+      // zero-offset walk-in just because the form was open too long.
       const r = await startWalkin({
         branchId,
         resourceId,
         phone,
         name: name.trim() || undefined,
-        startAt: new Date(baseNow.getTime() + offsetMin * 60_000).toISOString(),
+        startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
         mode,
         durationMin: mode === 'timed' ? durationMin : undefined,
       })
