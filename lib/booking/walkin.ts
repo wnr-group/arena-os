@@ -52,7 +52,20 @@ export const WALKIN_DURATION_STEP_MINUTES = 30
 export type WalkinResourceOption = {
   id: string
   name: string
+  resourceTypeId: string
   typeName: string
+  /** The resource's own rate override, else its type's rate — same
+   *  precedence listResources/getPublicResource use. This is what the unit
+   *  actually bills at, so it's what the final review step's rate/estimate
+   *  should use. */
+  hourlyRate: string
+  /** The type's own rate, override ignored — what the future-booking wizard's
+   *  device card shows (it groups by type, before any specific unit is
+   *  assigned), so the walk-in device card uses the same figure rather than
+   *  whichever unit happens to be first in the group (which could carry its
+   *  own override and show a misleadingly different price). */
+  typeHourlyRate: string
+  capacity: number | null
   /** No active booking on it right now — see the module doc comment above. */
   isFree: boolean
   /** Free right now, but has a scheduled booking later today (or beyond). */
@@ -74,7 +87,11 @@ export async function listWalkinResources(
       .select({
         id: resources.id,
         name: resources.name,
+        resourceTypeId: resources.resourceTypeId,
         typeName: resourceTypes.name,
+        rateOverride: resources.hourlyRateOverride,
+        typeRate: resourceTypes.hourlyRate,
+        capacity: resourceTypes.capacity,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -126,7 +143,11 @@ export async function listWalkinResources(
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
+      resourceTypeId: r.resourceTypeId,
       typeName: r.typeName,
+      hourlyRate: r.rateOverride ?? r.typeRate,
+      typeHourlyRate: r.typeRate,
+      capacity: r.capacity,
       isFree: !occupiedNow.has(r.id),
       hasUpcomingBooking: hasUpcoming.has(r.id),
     }))

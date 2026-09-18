@@ -77,7 +77,7 @@ export function BookingWizard({
 
       <div className="mt-6">
         {tab === 'walkin' && walkinEnabled ? (
-          <WalkinWizard branchId={branchId} timeZone={timeZone} />
+          <WalkinWizard branchId={branchId} timeZone={timeZone} currency={currency} />
         ) : (
           <FutureWizard
             branchId={branchId}

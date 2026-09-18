@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Clock3, Gamepad2, Loader2, Timer, Zap } from 'lucide-react'
+import { Check, Gamepad2, Loader2, Timer, Users, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
-import { timeInZone } from '@/lib/format'
+import { formatMoney, timeInZone } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { StepProgress } from './StepProgress'
 import {
@@ -33,7 +33,28 @@ const DURATIONS = Array.from({ length: 10 }, (_, i) => (i + 1) * 30).map((min) =
   label: min < 60 ? `${min} min` : `${min / 60} hr`,
 }))
 
-type ResourceOption = { id: string; name: string; typeName: string; isFree: boolean; hasUpcomingBooking: boolean }
+type ResourceOption = {
+  id: string
+  name: string
+  resourceTypeId: string
+  typeName: string
+  hourlyRate: string
+  typeHourlyRate: string
+  capacity: number | null
+  isFree: boolean
+  hasUpcomingBooking: boolean
+}
+/** One tile per device type — same card (icon, price/hr subtitle, capacity
+ *  badge) as the future-booking wizard's Devices step, and the same
+ *  auto-assign-a-free-unit rule: staff pick "PS5 Station", not a specific
+ *  numbered unit. */
+type ResourceTypeGroup = {
+  id: string
+  name: string
+  hourlyRate: string
+  capacity: number | null
+  resources: ResourceOption[]
+}
 
 /**
  * Walk-in wizard (M21 #3) — Station → Customer → Start & billing. Same
@@ -41,7 +62,15 @@ type ResourceOption = { id: string; name: string; typeName: string; isFree: bool
  * this replaced; only the presentation changed (one step at a time instead
  * of one long form, premium tiles instead of plain buttons).
  */
-export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZone: string }) {
+export function WalkinWizard({
+  branchId,
+  timeZone,
+  currency,
+}: {
+  branchId: string
+  timeZone: string
+  currency: string
+}) {
   const router = useRouter()
   const confirm = useConfirm()
   const [step, setStep] = useState(0)
@@ -116,6 +145,29 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
   const freeResources = resources?.filter((r) => r.isFree) ?? []
   const selectedResource = freeResources.find((r) => r.id === resourceId) ?? null
 
+  // Grouped by type, same as the future-booking wizard's Devices step — only
+  // types with at least one free unit right now show up at all.
+  const resourceTypeGroups = useMemo(() => {
+    const byType = new Map<string, ResourceTypeGroup>()
+    for (const r of freeResources) {
+      if (!byType.has(r.resourceTypeId))
+        byType.set(r.resourceTypeId, {
+          id: r.resourceTypeId,
+          name: r.typeName,
+          hourlyRate: r.typeHourlyRate,
+          capacity: r.capacity,
+          resources: [],
+        })
+      byType.get(r.resourceTypeId)!.resources.push(r)
+    }
+    return [...byType.values()]
+  }, [freeResources])
+
+  async function pickResourceType(group: ResourceTypeGroup) {
+    const r = group.resources[0]
+    if (r) await pickResource(r)
+  }
+
   async function pickResource(r: ResourceOption) {
     if (r.hasUpcomingBooking) {
       const ok = await confirm({
@@ -172,8 +224,10 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
       <WizardCard>
         {step === 0 && (
           <div>
-            <h2 className="text-lg font-semibold">Pick a station</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Only stations free right now are shown.</p>
+            <h2 className="text-lg font-semibold">Which device?</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              A free unit of this type is assigned automatically — only types with a free unit right now are shown.
+            </p>
 
             <div className="mt-5">
               {resources === null ? (
@@ -186,27 +240,30 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
                     ))}
                   </div>
                 )
-              ) : freeResources.length === 0 ? (
+              ) : resourceTypeGroups.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">No stations are free right now.</p>
               ) : (
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {freeResources.map((r) => (
-                    <SelectableTile
-                      key={r.id}
-                      selected={resourceId === r.id}
-                      onClick={() => pickResource(r)}
-                      icon={<Gamepad2 size={18} />}
-                      title={r.name}
-                      subtitle={r.typeName}
-                      badge={
-                        r.hasUpcomingBooking ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-bg px-2 py-0.5 text-[11px] font-medium text-amber">
-                            <Clock3 size={11} /> Later today
-                          </span>
-                        ) : undefined
-                      }
-                    />
-                  ))}
+                  {resourceTypeGroups.map((g) => {
+                    const selected = g.resources.some((r) => r.id === resourceId)
+                    return (
+                      <SelectableTile
+                        key={g.id}
+                        selected={selected}
+                        onClick={() => pickResourceType(g)}
+                        icon={<Gamepad2 size={18} />}
+                        title={g.name}
+                        subtitle={`${formatMoney(Number(g.hourlyRate), currency)} / hr`}
+                        badge={
+                          g.capacity != null ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                              <Users size={12} /> Up to {g.capacity}
+                            </span>
+                          ) : undefined
+                        }
+                      />
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -217,7 +274,7 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
         )}
 
         {step === 1 && (
-          <div className="max-w-xl">
+          <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
             <h2 className="text-lg font-semibold">Who&apos;s this for?</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Starting a walk-in on <span className="font-medium text-foreground">{selectedResource?.name}</span>.
@@ -277,7 +334,7 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
         )}
 
         {step === 2 && (
-          <div className="max-w-xl">
+          <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
             <h2 className="text-lg font-semibold">Start time & billing</h2>
 
             <div className="mt-5 space-y-5">
@@ -346,6 +403,16 @@ export function WalkinWizard({ branchId, timeZone }: { branchId: string; timeZon
                   <SummaryRow k="Station" v={selectedResource?.name ?? '—'} />
                   <SummaryRow k="Customer" v={name.trim() || phone} />
                   <SummaryRow k="Billing" v={mode === 'open_tab' ? 'Open tab' : `Timed · ${durationMin} min`} />
+                  <SummaryRow
+                    k={mode === 'timed' ? 'Estimated total' : 'Rate'}
+                    v={
+                      selectedResource
+                        ? mode === 'timed'
+                          ? formatMoney((Number(selectedResource.hourlyRate) * durationMin) / 60, currency)
+                          : `${formatMoney(Number(selectedResource.hourlyRate), currency)} / hr`
+                        : '—'
+                    }
+                  />
                 </dl>
               </div>
             </div>
