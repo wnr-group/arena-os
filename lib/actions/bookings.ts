@@ -23,6 +23,7 @@ import {
   extendWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
+  listActiveWalkins,
   WALKIN_MIN_DURATION_MINUTES,
   WALKIN_MAX_DURATION_MINUTES,
   WALKIN_DURATION_STEP_MINUTES,
@@ -306,6 +307,47 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
       return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
     }
     return fail(e)
+  }
+}
+
+export type ActiveWalkinAlarmRow = {
+  bookingId: string
+  resourceName: string
+  customerName: string | null
+  customerPhone: string | null
+  billingMode: 'open_tab' | 'timed'
+  endsAt: string | null
+  slotTotal: string
+}
+
+/**
+ * Bare-bones active-walk-in read for the top bar's global time's-up alarm —
+ * polled from every page, not just /sessions, so the alarm fires wherever
+ * staff happen to be. Fails soft to an empty list (never throws) since a
+ * background poll erroring out is noise, not something a toast should
+ * surface; the gate itself matches every other walk-in action, just quiet
+ * instead of returning `{ error }`.
+ */
+export async function listActiveWalkinsForAlarm(branchId: string): Promise<{ sessions: ActiveWalkinAlarmRow[] }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant' || !canManageWalkins(ctx.role)) {
+      return { sessions: [] }
+    }
+    const rows = await listActiveWalkins(ctx, branchId)
+    return {
+      sessions: rows.map((w) => ({
+        bookingId: w.bookingId,
+        resourceName: w.resourceName,
+        customerName: w.customerName,
+        customerPhone: w.customerPhone,
+        billingMode: w.billingMode,
+        endsAt: w.endsAt ? w.endsAt.toISOString() : null,
+        slotTotal: w.slotTotal,
+      })),
+    }
+  } catch {
+    return { sessions: [] }
   }
 }
 

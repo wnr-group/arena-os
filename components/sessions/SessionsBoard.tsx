@@ -1,11 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlarmClock, BellRing, Clock, ReceiptText, RefreshCw, Timer, Volume2, VolumeX } from 'lucide-react'
+import { AlarmClock, BellRing, Clock, ReceiptText, RefreshCw, Timer } from 'lucide-react'
 import { previewWalkinCheckout } from '@/lib/actions/bookings'
 import { formatCountdown } from '@/lib/booking/countdown'
-import { ALARM_SOUND_DATA_URI } from '@/lib/booking/alarmSound'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { WalkinCheckoutDialog } from '@/components/bookings/WalkinCheckoutDialog'
 import { TimedWalkinDialog } from '@/components/bookings/TimedWalkinDialog'
@@ -28,19 +27,21 @@ export type SessionRow = {
 }
 
 /** Heads-up fires once per session at the 5-minute mark; the alarm itself
- *  (sound + banner) fires once at zero and then just stays true until the
- *  operator handles it (extend resets both, checkout clears them). */
+ *  (banner) fires once at zero and then just stays true until the operator
+ *  handles it (extend resets both, checkout clears them). */
 type AlarmState = { headsUp: boolean; alarmed: boolean }
 
 const HEADS_UP_MS = 5 * 60_000
 const REFRESH_INTERVAL_MS = 60_000
-const SOUND_PREF_KEY = 'arena.sessions.soundEnabled'
 
 /**
  * The live walk-in sessions board (M21 #6) — a card per active walk-in with
  * a live countdown/elapsed readout, a running total, and Extend/Checkout.
- * Owns the time's-up alarm for TIMED sessions (open tabs have no committed
- * end, so nothing to alarm on — they just show elapsed time).
+ * Owns the time's-up VISUALS for TIMED sessions — the per-card red styling
+ * and the persistent banner (open tabs have no committed end, so nothing to
+ * alarm on — they just show elapsed time). The alarm SOUND itself lives in
+ * the top bar (TopBarActions) instead, polling independently so it fires
+ * from anywhere in the app, not only while this page happens to be open.
  *
  * Everything here is derived, every tick, from `committed_end_at`/`starts_at`
  * strings the server sent down — there is no persisted client-side timer
@@ -92,34 +93,11 @@ export function SessionsBoard({
     return () => clearInterval(id)
   }, [])
 
-  // ── sound unlock ────────────────────────────────────────────────────────
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const [soundEnabled, setSoundEnabled] = useState(false)
-  useEffect(() => {
-    setSoundEnabled(typeof window !== 'undefined' && window.localStorage.getItem(SOUND_PREF_KEY) === '1')
-  }, [])
-  function enableSound() {
-    const audio = audioRef.current
-    if (!audio) return
-    // The unlock trick: play+immediately pause in direct response to this
-    // click (a real user gesture) so the browser's autoplay policy lets a
-    // LATER, gesture-less .play() call (from the alarm tick) actually make
-    // sound. If it still throws (blocked, or no supported audio backend),
-    // the banner is the fallback — the alarm never depends on sound firing.
-    audio
-      .play()
-      .then(() => {
-        audio.pause()
-        audio.currentTime = 0
-        setSoundEnabled(true)
-        window.localStorage.setItem(SOUND_PREF_KEY, '1')
-      })
-      .catch(() => {
-        setSoundEnabled(false)
-      })
-  }
-
   // ── alarm state, per booking ────────────────────────────────────────────
+  // Sound lives in the top bar now (TopBarActions) — it polls independently
+  // and fires from anywhere in the app, not just while this page is open.
+  // This board keeps its own countdown/heads-up/banner purely as visuals,
+  // so the two can never double-fire the same beep while both are mounted.
   const [alarms, setAlarms] = useState<Record<string, AlarmState>>({})
   const resetAlarm = useCallback((bookingId: string) => {
     setAlarms((prev) => ({ ...prev, [bookingId]: { headsUp: false, alarmed: false } }))
@@ -145,7 +123,6 @@ export function SessionsBoard({
       setAlarms((prev) => {
         const state = prev[s.bookingId] ?? { headsUp: false, alarmed: false }
         if (remaining <= 0 && !state.alarmed) {
-          if (soundEnabled) audioRef.current?.play().catch(() => {})
           return { ...prev, [s.bookingId]: { headsUp: true, alarmed: true } }
         }
         if (remaining > 0 && remaining <= HEADS_UP_MS && !state.headsUp) {
@@ -154,7 +131,7 @@ export function SessionsBoard({
         return prev
       })
     }
-  }, [now, sessions, soundEnabled])
+  }, [now, sessions])
 
   const alarmedSessions = useMemo(
     () => sessions.filter((s) => alarms[s.bookingId]?.alarmed && !isCheckedOut(s)),
@@ -171,8 +148,6 @@ export function SessionsBoard({
 
   return (
     <div className="px-6 py-6">
-      <audio ref={audioRef} src={ALARM_SOUND_DATA_URI} preload="auto" />
-
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold">
@@ -180,33 +155,13 @@ export function SessionsBoard({
           </h1>
           <p className="text-sm text-muted-foreground">{branchName} · live walk-ins</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => router.refresh()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition hover:bg-accent/70"
-          >
-            <RefreshCw size={15} /> Refresh
-          </button>
-          <button
-            onClick={enableSound}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition ${
-              soundEnabled
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600'
-                : 'border-border bg-card hover:bg-muted'
-            }`}
-          >
-            {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
-            {soundEnabled ? 'Sound on' : 'Enable sound'}
-          </button>
-        </div>
+        <button
+          onClick={() => router.refresh()}
+          className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition hover:bg-accent/70"
+        >
+          <RefreshCw size={15} /> Refresh
+        </button>
       </div>
-
-      {!soundEnabled && (
-        <p className="mt-3 text-xs text-muted-foreground">
-          Sound is off on this device — the time&apos;s-up banner below will still appear, just silently. Click
-          &quot;Enable sound&quot; once to arm the alarm.
-        </p>
-      )}
 
       {/* persistent time's-up banner — stays until each session is extended or checked out */}
       {alarmedSessions.length > 0 && (
