@@ -112,6 +112,7 @@ export function WalkinWizard({
   useEffect(() => {
     setPhoneChecked(false)
     setExistingCustomerName(null)
+    setCheckingPhone(false)
     if (!isValidPhone(phone)) return
     let cancelled = false
     setCheckingPhone(true)

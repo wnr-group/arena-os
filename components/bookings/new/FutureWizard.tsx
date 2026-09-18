@@ -155,6 +155,7 @@ export function FutureWizard({
   useEffect(() => {
     setPhoneChecked(false)
     setExistingCustomerName(null)
+    setCheckingPhone(false)
     if (!isValidPhone(customerPhone)) return
     let cancelled = false
     setCheckingPhone(true)
