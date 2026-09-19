@@ -179,6 +179,10 @@ export type ActiveWalkin = {
   endsAt: Date | null
   billingMode: WalkinMode
   rateApplied: string
+  /** Minutes before committedEndAt the heads-up alarm fires — per-booking
+   *  (bookings.warning_minutes), not a hardcoded constant. Meaningless for
+   *  an open tab, which has no committed end to count down to. */
+  warningMinutes: number
   /** '0.00' until checkout prices the session (M21 #4/#5) — the same
    *  "already checked out?" signal checkoutWalkinCore itself uses for a
    *  timed walk-in, reused here so the UI can swap "Close tab"/"Extend" for
@@ -220,6 +224,7 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         pricingMode: bookingSlots.pricingMode,
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
+        warningMinutes: bookings.warningMinutes,
       })
       .from(bookings)
       .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
@@ -327,6 +332,13 @@ export async function startWalkinCore(
   if (resource.status !== 'available') throw new BookingError('This station is not available.')
 
   const rate = Number(resource.rateOverride ?? resource.typeRate)
+  // A zero EFFECTIVE rate (a per-resource override, not just the type rate
+  // already rejected above) would price a timed session to ₹0 — indistinguishable
+  // from the `slot_total > 0` "already checked out?" sentinel loadWalkinForCheckout
+  // relies on, which would then misfire and lock the booking as uncheckoutable.
+  if (rate <= 0) {
+    throw new BookingError('This resource isn’t set up as an hourly station.')
+  }
   const taxPercent =
     resource.taxPercent ?? (await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')) ?? '0'
 
@@ -609,7 +621,11 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
   // Timed.
   if (Number(walkin.slotTotal) > 0) throw new BookingError('This session has already been checked out.')
   if (!walkin.committedEndAt) throw new BookingError('This walk-in has no committed end time.')
-  if (endAt.getTime() > walkin.committedEndAt.getTime()) {
+  // Gate on the SERVER's now, not the client-supplied endAt — endAt plays no
+  // part in what gets priced here (priceEnd is always committedEndAt), so
+  // checking it instead of now would let a crafted endAt (e.g. exactly
+  // committedEndAt) walk straight past an actual overstay unbilled.
+  if (now.getTime() > walkin.committedEndAt.getTime()) {
     throw new BookingError('Extend the session before checking out.')
   }
   return { endAt, priceEnd: walkin.committedEndAt }

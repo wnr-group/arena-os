@@ -80,6 +80,10 @@ export function TopBarActions({
 
   // ── poll + alarm ─────────────────────────────────────────────────────
   const alarmedRef = useRef<Set<string>>(new Set())
+  // Tracks bookings whose heads-up toast has already fired, separately from
+  // alarmedRef's time's-up set — a session passes through this set on its
+  // way to becoming alarmed, never re-firing once it's inside the window.
+  const headsUpRef = useRef<Set<string>>(new Set())
   const [alarmedCount, setAlarmedCount] = useState(0)
 
   useEffect(() => {
@@ -91,18 +95,34 @@ export function TopBarActions({
       if (cancelled) return
       const now = Date.now()
       const stillAlarmed = new Set<string>()
+      const stillHeadsUp = new Set<string>()
       for (const s of sessions) {
         if (s.billingMode !== 'timed' || !s.endsAt || isCheckedOut(s)) continue
-        if (new Date(s.endsAt).getTime() > now) continue
-        stillAlarmed.add(s.bookingId)
-        if (!alarmedRef.current.has(s.bookingId)) {
-          if (soundEnabled) audioRef.current?.play().catch(() => {})
-          toast.error(`Time's up — ${s.resourceName} (${s.customerName || s.customerPhone || 'Walk-in'})`, {
-            action: { label: 'View sessions', onClick: () => router.push('/sessions') },
-          })
+        const remaining = new Date(s.endsAt).getTime() - now
+        const label = s.customerName || s.customerPhone || 'Walk-in'
+        if (remaining <= 0) {
+          stillAlarmed.add(s.bookingId)
+          if (!alarmedRef.current.has(s.bookingId)) {
+            if (soundEnabled) audioRef.current?.play().catch(() => {})
+            toast.error(`Time's up — ${s.resourceName} (${label})`, {
+              action: { label: 'View sessions', onClick: () => router.push('/sessions') },
+            })
+          }
+          continue
+        }
+        if (remaining <= s.warningMinutes * 60_000) {
+          stillHeadsUp.add(s.bookingId)
+          if (!headsUpRef.current.has(s.bookingId)) {
+            toast.warning(`${s.warningMinutes} min left — ${s.resourceName} (${label})`, {
+              action: { label: 'View sessions', onClick: () => router.push('/sessions') },
+            })
+          }
         }
       }
       alarmedRef.current = stillAlarmed
+      // A booking that's since been extended past the warning window drops
+      // back out of stillHeadsUp, so re-crossing it later fires again.
+      headsUpRef.current = stillHeadsUp
       setAlarmedCount(stillAlarmed.size)
     }
 

@@ -355,6 +355,8 @@ export type ActiveWalkinAlarmRow = {
   billingMode: 'open_tab' | 'timed'
   endsAt: string | null
   slotTotal: string
+  /** Minutes before endsAt the heads-up should fire — bookings.warning_minutes. */
+  warningMinutes: number
 }
 
 /**
@@ -381,6 +383,7 @@ export async function listActiveWalkinsForAlarm(branchId: string): Promise<{ ses
         billingMode: w.billingMode,
         endsAt: w.endsAt ? w.endsAt.toISOString() : null,
         slotTotal: w.slotTotal,
+        warningMinutes: w.warningMinutes,
       })),
     }
   } catch {

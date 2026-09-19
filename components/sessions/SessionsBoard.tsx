@@ -29,14 +29,17 @@ export type SessionRow = {
   pricingMode: string | null
   headCount: number | null
   minPlayers: number
+  /** Minutes before endsAt the heads-up fires — bookings.warning_minutes,
+   *  per booking, not a hardcoded constant. */
+  warningMinutes: number
 }
 
-/** Heads-up fires once per session at the 5-minute mark; the alarm itself
- *  (banner) fires once at zero and then just stays true until the operator
- *  handles it (extend resets both, checkout clears them). */
+/** Heads-up fires once per session `warningMinutes` out from its committed
+ *  end; the alarm itself (banner) fires once at zero and then just stays
+ *  true until the operator handles it (extend resets both, checkout clears
+ *  them). */
 type AlarmState = { headsUp: boolean; alarmed: boolean }
 
-const HEADS_UP_MS = 5 * 60_000
 const REFRESH_INTERVAL_MS = 60_000
 
 /**
@@ -125,12 +128,13 @@ export function SessionsBoard({
     for (const s of sessions) {
       if (s.billingMode !== 'timed' || !s.endsAt || isCheckedOut(s)) continue
       const remaining = new Date(s.endsAt).getTime() - now
+      const headsUpMs = s.warningMinutes * 60_000
       setAlarms((prev) => {
         const state = prev[s.bookingId] ?? { headsUp: false, alarmed: false }
         if (remaining <= 0 && !state.alarmed) {
           return { ...prev, [s.bookingId]: { headsUp: true, alarmed: true } }
         }
-        if (remaining > 0 && remaining <= HEADS_UP_MS && !state.headsUp) {
+        if (remaining > 0 && remaining <= headsUpMs && !state.headsUp) {
           return { ...prev, [s.bookingId]: { ...state, headsUp: true } }
         }
         return prev
@@ -205,6 +209,7 @@ export function SessionsBoard({
               timeZone={timeZone}
               currency={currency}
               alarmed={Boolean(alarms[s.bookingId]?.alarmed)}
+              headsUp={Boolean(alarms[s.bookingId]?.headsUp) && !alarms[s.bookingId]?.alarmed}
               onManage={() => openManage(s)}
             />
           ))}
@@ -250,6 +255,7 @@ function SessionCard({
   timeZone,
   currency,
   alarmed,
+  headsUp,
   onManage,
 }: {
   session: SessionRow
@@ -259,6 +265,9 @@ function SessionCard({
   timeZone: string
   currency: string
   alarmed: boolean
+  /** Inside the warning_minutes window but not yet overdue — a softer,
+   *  amber cue distinct from the red "time's up" state. */
+  headsUp: boolean
   onManage: () => void
 }) {
   const checkedOut = isCheckedOut(s)
@@ -297,7 +306,11 @@ function SessionCard({
   return (
     <div
       className={`rounded-xl border p-4 shadow-sm transition ${
-        alarmed ? 'border-destructive/50 bg-destructive/5' : 'border-border bg-card'
+        alarmed
+          ? 'border-destructive/50 bg-destructive/5'
+          : headsUp
+            ? 'border-amber-500/50 bg-amber-500/5'
+            : 'border-border bg-card'
       }`}
     >
       <div className="flex items-start justify-between gap-2">

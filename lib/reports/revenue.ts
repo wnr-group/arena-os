@@ -21,6 +21,13 @@ import { eachDay, type DateRange } from './date-range'
 
 export type DashboardDay = {
   day: string
+  /** The channel this row's figures were narrowed to by the dashboard's
+   *  `channel` option — 'Walk-in', 'Reserved', or 'All' when unfiltered.
+   *  Every row in a given dashboard carries the same value (the filter
+   *  applies to the whole range, not per-day), but it travels with each row
+   *  so the CSV export states plainly what it represents even once detached
+   *  from the on-screen filter/filename that produced it. */
+  channel: 'Walk-in' | 'Reserved' | 'All'
   /** Revenue, summed across branches for the day. */
   gross: number
   discount: number
@@ -85,7 +92,7 @@ export async function getRevenueDashboard(
   // the shared app pool, and running report queries in parallel just competes
   // for the same small pool for no gain at this size.
   const revenueByBranch = await getDailyRevenue(ctx, { range, branchId, channel })
-  const bookings = await getBookingMetrics(ctx, { range, branchId })
+  const bookings = await getBookingMetrics(ctx, { range, branchId, channel })
 
   // Folding per-branch revenue rows into per-day ones, and filling the days
   // nothing happened on. This is presentation shaping over rows Postgres has
@@ -117,12 +124,14 @@ export async function getRevenueDashboard(
   }
 
   const bookingsByDay = new Map(bookings.daily.map((d) => [d.day, d]))
+  const channelLabel: DashboardDay['channel'] = channel === 'walkin' ? 'Walk-in' : channel === 'reserved' ? 'Reserved' : 'All'
 
   const days: DashboardDay[] = eachDay(range).map((day) => {
     const rev = revenueByDay.get(day)
     const bk = bookingsByDay.get(day)
     return {
       day,
+      channel: channelLabel,
       gross: round2(rev?.gross ?? 0),
       discount: round2(rev?.discount ?? 0),
       tax: round2(rev?.tax ?? 0),
@@ -166,6 +175,7 @@ export async function getRevenueDashboard(
  */
 export const DASHBOARD_CSV_COLUMNS: readonly CsvColumn<DashboardDay>[] = [
   { header: 'Date', value: (d) => d.day },
+  { header: 'Channel', value: (d) => d.channel },
   { header: 'Invoices', value: (d) => d.invoices },
   { header: 'Gross', value: (d) => d.gross.toFixed(2) },
   { header: 'Discount', value: (d) => d.discount.toFixed(2) },

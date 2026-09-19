@@ -74,6 +74,7 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   // visible on screen. Nothing re-fetched either way.
   const dailyCols: CsvColumn<(typeof data.days)[number]>[] = [
     { key: 'day', label: 'Date' },
+    { key: 'channel', label: 'Channel' },
     { key: 'gross', label: 'Gross' },
     { key: 'discount', label: 'Discount' },
     { key: 'tax', label: 'Tax' },

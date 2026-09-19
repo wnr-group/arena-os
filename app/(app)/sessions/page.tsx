@@ -61,6 +61,7 @@ export default async function SessionsPage() {
         pricingMode: w.pricingMode,
         headCount: w.headCount,
         minPlayers: w.minPlayers,
+        warningMinutes: w.warningMinutes,
       }))}
     />
   )
