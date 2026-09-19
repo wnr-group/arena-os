@@ -34,6 +34,11 @@ export type CreateBookingInput = {
   discount: number
   deposit: number
   slots: CreateBookingSlotInput[]
+  /** Player count (M21 per-head #2) — required, and only meaningful, when a
+   *  slot's resource type is pricing_mode='per_head'. Applies uniformly to
+   *  every per_head slot in this booking (bookings.head_count is one value
+   *  per booking, not per slot — see 0094_per_head_pricing.sql). */
+  headCount?: number
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -47,6 +52,11 @@ export type PricedBookingSlot = {
   resourceName: string
   resourceTypeName: string
   taxRatePercent: string
+  /** Snapshot of the booking's head_count (M21 per-head #2) — null for a
+   *  per_resource slot, same discipline as rateApplied/taxRatePercent. */
+  headCount: number | null
+  /** Snapshot of the resource type's pricing_mode at booking time. */
+  pricingMode: string
 }
 
 /**
@@ -55,11 +65,17 @@ export type PricedBookingSlot = {
  * BEFORE creating it (the public pay-now flow, lib/actions/public-booking.ts,
  * needs this to decide how much to charge online) without a second,
  * drifting copy of the rate lookup.
+ *
+ * M21 per-head #2: a per_head resource type bills head_count × rate × hours
+ * instead of rate × hours — hourlyRate's meaning flips from "per resource"
+ * to "per player" (see resourceTypes.hourlyRate's comment in db/schema.ts).
+ * A per_resource slot (the default, and every pre-existing type) is priced
+ * exactly as before; head_count plays no part in its total.
  */
 export async function priceBookingSlots(
   tx: Db,
   ctx: { tenantId: string },
-  input: { branchId: string; slots: CreateBookingSlotInput[] },
+  input: { branchId: string; slots: CreateBookingSlotInput[]; headCount?: number },
 ): Promise<{ subtotal: number; slots: PricedBookingSlot[] }> {
   for (const s of input.slots) {
     if (new Date(s.endsAt) <= new Date(s.startsAt)) {
@@ -77,6 +93,8 @@ export async function priceBookingSlots(
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       rateOverride: resources.hourlyRateOverride,
+      pricingMode: resourceTypes.pricingMode,
+      minPlayers: resourceTypes.minPlayers,
       // Only a rate with appliesTo 'resources' or 'both' can ever be set here
       // (enforced in lib/actions/resources.ts), so no re-check is needed at
       // read time — unlike menu items, which snapshot from a live join too
@@ -108,8 +126,26 @@ export async function priceBookingSlots(
     const r = byId.get(s.resourceId)!
     const rate = Number(r.rateOverride ?? r.typeRate)
     const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
-    const total = rate * hours
+
+    let headCount: number | null = null
+    let total: number
+    if (r.pricingMode === 'per_head') {
+      const requested = input.headCount
+      if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
+        throw new BookingError(`${r.typeName} is priced per player — enter the number of players.`)
+      }
+      if (requested < r.minPlayers) {
+        throw new BookingError(
+          `${r.typeName} needs at least ${r.minPlayers} player${r.minPlayers === 1 ? '' : 's'}.`,
+        )
+      }
+      headCount = requested
+      total = headCount * rate * hours
+    } else {
+      total = rate * hours
+    }
     subtotal += total
+
     return {
       resourceId: s.resourceId,
       startsAt: new Date(s.startsAt),
@@ -119,6 +155,8 @@ export async function priceBookingSlots(
       resourceName: r.name,
       resourceTypeName: r.typeName,
       taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
+      headCount,
+      pricingMode: r.pricingMode,
     }
   })
 
@@ -163,6 +201,7 @@ export async function createBookingCore(
   const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
     slots: input.slots,
+    headCount: input.headCount,
   })
 
   const total = Math.max(0, subtotal - input.discount)
@@ -196,6 +235,7 @@ export async function createBookingCore(
       deposit: input.deposit.toFixed(2),
       notes: input.notes || null,
       createdBy: ctx.membershipId,
+      headCount: input.headCount ?? null,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 

@@ -31,6 +31,19 @@
  *    Rounding each segment first would drift from what a reserved booking
  *    covering the same window and rate would total — round2 is for MONEY,
  *    applied once, at the boundary where a number becomes a rupee figure.
+ *
+ * ── head_count (M21 per-head #2) ─────────────────────────────────────────
+ * A per_head resource's `rate` already means "per player" (see
+ * priceBookingSlots' doc comment), so head_count is a plain multiplier over
+ * the whole priced total — applied ONCE, after every segment (including any
+ * happy-hour split) is summed, not per-segment. Because it's a constant
+ * factor across every segment, multiplying the sum first and multiplying
+ * each segment first are mathematically identical; doing it once here keeps
+ * the single-round2-at-the-end discipline intact. Defaults to 1 so every
+ * per_resource caller (every one that existed before this ticket) is
+ * unaffected. Re-pricing at a NEW head_count (an edited session) is just
+ * calling this again with the new value — head_count is never baked into a
+ * cached rate.
  */
 import { round2, type BillLine } from './pricing'
 import { discountAmount, type HappyHourRule } from '@/lib/happy-hours/apply'
@@ -135,6 +148,10 @@ export function priceElapsedTime(
   rate: number,
   happyHours: HappyHourRule[],
   tenantTimezone: string,
+  /** Player count for a per_head resource (M21 per-head #2) — a plain
+   *  multiplier over the full duration. 1 (the default) for a per_resource
+   *  resource, i.e. every call site that predates this parameter. */
+  headCount: number = 1,
 ): BillLine {
   const startMs = start.getTime()
   const billableEndMs = billableEndTime(start, end).getTime()
@@ -174,7 +191,7 @@ export function priceElapsedTime(
     description: `${formatTimeInZone(start, tenantTimezone)}–${formatTimeInZone(billableEnd, tenantTimezone)}`,
     kind: 'booking',
     qty: 1,
-    unitPrice: round2(total),
+    unitPrice: round2(total * headCount),
     taxPercent: 0,
   }
 }

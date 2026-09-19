@@ -204,6 +204,11 @@ export async function loadBookingLines(
       resourceName: bookingSlots.resourceName,
       resourceTypeName: bookingSlots.resourceTypeName,
       taxRatePercent: bookingSlots.taxRatePercent,
+      // M21 per-head #2: snapshot of head_count/pricing_mode at booking time
+      // (lib/booking/service.ts's priceBookingSlots). Null/'per_resource' for
+      // every pre-existing booking.
+      headCount: bookingSlots.headCount,
+      pricingMode: bookingSlots.pricingMode,
     })
     .from(bookingSlots)
     .where(
@@ -238,7 +243,16 @@ export async function loadBookingLines(
           // charge" shape priceElapsedTime itself returns, rather than a
           // qty/rate pair that would need to multiply back to that figure.
           { qty: 1, unitPrice: Number(s.slotTotal) }
-        : { qty: durationHours(s.startsAt, s.endsAt), unitPrice: Number(s.rateApplied) }),
+        : {
+            // M21 per-head #2: rateApplied is per PLAYER for a per_head slot
+            // (snapshotted pricingMode/headCount, priceBookingSlots), so the
+            // multiplier folds into qty rather than unitPrice — reproduces
+            // slot_total exactly (headCount × rate × hours) while leaving a
+            // per_resource slot's qty/unit-price decomposition (hours × rate)
+            // byte-identical to before this ticket.
+            qty: durationHours(s.startsAt, s.endsAt) * (s.pricingMode === 'per_head' ? (s.headCount ?? 1) : 1),
+            unitPrice: Number(s.rateApplied),
+          }),
       // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
       // priceBookingSlots) from the resource type's own tax rate — same
       // discipline rate_applied already uses. 0 means no 'resources'/'both'
