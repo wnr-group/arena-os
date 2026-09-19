@@ -154,6 +154,10 @@ export const resourceTypes = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     description: text('description'),
+    // M21 per-head #1 (0094): what hourlyRate MEANS depends on pricingMode —
+    // 'per_resource' (default, every pre-existing type): rate per resource
+    // per hour, unchanged. 'per_head': rate per player per hour — the same
+    // column, billed by headCount instead of by resource.
     hourlyRate: numeric('hourly_rate', { precision: 10, scale: 2 }).notNull().default('0'),
     bufferMinutes: integer('buffer_minutes').notNull().default(0),
     capacity: integer('capacity'),
@@ -163,6 +167,11 @@ export const resourceTypes = pgTable(
     // NULL on delete). Only a rate with appliesTo 'resources' or 'both' may be
     // assigned here; enforced in lib/actions/resources.ts, not by the FK.
     taxRateId: uuid('tax_rate_id').references((): AnyPgColumn => taxRates.id, { onDelete: 'set null' }),
+    // M21 per-head #1 (0094): 'per_resource' | 'per_head'. See hourlyRate.
+    pricingMode: text('pricing_mode').notNull().default('per_resource'),
+    // M21 per-head #1 (0094): floor on headCount for a per_head booking on
+    // this type (e.g. snooker = 2). Unused (default 1) for per_resource types.
+    minPlayers: smallint('min_players').notNull().default(1),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -291,6 +300,9 @@ export const bookings = pgTable(
     // M21 (0093): minutes before committedEndAt the heads-up alarm fires for
     // a timed walk-in. Default 5.
     warningMinutes: smallint('warning_minutes').notNull().default(5),
+    // M21 per-head #1 (0094): player count for a per_head booking. Null for
+    // every per_resource booking.
+    headCount: smallint('head_count'),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -333,6 +345,11 @@ export const bookingSlots = pgTable(
     // today. 0 (the default) means "no resources tax configured," identical
     // to the pre-0092 hardcoded behaviour in loadBookingLines.
     taxRatePercent: numeric('tax_rate_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+    // M21 per-head #1 (0094): snapshot of the booking's headCount and the
+    // resource type's pricingMode at booking time — same discipline as
+    // rateApplied/taxRatePercent above. Null/null for a per_resource booking.
+    headCount: smallint('head_count'),
+    pricingMode: text('pricing_mode'),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),
