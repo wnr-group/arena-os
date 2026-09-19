@@ -118,7 +118,13 @@ export function ResourceTypeBookingPage({
   const [pending, startTransition] = useTransition()
 
   const hourlyRate = Number(resourceType.hourlyRate)
-  const priceFor = (minutes: number) => (hourlyRate * minutes) / 60
+  // M21 per-head #5: online never asks for a player count ("keep the online
+  // flow simple" — see the design doc) — this mirrors resolvePublicHeadCount
+  // (lib/booking/service.ts), the server's own source of truth, so the price
+  // shown here always matches what createPublicBooking actually charges.
+  const isPerHead = resourceType.pricingMode === 'per_head'
+  const headCount = isPerHead ? Math.max(1, resourceType.minPlayers) : 1
+  const priceFor = (minutes: number) => (hourlyRate * minutes * headCount) / 60
   const total = priceFor(duration)
   const endsAt = selectedSlot
     ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
@@ -254,7 +260,12 @@ export function ResourceTypeBookingPage({
         customerName: name,
         customerPhone: phone,
         customerEmail: email,
-        players: resourceType.capacity != null ? players : undefined,
+        // The capacity note-stepper is a headcount-for-notes convenience,
+        // unrelated to per-head pricing — hidden for a per_head type (see
+        // SummaryPanel) since showing it there would misleadingly suggest it
+        // changes the price, when the real player count is fixed online and
+        // only ever adjusted by staff at check-in (Per-head #4).
+        players: resourceType.capacity != null && !isPerHead ? players : undefined,
         payNow: razorpayConfigured && payOnline && total > 0,
         website,
       })
@@ -580,6 +591,7 @@ export function ResourceTypeBookingPage({
                 <SummaryRow icon={Boxes} label="Resource" value={resourceType.name} />
                 <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
                 <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
+                {isPerHead && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
                   <span>Total</span>
                   <span className="tabular-nums text-primary">{formatMoney(total, tenant.currency)}</span>
@@ -654,7 +666,9 @@ function ResourceTypeCard({ resourceType, currency }: { resourceType: PublicReso
         {resourceType.description && (
           <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">{resourceType.description}</p>
         )}
-        <p className="mt-1.5 text-sm font-bold text-primary">{formatMoney(resourceType.hourlyRate, currency)} / hr</p>
+        <p className="mt-1.5 text-sm font-bold text-primary">
+          {formatMoney(resourceType.hourlyRate, currency)} / {resourceType.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+        </p>
       </div>
       <Link
         href="/resources"
@@ -707,7 +721,11 @@ function SummaryPanel({
         <SummaryRow icon={Clock} label="End" value={endsAt ? time12(endsAt, timeZone) : '—'} />
       </div>
 
-      {resourceType.capacity != null && (
+      {/* The capacity note-stepper is a headcount-for-notes convenience — for
+       *  a per_head type "players" is the pricing-relevant concept instead
+       *  (fixed online, see the static note below), so showing this alongside
+       *  it here would misleadingly suggest it changes the price. */}
+      {resourceType.capacity != null && resourceType.pricingMode !== 'per_head' && (
         <div className="mt-5 flex items-center justify-between rounded-xl border border-border bg-background p-3">
           <div>
             <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
@@ -739,10 +757,20 @@ function SummaryPanel({
         </div>
       )}
 
+      {resourceType.pricingMode === 'per_head' && (
+        <div className="mt-5 flex items-center gap-1.5 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
+          <Users size={14} className="text-primary" />
+          Priced for {Math.max(1, resourceType.minPlayers)} player{Math.max(1, resourceType.minPlayers) === 1 ? '' : 's'}
+          {' — staff can adjust the count when you check in.'}
+        </div>
+      )}
+
       <div className="mt-5 space-y-2 border-t border-border pt-4">
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>Base rate</span>
-          <span className="tabular-nums">{formatMoney(hourlyRate, currency)} / hr</span>
+          <span className="tabular-nums">
+            {formatMoney(hourlyRate, currency)} / {resourceType.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+          </span>
         </div>
         <div className="flex items-center justify-between text-base font-extrabold text-foreground">
           <span>Total payable</span>

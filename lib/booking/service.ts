@@ -164,6 +164,39 @@ export async function priceBookingSlots(
 }
 
 /**
+ * Resolve the head_count a caller should price/create a booking with when it
+ * has no player count from the customer (M21 per-head #5) — the public
+ * booking flow, which deliberately never asks online: "keep the online flow
+ * simple" (design doc), the real count is only taken later at check-in
+ * (Per-head #4's BillScreen Players control).
+ *
+ * Returns undefined when none of the referenced resources are per_head — the
+ * overwhelming majority of bookings — so priceBookingSlots/createBookingCore
+ * behave exactly as before this ticket for every per_resource booking.
+ *
+ * When one or more resources ARE per_head, returns the largest min_players
+ * among them (1 for the default, and typical, min_players=1 config — the
+ * ticket's "books at 1 player by default") rather than a hardcoded 1: a
+ * type configured with a higher floor (e.g. snooker = 2) would otherwise
+ * make every public booking attempt fail outright, since priceBookingSlots
+ * itself rejects a headCount below min_players.
+ */
+export async function resolvePublicHeadCount(
+  tx: Db,
+  tenantId: string,
+  resourceIds: string[],
+): Promise<number | undefined> {
+  const rows = await tx
+    .select({ pricingMode: resourceTypes.pricingMode, minPlayers: resourceTypes.minPlayers })
+    .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .where(and(eq(resources.tenantId, tenantId), inArray(resources.id, resourceIds)))
+  const perHead = rows.filter((r) => r.pricingMode === 'per_head')
+  if (perHead.length === 0) return undefined
+  return perHead.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+}
+
+/**
  * Booking number: BK-YYYYMMDD-NNN, sequential per tenant per creation day.
  * Shared by createBookingCore (timed bookings) and seatTableSessionCore
  * (table sessions) so the two numbering schemes can never drift apart.

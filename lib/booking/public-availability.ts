@@ -89,6 +89,11 @@ export type PublicResourceTypeDetail = {
   imageUrl: string | null
   capacity: number | null
   hourlyRate: string
+  /** M21 per-head #5: 'per_resource' (default) or 'per_head' — online
+   *  always books at a fixed head count (see resolvePublicHeadCount in
+   *  lib/booking/service.ts), never an interactive player count. */
+  pricingMode: string
+  minPlayers: number
 }
 
 /**
@@ -113,6 +118,8 @@ export async function getPublicResourceType(
         imageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
         hourlyRate: resourceTypes.hourlyRate,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resourceTypes)
       .where(and(eq(resourceTypes.id, resourceTypeId), eq(resourceTypes.tenantId, tenantId), eq(resourceTypes.isActive, true)))
@@ -255,6 +262,9 @@ export type PublicResource = {
   capacity: number | null
   resourceTypeId: string
   resourceTypeName: string
+  /** M21 per-head #5 — see PublicResourceTypeDetail's doc comment. */
+  pricingMode: string
+  minPlayers: number
 }
 
 /**
@@ -279,6 +289,8 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
         typeHourlyRate: resourceTypes.hourlyRate,
         typeImageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -302,6 +314,8 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
     capacity: row.capacity,
     resourceTypeId: row.resourceTypeId,
     resourceTypeName: row.resourceTypeName,
+    pricingMode: row.pricingMode,
+    minPlayers: row.minPlayers,
   }
 }
 
@@ -330,6 +344,8 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
         typeHourlyRate: resourceTypes.hourlyRate,
         typeImageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -356,6 +372,8 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
         capacity: row.capacity,
         resourceTypeId: row.resourceTypeId,
         resourceTypeName: row.resourceTypeName,
+        pricingMode: row.pricingMode,
+        minPlayers: row.minPlayers,
       },
       bookingId,
     }
