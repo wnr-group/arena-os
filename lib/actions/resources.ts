@@ -119,6 +119,12 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
     })
     if (oldImageUrl) void deleteImage(oldImageUrl)
     revalidatePath('/settings/resources')
+    // A type's own rate/pricingMode/minPlayers feed straight into the New
+    // Booking wizard (listResources() joins resourceTypes) — without this,
+    // switching a type to per_head here left the wizard showing stale data
+    // (no Players field) until a hard reload, same reasoning upsertResource
+    // below already applies to a single unit's own rate/status.
+    revalidatePath('/bookings')
     return {}
   } catch (e) {
     return fail(e)

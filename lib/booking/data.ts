@@ -60,6 +60,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         bufferMinutes: resourceTypes.bufferMinutes,
         typeCapacity: resourceTypes.capacity,
         typeRate: resourceTypes.hourlyRate,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
         rateOverride: resources.hourlyRateOverride,
         imageUrl: resources.imageUrl,
         description: resources.description,

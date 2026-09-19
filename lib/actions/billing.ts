@@ -9,6 +9,7 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill, isManager, type MemberRole } from '@/lib/auth/roles'
 import { previewPromoForBooking } from '@/lib/billing/data'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
+import { BookingError, updateBookingHeadCountCore } from '@/lib/booking/service'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
 import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
 import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
@@ -32,7 +33,7 @@ export type PromoPreviewResult = { error?: string; code?: string; discount?: num
  * lib/actions/bookings.ts:fail().
  */
 function fail(e: unknown): CreateInvoiceResult {
-  if (e instanceof AuthError || e instanceof BillingError) return { error: e.message }
+  if (e instanceof AuthError || e instanceof BillingError || e instanceof BookingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   // 23505 = unique_violation on (tenant_id, invoice_number): a number collided
   // despite the atomic counter. Retrying is safe, so say so rather than leaking.
@@ -157,6 +158,41 @@ export async function createInvoiceForBooking(
 
     revalidatePath('/bookings')
     return { invoiceId: issued.invoiceId, invoiceNumber: issued.invoiceNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const updateHeadCountInput = z.object({
+  bookingId: z.string().uuid(),
+  headCount: z.coerce.number().int().min(1, 'Enter at least 1 player.'),
+})
+
+type UpdateHeadCountResult = { error?: string; headCount?: number }
+
+/**
+ * Edit a per-head (reserved) booking's player count from the POS bill screen
+ * (M21 per-head #4) — re-prices the whole session, since loadBookingLines
+ * (lib/billing/invoice.ts) recomputes qty (hours × head_count) from
+ * booking_slots on every read. Same gate as raising the bill itself: this
+ * changes what the bill will charge, so it's for the people allowed to
+ * charge it. updateBookingHeadCountCore refuses once a bill already exists —
+ * pricing is frozen with it, same as every other pre-bill-only edit.
+ */
+export async function updateBookingHeadCount(
+  input: z.input<typeof updateHeadCountInput>,
+): Promise<UpdateHeadCountResult> {
+  try {
+    const ctx = await requireContext()
+    if (!canBill(ctx.role)) {
+      throw new AuthError('You do not have permission to raise a bill.')
+    }
+    const v = updateHeadCountInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      updateBookingHeadCountCore(tx, { tenantId: ctx.tenant.id }, v),
+    )
+    revalidatePath(`/pos/${v.bookingId}`)
+    return { headCount: result.headCount }
   } catch (e) {
     return fail(e)
   }

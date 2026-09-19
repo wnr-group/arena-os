@@ -24,6 +24,11 @@ export type SessionRow = {
   /** '0.00' until checkout prices the session. */
   slotTotal: string
   rateApplied: string
+  /** M21 per-head #4: 'per_resource'/null (default) or 'per_head' — gates
+   *  the checkout/timed dialogs' Players control. */
+  pricingMode: string | null
+  headCount: number | null
+  minPlayers: number
 }
 
 /** Heads-up fires once per session at the 5-minute mark; the alarm itself

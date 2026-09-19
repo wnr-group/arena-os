@@ -78,6 +78,11 @@ const createInput = z.object({
       }),
     )
     .min(1, 'Add at least one resource slot'),
+  // M21 per-head #4: player count for a per_head resource type — required
+  // (and validated against min_players) by priceBookingSlots itself when a
+  // slot's resource type turns out to be per_head; meaningless and ignored
+  // otherwise.
+  headCount: z.coerce.number().int().min(1).optional(),
 })
 
 /** Server action: create a booking across one or more resource slots for the signed-in tenant. */
@@ -112,6 +117,10 @@ const startWalkinInput = z
     startAt: z.string().datetime(),
     mode: z.enum(['open_tab', 'timed']),
     durationMin: z.coerce.number().int().optional(),
+    // M21 per-head #4: player count for a per_head station — required (and
+    // validated against min_players) by startWalkinCore itself when the
+    // resource turns out to be per_head; ignored otherwise.
+    headCount: z.coerce.number().int().min(1).optional(),
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return
@@ -189,6 +198,12 @@ const checkoutWalkinInput = z.object({
   bookingId: z.string().uuid(),
   // Absent means "now" — see checkoutWalkinCore's default.
   endAt: z.string().datetime().optional(),
+  // M21 per-head #4: an edited player count for a per_head walk-in — absent
+  // means "keep whatever was captured at start" (see resolveHeadCount in
+  // lib/booking/walkin.ts). Like endAt, this travels with the preview/
+  // checkout pair and is only WRITTEN to booking_slots/bookings at the
+  // moment checkoutWalkinCore actually runs, never by the preview.
+  headCount: z.coerce.number().int().min(1).optional(),
 })
 
 type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number; invoiceId?: string; invoiceNumber?: string }
@@ -202,7 +217,18 @@ type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number
  */
 export async function previewWalkinCheckout(
   input: z.input<typeof checkoutWalkinInput>,
-): Promise<{ error?: string; total?: number; billableEnd?: string }> {
+): Promise<{
+  error?: string
+  total?: number
+  billableEnd?: string
+  /** M21 per-head #4: the head count this preview priced at (echoes back
+   *  input.headCount when provided, else whatever was captured at start),
+   *  plus the type's live min_players — so the checkout dialog's Players
+   *  control can initialise and validate without a second round trip. */
+  headCount?: number
+  minPlayers?: number
+  pricingMode?: string
+}> {
   try {
     const ctx = await requireContext()
     if (ctx.tenant.industry === 'restaurant') {

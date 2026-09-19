@@ -28,7 +28,14 @@ const STEPS = ['Devices', 'Slot', 'Customer', 'Confirm']
  *  layout mirrors that page exactly (see components/public-booking/ResourceBookingPage.tsx). */
 const DATE_WINDOW_DAYS = 7
 
-type ResourceTypeOption = { id: string; name: string; hourlyRate: string; capacity: number | null }
+type ResourceTypeOption = {
+  id: string
+  name: string
+  hourlyRate: string
+  capacity: number | null
+  pricingMode: string
+  minPlayers: number
+}
 type TimeSlot = { startsAt: string; resourceId: string }
 /** The whole working-day grid, taken slots included — mirrors the public
  *  resource booking page's Slot type, but carries the assigned resourceId
@@ -73,6 +80,8 @@ export function FutureWizard({
           name: r.typeName,
           hourlyRate: r.hourlyRate,
           capacity: r.capacity,
+          pricingMode: r.pricingMode,
+          minPlayers: r.minPlayers,
         })
       }
     }
@@ -86,7 +95,19 @@ export function FutureWizard({
   )
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
   const hourlyRate = Number(selectedType?.hourlyRate ?? 0)
-  const priceFor = (minutes: number) => (hourlyRate * minutes) / 60
+  const isPerHead = selectedType?.pricingMode === 'per_head'
+
+  // M21 per-head #4: player count for a per_head device — defaults to the
+  // type's min_players, and resets to it whenever the selected type changes
+  // (switching device types mid-flow shouldn't carry a stale count over from
+  // a different type's minimum). No max cap, per the design doc.
+  const [headCount, setHeadCount] = useState(selectedType?.minPlayers ?? 1)
+  useEffect(() => {
+    setHeadCount(selectedType?.minPlayers ?? 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceTypeId])
+
+  const priceFor = (minutes: number) => (hourlyRate * minutes * (isPerHead ? headCount : 1)) / 60
 
   const dateOptions = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
   const [date, setDate] = useState(initialDate)
@@ -235,6 +256,7 @@ export function FutureWizard({
         customerName,
         customerPhone,
         slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
+        headCount: isPerHead ? headCount : undefined,
       })
       if (r.error) setError(r.error)
       else {
@@ -267,7 +289,7 @@ export function FutureWizard({
                     onClick={() => setResourceTypeId(t.id)}
                     icon={<Gamepad2 size={18} />}
                     title={t.name}
-                    subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / hr`}
+                    subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
                     badge={
                       t.capacity != null ? (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
@@ -277,6 +299,35 @@ export function FutureWizard({
                     }
                   />
                 ))}
+              </div>
+            )}
+
+            {isPerHead && selectedType && (
+              <div className="mt-6 max-w-xs">
+                <label className={wizardLabel}>Players</label>
+                <div className="mt-1 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setHeadCount((h) => Math.max(selectedType.minPlayers, h - 1))}
+                    disabled={headCount <= selectedType.minPlayers}
+                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                  >
+                    −
+                  </button>
+                  <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                    {headCount}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setHeadCount((h) => h + 1)}
+                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted"
+                  >
+                    +
+                  </button>
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {selectedType.name} is priced per player — minimum {selectedType.minPlayers}.
+                </p>
               </div>
             )}
 
@@ -433,6 +484,7 @@ export function FutureWizard({
                     k="Time"
                     v={endsAtIso ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}` : '—'}
                   />
+                  {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
                   <SummaryRow k="Price" v={formatMoney(priceFor(duration), currency)} />
                 </dl>
               </div>
@@ -525,6 +577,7 @@ export function FutureWizard({
                 />
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
+                {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
                   <span>Total</span>
                   <span className="tabular-nums">{formatMoney(priceFor(duration), currency)}</span>

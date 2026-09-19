@@ -43,6 +43,10 @@ type ResourceOption = {
   capacity: number | null
   isFree: boolean
   hasUpcomingBooking: boolean
+  /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
+   *  Start & billing step's Players field. */
+  pricingMode: string
+  minPlayers: number
 }
 /** One tile per device type — same card (icon, price/hr subtitle, capacity
  *  badge) as the future-booking wizard's Devices step, and the same
@@ -53,6 +57,7 @@ type ResourceTypeGroup = {
   name: string
   hourlyRate: string
   capacity: number | null
+  pricingMode: string
   resources: ResourceOption[]
 }
 
@@ -107,6 +112,11 @@ export function WalkinWizard({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
+  // M21 per-head #4: player count for a per_head station — defaults to the
+  // type's min_players, reset whenever a different station is picked. No
+  // max cap, per the design doc.
+  const [headCount, setHeadCount] = useState(1)
+
   // Same phone-first lookup as the old dialog — name stays optional either
   // way, so this only ever pre-fills it, never gates the form.
   useEffect(() => {
@@ -145,6 +155,12 @@ export function WalkinWizard({
   const startAtIso = useMemo(() => new Date(baseNow.getTime() + offsetMin * 60_000).toISOString(), [baseNow, offsetMin])
   const freeResources = resources?.filter((r) => r.isFree) ?? []
   const selectedResource = freeResources.find((r) => r.id === resourceId) ?? null
+  const isPerHead = selectedResource?.pricingMode === 'per_head'
+
+  useEffect(() => {
+    setHeadCount(selectedResource?.minPlayers ?? 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceId])
 
   // Grouped by type, same as the future-booking wizard's Devices step — only
   // types with at least one free unit right now show up at all.
@@ -157,6 +173,7 @@ export function WalkinWizard({
           name: r.typeName,
           hourlyRate: r.typeHourlyRate,
           capacity: r.capacity,
+          pricingMode: r.pricingMode,
           resources: [],
         })
       byType.get(r.resourceTypeId)!.resources.push(r)
@@ -214,6 +231,7 @@ export function WalkinWizard({
         startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
         mode,
         durationMin: mode === 'timed' ? durationMin : undefined,
+        headCount: isPerHead ? headCount : undefined,
       })
       if (r.error) setError(r.error)
       else {
@@ -261,7 +279,7 @@ export function WalkinWizard({
                         onClick={() => pickResourceType(g)}
                         icon={<Gamepad2 size={18} />}
                         title={g.name}
-                        subtitle={`${formatMoney(Number(g.hourlyRate), currency)} / hr`}
+                        subtitle={`${formatMoney(Number(g.hourlyRate), currency)} / ${g.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
                         badge={
                           g.capacity != null ? (
                             <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
@@ -412,18 +430,51 @@ export function WalkinWizard({
                 </div>
               )}
 
+              {isPerHead && selectedResource && (
+                <div>
+                  <label className={wizardLabel}>Players</label>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setHeadCount((h) => Math.max(selectedResource.minPlayers, h - 1))}
+                      disabled={headCount <= selectedResource.minPlayers}
+                      className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                    >
+                      −
+                    </button>
+                    <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                      {headCount}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setHeadCount((h) => h + 1)}
+                      className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <p className={wizardHint}>
+                    {selectedResource.typeName} is priced per player — minimum {selectedResource.minPlayers}.
+                  </p>
+                </div>
+              )}
+
               <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm">
                 <dl className="space-y-1.5">
                   <SummaryRow k="Station" v={selectedResource?.name ?? '—'} />
                   <SummaryRow k="Customer" v={name.trim() || phone} />
                   <SummaryRow k="Billing" v={mode === 'open_tab' ? 'Open tab' : `Timed · ${durationMin} min`} />
+                  {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
                   <SummaryRow
                     k={mode === 'timed' ? 'Estimated total' : 'Rate'}
                     v={
                       selectedResource
                         ? mode === 'timed'
-                          ? formatMoney((Number(selectedResource.hourlyRate) * durationMin) / 60, currency)
-                          : `${formatMoney(Number(selectedResource.hourlyRate), currency)} / hr`
+                          ? formatMoney(
+                              (Number(selectedResource.hourlyRate) * durationMin * (isPerHead ? headCount : 1)) / 60,
+                              currency,
+                            )
+                          : `${formatMoney(Number(selectedResource.hourlyRate), currency)} / ${isPerHead ? 'player / hr' : 'hr'}`
                         : '—'
                     }
                   />

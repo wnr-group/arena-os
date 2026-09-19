@@ -14,6 +14,7 @@ import {
   payments,
   refunds,
   resources,
+  resourceTypes,
   taxRates,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -138,6 +139,18 @@ export type BillableBookingHeader = {
   startsAt: string | null
   endsAt: string | null
   resourceNames: string[]
+  /** M21 per-head #4: 'walkin' bookings price/freeze at checkout (see
+   *  checkoutWalkinCore) — the bill screen's Players EDIT control only makes
+   *  sense pre-bill for a reserved booking, so it's gated on this too. */
+  channel: string
+  /** Present when at least one active slot is per_head — null otherwise
+   *  (every per_resource booking, and a walk-in before it's captured one). */
+  pricingMode: string | null
+  headCount: number | null
+  /** The resource type's CURRENT min_players — live, not frozen, same
+   *  reasoning as updateBookingHeadCountCore's own re-check. Meaningless
+   *  when pricingMode is null. */
+  minPlayers: number | null
 }
 
 /** One check of a split bill (M18 #2) — the same shape a normal invoice's
@@ -238,6 +251,8 @@ export async function getBillableForBooking(
         id: bookings.id,
         bookingNumber: bookings.bookingNumber,
         status: bookings.status,
+        channel: bookings.channel,
+        headCount: bookings.headCount,
         branchId: bookings.branchId,
         branchName: branches.name,
         customerId: bookings.customerId,
@@ -318,6 +333,26 @@ export async function getBillableForBooking(
 
     const bookingLines = lines.filter((l) => l.kind === 'booking')
 
+    // M21 per-head #4: any active per_head slot, plus its type's CURRENT
+    // min_players (live, not frozen — same reasoning as
+    // updateBookingHeadCountCore) — DISPLAY/gating only for the bill
+    // screen's Players control; bookings.head_count above is what's
+    // actually billed.
+    const [perHeadSlot] = await tx
+      .select({ minPlayers: resourceTypes.minPlayers })
+      .from(bookingSlots)
+      .innerJoin(resources, eq(resources.id, bookingSlots.resourceId))
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(bookingSlots.tenantId, ctx.tenant.id),
+          eq(bookingSlots.bookingId, row.id),
+          eq(bookingSlots.active, true),
+          eq(bookingSlots.pricingMode, 'per_head'),
+        ),
+      )
+      .limit(1)
+
     // The membership benefit, for DISPLAY on the bill screen. Priced against the
     // undiscounted subtotal, exactly as issueInvoiceForBooking() does, through
     // the same helper — so the figure the cashier sees is the figure that gets
@@ -361,6 +396,10 @@ export async function getBillableForBooking(
         bookingNumber: row.bookingNumber,
         status: row.status,
         billable: isBillableBookingStatus(row.status),
+        channel: row.channel,
+        headCount: row.headCount,
+        pricingMode: perHeadSlot ? 'per_head' : null,
+        minPlayers: perHeadSlot?.minPlayers ?? null,
         branchId: row.branchId,
         branchName: row.branchName,
         customerId: row.customerId,

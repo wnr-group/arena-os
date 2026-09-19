@@ -72,6 +72,11 @@ export type WalkinResourceOption = {
   isFree: boolean
   /** Free right now, but has a scheduled booking later today (or beyond). */
   hasUpcomingBooking: boolean
+  /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
+   *  start form's Players field. */
+  pricingMode: string
+  /** Floor on head_count for a per_head station; meaningless otherwise. */
+  minPlayers: number
 }
 
 /**
@@ -94,6 +99,8 @@ export async function listWalkinResources(
         rateOverride: resources.hourlyRateOverride,
         typeRate: resourceTypes.hourlyRate,
         capacity: resourceTypes.capacity,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -152,6 +159,8 @@ export async function listWalkinResources(
       capacity: r.capacity,
       isFree: !occupiedNow.has(r.id),
       hasUpcomingBooking: hasUpcoming.has(r.id),
+      pricingMode: r.pricingMode,
+      minPlayers: r.minPlayers,
     }))
   })
 }
@@ -175,6 +184,13 @@ export type ActiveWalkin = {
    *  timed walk-in, reused here so the UI can swap "Close tab"/"Extend" for
    *  a plain "Pay" link once there's nothing left to check out. */
   slotTotal: string
+  /** M21 per-head #4: snapshot of the resource type's pricing_mode/the
+   *  session's captured player count, plus the type's LIVE min_players —
+   *  the checkout/timed dialogs use these to show and edit a Players
+   *  control. Null pricing_mode (every pre-#4 walk-in) reads as per_resource. */
+  pricingMode: string | null
+  headCount: number | null
+  minPlayers: number
 }
 
 /**
@@ -201,9 +217,14 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         endsAt: bookingSlots.endsAt,
         rateApplied: bookingSlots.rateApplied,
         slotTotal: bookingSlots.slotTotal,
+        pricingMode: bookingSlots.pricingMode,
+        headCount: bookingSlots.headCount,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(bookings)
       .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
+      .innerJoin(resources, eq(resources.id, bookingSlots.resourceId))
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
       .where(
         and(
           eq(bookings.tenantId, ctx.tenant.id),
@@ -228,6 +249,11 @@ export type StartWalkinInput = {
   mode: WalkinMode
   /** Required (and only meaningful) when mode is 'timed'. */
   durationMin?: number
+  /** M21 per-head #4: player count — required (and validated against
+   *  min_players) when the resource turns out to be per_head; ignored
+   *  otherwise. Captured now so a checkout-time edit (see checkoutWalkinCore)
+   *  has something to default from. */
+  headCount?: number
 }
 
 /**
@@ -281,6 +307,8 @@ export async function startWalkinCore(
       typeRate: resourceTypes.hourlyRate,
       rateOverride: resources.hourlyRateOverride,
       taxPercent: taxRates.percent,
+      pricingMode: resourceTypes.pricingMode,
+      minPlayers: resourceTypes.minPlayers,
     })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -302,6 +330,24 @@ export async function startWalkinCore(
   const taxPercent =
     resource.taxPercent ?? (await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')) ?? '0'
 
+  // M21 per-head #4: captured now (mirrors priceBookingSlots' own
+  // validation for a reserved booking) even though a walk-in isn't PRICED
+  // until checkout — checkoutWalkinCore defaults to whatever's stored here,
+  // and the checkout dialog lets the operator edit it before confirming.
+  let headCount: number | null = null
+  if (resource.pricingMode === 'per_head') {
+    const requested = input.headCount
+    if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
+      throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
+    }
+    if (requested < resource.minPlayers) {
+      throw new BookingError(
+        `${resource.typeName} needs at least ${resource.minPlayers} player${resource.minPlayers === 1 ? '' : 's'}.`,
+      )
+    }
+    headCount = requested
+  }
+
   const customerId = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
@@ -322,6 +368,7 @@ export async function startWalkinCore(
       committedEndAt,
       createdBy: ctx.membershipId,
       checkedInAt: now,
+      headCount,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -340,6 +387,8 @@ export async function startWalkinCore(
     resourceName: resource.name,
     resourceTypeName: resource.typeName,
     taxRatePercent: Number(taxPercent).toFixed(2),
+    pricingMode: resource.pricingMode,
+    headCount,
   })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
@@ -356,7 +405,15 @@ export const WALKIN_CHECKOUT_WINDOW_MINUTES = 30
  *  resource for days. */
 export const WALKIN_EXTEND_MAX_MINUTES = 24 * 60
 
-export type CheckoutWalkinInput = { bookingId: string; endAt?: string }
+export type CheckoutWalkinInput = {
+  bookingId: string
+  endAt?: string
+  /** M21 per-head #4: an edited player count for a per_head walk-in — absent
+   *  means "keep whatever was captured at start." Only ever WRITTEN by
+   *  checkoutWalkinCore itself, at the moment of checkout; a preview never
+   *  persists it, same as endAt. */
+  headCount?: number
+}
 export type ExtendWalkinInput = { bookingId: string; addMinutes: number }
 
 type WalkinForCheckout = {
@@ -377,6 +434,17 @@ type WalkinForCheckout = {
   slotTotal: string
   /** Timed only — null for an open tab. */
   committedEndAt: Date | null
+  /** M21 per-head #4: 'per_resource' (every pre-#4 walk-in reads null as
+   *  this) or 'per_head' — read straight off the slot, same as headCount. */
+  pricingMode: string
+  /** The player count captured at start (or last edited at a previous
+   *  checkout attempt) — null for a per_resource slot. */
+  headCount: number | null
+  /** The resource type's CURRENT min_players — re-read live, not frozen,
+   *  because unlike rate/tax a walk-in's head_count is meant to stay
+   *  editable right up until checkout. Only meaningful when pricingMode is
+   *  'per_head'; 1 otherwise. */
+  minPlayers: number
 }
 
 /**
@@ -421,10 +489,13 @@ async function loadWalkinForCheckout(
 
   const slotCols = {
     id: bookingSlots.id,
+    resourceId: bookingSlots.resourceId,
     startsAt: bookingSlots.startsAt,
     endsAt: bookingSlots.endsAt,
     rateApplied: bookingSlots.rateApplied,
     slotTotal: bookingSlots.slotTotal,
+    pricingMode: bookingSlots.pricingMode,
+    headCount: bookingSlots.headCount,
   }
   const slotWhere = and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true))
   const slotRows = lock
@@ -432,6 +503,20 @@ async function loadWalkinForCheckout(
     : await tx.select(slotCols).from(bookingSlots).where(slotWhere).limit(1)
   const [slot] = slotRows
   if (!slot) throw new BookingError('This walk-in has no active session.')
+
+  const pricingMode = slot.pricingMode ?? 'per_resource'
+  // The resource type's CURRENT min_players, not a frozen snapshot — see the
+  // WalkinForCheckout doc comment above. Unlocked: nothing here is written.
+  let minPlayers = 1
+  if (pricingMode === 'per_head') {
+    const [typeRow] = await tx
+      .select({ minPlayers: resourceTypes.minPlayers })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(eq(resources.id, slot.resourceId))
+      .limit(1)
+    minPlayers = typeRow?.minPlayers ?? 1
+  }
 
   return {
     bookingId: booking.id,
@@ -442,7 +527,31 @@ async function loadWalkinForCheckout(
     slotEndsAt: slot.endsAt,
     slotTotal: slot.slotTotal,
     committedEndAt: booking.committedEndAt,
+    pricingMode,
+    headCount: slot.headCount,
+    minPlayers,
   }
+}
+
+/**
+ * Resolve + validate the head count a preview/checkout should price at (M21
+ * per-head #4) — `requested` (an in-progress edit, not yet persisted) if
+ * given, else whatever was captured at start. Always 1 for a per_resource
+ * slot: head_count plays no part in its price, so there is nothing to
+ * validate. Pure (no DB) — safe after either a locking or a read-only load.
+ */
+function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefined): number {
+  if (walkin.pricingMode !== 'per_head') return 1
+  const headCount = requested ?? walkin.headCount ?? walkin.minPlayers
+  if (!Number.isInteger(headCount) || headCount < 1) {
+    throw new BookingError('Enter a whole number of players, at least 1.')
+  }
+  if (headCount < walkin.minPlayers) {
+    throw new BookingError(
+      `This station needs at least ${walkin.minPlayers} player${walkin.minPlayers === 1 ? '' : 's'}.`,
+    )
+  }
+  return headCount
 }
 
 /** Tenant's active happy-hour rules, in the shape priceElapsedTime expects —
@@ -517,12 +626,19 @@ export async function previewWalkinCheckout(
   tx: Db,
   ctx: { tenantId: string; timezone: string },
   input: CheckoutWalkinInput,
-): Promise<{ total: number; billableEnd: string }> {
+): Promise<{ total: number; billableEnd: string; headCount: number; minPlayers: number; pricingMode: string }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, false)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
+  const headCount = resolveHeadCount(walkin, input.headCount)
   const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone)
-  return { total: priced.unitPrice, billableEnd: billableEndTime(walkin.startsAt, priceEnd).toISOString() }
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+  return {
+    total: priced.unitPrice,
+    billableEnd: billableEndTime(walkin.startsAt, priceEnd).toISOString(),
+    headCount,
+    minPlayers: walkin.minPlayers,
+    pricingMode: walkin.pricingMode,
+  }
 }
 
 /**
@@ -561,16 +677,29 @@ export async function checkoutWalkinCore(
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
+  const headCount = resolveHeadCount(walkin, input.headCount)
   const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone)
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+
+  // M21 per-head #4: the (possibly just-edited) head count is written here,
+  // at the moment checkout actually commits — same "preview travels loose,
+  // only checkout persists" discipline endAt already has. A per_resource
+  // slot's head_count stays null; nothing to write.
+  const headCountUpdate = walkin.pricingMode === 'per_head' ? { headCount } : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx
       .update(bookingSlots)
-      .set({ endsAt: priceEnd, slotTotal: priced.unitPrice.toFixed(2) })
+      .set({ endsAt: priceEnd, slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
       .where(eq(bookingSlots.id, walkin.slotId))
   } else {
-    await tx.update(bookingSlots).set({ slotTotal: priced.unitPrice.toFixed(2) }).where(eq(bookingSlots.id, walkin.slotId))
+    await tx
+      .update(bookingSlots)
+      .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
+      .where(eq(bookingSlots.id, walkin.slotId))
+  }
+  if (walkin.pricingMode === 'per_head') {
+    await tx.update(bookings).set({ headCount }).where(eq(bookings.id, walkin.bookingId))
   }
 
   return { bookingId: walkin.bookingId, total: priced.unitPrice }

@@ -37,6 +37,10 @@ export function TimedWalkinDialog({
     resourceName: string
     startsAt: string
     committedEndAt: string
+    /** M21 per-head #4: gates the Players control below. */
+    pricingMode?: string | null
+    headCount?: number | null
+    minPlayers?: number
   }
   timeZone: string
   currency: string
@@ -57,20 +61,31 @@ export function TimedWalkinDialog({
   const [extendError, setExtendError] = useState<string | null>(null)
   const [extending, startExtend] = useTransition()
 
+  const isPerHead = booking.pricingMode === 'per_head'
+  // M21 per-head #4: an in-progress edit — travels with the preview, only
+  // ever WRITTEN by checkoutWalkin itself at confirm, same discipline
+  // committedEndAt/extend already has.
+  const [headCount, setHeadCount] = useState(booking.headCount ?? booking.minPlayers ?? 1)
+  const minPlayers = booking.minPlayers ?? 1
+
   const [preview, setPreview] = useState<{ total: number } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
   const [checkingOut, startCheckout] = useTransition()
 
-  // Re-priced whenever the committed end moves (an extend) or the clock
-  // ticks past it — same previewWalkinCheckout call checkoutWalkin itself
-  // makes, so the number on screen is what actually gets billed.
+  // Re-priced whenever the committed end moves (an extend), the head count
+  // is edited, or the clock ticks past it — same previewWalkinCheckout call
+  // checkoutWalkin itself makes, so the number on screen is what actually
+  // gets billed.
   useEffect(() => {
     let cancelled = false
     setPreviewLoading(true)
     setPreviewError(null)
-    previewWalkinCheckout({ bookingId: booking.bookingId }).then((r) => {
+    previewWalkinCheckout({
+      bookingId: booking.bookingId,
+      headCount: isPerHead ? headCount : undefined,
+    }).then((r) => {
       if (cancelled) return
       setPreviewLoading(false)
       if (r.error || r.total === undefined) {
@@ -84,7 +99,7 @@ export function TimedWalkinDialog({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booking.bookingId, committedEndAt, Math.floor(now / 15_000)])
+  }, [booking.bookingId, committedEndAt, headCount, Math.floor(now / 15_000)])
 
   function extend(minutes: number) {
     if (!Number.isInteger(minutes) || minutes <= 0) {
@@ -106,7 +121,10 @@ export function TimedWalkinDialog({
   function checkout() {
     setCheckoutError(null)
     startCheckout(async () => {
-      const r = await checkoutWalkin({ bookingId: booking.bookingId })
+      const r = await checkoutWalkin({
+        bookingId: booking.bookingId,
+        headCount: isPerHead ? headCount : undefined,
+      })
       if (r.error || !r.invoiceId) {
         setCheckoutError(r.error ?? 'Could not check out this session.')
         return
@@ -176,6 +194,36 @@ export function TimedWalkinDialog({
           </div>
         </div>
         {extendError && <p className="mt-1.5 text-sm text-destructive">{extendError}</p>}
+
+        {isPerHead && (
+          <>
+            <label className="mt-4 block text-sm font-medium text-foreground">Players</label>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setHeadCount((h) => Math.max(minPlayers, h - 1))}
+                disabled={busy || headCount <= minPlayers}
+                className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+              >
+                −
+              </button>
+              <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                {headCount}
+              </span>
+              <button
+                type="button"
+                onClick={() => setHeadCount((h) => h + 1)}
+                disabled={busy}
+                className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Editing re-prices the whole session — minimum {minPlayers}.
+            </p>
+          </>
+        )}
 
         <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4">
           <div className="flex items-center justify-between text-sm text-muted-foreground">

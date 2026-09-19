@@ -58,6 +58,9 @@ export default async function SessionsPage() {
         billingMode: w.billingMode,
         slotTotal: w.slotTotal,
         rateApplied: w.rateApplied,
+        pricingMode: w.pricingMode,
+        headCount: w.headCount,
+        minPlayers: w.minPlayers,
       }))}
     />
   )

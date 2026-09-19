@@ -17,6 +17,10 @@ export type WizardResource = {
    *  type-level booking can't know which unit it'll land on yet. */
   hourlyRate: string
   capacity: number | null
+  /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
+   *  future-booking wizard's Players field. */
+  pricingMode: string
+  minPlayers: number
 }
 
 /**

@@ -36,6 +36,10 @@ export function WalkinCheckoutDialog({
     customerPhone: string | null
     resourceName: string
     startsAt: string
+    /** M21 per-head #4: gates the Players control below. */
+    pricingMode?: string | null
+    headCount?: number | null
+    minPlayers?: number
   }
   timeZone: string
   currency: string
@@ -50,6 +54,13 @@ export function WalkinCheckoutDialog({
   const [offsetMin, setOffsetMin] = useState(0)
   const endAtIso = new Date(baseNow.getTime() + offsetMin * 60_000).toISOString()
 
+  const isPerHead = booking.pricingMode === 'per_head'
+  // M21 per-head #4: an in-progress edit — travels with the preview, only
+  // ever WRITTEN by checkoutWalkin itself at confirm, same discipline
+  // offsetMin/endAt already has.
+  const [headCount, setHeadCount] = useState(booking.headCount ?? booking.minPlayers ?? 1)
+  const minPlayers = booking.minPlayers ?? 1
+
   const [preview, setPreview] = useState<{ total: number; billableEnd: string } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -60,7 +71,11 @@ export function WalkinCheckoutDialog({
     let cancelled = false
     setPreviewLoading(true)
     setPreviewError(null)
-    previewWalkinCheckout({ bookingId: booking.bookingId, endAt: endAtIso }).then((r) => {
+    previewWalkinCheckout({
+      bookingId: booking.bookingId,
+      endAt: endAtIso,
+      headCount: isPerHead ? headCount : undefined,
+    }).then((r) => {
       if (cancelled) return
       setPreviewLoading(false)
       if (r.error || r.total === undefined || r.billableEnd === undefined) {
@@ -74,12 +89,16 @@ export function WalkinCheckoutDialog({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booking.bookingId, offsetMin])
+  }, [booking.bookingId, offsetMin, headCount])
 
   function confirm() {
     setError(null)
     start(async () => {
-      const r = await checkoutWalkin({ bookingId: booking.bookingId, endAt: endAtIso })
+      const r = await checkoutWalkin({
+        bookingId: booking.bookingId,
+        endAt: endAtIso,
+        headCount: isPerHead ? headCount : undefined,
+      })
       if (r.error || !r.invoiceId) {
         setError(r.error ?? 'Could not close this tab.')
         return
@@ -130,6 +149,36 @@ export function WalkinCheckoutDialog({
           </button>
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">Up to {OFFSET_MAX_MIN} minutes either side of now.</p>
+
+        {isPerHead && (
+          <>
+            <label className="mt-4 block text-sm font-medium text-foreground">Players</label>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setHeadCount((h) => Math.max(minPlayers, h - 1))}
+                disabled={pending || headCount <= minPlayers}
+                className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+              >
+                −
+              </button>
+              <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                {headCount}
+              </span>
+              <button
+                type="button"
+                onClick={() => setHeadCount((h) => h + 1)}
+                disabled={pending}
+                className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Editing re-prices the whole session — minimum {minPlayers}.
+            </p>
+          </>
+        )}
 
         <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4">
           <div className="flex items-center justify-between text-sm text-muted-foreground">

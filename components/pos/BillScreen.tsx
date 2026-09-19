@@ -4,7 +4,7 @@ import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
-import { createInvoiceForBooking, previewPromoCodeForBooking } from '@/lib/actions/billing'
+import { createInvoiceForBooking, previewPromoCodeForBooking, updateBookingHeadCount } from '@/lib/actions/billing'
 import {
   computeServiceCharge,
   priceBill,
@@ -28,6 +28,14 @@ type BookingHeader = {
   startsAt: string | null
   endsAt: string | null
   resourceNames: string[]
+  /** M21 per-head #4: a walk-in prices/freezes at checkout, not here — the
+   *  Players EDIT control only makes sense pre-bill for a reserved booking. */
+  channel: string
+  /** 'per_head' when at least one active slot is — null otherwise. */
+  pricingMode: string | null
+  headCount: number | null
+  /** The resource type's live min_players; meaningless when pricingMode is null. */
+  minPlayers: number | null
 }
 type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
 
@@ -150,6 +158,36 @@ export function BillScreen({
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
   const [splitOpen, setSplitOpen] = useState(false)
+
+  // M21 per-head #4 — the bill screen's Players control.
+  const [headCountText, setHeadCountText] = useState(String(booking.headCount ?? booking.minPlayers ?? 1))
+  const [headCountError, setHeadCountError] = useState<string | null>(null)
+  const [headCountPending, startHeadCount] = useTransition()
+  // A walk-in prices/freezes at checkout (WalkinCheckoutDialog/TimedWalkinDialog
+  // own that edit instead — see lib/booking/walkin.ts's checkoutWalkinCore),
+  // and once a bill exists here the pricing is frozen too — same gate as
+  // every other pre-bill-only control on this screen.
+  const canEditHeadCount = booking.channel !== 'walkin' && !existingInvoice && !splitChecks
+  function saveHeadCount() {
+    const n = Number(headCountText)
+    if (!Number.isInteger(n) || n < 1) {
+      setHeadCountError('Enter a whole number, at least 1.')
+      return
+    }
+    if (booking.minPlayers !== null && n < booking.minPlayers) {
+      setHeadCountError(`Needs at least ${booking.minPlayers} player${booking.minPlayers === 1 ? '' : 's'}.`)
+      return
+    }
+    setHeadCountError(null)
+    startHeadCount(async () => {
+      const r = await updateBookingHeadCount({ bookingId: booking.id, headCount: n })
+      if (r.error) {
+        setHeadCountError(r.error)
+        return
+      }
+      router.refresh()
+    })
+  }
 
   const canComp = isRestaurant && isManager
 
@@ -393,6 +431,40 @@ export function BillScreen({
           {booking.status.replace('_', ' ')}
         </span>
       </div>
+
+      {/* ── players (M21 per-head #4) ── */}
+      {booking.pricingMode === 'per_head' && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+          <span className="font-medium text-foreground">Players</span>
+          {canEditHeadCount ? (
+            <>
+              <input
+                type="number"
+                min={booking.minPlayers ?? 1}
+                step={1}
+                value={headCountText}
+                onChange={(e) => setHeadCountText(e.target.value)}
+                disabled={headCountPending}
+                className="w-16 rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:border-primary disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={saveHeadCount}
+                disabled={headCountPending || headCountText === String(booking.headCount ?? '')}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {headCountPending && <Loader2 size={12} className="animate-spin" />} Update
+              </button>
+              <span className="text-xs text-muted-foreground">
+                Re-prices the whole session · min {booking.minPlayers ?? 1}
+              </span>
+              {headCountError && <span className="text-xs text-destructive">{headCountError}</span>}
+            </>
+          ) : (
+            <span className="text-muted-foreground">{booking.headCount ?? '—'}</span>
+          )}
+        </div>
+      )}
 
       {/* ── blocking states ── */}
       {existingInvoice && (

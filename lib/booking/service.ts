@@ -251,6 +251,91 @@ export async function createBookingCore(
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }
 
+export type UpdateBookingHeadCountInput = { bookingId: string; headCount: number }
+
+/**
+ * Change a per_head (reserved) booking's player count before it's billed
+ * (M21 per-head #4) — the POS bill screen's Players control.
+ *
+ * Unlike rate/tax (frozen at booking time, see priceBookingSlots, so a later
+ * config change can't reprice an old booking), head_count is meant to stay
+ * EDITABLE right up until the bill is raised: min_players is re-checked
+ * against the resource type's CURRENT setting here, not whatever was true
+ * when the booking was made.
+ *
+ * Writes straight onto bookings.head_count and every active per_head
+ * booking_slots row for this booking. Nothing else needs to change:
+ * loadBookingLines (lib/billing/invoice.ts) already recomputes each line's
+ * qty (hours × head_count) from booking_slots on every read, so the very
+ * next bill-screen load re-prices the whole session with no extra step.
+ *
+ * Blocked once a bill already exists — findLiveBilling is the same check
+ * requireNoLiveInvoice uses elsewhere in this file, just with wording that
+ * fits an arbitrary resource rather than always "this table."
+ */
+export async function updateBookingHeadCountCore(
+  tx: Db,
+  ctx: { tenantId: string },
+  input: UpdateBookingHeadCountInput,
+): Promise<{ bookingId: string; headCount: number }> {
+  if (!Number.isInteger(input.headCount) || input.headCount < 1) {
+    throw new BookingError('Enter a whole number of players, at least 1.')
+  }
+
+  const [booking] = await tx
+    .select({ id: bookings.id })
+    .from(bookings)
+    .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+    .for('update')
+    .limit(1)
+  if (!booking) throw new BookingError('Booking not found.')
+
+  const existing = await findLiveBilling(tx, ctx.tenantId, booking.id)
+  if (existing) {
+    throw new BookingError('This booking has already been billed — the player count is frozen with the bill.')
+  }
+
+  const slots = await tx
+    .select({ id: bookingSlots.id, resourceId: bookingSlots.resourceId, pricingMode: bookingSlots.pricingMode })
+    .from(bookingSlots)
+    .where(
+      and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true)),
+    )
+    .for('update')
+  const perHeadSlots = slots.filter((s) => s.pricingMode === 'per_head')
+  if (perHeadSlots.length === 0) {
+    throw new BookingError('This booking has no per-head resource to adjust.')
+  }
+
+  // min_players is checked against the resource type's CURRENT setting, not
+  // a snapshot — see the doc comment above.
+  const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
+  const typeRows = await tx
+    .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
+    .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
+  const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+  if (input.headCount < minPlayers) {
+    const name = typeRows[0]?.typeName ?? 'This resource'
+    throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+  }
+
+  await tx.update(bookings).set({ headCount: input.headCount }).where(eq(bookings.id, booking.id))
+  await tx
+    .update(bookingSlots)
+    .set({ headCount: input.headCount })
+    .where(
+      and(
+        eq(bookingSlots.bookingId, booking.id),
+        eq(bookingSlots.tenantId, ctx.tenantId),
+        eq(bookingSlots.pricingMode, 'per_head'),
+      ),
+    )
+
+  return { bookingId: booking.id, headCount: input.headCount }
+}
+
 export type SeatTableSessionInput = {
   branchId: string
   resourceId: string
