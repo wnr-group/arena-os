@@ -1,9 +1,12 @@
 import { redirect } from 'next/navigation'
+import { and, eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
-import { ROLE_LABELS } from '@/lib/auth/roles'
+import { ROLE_LABELS, canManageWalkins } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
 import { AppShell } from '@/components/AppShell'
+import { withUser } from '@/db'
+import { branches } from '@/db/schema'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -41,6 +44,21 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const { tenant, role } = ctx
 
+  // Same gate as the Sessions nav entry (Sidebar.tsx) — only fetch the branch
+  // the top bar's global alarm needs to poll when there's actually something
+  // for it to poll.
+  const walkinsEnabled = tenant.industry !== 'restaurant' && canManageWalkins(role)
+  const branchId = walkinsEnabled
+    ? await withUser(ctx.user.id, async (tx) => {
+        const [branch] = await tx
+          .select({ id: branches.id })
+          .from(branches)
+          .where(and(eq(branches.tenantId, tenant.id), eq(branches.isPrimary, true)))
+          .limit(1)
+        return branch?.id ?? null
+      })
+    : null
+
   return (
     // Merge note: the responsive AppShell (from main) replaced the inline
     // sidebar/header this file used to render. The `no-print` chrome-hiding that
@@ -50,9 +68,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       industry={tenant.industry}
       tenantName={tenant.name}
       role={role}
+      userFullName={user.fullName}
       userEmail={user.email}
       roleLabel={ROLE_LABELS[role]}
       signOutAction={signOut}
+      walkinsEnabled={walkinsEnabled}
+      branchId={branchId}
     >
       {children}
     </AppShell>

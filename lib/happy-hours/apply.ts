@@ -23,7 +23,13 @@ export type AppliedHappyHour = {
   rule: HappyHourRule
 }
 
-function discountAmount(basePrice: number, rule: HappyHourRule): number {
+/**
+ * Exported (M21) so lib/billing/elapsed-time.ts's per-segment pricing can
+ * apply the SAME discount math to a resource's hourly rate that this file
+ * already applies to a menu item's price — one formula, two consumers, no
+ * risk of the two drifting apart.
+ */
+export function discountAmount(basePrice: number, rule: HappyHourRule): number {
   const value = Number(rule.discountValue)
   return rule.discountType === 'percentage' ? (basePrice * value) / 100 : value
 }

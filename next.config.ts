@@ -20,6 +20,10 @@ function contentSecurityPolicy(): string {
     // http://127.0.0.1:54321 is local Supabase storage — dev only, mirrors
     // the images.remotePatterns entry below.
     `img-src 'self' data: https://*.supabase.co https://*.neon.tech https://*.amazonaws.com${isProd ? '' : ' http://127.0.0.1:54321'}`,
+    // The Sessions board's time's-up alarm (M21 #6) is a data: URI <audio>
+    // element — no external asset dependency. Falls back to default-src
+    // otherwise, which excludes data:, so this stays explicit.
+    "media-src 'self' data:",
     "font-src 'self'",
     "connect-src 'self'",
     "object-src 'none'",

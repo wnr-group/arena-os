@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
+import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
   seatTableSessionCore,
@@ -16,6 +17,20 @@ import {
   assertBookingFullyPaid,
   BookingError,
 } from '@/lib/booking/service'
+import {
+  startWalkinCore,
+  checkoutWalkinCore,
+  extendWalkinCore,
+  previewWalkinCheckout as previewWalkinCheckoutCore,
+  listWalkinResources as listWalkinResourcesForBranch,
+  listActiveWalkins,
+  WALKIN_MIN_DURATION_MINUTES,
+  WALKIN_MAX_DURATION_MINUTES,
+  WALKIN_DURATION_STEP_MINUTES,
+  WALKIN_EXTEND_MAX_MINUTES,
+  type WalkinResourceOption,
+} from '@/lib/booking/walkin'
+import { issueInvoiceForBooking, BillingError } from '@/lib/billing/invoice'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -25,7 +40,7 @@ type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
-  if (e instanceof AuthError || e instanceof BookingError) return { error: e.message }
+  if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const pg = pgError(e)
   // 23P01 = exclusion_violation: the exclusion constraint caught an overlap.
@@ -63,6 +78,11 @@ const createInput = z.object({
       }),
     )
     .min(1, 'Add at least one resource slot'),
+  // M21 per-head #4: player count for a per_head resource type — required
+  // (and validated against min_players) by priceBookingSlots itself when a
+  // slot's resource type turns out to be per_head; meaningless and ignored
+  // otherwise.
+  headCount: z.coerce.number().int().min(1).optional(),
 })
 
 /** Server action: create a booking across one or more resource slots for the signed-in tenant. */
@@ -79,6 +99,295 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
     return fail(e)
+  }
+}
+
+const WALKIN_INDUSTRY_ERROR = 'Walk-ins are not enabled for this business.'
+
+const startWalkinInput = z
+  .object({
+    branchId: z.string().uuid(),
+    resourceId: z.string().uuid(),
+    phone: z
+      .string()
+      .trim()
+      .min(1, 'Phone number is required.')
+      .refine((v) => isValidPhone(v), 'Enter a valid 10-digit phone number.'),
+    name: z.string().trim().optional(),
+    startAt: z.string().datetime(),
+    mode: z.enum(['open_tab', 'timed']),
+    durationMin: z.coerce.number().int().optional(),
+    // M21 per-head #4: player count for a per_head station — required (and
+    // validated against min_players) by startWalkinCore itself when the
+    // resource turns out to be per_head; ignored otherwise.
+    headCount: z.coerce.number().int().min(1).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.mode !== 'timed') return
+    if (
+      v.durationMin === undefined ||
+      v.durationMin < WALKIN_MIN_DURATION_MINUTES ||
+      v.durationMin > WALKIN_MAX_DURATION_MINUTES ||
+      v.durationMin % WALKIN_DURATION_STEP_MINUTES !== 0
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['durationMin'],
+        message: `Pick a duration between ${WALKIN_MIN_DURATION_MINUTES} minutes and ${WALKIN_MAX_DURATION_MINUTES / 60} hours, in ${WALKIN_DURATION_STEP_MINUTES}-minute steps.`,
+      })
+    }
+  })
+
+/**
+ * Start a walk-in session (M21 #3) — the non-restaurant sibling of seatTable.
+ * Gated at the action layer like every other industry-scoped action here: a
+ * restaurant tenant (which uses M17 Seat-a-party instead) or a role outside
+ * WALKIN_ROLES gets rejected here regardless of what the client sent, even if
+ * the chooser/start form were somehow bypassed.
+ */
+export async function startWalkin(input: z.input<typeof startWalkinInput>): Promise<CreateResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to start a walk-in.')
+    }
+    const v = startWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      startWalkinCore(
+        tx,
+        { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+        v,
+      ),
+    )
+
+    revalidatePath('/bookings')
+    return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Free/occupied hourly stations for the walk-in start form's station picker.
+ * Same industry/role gate as startWalkin — read-only, but a restaurant
+ * tenant or unauthorized role has no legitimate reason to see it either.
+ */
+export async function listWalkinResources(
+  branchId: string,
+): Promise<{ error?: string; resources?: WalkinResourceOption[] }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to start a walk-in.')
+    }
+    const resources = await listWalkinResourcesForBranch(ctx, branchId)
+    return { resources }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const checkoutWalkinInput = z.object({
+  bookingId: z.string().uuid(),
+  // Absent means "now" — see checkoutWalkinCore's default.
+  endAt: z.string().datetime().optional(),
+  // M21 per-head #4: an edited player count for a per_head walk-in — absent
+  // means "keep whatever was captured at start" (see resolveHeadCount in
+  // lib/booking/walkin.ts). Like endAt, this travels with the preview/
+  // checkout pair and is only WRITTEN to booking_slots/bookings at the
+  // moment checkoutWalkinCore actually runs, never by the preview.
+  headCount: z.coerce.number().int().min(1).optional(),
+})
+
+type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number; invoiceId?: string; invoiceNumber?: string }
+
+/**
+ * Read-only: what checkoutWalkin would charge for the given end time, for the
+ * checkout dialog's live-updating amount as the operator nudges the ±30-min
+ * slider. Same gate as starting a walk-in — closing one is the same
+ * capability. Writes nothing; the real checkoutWalkin re-derives this from
+ * scratch under a lock.
+ */
+export async function previewWalkinCheckout(
+  input: z.input<typeof checkoutWalkinInput>,
+): Promise<{
+  error?: string
+  total?: number
+  billableEnd?: string
+  /** M21 per-head #4: the head count this preview priced at (echoes back
+   *  input.headCount when provided, else whatever was captured at start),
+   *  plus the type's live min_players — so the checkout dialog's Players
+   *  control can initialise and validate without a second round trip. */
+  headCount?: number
+  minPlayers?: number
+  pricingMode?: string
+}> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to check out a walk-in.')
+    }
+    const v = checkoutWalkinInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      previewWalkinCheckoutCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+    )
+    return result
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Close out a walk-in's session — an open tab's end time (M21 #4) or a timed
+ * session's committed end plus any extensions (M21 #5, blocked until the
+ * operator extends past "now" if it's already passed): price it and raise
+ * the bill in one transaction, reusing issueInvoiceForBooking so membership
+ * discount, loyalty, resource GST and any open food orders fold in exactly
+ * as they would for any other booking. The caller (the checkout dialog)
+ * then routes to /pos/[bookingId], which already renders straight to the
+ * payment panel once an invoice exists — no separate "raise bill" click, no
+ * online prepay.
+ *
+ * DELIBERATE exception to the general billing gate (M21 #7, product-owner
+ * confirmed — see BILLING_ROLES's own doc comment in lib/auth/roles.ts):
+ * this DOES raise a real GST invoice, and receptionist/floor_staff — both in
+ * WALKIN_ROLES — are otherwise excluded from BILLING_ROLES because they
+ * never issue one anywhere else in the app (createInvoiceForBooking et al.
+ * all gate on canBill). Walk-in checkout is the one carve-out: on-shift
+ * floor staff who started or extended a session are trusted to close it out
+ * themselves too, rather than needing to hand off to a cashier. Gated on
+ * canManageWalkins alone, on purpose — do not add a canBill check here
+ * without revisiting that product decision first.
+ *
+ * The booking itself is NOT marked completed here — that stays gated on
+ * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
+ * actually settles this invoice.
+ */
+export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>): Promise<CheckoutWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to check out a walk-in.')
+    }
+    const v = checkoutWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const checkout = await checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v)
+      const invoice = await issueInvoiceForBooking(
+        tx,
+        { id: ctx.tenant.id, timezone: ctx.tenant.timezone },
+        { bookingId: checkout.bookingId },
+      )
+      return { ...checkout, invoice }
+    })
+
+    revalidatePath('/bookings')
+    revalidatePath(`/pos/${result.bookingId}`)
+    return {
+      bookingId: result.bookingId,
+      total: result.total,
+      invoiceId: result.invoice.invoiceId,
+      invoiceNumber: result.invoice.invoiceNumber,
+    }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const extendWalkinInput = z.object({
+  bookingId: z.string().uuid(),
+  addMinutes: z.coerce.number().int().min(1).max(WALKIN_EXTEND_MAX_MINUTES),
+})
+
+type ExtendWalkinResult = { error?: string; bookingId?: string; committedEndAt?: string }
+
+/**
+ * Push a timed walk-in's committed end forward (M21 #5) — the countdown
+ * badge re-arms from whatever `committedEndAt` this returns. Same gate as
+ * starting/checking out a walk-in; no money moves here, only at checkout.
+ */
+export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Promise<ExtendWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to extend a walk-in.')
+    }
+    const v = extendWalkinInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) => extendWalkinCore(tx, { tenantId: ctx.tenant.id }, v))
+
+    revalidatePath('/bookings')
+    return result
+  } catch (e) {
+    // 23P01 here specifically means the extension would now overlap
+    // something else booked on this resource right after the OLD committed
+    // end — friendlier than the generic "pick another slot" wording, which
+    // reads oddly for an in-progress session that isn't being re-slotted.
+    const pg = pgError(e)
+    if (pg?.code === '23P01') {
+      return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
+    }
+    return fail(e)
+  }
+}
+
+export type ActiveWalkinAlarmRow = {
+  bookingId: string
+  resourceName: string
+  customerName: string | null
+  customerPhone: string | null
+  billingMode: 'open_tab' | 'timed'
+  endsAt: string | null
+  slotTotal: string
+  /** Minutes before endsAt the heads-up should fire — bookings.warning_minutes. */
+  warningMinutes: number
+}
+
+/**
+ * Bare-bones active-walk-in read for the top bar's global time's-up alarm —
+ * polled from every page, not just /sessions, so the alarm fires wherever
+ * staff happen to be. Fails soft to an empty list (never throws) since a
+ * background poll erroring out is noise, not something a toast should
+ * surface; the gate itself matches every other walk-in action, just quiet
+ * instead of returning `{ error }`.
+ */
+export async function listActiveWalkinsForAlarm(branchId: string): Promise<{ sessions: ActiveWalkinAlarmRow[] }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant' || !canManageWalkins(ctx.role)) {
+      return { sessions: [] }
+    }
+    const rows = await listActiveWalkins(ctx, branchId)
+    return {
+      sessions: rows.map((w) => ({
+        bookingId: w.bookingId,
+        resourceName: w.resourceName,
+        customerName: w.customerName,
+        customerPhone: w.customerPhone,
+        billingMode: w.billingMode,
+        endsAt: w.endsAt ? w.endsAt.toISOString() : null,
+        slotTotal: w.slotTotal,
+        warningMinutes: w.warningMinutes,
+      })),
+    }
+  } catch {
+    return { sessions: [] }
   }
 }
 
@@ -248,7 +557,11 @@ export async function lookupCustomerByPhone(phone: string): Promise<CustomerLook
 
 type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
 
-/** Server action: transition a booking's status, gating 'completed' on a fully-paid bill and cancelling its open orders on 'cancelled'. */
+/**
+ * Server action: transition a booking's status, gating 'completed' on a
+ * fully-paid bill, refusing 'no_show' for a walk-in (M21 #8 QA pass — see
+ * below), and cancelling its open orders on 'cancelled'.
+ */
 export async function setBookingStatus(id: string, status: BookingStatus): Promise<Result> {
   try {
     const ctx = await requireContext()
@@ -261,6 +574,23 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
     await withUser(ctx.user.id, async (tx) => {
       if (status === 'completed') {
         await assertBookingFullyPaid(tx, ctx.tenant.id, id)
+      }
+
+      if (status === 'no_show') {
+        // A walk-in is born already `checked_in` (startWalkinCore) — the
+        // customer is physically present the moment the booking exists, so
+        // "didn't show up" cannot apply. The UI never offers this either
+        // (BookingsView's No-show button only shows for a 'confirmed'
+        // booking, which a walk-in never is), but hiding a button is
+        // convenience, never a guard — the action refuses it too.
+        const [row] = await tx
+          .select({ channel: bookings.channel })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (row?.channel === 'walkin') {
+          throw new BookingError('A walk-in cannot be marked no-show — it is already checked in.')
+        }
       }
 
       await tx.update(bookings).set(set).where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))

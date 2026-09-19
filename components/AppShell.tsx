@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { LogOut, Menu, X, PanelRightOpen, PanelRightClose } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
+import { TopBarActions } from '@/components/TopBarActions'
 import type { MemberRole } from '@/lib/auth/roles'
 import { cn } from '@/lib/utils/cn'
 
@@ -26,18 +27,28 @@ export function AppShell({
   industry,
   tenantName,
   role,
+  userFullName,
   userEmail,
   roleLabel,
   signOutAction,
+  walkinsEnabled,
+  branchId,
   children,
 }: {
   industryLabel: string
   industry: string
   tenantName: string
   role: MemberRole
+  userFullName: string | null
   userEmail: string
   roleLabel: string
   signOutAction: () => void | Promise<void>
+  /** Gates the global time's-up alarm in the top bar — same rule as the
+   *  Sessions nav entry (see Sidebar.tsx): non-restaurant + canManageWalkins. */
+  walkinsEnabled: boolean
+  /** The tenant's primary branch, for the alarm poll. Null when walkinsEnabled
+   *  is false or no primary branch is configured yet. */
+  branchId: string | null
   children: React.ReactNode
 }) {
   const [collapsed, setCollapsed] = useState(false)
@@ -175,22 +186,27 @@ export function AppShell({
 
       {/* Main Content Area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* Mobile Header */}
-        <header className="no-print flex h-14 items-center justify-between border-b border-border bg-card/65 backdrop-blur-md px-4 sm:hidden">
-          <div className="flex items-center gap-3">
+        {/* Top bar — every page, every breakpoint (M21 #6 follow-up) */}
+        <header className="no-print flex h-14 shrink-0 items-center justify-end gap-3 border-b border-border bg-accent backdrop-blur-md px-4">
+          <div className="mr-auto flex items-center gap-3 sm:hidden">
             <button
               type="button"
               onClick={() => setMobileOpen(true)}
-              className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="rounded-lg p-2 text-accent-foreground/60 transition-colors hover:bg-[rgba(139,34,66,0.07)] hover:text-primary"
               aria-label="Open menu"
             >
               <Menu size={20} />
             </button>
-            <span className="font-semibold tracking-tight text-sm">{tenantName}</span>
+            <span className="font-semibold tracking-tight text-sm text-foreground">{tenantName}</span>
           </div>
-          <div className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-tr from-primary to-primary-hover text-xs font-bold text-primary-foreground shadow-sm">
-            {initialsOf(tenantName)}
-          </div>
+          <TopBarActions
+            userFullName={userFullName}
+            userEmail={userEmail}
+            roleLabel={roleLabel}
+            signOutAction={signOutAction}
+            walkinsEnabled={walkinsEnabled}
+            branchId={branchId}
+          />
         </header>
 
         <main id="app-main-scroll" className="min-w-0 flex-1 bg-background/50 overflow-y-auto">

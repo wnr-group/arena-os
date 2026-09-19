@@ -44,6 +44,8 @@ export default async function ResourceTypesPage() {
           imageUrl: t.imageUrl,
           taxRateId: t.taxRateId,
           taxRateName: t.taxRateName,
+          pricingMode: t.pricingMode,
+          minPlayers: t.minPlayers,
           isActive: t.isActive,
         }))}
       />

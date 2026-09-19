@@ -34,6 +34,11 @@ export type CreateBookingInput = {
   discount: number
   deposit: number
   slots: CreateBookingSlotInput[]
+  /** Player count (M21 per-head #2) — required, and only meaningful, when a
+   *  slot's resource type is pricing_mode='per_head'. Applies uniformly to
+   *  every per_head slot in this booking (bookings.head_count is one value
+   *  per booking, not per slot — see 0094_per_head_pricing.sql). */
+  headCount?: number
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -47,6 +52,11 @@ export type PricedBookingSlot = {
   resourceName: string
   resourceTypeName: string
   taxRatePercent: string
+  /** Snapshot of the booking's head_count (M21 per-head #2) — null for a
+   *  per_resource slot, same discipline as rateApplied/taxRatePercent. */
+  headCount: number | null
+  /** Snapshot of the resource type's pricing_mode at booking time. */
+  pricingMode: string
 }
 
 /**
@@ -55,11 +65,17 @@ export type PricedBookingSlot = {
  * BEFORE creating it (the public pay-now flow, lib/actions/public-booking.ts,
  * needs this to decide how much to charge online) without a second,
  * drifting copy of the rate lookup.
+ *
+ * M21 per-head #2: a per_head resource type bills head_count × rate × hours
+ * instead of rate × hours — hourlyRate's meaning flips from "per resource"
+ * to "per player" (see resourceTypes.hourlyRate's comment in db/schema.ts).
+ * A per_resource slot (the default, and every pre-existing type) is priced
+ * exactly as before; head_count plays no part in its total.
  */
 export async function priceBookingSlots(
   tx: Db,
   ctx: { tenantId: string },
-  input: { branchId: string; slots: CreateBookingSlotInput[] },
+  input: { branchId: string; slots: CreateBookingSlotInput[]; headCount?: number },
 ): Promise<{ subtotal: number; slots: PricedBookingSlot[] }> {
   for (const s of input.slots) {
     if (new Date(s.endsAt) <= new Date(s.startsAt)) {
@@ -77,6 +93,8 @@ export async function priceBookingSlots(
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       rateOverride: resources.hourlyRateOverride,
+      pricingMode: resourceTypes.pricingMode,
+      minPlayers: resourceTypes.minPlayers,
       // Only a rate with appliesTo 'resources' or 'both' can ever be set here
       // (enforced in lib/actions/resources.ts), so no re-check is needed at
       // read time — unlike menu items, which snapshot from a live join too
@@ -108,8 +126,26 @@ export async function priceBookingSlots(
     const r = byId.get(s.resourceId)!
     const rate = Number(r.rateOverride ?? r.typeRate)
     const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
-    const total = rate * hours
+
+    let headCount: number | null = null
+    let total: number
+    if (r.pricingMode === 'per_head') {
+      const requested = input.headCount
+      if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
+        throw new BookingError(`${r.typeName} is priced per player — enter the number of players.`)
+      }
+      if (requested < r.minPlayers) {
+        throw new BookingError(
+          `${r.typeName} needs at least ${r.minPlayers} player${r.minPlayers === 1 ? '' : 's'}.`,
+        )
+      }
+      headCount = requested
+      total = headCount * rate * hours
+    } else {
+      total = rate * hours
+    }
     subtotal += total
+
     return {
       resourceId: s.resourceId,
       startsAt: new Date(s.startsAt),
@@ -119,10 +155,45 @@ export async function priceBookingSlots(
       resourceName: r.name,
       resourceTypeName: r.typeName,
       taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
+      headCount,
+      pricingMode: r.pricingMode,
     }
   })
 
   return { subtotal, slots }
+}
+
+/**
+ * Resolve the head_count a caller should price/create a booking with when it
+ * has no player count from the customer (M21 per-head #5) — the public
+ * booking flow, which deliberately never asks online: "keep the online flow
+ * simple" (design doc), the real count is only taken later at check-in
+ * (Per-head #4's BillScreen Players control).
+ *
+ * Returns undefined when none of the referenced resources are per_head — the
+ * overwhelming majority of bookings — so priceBookingSlots/createBookingCore
+ * behave exactly as before this ticket for every per_resource booking.
+ *
+ * When one or more resources ARE per_head, returns the largest min_players
+ * among them (1 for the default, and typical, min_players=1 config — the
+ * ticket's "books at 1 player by default") rather than a hardcoded 1: a
+ * type configured with a higher floor (e.g. snooker = 2) would otherwise
+ * make every public booking attempt fail outright, since priceBookingSlots
+ * itself rejects a headCount below min_players.
+ */
+export async function resolvePublicHeadCount(
+  tx: Db,
+  tenantId: string,
+  resourceIds: string[],
+): Promise<number | undefined> {
+  const rows = await tx
+    .select({ pricingMode: resourceTypes.pricingMode, minPlayers: resourceTypes.minPlayers })
+    .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .where(and(eq(resources.tenantId, tenantId), inArray(resources.id, resourceIds)))
+  const perHead = rows.filter((r) => r.pricingMode === 'per_head')
+  if (perHead.length === 0) return undefined
+  return perHead.reduce((max, r) => Math.max(max, r.minPlayers), 1)
 }
 
 /**
@@ -137,8 +208,11 @@ export async function priceBookingSlots(
  * would hand two concurrent callers the same number and let
  * bookings_tenant_number_key reject the loser, which a walk-in-heavy screen
  * like seatTableSessionCore hits often enough at rush to matter.
+ *
+ * Exported (M21) so lib/booking/walkin.ts's startWalkinCore can share this
+ * exact same numbering scheme instead of a second, potentially-drifting copy.
  */
-async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: string }): Promise<string> {
+export async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezone: string }): Promise<string> {
   const compact = todayInZone(ctx.timezone).replace(/-/g, '')
   const bumped = await tx.execute<{ value: number }>(sql`
     insert into sequences (tenant_id, kind, period, value)
@@ -160,6 +234,7 @@ export async function createBookingCore(
   const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
     slots: input.slots,
+    headCount: input.headCount,
   })
 
   const total = Math.max(0, subtotal - input.discount)
@@ -193,6 +268,7 @@ export async function createBookingCore(
       deposit: input.deposit.toFixed(2),
       notes: input.notes || null,
       createdBy: ctx.membershipId,
+      headCount: input.headCount ?? null,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -206,6 +282,91 @@ export async function createBookingCore(
   )
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
+}
+
+export type UpdateBookingHeadCountInput = { bookingId: string; headCount: number }
+
+/**
+ * Change a per_head (reserved) booking's player count before it's billed
+ * (M21 per-head #4) — the POS bill screen's Players control.
+ *
+ * Unlike rate/tax (frozen at booking time, see priceBookingSlots, so a later
+ * config change can't reprice an old booking), head_count is meant to stay
+ * EDITABLE right up until the bill is raised: min_players is re-checked
+ * against the resource type's CURRENT setting here, not whatever was true
+ * when the booking was made.
+ *
+ * Writes straight onto bookings.head_count and every active per_head
+ * booking_slots row for this booking. Nothing else needs to change:
+ * loadBookingLines (lib/billing/invoice.ts) already recomputes each line's
+ * qty (hours × head_count) from booking_slots on every read, so the very
+ * next bill-screen load re-prices the whole session with no extra step.
+ *
+ * Blocked once a bill already exists — findLiveBilling is the same check
+ * requireNoLiveInvoice uses elsewhere in this file, just with wording that
+ * fits an arbitrary resource rather than always "this table."
+ */
+export async function updateBookingHeadCountCore(
+  tx: Db,
+  ctx: { tenantId: string },
+  input: UpdateBookingHeadCountInput,
+): Promise<{ bookingId: string; headCount: number }> {
+  if (!Number.isInteger(input.headCount) || input.headCount < 1) {
+    throw new BookingError('Enter a whole number of players, at least 1.')
+  }
+
+  const [booking] = await tx
+    .select({ id: bookings.id })
+    .from(bookings)
+    .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+    .for('update')
+    .limit(1)
+  if (!booking) throw new BookingError('Booking not found.')
+
+  const existing = await findLiveBilling(tx, ctx.tenantId, booking.id)
+  if (existing) {
+    throw new BookingError('This booking has already been billed — the player count is frozen with the bill.')
+  }
+
+  const slots = await tx
+    .select({ id: bookingSlots.id, resourceId: bookingSlots.resourceId, pricingMode: bookingSlots.pricingMode })
+    .from(bookingSlots)
+    .where(
+      and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true)),
+    )
+    .for('update')
+  const perHeadSlots = slots.filter((s) => s.pricingMode === 'per_head')
+  if (perHeadSlots.length === 0) {
+    throw new BookingError('This booking has no per-head resource to adjust.')
+  }
+
+  // min_players is checked against the resource type's CURRENT setting, not
+  // a snapshot — see the doc comment above.
+  const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
+  const typeRows = await tx
+    .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
+    .from(resources)
+    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+    .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
+  const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+  if (input.headCount < minPlayers) {
+    const name = typeRows[0]?.typeName ?? 'This resource'
+    throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+  }
+
+  await tx.update(bookings).set({ headCount: input.headCount }).where(eq(bookings.id, booking.id))
+  await tx
+    .update(bookingSlots)
+    .set({ headCount: input.headCount })
+    .where(
+      and(
+        eq(bookingSlots.bookingId, booking.id),
+        eq(bookingSlots.tenantId, ctx.tenantId),
+        eq(bookingSlots.pricingMode, 'per_head'),
+      ),
+    )
+
+  return { bookingId: booking.id, headCount: input.headCount }
 }
 
 export type SeatTableSessionInput = {

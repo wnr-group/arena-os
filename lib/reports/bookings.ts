@@ -131,10 +131,16 @@ export type BookingMetrics = {
  * Authorization mirrors getDailyRevenue(): owner/manager only, thrown from the
  * data layer so a hand-crafted request cannot reach the figures by skipping the
  * page guard.
+ *
+ * `channel` (M21 follow-up) narrows all four queries the same way
+ * cashMovements()'s own filter narrows revenue — so a Walk-in-filtered
+ * /reports view shows a consistent picture: bookings/occupancy/top-resources
+ * for that channel alone, not a revenue slice sitting on top of all-channel
+ * booking counts.
  */
 export async function getBookingMetrics(
   ctx: ActiveContext,
-  options: { range: DateRange; branchId?: string | null },
+  options: { range: DateRange; branchId?: string | null; channel?: 'walkin' | 'reserved' | null },
 ): Promise<BookingMetrics> {
   if (!isManager(ctx.role)) {
     throw new ReportAccessError('Only owners and managers can view reports.')
@@ -143,7 +149,7 @@ export async function getBookingMetrics(
   // the pages redirect for presentation, this is what actually refuses.
   await requireEntitlement(ctx, 'module.reports')
 
-  const { range, branchId } = options
+  const { range, branchId, channel } = options
   const tenantId = ctx.tenant.id
   const start = range.start
   // Inclusive end, per lib/reports/date-range.ts. Where an instant window is
@@ -151,6 +157,12 @@ export async function getBookingMetrics(
   // is whole and no second is lost.
   const end = range.end
   const branchFilter = branchId ? sql`and b.id = ${branchId}` : sql``
+  // M21 follow-up — same shape as cashMovements()'s own channelFilter
+  // (lib/reports/revenue-basis.ts): bookings.channel is NOT NULL (default
+  // 'reserved'), and every booking_slots row belongs to exactly one booking,
+  // so a direct equality (no coalesce needed here) narrows every metric
+  // below to one channel, not just revenue.
+  const channelFilter = channel ? sql`and bk.channel = ${channel}` : sql``
 
   return withUser(ctx.user.id, async (tx) => {
     // ── 1. occupancy + capacity, per local day ───────────────────────────────
@@ -216,6 +228,8 @@ export async function getBookingMetrics(
            -- occupancy, and this is what clips an overnight booking per day
            and s.starts_at < c.closes_at
            and s.ends_at   > c.opens_at
+          join public.bookings bk on bk.id = s.booking_id and bk.tenant_id = ${tenantId}
+         where true ${channelFilter}
          group by c.day
       )
       select d.day::text                                        as day,
@@ -246,6 +260,7 @@ export async function getBookingMetrics(
           join public.tenants  t  on t.id = bk.tenant_id
          where bk.status not in ('cancelled','no_show')
            ${branchFilter}
+           ${channelFilter}
       )
       select day::text as day, count(*)::int as bookings
         from placed
@@ -274,6 +289,7 @@ export async function getBookingMetrics(
          and ((s.starts_at at time zone coalesce(b.timezone, t.timezone))::date)
              between ${start}::date and ${end}::date
          ${branchFilter}
+         ${channelFilter}
        group by 1
        order by 1
     `)
@@ -313,6 +329,7 @@ export async function getBookingMetrics(
          and s.ends_at   > w.range_start
         join public.bookings bk on bk.id = s.booking_id and bk.tenant_id = ${tenantId}
        where bk.status not in ('cancelled','no_show')
+         ${channelFilter}
        group by r.id, r.name, rt.name
        order by minutes desc, r.name
     `)

@@ -4,14 +4,16 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { getRevenueDashboard } from '@/lib/reports/revenue'
+import type { DailyRevenueTotals } from '@/lib/reports/daily-revenue'
 import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
+import { ChannelFilter } from '@/components/reports/ChannelFilter'
 import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
 import { Pager, pageInfo } from '@/components/reports/Pager'
 
-type Search = { from?: string; to?: string; page?: string }
+type Search = { from?: string; to?: string; page?: string; channel?: string }
 
 const DAILY_PAGE_SIZE = 10
 
@@ -45,9 +47,12 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   // Shared AROS-64 parser: inclusive [start, end], tenant-local "today",
   // junk ignored, reversed ranges clamped. No second date parser in this file.
   const range = resolveDateRange({ start: sp.from, end: sp.to }, { timeZone: tz })
+  // Junk in the URL falls back to "all", same "ignore, don't error" spirit
+  // resolveDateRange already applies to a bad date.
+  const channel = sp.channel === 'walkin' || sp.channel === 'reserved' ? sp.channel : null
 
-  const data = await getRevenueDashboard(ctx, { range })
-  const { revenueTotals, bookings } = data
+  const data = await getRevenueDashboard(ctx, { range, channel })
+  const { revenueTotals, channelTotals, bookings } = data
   const totals = bookings.totals
 
   const money = (n: number) => formatMoney(n, currency)
@@ -60,7 +65,8 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   // summary cards/footer totals are computed over the full range, not the page.
   const dailyPage = pageInfo(sp.page, data.days.length, DAILY_PAGE_SIZE)
   const pagedDays = data.days.slice((dailyPage.page - 1) * DAILY_PAGE_SIZE, dailyPage.page * DAILY_PAGE_SIZE)
-  const dailyHref = (page: number) => `/reports?from=${range.start}&to=${range.end}&page=${page}`
+  const dailyHref = (page: number) =>
+    `/reports?from=${range.start}&to=${range.end}&page=${page}${channel ? `&channel=${channel}` : ''}`
 
   // CSV columns for the client-side export button (shared ExportCsvButton).
   // Exports data.days — the FULL date range, not just the current page of
@@ -68,6 +74,7 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
   // visible on screen. Nothing re-fetched either way.
   const dailyCols: CsvColumn<(typeof data.days)[number]>[] = [
     { key: 'day', label: 'Date' },
+    { key: 'channel', label: 'Channel' },
     { key: 'gross', label: 'Gross' },
     { key: 'discount', label: 'Discount' },
     { key: 'tax', label: 'Tax' },
@@ -93,11 +100,14 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
         <ExportCsvButton
           rows={data.days}
           columns={dailyCols}
-          filename={`revenue-${range.start}_${range.end}.csv`}
+          filename={`revenue-${range.start}_${range.end}${channel ? `-${channel}` : ''}.csv`}
         />
       </div>
 
       <DateRangeFilter basePath="/reports" from={range.start} to={range.end} today={today} />
+      <div className="mt-3 flex flex-wrap items-end gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm">
+        <ChannelFilter basePath="/reports" />
+      </div>
 
       {/* ── summary ── */}
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -141,6 +151,19 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
           the POS to see it here.
         </p>
       )}
+
+      {/* ── channel split (M21 #7) — walk-in and reserved always reconcile to
+          Net revenue above, since both are summed from the exact same rows. */}
+      <Section title="Walk-in vs reserved">
+        <div className="grid gap-4 p-4 sm:grid-cols-2">
+          <ChannelStat label="Walk-in" totals={channelTotals.walkin} money={money} active={channel === 'walkin'} />
+          <ChannelStat label="Reserved" totals={channelTotals.reserved} money={money} active={channel === 'reserved'} />
+        </div>
+        <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+          {money(channelTotals.walkin.net)} + {money(channelTotals.reserved.net)} = {money(revenueTotals.net)} net
+          revenue{channel ? ' — filtered to one channel above, the other side is 0 by construction.' : '.'}
+        </p>
+      </Section>
 
       {/* ── daily table ── */}
       <Section title="Daily breakdown">
@@ -265,6 +288,31 @@ export default async function RevenueReportPage({ searchParams }: { searchParams
           </p>
         </Section>
       </div>
+    </div>
+  )
+}
+
+/** One side of the M21 #7 channel split — dimmed when a channel filter is
+ *  active and this isn't the one selected, so the "0 by construction" side
+ *  reads as expected rather than as a bug. */
+function ChannelStat({
+  label,
+  totals,
+  money,
+  active,
+}: {
+  label: string
+  totals: DailyRevenueTotals
+  money: (n: number) => string
+  active: boolean
+}) {
+  return (
+    <div className={`rounded-xl border p-4 ${active ? 'border-primary/40 bg-primary/5' : 'border-border'}`}>
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-1 text-xl font-semibold tabular-nums">{money(totals.net)}</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {totals.invoiceCount} invoice{totals.invoiceCount === 1 ? '' : 's'} · {money(totals.gross)} gross
+      </p>
     </div>
   )
 }

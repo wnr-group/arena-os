@@ -115,10 +115,16 @@ export type SalesReport = {
  * Aggregated entirely in Postgres — two GROUP BY queries, constant regardless
  * of how many plates or plans were sold. Owner/manager only, refused in this
  * layer so the guard cannot be skipped by calling the reader directly.
+ *
+ * `channel` (M21 #7) narrows both reports to invoices whose booking is that
+ * channel — same optional filter, same 'walkin'/'reserved' meaning, as
+ * getDailyRevenue's (lib/reports/daily-revenue.ts). Food/membership sales
+ * don't carry a channel of their own; this classifies by the BILL they were
+ * sold on, same as revenue does.
  */
 export async function getSalesReport(
   ctx: ActiveContext,
-  options: { range: DateRange; branchId?: string | null },
+  options: { range: DateRange; branchId?: string | null; channel?: 'walkin' | 'reserved' | null },
 ): Promise<SalesReport> {
   if (!isManager(ctx.role)) {
     throw new ReportAccessError('Only owners and managers can view reports.')
@@ -127,7 +133,7 @@ export async function getSalesReport(
   // the pages redirect for presentation, this is what actually refuses.
   await requireEntitlement(ctx, 'module.reports')
 
-  const { range, branchId } = options
+  const { range, branchId, channel } = options
   const tenantId = ctx.tenant.id
 
   return withUser(ctx.user.id, async (tx) => {
@@ -146,7 +152,7 @@ export async function getSalesReport(
     const food = await tx.execute(sql`
       with inv_net as (
         select invoice_id, sum(amount) as net_amount, max(all_lines) as all_lines
-          from ${cashMovements(tenantId, range, branchId)} m
+          from ${cashMovements(tenantId, range, branchId, channel)} m
          group by invoice_id
       )
       select ii.description                                                  as item_name,
@@ -188,7 +194,7 @@ export async function getSalesReport(
     const memberships = await tx.execute(sql`
       with inv_net as (
         select invoice_id, sum(amount) as net_amount, max(all_lines) as all_lines
-          from ${cashMovements(tenantId, range, branchId)} m
+          from ${cashMovements(tenantId, range, branchId, channel)} m
          group by invoice_id
       ),
       sold as (

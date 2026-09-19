@@ -49,6 +49,11 @@ const resourceTypeInput = z.object({
   imageUrl: z.string().trim().optional(),
   taxRateId: z.string().uuid().nullable().optional(),
   isActive: z.boolean().default(true),
+  // M21 per-head #3: 'per_resource' (default — today's rate × time billing,
+  // unchanged) or 'per_head' (rate × players × time — see 0094_per_head_pricing.sql
+  // and lib/booking/service.ts's priceBookingSlots).
+  pricingMode: z.enum(['per_resource', 'per_head']).default('per_resource'),
+  minPlayers: z.coerce.number().int().min(1).default(1),
 })
 
 export async function upsertResourceType(input: z.input<typeof resourceTypeInput>): Promise<Result> {
@@ -73,6 +78,16 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         }
       }
 
+      // Per-head pricing only ever means something for a timed, hourly
+      // resource — a restaurant's table types are seated via
+      // seatTableSessionCore, which never prices by time at all (see its own
+      // "hourlyRate must be 0" convention), so a per_head mode there would be
+      // a setting with no effect anywhere in the app. Gated here, not just in
+      // the form, the same way a food-only tax rate is re-checked above.
+      if (v.pricingMode === 'per_head' && ctx.tenant.industry === 'restaurant') {
+        throw new AuthError('Per-head pricing isn’t available for restaurant table types.')
+      }
+
       const values = {
         tenantId: ctx.tenant.id,
         name: v.name,
@@ -84,6 +99,8 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         imageUrl: newImageUrl,
         taxRateId: v.taxRateId || null,
         isActive: v.isActive,
+        pricingMode: v.pricingMode,
+        minPlayers: v.minPlayers,
       }
       if (v.id) {
         const [existing] = await tx
@@ -102,6 +119,12 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
     })
     if (oldImageUrl) void deleteImage(oldImageUrl)
     revalidatePath('/settings/resources')
+    // A type's own rate/pricingMode/minPlayers feed straight into the New
+    // Booking wizard (listResources() joins resourceTypes) — without this,
+    // switching a type to per_head here left the wizard showing stale data
+    // (no Players field) until a hard reload, same reasoning upsertResource
+    // below already applies to a single unit's own rate/status.
+    revalidatePath('/bookings')
     return {}
   } catch (e) {
     return fail(e)

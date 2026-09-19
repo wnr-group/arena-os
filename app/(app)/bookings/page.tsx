@@ -42,15 +42,16 @@ export default async function BookingsPage({
   // this cross-industry order screen, same scoping as /floor's own gate.
   const isRestaurant = ctx.tenant.industry === 'restaurant'
 
-  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] = await Promise.all([
-    listResources(ctx, branch.id),
-    getWorkingHours(ctx, branch.id),
-    listDayBookings(ctx, branch.id, date, tz),
-    listMenuItems(ctx),
-    listHappyHours(ctx),
-    listMostOrderedItemIds(ctx, branch.id),
-    isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
-  ])
+  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] =
+    await Promise.all([
+      listResources(ctx, branch.id),
+      getWorkingHours(ctx, branch.id),
+      listDayBookings(ctx, branch.id, date, tz),
+      listMenuItems(ctx),
+      listHappyHours(ctx),
+      listMostOrderedItemIds(ctx, branch.id),
+      isRestaurant ? listMenuItemModifierGroups(ctx) : Promise.resolve([]),
+    ])
   const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
   const bookingIds = [...new Set(slots.map((s) => s.bookingId))]

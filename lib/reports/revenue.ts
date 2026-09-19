@@ -21,6 +21,13 @@ import { eachDay, type DateRange } from './date-range'
 
 export type DashboardDay = {
   day: string
+  /** The channel this row's figures were narrowed to by the dashboard's
+   *  `channel` option — 'Walk-in', 'Reserved', or 'All' when unfiltered.
+   *  Every row in a given dashboard carries the same value (the filter
+   *  applies to the whole range, not per-day), but it travels with each row
+   *  so the CSV export states plainly what it represents even once detached
+   *  from the on-screen filter/filename that produced it. */
+  channel: 'Walk-in' | 'Reserved' | 'All'
   /** Revenue, summed across branches for the day. */
   gross: number
   discount: number
@@ -46,18 +53,31 @@ export type DashboardDay = {
 
 export type RevenueDashboard = {
   range: DateRange
-  /** One row per day IN THE RANGE, including days with no activity. */
+  /** One row per day IN THE RANGE, including days with no activity. Folded
+   *  ACROSS channel as well as branch — see `channelTotals` for the split. */
   days: DashboardDay[]
   revenueTotals: DailyRevenueTotals
   bookings: BookingMetrics
-  /** Per (day, branch) — kept for a future branch breakdown, and what the
-   *  revenue figures above are folded from. */
+  /** Per (day, branch, channel) — kept for a future branch breakdown, and
+   *  what the revenue figures above (and channelTotals below) are folded
+   *  from. */
   revenueByBranch: DailyRevenueRow[]
+  /**
+   * M21 #7 — `revenueTotals` split by the underlying booking's channel.
+   * Both sides are `sumDailyRevenue` over the SAME `revenueByBranch` rows
+   * `revenueTotals` itself sums (just filtered by `channel` first), so
+   * `channelTotals.walkin.net + channelTotals.reserved.net === revenueTotals.net`
+   * holds structurally, not by a separate query that could drift — same for
+   * every other field. Unaffected by the `channel` filter option below: if
+   * one is passed, the OTHER side's totals are simply all-zero, which is the
+   * correct "not shown" answer for a report already narrowed to one channel.
+   */
+  channelTotals: { walkin: DailyRevenueTotals; reserved: DailyRevenueTotals }
 }
 
 export async function getRevenueDashboard(
   ctx: ActiveContext,
-  options: { range: DateRange; branchId?: string | null },
+  options: { range: DateRange; branchId?: string | null; channel?: 'walkin' | 'reserved' | null },
 ): Promise<RevenueDashboard> {
   // Module gate (M16 #2). Stated here as well as in the two readers below,
   // which both enforce it themselves: this function is its own entry point
@@ -66,13 +86,13 @@ export async function getRevenueDashboard(
   // refactor away from not holding at all.
   await requireEntitlement(ctx, 'module.reports')
 
-  const { range, branchId } = options
+  const { range, branchId, channel } = options
 
   // Sequential, not Promise.all: each opens its own withUser() transaction on
   // the shared app pool, and running report queries in parallel just competes
   // for the same small pool for no gain at this size.
-  const revenueByBranch = await getDailyRevenue(ctx, { range, branchId })
-  const bookings = await getBookingMetrics(ctx, { range, branchId })
+  const revenueByBranch = await getDailyRevenue(ctx, { range, branchId, channel })
+  const bookings = await getBookingMetrics(ctx, { range, branchId, channel })
 
   // Folding per-branch revenue rows into per-day ones, and filling the days
   // nothing happened on. This is presentation shaping over rows Postgres has
@@ -104,12 +124,14 @@ export async function getRevenueDashboard(
   }
 
   const bookingsByDay = new Map(bookings.daily.map((d) => [d.day, d]))
+  const channelLabel: DashboardDay['channel'] = channel === 'walkin' ? 'Walk-in' : channel === 'reserved' ? 'Reserved' : 'All'
 
   const days: DashboardDay[] = eachDay(range).map((day) => {
     const rev = revenueByDay.get(day)
     const bk = bookingsByDay.get(day)
     return {
       day,
+      channel: channelLabel,
       gross: round2(rev?.gross ?? 0),
       discount: round2(rev?.discount ?? 0),
       tax: round2(rev?.tax ?? 0),
@@ -134,6 +156,10 @@ export async function getRevenueDashboard(
     revenueTotals: sumDailyRevenue(revenueByBranch),
     bookings,
     revenueByBranch,
+    channelTotals: {
+      walkin: sumDailyRevenue(revenueByBranch.filter((r) => r.channel === 'walkin')),
+      reserved: sumDailyRevenue(revenueByBranch.filter((r) => r.channel === 'reserved')),
+    },
   }
 }
 
@@ -149,6 +175,7 @@ export async function getRevenueDashboard(
  */
 export const DASHBOARD_CSV_COLUMNS: readonly CsvColumn<DashboardDay>[] = [
   { header: 'Date', value: (d) => d.day },
+  { header: 'Channel', value: (d) => d.channel },
   { header: 'Invoices', value: (d) => d.invoices },
   { header: 'Gross', value: (d) => d.gross.toFixed(2) },
   { header: 'Discount', value: (d) => d.discount.toFixed(2) },

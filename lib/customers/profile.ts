@@ -158,12 +158,15 @@ export async function getCustomerProfile(
 
     const history: ProfileBooking[] = bookingRows.map((b) => {
       const slots = slotsByBooking.get(b.id) ?? []
+      // M21: an open-tab walk-in slot has no ends_at until checkout — its
+      // duration isn't knowable yet, so it's excluded from both the minutes
+      // total and the ends-at range rather than treated as zero-length.
       const minutes = slots.reduce(
-        (sum, s) => sum + (s.endsAt.getTime() - s.startsAt.getTime()) / 60_000,
+        (sum, s) => sum + (s.endsAt ? (s.endsAt.getTime() - s.startsAt.getTime()) / 60_000 : 0),
         0,
       )
       const starts = slots.map((s) => s.startsAt.getTime())
-      const ends = slots.map((s) => s.endsAt.getTime())
+      const ends = slots.flatMap((s) => (s.endsAt ? [s.endsAt.getTime()] : []))
       return {
         ...b,
         resources: [...new Set(slots.map((s) => s.resourceName))],

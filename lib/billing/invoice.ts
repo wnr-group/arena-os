@@ -158,9 +158,18 @@ export function formatInvoiceNumber(prefix: string, period: string, value: numbe
  * Read from `booking_slots`, which already snapshots what was agreed when the
  * booking was taken: `rate_applied`, `resource_name`, `resource_type_name`. We
  * bill from that snapshot rather than today's `resource_types.hourly_rate`, so a
- * price rise tomorrow cannot silently re-price a booking taken today — and it
- * keeps this identical to how lib/actions/bookings.ts priced the slot in the
- * first place (rate × durationHours), so the bill always agrees with the booking.
+ * price rise tomorrow cannot silently re-price a booking taken today — and for
+ * a plain RESERVED booking, that keeps this identical to how the slot was
+ * priced in the first place (rate × durationHours), so the bill always agrees
+ * with the booking, down to the qty/unit-price decomposition a cashier sees
+ * on screen (see scripts/test-billing-flow.ts's own assertion on this exact
+ * shape).
+ *
+ * A walk-in (either mode) is the exception: checkoutWalkinCore (M21 #4 open
+ * tab, M21 #5 timed) prices it with priceElapsedTime — a per-segment
+ * happy-hour blend a flat rate×duration recomputation here cannot reproduce —
+ * and writes the result onto `slot_total`. That one case bills as a single
+ * qty=1 line at the already-priced total instead.
  *
  * Only ACTIVE slots are billed: the 0003 trigger clears `active` when a booking
  * is cancelled or marked no-show, so a released slot never reaches the till.
@@ -171,15 +180,35 @@ export async function loadBookingLines(
   bookingId: string,
   timeZone: string,
 ): Promise<BillLine[]> {
+  const [booking] = await tx
+    .select({ channel: bookings.channel, billingMode: bookings.billingMode })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .limit(1)
+  const isWalkin = booking?.channel === 'walkin'
+  // A timed walk-in's slot is born with a real ends_at (the committed end),
+  // unlike an open tab's null-until-checkout — so "not yet checked out" for
+  // one has to be read off slot_total still sitting at 0 instead. Safe
+  // because a walk-in resource always has a nonzero rate
+  // (listWalkinResources excludes zero-rate types), so a real session can
+  // never legitimately price to exactly 0.
+  const isUncommittedTimed = isWalkin && booking?.billingMode === 'timed'
+
   const slots = await tx
     .select({
       id: bookingSlots.id,
       startsAt: bookingSlots.startsAt,
       endsAt: bookingSlots.endsAt,
       rateApplied: bookingSlots.rateApplied,
+      slotTotal: bookingSlots.slotTotal,
       resourceName: bookingSlots.resourceName,
       resourceTypeName: bookingSlots.resourceTypeName,
       taxRatePercent: bookingSlots.taxRatePercent,
+      // M21 per-head #2: snapshot of head_count/pricing_mode at booking time
+      // (lib/booking/service.ts's priceBookingSlots). Null/'per_resource' for
+      // every pre-existing booking.
+      headCount: bookingSlots.headCount,
+      pricingMode: bookingSlots.pricingMode,
     })
     .from(bookingSlots)
     .where(
@@ -191,18 +220,45 @@ export async function loadBookingLines(
     )
     .orderBy(bookingSlots.startsAt)
 
-  return slots.map((s) => ({
-    description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
-    kind: 'booking' as const,
-    sourceId: s.id,
-    qty: durationHours(s.startsAt, s.endsAt),
-    unitPrice: Number(s.rateApplied),
-    // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
-    // priceBookingSlots) from the resource type's own tax rate — same
-    // discipline rate_applied already uses. 0 means no 'resources'/'both'
-    // tax rate was configured for that type at booking time.
-    taxPercent: Number(s.taxRatePercent),
-  }))
+  return slots
+    .filter((s): s is typeof s & { endsAt: Date } => {
+      // An open-tab walk-in slot has no ends_at until checkoutWalkinCore
+      // finalizes it — nothing to bill yet.
+      if (s.endsAt === null) return false
+      // A timed walk-in's ends_at is set from the start, but it isn't
+      // PRICED until checkout — this filter keeps a read-only bill preview
+      // (lib/billing/data.ts) degrading gracefully rather than crashing.
+      // It is NOT what stops the invoice-issuing path from silently billing
+      // just the food and omitting the session charge — prepareBookingBill
+      // rejects that case explicitly, before it ever reaches this filter.
+      if (isUncommittedTimed && Number(s.slotTotal) === 0) return false
+      return true
+    })
+    .map((s) => ({
+      description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
+      kind: 'booking' as const,
+      sourceId: s.id,
+      ...(isWalkin
+        ? // qty=1, unitPrice=the whole priced total — same "one computed
+          // charge" shape priceElapsedTime itself returns, rather than a
+          // qty/rate pair that would need to multiply back to that figure.
+          { qty: 1, unitPrice: Number(s.slotTotal) }
+        : {
+            // M21 per-head #2: rateApplied is per PLAYER for a per_head slot
+            // (snapshotted pricingMode/headCount, priceBookingSlots), so the
+            // multiplier folds into qty rather than unitPrice — reproduces
+            // slot_total exactly (headCount × rate × hours) while leaving a
+            // per_resource slot's qty/unit-price decomposition (hours × rate)
+            // byte-identical to before this ticket.
+            qty: durationHours(s.startsAt, s.endsAt) * (s.pricingMode === 'per_head' ? (s.headCount ?? 1) : 1),
+            unitPrice: Number(s.rateApplied),
+          }),
+      // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
+      // priceBookingSlots) from the resource type's own tax rate — same
+      // discipline rate_applied already uses. 0 means no 'resources'/'both'
+      // tax rate was configured for that type at booking time.
+      taxPercent: Number(s.taxRatePercent),
+    }))
 }
 
 /**
@@ -649,6 +705,8 @@ export async function prepareBookingBill(
       branchId: bookings.branchId,
       customerId: bookings.customerId,
       status: bookings.status,
+      channel: bookings.channel,
+      billingMode: bookings.billingMode,
     })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenant.id)))
@@ -670,6 +728,40 @@ export async function prepareBookingBill(
     throw new BillingError(
       `This booking's bill has already been split into ${existing.checks.length} checks — settle them individually.`,
     )
+  }
+
+  // A timed walk-in's slot has a committed ends_at from the moment it starts,
+  // but isn't PRICED until checkoutWalkinCore runs (M21 #5) — loadBookingLines
+  // silently drops that line below (so a read-only bill preview degrades
+  // gracefully instead of crashing), which is fine on its own: with NO other
+  // lines, the lines.length === 0 guard in step 3 still catches it. But with
+  // open food orders too, that guard never fires — this general billing path
+  // would raise an invoice for the food alone and silently omit the session
+  // charge entirely. Reject outright instead of letting the filter hide it.
+  if (booking.channel === 'walkin') {
+    const [slot] = await tx
+      .select({ slotTotal: bookingSlots.slotTotal, endsAt: bookingSlots.endsAt })
+      .from(bookingSlots)
+      .where(
+        and(eq(bookingSlots.tenantId, tenant.id), eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.active, true)),
+      )
+      .limit(1)
+    // A walk-in is billed via checkoutWalkinCore, never this general path.
+    // Until it's checked out its session line isn't priced — an OPEN TAB's
+    // ends_at is still null, a TIMED session's slot_total is still 0 — so
+    // loadBookingLines drops it above. With open food orders too, billing here
+    // would raise a food-only invoice that silently omits the session charge
+    // AND, becoming the booking's live invoice, blocks checkoutWalkin forever.
+    // Reject BOTH walk-in shapes, not just timed.
+    const notCheckedOut =
+      booking.billingMode === 'timed'
+        ? slot != null && Number(slot.slotTotal) === 0
+        : slot != null && slot.endsAt === null
+    if (notCheckedOut) {
+      throw new BillingError(
+        'This walk-in has not been checked out yet — check it out from its session to bill it.',
+      )
+    }
   }
 
   // ── 3. lines, entirely from server-side data ──────────────────────────────

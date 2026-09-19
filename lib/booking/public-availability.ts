@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
@@ -89,6 +89,11 @@ export type PublicResourceTypeDetail = {
   imageUrl: string | null
   capacity: number | null
   hourlyRate: string
+  /** M21 per-head #5: 'per_resource' (default) or 'per_head' — online
+   *  always books at a fixed head count (see resolvePublicHeadCount in
+   *  lib/booking/service.ts), never an interactive player count. */
+  pricingMode: string
+  minPlayers: number
 }
 
 /**
@@ -113,6 +118,8 @@ export async function getPublicResourceType(
         imageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
         hourlyRate: resourceTypes.hourlyRate,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resourceTypes)
       .where(and(eq(resourceTypes.id, resourceTypeId), eq(resourceTypes.tenantId, tenantId), eq(resourceTypes.isActive, true)))
@@ -222,9 +229,14 @@ export async function getPublicAvailableStarts(
           // "that time was just taken". A second unit of the same type could
           // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
-          gt(bookingSlots.endsAt, dayStart),
+          // An open-tab walk-in (M21) has no ends_at until checkout but is
+          // still genuinely occupying the resource — kept in this set (its
+          // synthetic end is clamped to dayEnd below) rather than filtered
+          // out as if it had already ended.
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
         ),
       )
+      .then((rows) => rows.map((r) => ({ startsAt: r.startsAt, endsAt: r.endsAt ?? dayEnd })))
 
     const resolvedHours = hours ?? DEFAULT_HOURS
     const starts = availableStartTimes(date, timeZone, resolvedHours, existing, {
@@ -250,6 +262,9 @@ export type PublicResource = {
   capacity: number | null
   resourceTypeId: string
   resourceTypeName: string
+  /** M21 per-head #5 — see PublicResourceTypeDetail's doc comment. */
+  pricingMode: string
+  minPlayers: number
 }
 
 /**
@@ -274,6 +289,8 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
         typeHourlyRate: resourceTypes.hourlyRate,
         typeImageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -297,6 +314,8 @@ export async function getPublicResource(tenantId: string, resourceId: string): P
     capacity: row.capacity,
     resourceTypeId: row.resourceTypeId,
     resourceTypeName: row.resourceTypeName,
+    pricingMode: row.pricingMode,
+    minPlayers: row.minPlayers,
   }
 }
 
@@ -325,6 +344,8 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
         typeHourlyRate: resourceTypes.hourlyRate,
         typeImageUrl: resourceTypes.imageUrl,
         capacity: resourceTypes.capacity,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -351,6 +372,8 @@ export async function getPublicStation(tenantId: string, qrToken: string): Promi
         capacity: row.capacity,
         resourceTypeId: row.resourceTypeId,
         resourceTypeName: row.resourceTypeName,
+        pricingMode: row.pricingMode,
+        minPlayers: row.minPlayers,
       },
       bookingId,
     }
@@ -441,14 +464,18 @@ export async function getPublicAvailableStartsForType(
           // "that time was just taken". A second unit of the same type could
           // never be allocated while such a slot sat on it.
           lt(bookingSlots.startsAt, dayEnd),
-          gt(bookingSlots.endsAt, dayStart),
+          // An open-tab walk-in (M21) has no ends_at until checkout but is
+          // still genuinely occupying the resource — kept in this set (its
+          // synthetic end is clamped to dayEnd below) rather than filtered
+          // out as if it had already ended.
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
         ),
       )
 
     const existingByResource = new Map<string, Interval[]>()
     for (const row of existingRows) {
       const list = existingByResource.get(row.resourceId) ?? []
-      list.push({ startsAt: row.startsAt, endsAt: row.endsAt })
+      list.push({ startsAt: row.startsAt, endsAt: row.endsAt ?? dayEnd })
       existingByResource.set(row.resourceId, list)
     }
 

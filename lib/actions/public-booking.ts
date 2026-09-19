@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { withPublicTenant } from '@/db'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
-import { createBookingCore, priceBookingSlots, BookingError } from '@/lib/booking/service'
+import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
 import { round2 } from '@/lib/billing/pricing'
@@ -254,6 +254,15 @@ export async function createPublicBooking(
 
     const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }]
 
+    // M21 per-head #5: online never asks for a player count — "keep the
+    // online flow simple" — so this resolves what priceBookingSlots/
+    // createBookingCore need on the customer's behalf. undefined (i.e. no
+    // per_head resource involved) for the overwhelming majority of
+    // bookings; otherwise 1, or the type's own min_players if higher.
+    const headCount = await withPublicTenant(tenant.id, (tx) =>
+      resolvePublicHeadCount(tx, tenant.id, [v.resourceId]),
+    )
+
     // Pay-now: price the slot BEFORE creating the booking, so a total too
     // large to take online refuses cleanly rather than leaving a booking
     // behind that can never be paid through this path. Re-priced again
@@ -263,7 +272,7 @@ export async function createPublicBooking(
     let deposit = 0
     if (v.payNow) {
       const priced = await withPublicTenant(tenant.id, (tx) =>
-        priceBookingSlots(tx, { tenantId: tenant.id }, { branchId: branch.id, slots }),
+        priceBookingSlots(tx, { tenantId: tenant.id }, { branchId: branch.id, slots, headCount }),
       )
       const rupees = round2(priced.subtotal)
       const amountPaise = paise(rupees)
@@ -290,6 +299,7 @@ export async function createPublicBooking(
           discount: 0,
           deposit,
           slots,
+          headCount,
         },
       ),
     )

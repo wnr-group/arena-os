@@ -8,9 +8,10 @@ import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
+import { ChannelFilter } from '@/components/reports/ChannelFilter'
 import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
 
-type Search = { from?: string; to?: string }
+type Search = { from?: string; to?: string; channel?: string }
 
 /**
  * Food & Membership sales (AROS-66) — the sibling of /reports, same shape:
@@ -33,8 +34,9 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
   const sp = await searchParams
   const today = todayInZone(tz)
   const range = resolveDateRange({ start: sp.from, end: sp.to }, { timeZone: tz })
+  const channel = sp.channel === 'walkin' || sp.channel === 'reserved' ? sp.channel : null
 
-  const report = await getSalesReport(ctx, { range })
+  const report = await getSalesReport(ctx, { range, channel })
   const { food, memberships, totals } = report
   const money = (n: number) => formatMoney(n, currency)
   const maxFood = Math.max(...food.map((f) => f.grossRevenue), 0)
@@ -67,6 +69,9 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
       </div>
 
       <DateRangeFilter basePath="/reports/sales" from={range.start} to={range.end} today={today} />
+      <div className="mt-3 flex flex-wrap items-end gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm">
+        <ChannelFilter basePath="/reports/sales" />
+      </div>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Items sold" value={formatQty(totals.foodQuantity)} hint="Billed food & drink lines" />
@@ -88,7 +93,7 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
             <ExportCsvButton
               rows={food}
               columns={foodCols}
-              filename={`food-sales-${range.start}_${range.end}.csv`}
+              filename={`food-sales-${range.start}_${range.end}${channel ? `-${channel}` : ''}.csv`}
             />
           ) : undefined
         }
@@ -154,7 +159,7 @@ export default async function SalesReportPage({ searchParams }: { searchParams: 
             <ExportCsvButton
               rows={memberships}
               columns={membershipCols}
-              filename={`membership-sales-${range.start}_${range.end}.csv`}
+              filename={`membership-sales-${range.start}_${range.end}${channel ? `-${channel}` : ''}.csv`}
             />
           ) : undefined
         }

@@ -64,12 +64,17 @@ export async function getPublicBookingByToken(
       customerName: booking.customerName,
       total: booking.total,
       createdAt: booking.createdAt.toISOString(),
-      slots: slots.map((s) => ({
-        resourceName: s.resourceName,
-        resourceTypeName: s.resourceTypeName,
-        startsAt: s.startsAt.toISOString(),
-        endsAt: s.endsAt.toISOString(),
-      })),
+      // M21: a public/online booking never lands on an open-tab walk-in slot
+      // (endsAt null) — this filter is a type-safety no-op today, not a
+      // behavior change.
+      slots: slots
+        .filter((s): s is typeof s & { endsAt: Date } => s.endsAt !== null)
+        .map((s) => ({
+          resourceName: s.resourceName,
+          resourceTypeName: s.resourceTypeName,
+          startsAt: s.startsAt.toISOString(),
+          endsAt: s.endsAt.toISOString(),
+        })),
     }
   })
 }
