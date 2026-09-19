@@ -46,10 +46,16 @@ function ceilToStep(minutes: number, step: number): number {
 }
 
 /**
- * `rule`'s [start, end) as absolute instants (ms) on one local calendar
- * date, or null if the rule doesn't run that day. Overnight windows
- * (end <= start) aren't supported here — same scope limit activeHappyHours
- * already has via its plain string comparison.
+ * `rule`'s [start, end) as absolute instants (ms), ANCHORED on the local
+ * calendar date `dateStr` (the day the window STARTS, which is the day matched
+ * against daysOfWeek), or null if the rule doesn't run that day.
+ *
+ * An OVERNIGHT window (endTime < startTime, e.g. a 22:00–01:00 late-night
+ * rate) ends on the NEXT calendar day — so "Friday 22:00–01:00" is Friday
+ * 22:00 through Saturday 01:00, and its Saturday-morning tail is found by
+ * anchoring on Friday (see ruleActiveAt / the boundary loop, which both look a
+ * day back to catch it). endTime === startTime is a degenerate/empty window
+ * and yields null.
  */
 function ruleWindowOnDate(
   rule: HappyHourRule,
@@ -60,10 +66,13 @@ function ruleWindowOnDate(
   if (!rule.daysOfWeek.includes(weekdayInZone(dateStr, tenantTimezone))) return null
   const startTime = rule.startTime.slice(0, 5)
   const endTime = rule.endTime.slice(0, 5)
-  if (endTime <= startTime) return null
+  if (endTime === startTime) return null
+  // endTime < startTime → the window wraps past midnight, so it ends on the
+  // day after its anchor date.
+  const endDateStr = endTime < startTime ? addDays(dateStr, 1) : dateStr
   return {
     startsAt: zonedTimeToUtc(dateStr, startTime, tenantTimezone).getTime(),
-    endsAt: zonedTimeToUtc(dateStr, endTime, tenantTimezone).getTime(),
+    endsAt: zonedTimeToUtc(endDateStr, endTime, tenantTimezone).getTime(),
   }
 }
 
@@ -82,10 +91,16 @@ function ruleActiveAt(
   tenantTimezone: string,
 ): HappyHourRule | null {
   const dateStr = todayInZone(tenantTimezone, new Date(instantMs))
-  const live = rules.filter((r) => {
-    const w = ruleWindowOnDate(r, dateStr, tenantTimezone)
-    return w !== null && instantMs >= w.startsAt && instantMs < w.endsAt
-  })
+  // Check the instant's own day AND the day before: an overnight window
+  // anchored on the previous day (e.g. Fri 22:00–01:00) covers the early hours
+  // of this one.
+  const prevDateStr = addDays(dateStr, -1)
+  const live = rules.filter((r) =>
+    [prevDateStr, dateStr].some((anchor) => {
+      const w = ruleWindowOnDate(r, anchor, tenantTimezone)
+      return w !== null && instantMs >= w.startsAt && instantMs < w.endsAt
+    }),
+  )
   if (live.length === 0) return null
   // Biggest discount wins — the same deterministic tie-break applyHappyHour
   // uses when more than one rule is live at once.
@@ -129,7 +144,10 @@ export function priceElapsedTime(
   // rate can change.
   const boundaries = new Set<number>([startMs, billableEndMs])
   const lastDate = todayInZone(tenantTimezone, new Date(billableEndMs))
-  for (let d = todayInZone(tenantTimezone, start); ; d = addDays(d, 1)) {
+  // Start a day BEFORE the session: an overnight window anchored on the prior
+  // day can end inside the session (e.g. its 01:00 tail). Edges outside
+  // [startMs, billableEndMs) are filtered out below, so the extra day is safe.
+  for (let d = addDays(todayInZone(tenantTimezone, start), -1); ; d = addDays(d, 1)) {
     for (const rule of happyHours) {
       const w = ruleWindowOnDate(rule, d, tenantTimezone)
       if (!w) continue

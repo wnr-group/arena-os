@@ -724,16 +724,29 @@ export async function prepareBookingBill(
   // open food orders too, that guard never fires — this general billing path
   // would raise an invoice for the food alone and silently omit the session
   // charge entirely. Reject outright instead of letting the filter hide it.
-  if (booking.channel === 'walkin' && booking.billingMode === 'timed') {
+  if (booking.channel === 'walkin') {
     const [slot] = await tx
-      .select({ slotTotal: bookingSlots.slotTotal })
+      .select({ slotTotal: bookingSlots.slotTotal, endsAt: bookingSlots.endsAt })
       .from(bookingSlots)
       .where(
         and(eq(bookingSlots.tenantId, tenant.id), eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.active, true)),
       )
       .limit(1)
-    if (slot && Number(slot.slotTotal) === 0) {
-      throw new BillingError('This timed walk-in has not been checked out yet — extend or check it out first.')
+    // A walk-in is billed via checkoutWalkinCore, never this general path.
+    // Until it's checked out its session line isn't priced — an OPEN TAB's
+    // ends_at is still null, a TIMED session's slot_total is still 0 — so
+    // loadBookingLines drops it above. With open food orders too, billing here
+    // would raise a food-only invoice that silently omits the session charge
+    // AND, becoming the booking's live invoice, blocks checkoutWalkin forever.
+    // Reject BOTH walk-in shapes, not just timed.
+    const notCheckedOut =
+      booking.billingMode === 'timed'
+        ? slot != null && Number(slot.slotTotal) === 0
+        : slot != null && slot.endsAt === null
+    if (notCheckedOut) {
+      throw new BillingError(
+        'This walk-in has not been checked out yet — check it out from its session to bill it.',
+      )
     }
   }
 

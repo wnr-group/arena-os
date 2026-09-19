@@ -166,6 +166,36 @@ function main() {
     )
   }
 
+  // ── 12. an OVERNIGHT happy-hour window (endTime < startTime) ──────────────
+  // A 22:00–01:00 late-night rate anchored on Tuesday runs Tue 22:00 → Wed
+  // 01:00. Previously dropped entirely (overcharging the promised discount).
+  {
+    const night = rule({ id: 'night', startTime: '22:00', endTime: '01:00' }) // ₹120 → ₹80
+    // 2026-08-12 is the Wednesday after `at`'s Tuesday.
+    const wed = (hhmm: string) => new Date(`2026-08-12T${hhmm}:00+05:30`)
+
+    // Early hours of Wed are covered by TUESDAY's window (the bug: the instant's
+    // own day has no window, only the day before does).
+    const early = priceElapsedTime(wed('00:00'), wed('00:30'), 120, [night], TZ)
+    check('T12 early-hours session inside an overnight window is discounted: unitPrice = 40', early.unitPrice === 40)
+
+    // Late hours of the anchor day.
+    const late = priceElapsedTime(at('22:30'), at('23:00'), 120, [night], TZ)
+    check('T12 late-hours session inside an overnight window is discounted: unitPrice = 40', late.unitPrice === 40)
+
+    // A session straddling the 01:00 end: 30min @₹80 + 30min @₹120 = 100.
+    const cross = priceElapsedTime(wed('00:30'), wed('01:30'), 120, [night], TZ)
+    check('T12 session crossing the overnight window end reconciles per segment: unitPrice = 100', cross.unitPrice === 100)
+
+    // A rule scoped to Tuesday still covers Wednesday's early hours (the window
+    // belongs to its START day), and does NOT apply on a later day's late hours.
+    const tueNight = rule({ id: 'tuenight', startTime: '22:00', endTime: '01:00', daysOfWeek: [2] })
+    const tueTail = priceElapsedTime(wed('00:00'), wed('00:30'), 120, [tueNight], TZ)
+    check('T12 an overnight window belongs to its start weekday (Tue tail into Wed): unitPrice = 40', tueTail.unitPrice === 40)
+    const wedLate = priceElapsedTime(wed('22:30'), wed('23:00'), 120, [tueNight], TZ)
+    check('T12 …and a Tue-only overnight rule does not discount Wednesday night: unitPrice = 60', wedLate.unitPrice === 60)
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 }

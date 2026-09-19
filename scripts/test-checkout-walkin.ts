@@ -136,6 +136,15 @@ async function main() {
     )
   ).rows[0].id
 
+  const station6 = (
+    await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+       values ($1,$2,$3,'Station 6','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, hourlyType.rows[0].id],
+    )
+  ).rows[0].id
+
   const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
   async function signInAs(userId: string, tenantSlug: string) {
     const token = randomBytes(32).toString('hex')
@@ -310,6 +319,51 @@ async function main() {
       order.rows[0].id,
     ])
     check('…the food order is still open, not silently billed', orderStatus.rows[0]?.status === 'open')
+  }
+
+  // ══ 3b-2. the SAME guard must cover an OPEN-TAB walk-in with food on it ════
+  // Regression for the asymmetric guard: prepareBookingBill originally guarded
+  // only TIMED walk-ins. An open tab's session line is dropped by
+  // loadBookingLines while its ends_at is null (until checkout), so with food
+  // orders open the general path would raise a food-only invoice AND, becoming
+  // the booking's live invoice, block checkoutWalkin forever.
+  console.log('\n── general billing refuses an unpriced open-tab walk-in with food on it ──')
+  {
+    const tab = await startWalkin({
+      branchId,
+      resourceId: station6,
+      phone: nextPhone(),
+      startAt: new Date().toISOString(),
+      mode: 'open_tab',
+    })
+    check('open-tab walk-in (for the general-billing regression) starts cleanly', !tab.error && Boolean(tab.bookingId))
+    const bookingId = tab.bookingId!
+
+    const order = await owner.query<{ id: string }>(
+      `insert into orders (tenant_id, branch_id, booking_id, order_number, status)
+       values ($1, $2, $3, $4, 'open') returning id`,
+      [tenantId, branchId, bookingId, `TESTORD-OT-${bookingId.slice(0, 8)}`],
+    )
+    await owner.query(
+      `insert into order_items (tenant_id, order_id, item_name, unit_price, qty, line_total)
+       values ($1, $2, 'Cold Drink', 50.00, 1, 50.00)`,
+      [tenantId, order.rows[0].id],
+    )
+
+    const result = await createInvoiceForBooking({ bookingId })
+    check('createInvoiceForBooking refuses the un-checked-out open tab, not just an undercharged bill', Boolean(result.error))
+
+    const invoiceCount = await owner.query<{ n: string }>(
+      `select count(*)::text as n from invoices where booking_id = $1`,
+      [bookingId],
+    )
+    check('…and no invoice was raised at all (not even for the food alone)', invoiceCount.rows[0].n === '0')
+
+    // The legit path still works and the earlier rejection did not lock the
+    // booking: checkoutWalkin prices the session and bills it WITH the food.
+    const co = await checkoutWalkin({ bookingId })
+    check('…checkoutWalkin then succeeds (booking not locked by the rejected bill)', !co.error && Boolean(co.invoiceId))
+    check('…and it bills session + food in one invoice (total exceeds the ₹50 food alone)', (co.total ?? 0) > 50)
   }
 
   // ══ 3c. floor_staff can start, extend AND check out a walk-in end-to-end
