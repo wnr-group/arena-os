@@ -18,6 +18,19 @@ function fileNameFromUrl(url: string): string {
   }
 }
 
+/** Currency symbol for the rate field's label (e.g. "₹ per hour") — falls
+ *  back to the ISO code itself if Intl doesn't recognize it. */
+function currencySymbol(currency: string): string {
+  try {
+    const part = new Intl.NumberFormat('en-IN', { style: 'currency', currency, maximumFractionDigits: 0 })
+      .formatToParts(0)
+      .find((p) => p.type === 'currency')
+    return part?.value ?? currency
+  } catch {
+    return currency
+  }
+}
+
 type TypeRow = {
   id: string
   name: string
@@ -29,6 +42,11 @@ type TypeRow = {
   imageUrl: string | null
   taxRateId: string | null
   taxRateName: string | null
+  // M21 per-head #3: 'per_resource' (today's behaviour — rate × time) or
+  // 'per_head' (rate × players × time). Kept as `string`, not a union, to
+  // match the column's type across the app (lib/booking/service.ts).
+  pricingMode: string
+  minPlayers: number
   isActive: boolean
 }
 type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food' | 'resources' | 'both' }
@@ -198,7 +216,9 @@ export function ResourceTypesManager({
                     </div>
                   </td>
                   {!isRestaurant && (
-                    <td className="px-4 py-3 text-muted-foreground">{formatMoney(row.hourlyRate, currency)}/hr</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatMoney(row.hourlyRate, currency)}/{row.pricingMode === 'per_head' ? 'player/hr' : 'hr'}
+                    </td>
                   )}
                   {!isRestaurant && (
                     <td className="px-4 py-3 text-muted-foreground">{effectiveTaxLabel(row.taxRateName, autoTaxRate) ?? '—'}</td>
@@ -310,6 +330,7 @@ function TypeCardBody({
   capacity,
   bufferMinutes,
   description,
+  perPlayer = false,
 }: {
   name: string
   rate: number | string
@@ -317,12 +338,17 @@ function TypeCardBody({
   capacity?: number | null
   bufferMinutes?: number
   description?: string | null
+  /** M21 per-head #3: the type's pricing_mode is 'per_head' — the preview
+   *  price is per player, not per resource. */
+  perPlayer?: boolean
 }) {
   return (
     <div className="p-4">
       <div className="flex items-start justify-between gap-2">
         <h3 className="line-clamp-1 text-base font-semibold">{name || 'Untitled type'}</h3>
-        <span className="shrink-0 text-base font-semibold text-primary">{formatMoney(rate, currency)}/hr</span>
+        <span className="shrink-0 text-base font-semibold text-primary">
+          {formatMoney(rate, currency)}/{perPlayer ? 'player/hr' : 'hr'}
+        </span>
       </div>
       {((capacity ?? 0) > 0 || (bufferMinutes ?? 0) > 0) && (
         <p className="mt-0.5 text-sm text-muted-foreground">
@@ -373,6 +399,10 @@ function TypeModal({
   // instead of sitting on "No tax" for a type that's really being taxed via
   // the implicit scope default (lib/tax-rates/resolve.ts).
   const [taxRateId, setTaxRateId] = useState(row?.taxRateId ?? autoTaxRate?.id ?? '')
+  const [pricingMode, setPricingMode] = useState<'per_resource' | 'per_head'>(
+    row?.pricingMode === 'per_head' ? 'per_head' : 'per_resource',
+  )
+  const [minPlayers, setMinPlayers] = useState(String(row?.minPlayers ?? 1))
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
   const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
@@ -381,7 +411,14 @@ function TypeModal({
   const [submitted, setSubmitted] = useState(false)
 
   const errors = useMemo(() => {
-    const e: { name?: string; description?: string; rate?: string; buffer?: string; capacity?: string } = {}
+    const e: {
+      name?: string
+      description?: string
+      rate?: string
+      buffer?: string
+      capacity?: string
+      minPlayers?: string
+    } = {}
     if (!name.trim()) e.name = 'Name is required.'
     else if (name.trim().length < 2) e.name = 'Name must be at least 2 characters.'
     else if (name.trim().length > 100) e.name = 'Name must be at most 100 characters.'
@@ -391,8 +428,10 @@ function TypeModal({
       e.buffer = 'Buffer must be a whole number.'
     if (capacity !== '' && (Number.isNaN(Number(capacity)) || Number(capacity) <= 0))
       e.capacity = 'Capacity must be a positive number.'
+    if (pricingMode === 'per_head' && (Number.isNaN(Number(minPlayers)) || !Number.isInteger(Number(minPlayers)) || Number(minPlayers) < 1))
+      e.minPlayers = 'Minimum players must be a whole number of at least 1.'
     return e
-  }, [name, description, rate, buffer, capacity])
+  }, [name, description, rate, buffer, capacity, pricingMode, minPlayers])
   const isValid = Object.keys(errors).length === 0
   // A rate scoped to 'food' only isn't valid on a resource type — the server
   // rejects it too (lib/actions/resources.ts) — but keep the current
@@ -434,6 +473,8 @@ function TypeModal({
           color,
           imageUrl,
           taxRateId: taxRateId || null,
+          pricingMode,
+          minPlayers: minPlayers === '' ? 1 : Number(minPlayers),
           isActive,
         }),
       () => {
@@ -534,9 +575,46 @@ function TypeModal({
                   />
                   {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
                 </div>
+                <div>
+                  <label className={label}>Pricing mode</label>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPricingMode('per_resource')}
+                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                        pricingMode === 'per_resource'
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:bg-muted/40'
+                      }`}
+                    >
+                      Per station
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPricingMode('per_head')}
+                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                        pricingMode === 'per_head'
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:bg-muted/40'
+                      }`}
+                    >
+                      Per head
+                    </button>
+                  </div>
+                  {pricingMode === 'per_head' && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Billed per player instead of per booking. Switching an existing type is explicit and only
+                      affects new bookings — bills already made keep their original rate.
+                    </p>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={label}>Hourly rate</label>
+                    <label className={label}>
+                      {pricingMode === 'per_head'
+                        ? `${currencySymbol(currency)} per player / hour`
+                        : `${currencySymbol(currency)} per hour`}
+                    </label>
                     <input
                       className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
                       type="number"
@@ -559,6 +637,20 @@ function TypeModal({
                     {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
                   </div>
                 </div>
+                {pricingMode === 'per_head' && (
+                  <div>
+                    <label className={label}>Minimum players</label>
+                    <input
+                      className={`${input} ${submitted && errors.minPlayers ? inputInvalid : ''}`}
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={minPlayers}
+                      onChange={(e) => setMinPlayers(e.target.value)}
+                    />
+                    {submitted && errors.minPlayers && <p className={errorText}>{errors.minPlayers}</p>}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className={label}>Capacity (optional)</label>
@@ -669,6 +761,7 @@ function TypeModal({
                 capacity={capacity === '' ? null : Number(capacity)}
                 bufferMinutes={buffer === '' ? 0 : Number(buffer)}
                 description={description}
+                perPlayer={pricingMode === 'per_head'}
               />
             </div>
 

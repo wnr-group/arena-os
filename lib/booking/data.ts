@@ -32,6 +32,8 @@ export function listResourceTypes(ctx: ActiveContext) {
         taxRateId: resourceTypes.taxRateId,
         taxRateName: taxRates.name,
         taxPercent: taxRates.percent,
+        pricingMode: resourceTypes.pricingMode,
+        minPlayers: resourceTypes.minPlayers,
         isActive: resourceTypes.isActive,
         createdAt: resourceTypes.createdAt,
         updatedAt: resourceTypes.updatedAt,
