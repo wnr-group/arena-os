@@ -254,14 +254,19 @@ export async function createPublicBooking(
 
     const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }]
 
-    // M21 per-head #5: online never asks for a player count — "keep the
-    // online flow simple" — so this resolves what priceBookingSlots/
-    // createBookingCore need on the customer's behalf. undefined (i.e. no
-    // per_head resource involved) for the overwhelming majority of
-    // bookings; otherwise 1, or the type's own min_players if higher.
-    const headCount = await withPublicTenant(tenant.id, (tx) =>
+    // M21 per-head #5: honor the player count the customer entered online for a
+    // per_head resource, so the price AND the deposit reflect the real party
+    // (staff can still adjust it at check-in). resolvePublicHeadCount tells us
+    // whether a per_head resource is involved (and its min_players floor):
+    // undefined → per_resource, where a player count is meaningless, so we pass
+    // nothing. Otherwise use the entered count, falling back to the floor when
+    // the customer didn't specify one; a count BELOW the floor is rejected with
+    // a clear message by priceBookingSlots/createBookingCore below (same guard
+    // the staff path uses), rather than silently charging for more.
+    const perHeadMin = await withPublicTenant(tenant.id, (tx) =>
       resolvePublicHeadCount(tx, tenant.id, [v.resourceId]),
     )
+    const headCount = perHeadMin === undefined ? undefined : (v.players ?? perHeadMin)
 
     // Pay-now: price the slot BEFORE creating the booking, so a total too
     // large to take online refuses cleanly rather than leaving a booking

@@ -558,7 +558,12 @@ function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefin
   if (!Number.isInteger(headCount) || headCount < 1) {
     throw new BookingError('Enter a whole number of players, at least 1.')
   }
-  if (headCount < walkin.minPlayers) {
+  // Only enforce the CURRENT min_players when the operator is setting a NEW
+  // count (`requested`). A session already running at its captured count must
+  // stay closeable even if an admin raised min_players after it started —
+  // otherwise checkout is blocked and the operator can't close the table
+  // without over-counting (finding 3, PR #24 per-head review).
+  if (requested !== undefined && headCount < walkin.minPlayers) {
     throw new BookingError(
       `This station needs at least ${walkin.minPlayers} player${walkin.minPlayers === 1 ? '' : 's'}.`,
     )

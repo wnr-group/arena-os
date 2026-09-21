@@ -26,7 +26,7 @@ import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { createBookingCore, priceBookingSlots, BookingError } from '../lib/booking/service'
+import { createBookingCore, priceBookingSlots, updateBookingHeadCountCore, BookingError } from '../lib/booking/service'
 import { loadBookingLines } from '../lib/billing/invoice'
 import { priceElapsedTime } from '../lib/billing/elapsed-time'
 import { priceBill, round2 } from '../lib/billing/pricing'
@@ -213,6 +213,47 @@ async function testBookingSlots() {
     check('T5 booking_slots.slot_total = 300.00 (3 × ₹50 × 2h)', row.slot_total === '300.00')
     check('T5 booking_slots.head_count snapshot = 3', row.slot_head_count === 3)
     check("T5 booking_slots.pricing_mode snapshot = 'per_head'", row.pricing_mode === 'per_head')
+  }
+
+  // ── a2. editing the player count re-prices AND refreshes the stored total ──
+  // (finding 1, PR #24 per-head review: loadBookingLines recomputes the invoice
+  //  from head_count, but the denormalized bookings.subtotal/total shown to the
+  //  customer — confirmation page, account pages, bookings list — must not go
+  //  stale at the old count.)
+  {
+    // A DEDICATED booking (not the snapshot-freeze one T9/T10 rely on): start
+    // at 3 players, edit to 5, and confirm the stored totals follow.
+    const edited = await withUser(userId, (tx) =>
+      createBookingCore(tx, ctx, {
+        branchId,
+        source: 'staff',
+        discount: 0,
+        deposit: 0,
+        headCount: 3,
+        slots: [{ resourceId: snookerResource.rows[0].id, startsAt: day(20).toISOString(), endsAt: day(22).toISOString() }],
+      }),
+    )
+    await withUser(userId, (tx) =>
+      updateBookingHeadCountCore(tx, { tenantId }, { bookingId: edited.id, headCount: 5 }),
+    )
+    const { rows } = await ownerPool.query(
+      `select b.head_count as booking_head_count, b.subtotal, b.total,
+              s.slot_total, s.head_count as slot_head_count
+       from bookings b join booking_slots s on s.booking_id = b.id where b.id = $1`,
+      [edited.id],
+    )
+    const row = rows[0]
+    check('T5b edit to 5 players: bookings.head_count = 5', row.booking_head_count === 5)
+    check(
+      'T5b …bookings.subtotal/total refreshed to 500.00 (not left stale at 300)',
+      row.subtotal === '500.00' && row.total === '500.00',
+    )
+    check('T5b …booking_slots.slot_total refreshed to 500.00', row.slot_total === '500.00')
+    check('T5b …booking_slots.head_count snapshot = 5', row.slot_head_count === 5)
+
+    const lines = await withUser(userId, (tx) => loadBookingLines(tx, tenantId, edited.id, TZ))
+    const billed = round2(lines.reduce((s, l) => s + l.qty * l.unitPrice, 0))
+    check('T5b …and the billed line reconciles to 500.00 (2h × 5 players × ₹50)', billed === 500)
   }
 
   // ── b. min_players enforced — 1 player on a 2-player-minimum type is rejected ─

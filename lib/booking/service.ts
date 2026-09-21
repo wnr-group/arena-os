@@ -11,6 +11,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
 import { durationHours } from './availability'
+import { round2 } from '@/lib/billing/pricing'
 import { todayInZone } from './time'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
@@ -316,7 +317,7 @@ export async function updateBookingHeadCountCore(
   }
 
   const [booking] = await tx
-    .select({ id: bookings.id })
+    .select({ id: bookings.id, discount: bookings.discount })
     .from(bookings)
     .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
     .for('update')
@@ -329,7 +330,15 @@ export async function updateBookingHeadCountCore(
   }
 
   const slots = await tx
-    .select({ id: bookingSlots.id, resourceId: bookingSlots.resourceId, pricingMode: bookingSlots.pricingMode })
+    .select({
+      id: bookingSlots.id,
+      resourceId: bookingSlots.resourceId,
+      pricingMode: bookingSlots.pricingMode,
+      rateApplied: bookingSlots.rateApplied,
+      startsAt: bookingSlots.startsAt,
+      endsAt: bookingSlots.endsAt,
+      slotTotal: bookingSlots.slotTotal,
+    })
     .from(bookingSlots)
     .where(
       and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true)),
@@ -354,17 +363,39 @@ export async function updateBookingHeadCountCore(
     throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
   }
 
-  await tx.update(bookings).set({ headCount: input.headCount }).where(eq(bookings.id, booking.id))
+  // Re-price every per_head slot AND refresh the booking's stored subtotal/
+  // total, so the customer-facing figures (online confirmation, the account
+  // pages, the bookings list) match the new count. The invoice recomputes the
+  // line independently from head_count (loadBookingLines), but these
+  // denormalized columns are read straight out and would otherwise go stale.
+  // A per_head slot with no ends_at yet (an open-tab walk-in) is priced at
+  // checkout, not here, so its slot_total is left to checkoutWalkinCore.
+  let newSubtotal = 0
+  for (const s of slots) {
+    if (s.pricingMode === 'per_head' && s.endsAt !== null) {
+      const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
+      const slotTotal = round2(input.headCount * Number(s.rateApplied) * hours)
+      newSubtotal += slotTotal
+      await tx
+        .update(bookingSlots)
+        .set({ headCount: input.headCount, slotTotal: slotTotal.toFixed(2) })
+        .where(and(eq(bookingSlots.id, s.id), eq(bookingSlots.tenantId, ctx.tenantId)))
+    } else {
+      newSubtotal += Number(s.slotTotal)
+      if (s.pricingMode === 'per_head') {
+        await tx
+          .update(bookingSlots)
+          .set({ headCount: input.headCount })
+          .where(and(eq(bookingSlots.id, s.id), eq(bookingSlots.tenantId, ctx.tenantId)))
+      }
+    }
+  }
+  newSubtotal = round2(newSubtotal)
+  const newTotal = Math.max(0, round2(newSubtotal - Number(booking.discount)))
   await tx
-    .update(bookingSlots)
-    .set({ headCount: input.headCount })
-    .where(
-      and(
-        eq(bookingSlots.bookingId, booking.id),
-        eq(bookingSlots.tenantId, ctx.tenantId),
-        eq(bookingSlots.pricingMode, 'per_head'),
-      ),
-    )
+    .update(bookings)
+    .set({ headCount: input.headCount, subtotal: newSubtotal.toFixed(2), total: newTotal.toFixed(2) })
+    .where(eq(bookings.id, booking.id))
 
   return { bookingId: booking.id, headCount: input.headCount }
 }
