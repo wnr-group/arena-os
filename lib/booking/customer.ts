@@ -15,20 +15,11 @@ export type BookingContact = {
   email?: string | null
 }
 
-export type ResolvedBookingCustomer = { id: string; name: string | null }
-
-/**
- * Resolves the phone to a customer row and returns its directory name
- * alongside the id — a caller whose contact.name came back blank (e.g. the
- * public booking form skips asking for a name once it recognises the phone,
- * see lookupPublicCustomerByPhone) can fall back to this instead of writing
- * a nameless booking that then displays as "Walk-in".
- */
 export async function resolveBookingCustomer(
   tx: Db,
   tenantId: string,
   contact: BookingContact,
-): Promise<ResolvedBookingCustomer | null> {
+): Promise<string | null> {
   if (!contact.phone || !normalizePhone(contact.phone)) return null
 
   const customer = await findOrCreateCustomer(tx, tenantId, {
@@ -36,5 +27,5 @@ export async function resolveBookingCustomer(
     name: contact.name,
     email: contact.email,
   })
-  return { id: customer.id, name: customer.name }
+  return customer.id
 }

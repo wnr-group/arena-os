@@ -74,12 +74,12 @@ async function main() {
     contact: { phone?: string | null; name?: string | null; email?: string | null },
   ) {
     return withUser(t.userId, async (tx) => {
-      const resolved = await resolveBookingCustomer(tx, t.tenantId, contact)
+      const customerId = await resolveBookingCustomer(tx, t.tenantId, contact)
       const num = `BC-${String(++seq).padStart(3, '0')}`
       const r = await tx.execute(sql`
         insert into bookings (tenant_id, branch_id, booking_number, customer_id,
                               customer_name, customer_phone, total)
-        values (${t.tenantId}, ${t.branchId}, ${num}, ${resolved?.id ?? null},
+        values (${t.tenantId}, ${t.branchId}, ${num}, ${customerId},
                 ${contact.name ?? null}, ${contact.phone ?? null}, '0')
         returning id, customer_id, customer_name, customer_phone
       `)
