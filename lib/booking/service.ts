@@ -243,11 +243,12 @@ export async function createBookingCore(
   // Attach the booking to the customer directory so it shows on their
   // profile. Same transaction as the booking, so the two commit together.
   // Returns null when there's no usable phone — see resolveBookingCustomer.
-  const customerId = await resolveBookingCustomer(tx, ctx.tenantId, {
+  const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, {
     phone: input.customerPhone,
     name: input.customerName,
     email: input.customerEmail,
   })
+  const customerId = resolvedCustomer?.id ?? null
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
 
@@ -257,7 +258,11 @@ export async function createBookingCore(
       tenantId: ctx.tenantId,
       branchId: input.branchId,
       bookingNumber,
-      customerName: input.customerName || null,
+      // Falls back to the directory's own name for a returning customer who
+      // wasn't asked for one again (public booking form) — otherwise the
+      // booking would carry no name at all and every dashboard would show it
+      // as "Walk-in" despite the phone matching a known customer.
+      customerName: input.customerName?.trim() || resolvedCustomer?.name || null,
       customerPhone: input.customerPhone || null,
       customerEmail: input.customerEmail || null,
       customerId,
@@ -450,11 +455,12 @@ export async function seatTableSessionCore(
   }
   if (resource.status !== 'available') throw new BookingError('This table is not available.')
 
-  const customerId = await resolveBookingCustomer(tx, ctx.tenantId, {
+  const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, {
     phone: input.customerPhone,
     name: input.customerName,
     email: input.customerEmail,
   })
+  const customerId = resolvedCustomer?.id ?? null
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
   const now = new Date()
@@ -471,7 +477,7 @@ export async function seatTableSessionCore(
       resourceId: input.resourceId,
       coverCount: input.coverCount,
       bookingNumber,
-      customerName: input.customerName || null,
+      customerName: input.customerName?.trim() || resolvedCustomer?.name || null,
       customerPhone: input.customerPhone || null,
       customerEmail: input.customerEmail || null,
       customerId,
