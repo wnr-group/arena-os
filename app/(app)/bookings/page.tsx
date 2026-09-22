@@ -167,7 +167,7 @@ export default async function BookingsPage({
         slotId: s.slotId,
         resourceId: s.resourceId,
         startsAt: s.startsAt.toISOString(),
-        endsAt: s.endsAt.toISOString(),
+        endsAt: s.endsAt ? s.endsAt.toISOString() : null,
         bookingId: s.bookingId,
         bookingNumber: s.bookingNumber,
         customerName: s.customerName,
