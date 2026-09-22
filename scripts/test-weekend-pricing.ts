@@ -35,7 +35,7 @@ import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { createBookingCore, priceBookingSlots } from '../lib/booking/service'
+import { createBookingCore, priceBookingSlots, BookingError } from '../lib/booking/service'
 import { loadBookingLines } from '../lib/billing/invoice'
 import { priceBill, round2 } from '../lib/billing/pricing'
 import { isWeekendDay, resolveDayRate } from '../lib/booking/rate'
@@ -612,6 +612,51 @@ async function testWalkins() {
       'T15 today IS weekend, but the type has no weekend_rate: rate_applied stays 90.00 (opt-in, unaffected)',
       (await rateApplied(walkin.id)) === '90.00',
     )
+  }
+
+  // ── d. bugfix: a weekend_rate of exactly 0 must be rejected — not just a
+  // zero WEEKDAY rate (already guarded before this fix). A configured
+  // weekend_rate=0 with a POSITIVE weekday rate would otherwise slip past
+  // that weekdayRate-only guard and price a weekend walk-in to
+  // rate_applied=0.00 — indistinguishable, once a TIMED walk-in checks out,
+  // from loadWalkinForCheckout's "not yet checked out" sentinel
+  // (slot_total > 0), letting it be checked out repeatedly or excluded from
+  // billing entirely (lib/billing/invoice.ts's loadBookingLines documents
+  // the same "a walk-in never legitimately prices to 0" invariant).
+  await ownerPool.query(`update business_profiles set weekend_days = $1 where tenant_id = $2`, [[todayWeekday], tenantId])
+  {
+    const freeWeekendType = await ownerPool.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate,weekend_rate) values ($1,'Free-on-Weekend','100.00','0.00')
+       on conflict (tenant_id,name) do update set hourly_rate=excluded.hourly_rate, weekend_rate=excluded.weekend_rate
+       returning id`,
+      [tenantId],
+    )
+    const freeWeekendResource = await ownerPool.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'PS-FreeWeekend','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, freeWeekendType.rows[0].id],
+    )
+    let rejected = false
+    let messageOk = false
+    try {
+      await withUser(userId, (tx) =>
+        startWalkinCore(tx, ctx, {
+          branchId,
+          resourceId: freeWeekendResource.rows[0].id,
+          phone: '9990000004',
+          startAt: new Date().toISOString(),
+          mode: 'open_tab',
+        }),
+      )
+    } catch (e) {
+      rejected = e instanceof BookingError
+      messageOk = rejected && (e as BookingError).message.includes('hourly station')
+    }
+    check(
+      'T19 today configured as weekend, weekend_rate=0.00 (weekday rate is 100, positive): startWalkinCore REJECTS it',
+      rejected,
+    )
+    check('T19 …with a clear BookingError message, not a silently-created ₹0 booking', messageOk)
   }
 
   await ownerPool.query('delete from tenants where id = $1', [tenantId])
