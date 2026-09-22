@@ -360,7 +360,7 @@ export async function startWalkinCore(
     headCount = requested
   }
 
-  const customerId = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
+  const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
 
@@ -370,9 +370,9 @@ export async function startWalkinCore(
       tenantId: ctx.tenantId,
       branchId: input.branchId,
       bookingNumber,
-      customerName: input.name?.trim() || null,
+      customerName: input.name?.trim() || resolvedCustomer?.name || null,
       customerPhone: input.phone,
-      customerId,
+      customerId: resolvedCustomer?.id ?? null,
       status: 'checked_in',
       source: 'walk_in',
       channel: 'walkin',
