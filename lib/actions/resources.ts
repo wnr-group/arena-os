@@ -170,7 +170,16 @@ const resourceInput = z.object({
   branchId: z.string().uuid(),
   resourceTypeId: z.string().uuid(),
   name: z.string().trim().min(1, 'Name is required'),
-  hourlyRateOverride: z.union([z.coerce.number().min(0), z.null()]).optional(),
+  // A BLANK override means "no override — use the type rate", which must land as
+  // null. Guard the coercion: z.coerce.number('') is 0, not NaN, so without this
+  // an empty string would silently store 0.00 and price the resource at ₹0
+  // (`rate ?? typeRate` only falls back on null). Explicit 0 stays 0 (free).
+  hourlyRateOverride: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.coerce.number().min(0), z.null()]),
+    )
+    .optional(),
   status: z.enum(['available', 'maintenance', 'inactive']).default('available'),
   imageUrl: z.string().trim().optional(),
   description: z.string().trim().optional(),
