@@ -76,13 +76,15 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
     monthlyPrice: '7999.00',
     annualPrice: '79990.00',
     entitlements: {
-      max_branches: 3,
-      max_staff: 25,
-      max_resources: 50,
+      // Pro is the tier we hand our first clients: every module on, every limit
+      // unlimited (null, not a sentinel — same convention as Enterprise below).
+      max_branches: null,
+      max_staff: null,
+      max_resources: null,
       'module.payroll': true,
       'module.expenses': true,
       'module.reports': true,
-      'module.events': false,
+      'module.events': true,
     },
   },
   {
