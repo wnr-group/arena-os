@@ -498,6 +498,7 @@ export function BookingsView({
                         <span
                           key={s.slotId}
                           onClick={(e) => {
+                            e.preventDefault()
                             e.stopPropagation()
                             setSelected(s)
                           }}
