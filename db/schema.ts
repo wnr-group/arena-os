@@ -172,6 +172,10 @@ export const resourceTypes = pgTable(
     // M21 per-head #1 (0094): floor on headCount for a per_head booking on
     // this type (e.g. snooker = 2). Unused (default 1) for per_resource types.
     minPlayers: smallint('min_players').notNull().default(1),
+    // M22 #1 (0095): weekend hourly rate. Null = no weekend pricing
+    // configured — weekend prices the same as weekday. hourlyRate (and
+    // resources.hourlyRateOverride) remains the weekday rate.
+    weekendRate: numeric('weekend_rate', { precision: 10, scale: 2 }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1160,6 +1164,9 @@ export const businessProfiles = pgTable('business_profiles', {
   // untaxed, not unconfigured.
   serviceChargePercent: numeric('service_charge_percent', { precision: 5, scale: 2 }).notNull().default('0'),
   serviceChargeTaxRateId: uuid('service_charge_tax_rate_id').references(() => taxRates.id, { onDelete: 'set null' }),
+  // M22 #1 (0095): weekday numbers (0=Sun...6=Sat, JS getDay convention)
+  // this tenant treats as weekend for pricing. Default {0,6} (Sat+Sun).
+  weekendDays: smallint('weekend_days').array().notNull().default([0, 6]),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
