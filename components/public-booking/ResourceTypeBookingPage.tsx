@@ -117,7 +117,13 @@ export function ResourceTypeBookingPage({
   const [payOnline, setPayOnline] = useState(false)
   const [pending, startTransition] = useTransition()
 
-  const hourlyRate = Number(resourceType.hourlyRate)
+  // M22 #4: starts at the type's flat rate (the same figure the browse
+  // card/header quote before any date is picked), then follows whatever
+  // getPublicAvailability resolves for the SELECTED date (weekday or
+  // weekend) once that fetch lands — so the live estimate/deposit below
+  // always matches what createPublicBooking will actually charge, without
+  // ever labelling the day as "weekend" (per the confirmed spec).
+  const [hourlyRate, setHourlyRate] = useState(Number(resourceType.hourlyRate))
   // M21 per-head #5: online never asks for a player count ("keep the online
   // flow simple" — see the design doc) — this mirrors resolvePublicHeadCount
   // (lib/booking/service.ts), the server's own source of truth, so the price
@@ -150,6 +156,7 @@ export function ResourceTypeBookingPage({
         setSlots([])
         return
       }
+      if (r.rate !== undefined) setHourlyRate(Number(r.rate))
       // allStarts is the working day; starts is what is actually free. Merge
       // them so position in the list always matches clock time.
       const byStart = new Map((r.starts ?? []).map((s) => [s.startsAt, s.resourceId]))

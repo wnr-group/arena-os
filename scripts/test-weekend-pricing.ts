@@ -22,6 +22,13 @@
  *   - the resolved rate freezes onto booking_slots.rate_applied — a later
  *     resource-type rate change can't reprice a booking already taken
  *
+ * M22 #4 — the same resolution surfaces through the PUBLIC booking read path
+ * (lib/booking/public-availability.ts's getPublicAvailableStarts/
+ * getPublicAvailableStartsForType) so the online wizard's live estimate/
+ * deposit quote the correct date-specific rate — never trusted at write
+ * time regardless (createPublicBooking re-prices via createBookingCore ->
+ * priceBookingSlots, the same engine #2 already pins above).
+ *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-weekend-pricing.ts
  */
 import { Pool } from 'pg'
@@ -29,9 +36,17 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { createBookingCore, priceBookingSlots } from '../lib/booking/service'
-import { startWalkinCore, checkoutWalkinCore } from '../lib/booking/walkin'
 import { isWeekendDay, resolveDayRate } from '../lib/booking/rate'
 import { loadEnv } from './env'
+// lib/booking/walkin.ts statically imports @/db (for a `withUser` it never
+// actually gets called from here — this test uses its own local `withUser`
+// below) — @/db's pools are created from process.env.DATABASE_URL(_OWNER) at
+// MODULE-EVALUATION time, so importing walkin.ts at this file's own top
+// level would poison that singleton with undefined connection strings
+// before loadEnv() (called inside testReservedBookings, below) ever runs.
+// Deferred to a dynamic import in testWalkins() instead, after loadEnv() has
+// already run via testReservedBookings() earlier in main() — same reasoning
+// test-public-availability-grid.ts's own dynamic import documents.
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -76,6 +91,12 @@ function testPureResolver() {
 // ── 2. priceBookingSlots / createBookingCore — reserved bookings, real DB ────
 async function testReservedBookings() {
   loadEnv()
+  // Dynamic, AFTER loadEnv(): public-availability.ts pulls in @/db, whose
+  // pool reads process.env.DATABASE_URL at module-load time — a static
+  // top-level import here would evaluate that before loadEnv() ran and
+  // connect to nothing (ECONNREFUSED 127.0.0.1:5432), same reasoning
+  // test-public-availability-grid.ts's own dynamic import already documents.
+  const { getPublicAvailableStarts, getPublicAvailableStartsForType } = await import('../lib/booking/public-availability')
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })
   const app = drizzle(appPool, { schema })
@@ -270,7 +291,74 @@ async function testReservedBookings() {
     await ownerPool.query(`update business_profiles set weekend_days = '{0,6}' where tenant_id = $1`, [tenantId])
   }
 
-  // ── h. priceBookingSlots resolves the same way called directly (not just
+  // ── h. M22 #4: the public availability read path quotes the same
+  // date-specific rate the wizard's live estimate/deposit should show —
+  // must run BEFORE the next block mutates the type's rates.
+  {
+    const WD_TUE = '2046-03-20'
+    const WD_FRI = '2046-03-16'
+    const WD_SAT = '2046-03-17'
+
+    async function rateFor(resourceId: string, date: string) {
+      const r = await getPublicAvailableStarts({
+        tenantId,
+        branchId,
+        resourceId,
+        timeZone: TZ,
+        date,
+        durationMinutes: 60,
+      })
+      if ('error' in r) throw new Error(r.error)
+      return r.rate
+    }
+    async function typeRateFor(resourceTypeId: string, date: string) {
+      const r = await getPublicAvailableStartsForType({
+        tenantId,
+        branchId,
+        resourceTypeId,
+        timeZone: TZ,
+        date,
+        durationMinutes: 60,
+      })
+      if ('error' in r) throw new Error(r.error)
+      return r.rate
+    }
+
+    check(
+      'T16 public single-resource quote on a weekday: PS5-A = 100.00',
+      (await rateFor(ps5A.rows[0].id, WD_TUE)) === '100.00',
+    )
+    check(
+      'T16 …on a weekend: PS5-A = 150.00 (the weekend rate)',
+      (await rateFor(ps5A.rows[0].id, WD_SAT)) === '150.00',
+    )
+    check(
+      "T16 …PS5-B's weekday override applies on a weekday: 70.00",
+      (await rateFor(ps5B.rows[0].id, WD_TUE)) === '70.00',
+    )
+    check(
+      "T16 …but is IGNORED on a weekend — PS5-B quotes the type's weekend rate: 150.00",
+      (await rateFor(ps5B.rows[0].id, WD_SAT)) === '150.00',
+    )
+    check(
+      'T16 …a type with no weekend_rate quotes the same price every day: Pool-A = 120.00 on Fri',
+      (await rateFor(poolA.rows[0].id, WD_FRI)) === '120.00',
+    )
+    check(
+      'T16 …Pool-A on a weekend too: 120.00 (opt-in, unaffected)',
+      (await rateFor(poolA.rows[0].id, WD_SAT)) === '120.00',
+    )
+    check(
+      'T16 public type-level quote (auto-assigned unit) on a weekday: PS5 Weekend type = 100.00',
+      (await typeRateFor(ps5Type.rows[0].id, WD_TUE)) === '100.00',
+    )
+    check(
+      'T16 …on a weekend: 150.00',
+      (await typeRateFor(ps5Type.rows[0].id, WD_SAT)) === '150.00',
+    )
+  }
+
+  // ── i. priceBookingSlots resolves the same way called directly (not just
   // through createBookingCore) — must run BEFORE the next block mutates the
   // type's rates.
   {
@@ -283,7 +371,7 @@ async function testReservedBookings() {
     check('T11 priceBookingSlots called directly resolves the same weekend rate: subtotal = 150', priced.subtotal === 150)
   }
 
-  // ── i. snapshot freeze: a later resource-type rate change can't reprice ──
+  // ── j. snapshot freeze: a later resource-type rate change can't reprice ──
   {
     const r = await bookAndLoad(ps5A.rows[0].id, sat('20:00'), sat('22:00'))
     await ownerPool.query(`update resource_types set weekend_rate = '999.00', hourly_rate = '999.00' where id = $1`, [
@@ -310,6 +398,7 @@ async function testReservedBookings() {
 // weekday — proving the same resolution regardless of which day this suite
 // happens to run on.
 async function testWalkins() {
+  const { startWalkinCore, checkoutWalkinCore } = await import('../lib/booking/walkin')
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })
   const app = drizzle(appPool, { schema })

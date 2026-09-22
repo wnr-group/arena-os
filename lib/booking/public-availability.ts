@@ -4,6 +4,8 @@ import { withPublicTenant } from '@/db'
 import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
+import { resolveDayRate } from './rate'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { getActiveBookingForResource } from './attribution'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
@@ -180,12 +182,17 @@ export type PublicAvailabilityInput = {
  */
 export async function getPublicAvailableStarts(
   input: PublicAvailabilityInput,
-): Promise<{ starts: Date[]; allStarts: Date[]; isClosed: boolean } | { error: string }> {
+): Promise<{ starts: Date[]; allStarts: Date[]; isClosed: boolean; rate: string } | { error: string }> {
   const { tenantId, branchId, resourceId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
     const [res] = await tx
-      .select({ buffer: resourceTypes.bufferMinutes })
+      .select({
+        buffer: resourceTypes.bufferMinutes,
+        weekdayRate: resources.hourlyRateOverride,
+        typeRate: resourceTypes.hourlyRate,
+        typeWeekendRate: resourceTypes.weekendRate,
+      })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
       .where(
@@ -197,6 +204,17 @@ export async function getPublicAvailableStarts(
         ),
       )
     if (!res) return { error: 'Resource not found.' }
+
+    // M22 #4: the price shown/charged for THIS date — resolved the same way
+    // priceBookingSlots resolves it at booking time (lib/booking/rate.ts), so
+    // the quote here can never drift from what createPublicBooking actually
+    // charges. Anchored at noon on `date`, matching weekdayInZone's own
+    // DST-edge-avoidance convention.
+    const weekendDays = await loadWeekendDays(tx, tenantId)
+    const anchor = zonedTimeToUtc(date, '12:00', timeZone)
+    const weekdayRate = Number(res.weekdayRate ?? res.typeRate)
+    const weekendRate = res.typeWeekendRate === null ? null : Number(res.typeWeekendRate)
+    const rate = resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
 
     const dow = weekdayInZone(date, timeZone)
     const [hours] = await tx
@@ -249,7 +267,7 @@ export async function getPublicAvailableStarts(
       slotMinutes: 30,
     })
 
-    return { starts, allStarts, isClosed: resolvedHours.isClosed }
+    return { starts, allStarts, isClosed: resolvedHours.isClosed, rate: rate.toFixed(2) }
   })
 }
 
@@ -413,12 +431,17 @@ export type PublicTypeSlot = { start: Date; resourceId: string }
  */
 export async function getPublicAvailableStartsForType(
   input: PublicTypeAvailabilityInput,
-): Promise<{ starts: PublicTypeSlot[]; allStarts: Date[] } | { error: string }> {
+): Promise<{ starts: PublicTypeSlot[]; allStarts: Date[]; rate: string } | { error: string }> {
   const { tenantId, branchId, resourceTypeId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
     const resourceRows = await tx
-      .select({ id: resources.id, buffer: resourceTypes.bufferMinutes })
+      .select({
+        id: resources.id,
+        buffer: resourceTypes.bufferMinutes,
+        typeRate: resourceTypes.hourlyRate,
+        typeWeekendRate: resourceTypes.weekendRate,
+      })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
       .where(
@@ -431,6 +454,16 @@ export async function getPublicAvailableStartsForType(
       )
       .orderBy(resources.sortOrder)
     if (resourceRows.length === 0) return { error: 'This is not bookable right now.' }
+
+    // M22 #4: type-level booking auto-assigns the first free UNIT of the
+    // type, but the price it quotes has always been the TYPE's own rate (see
+    // getPublicResourceType) rather than any one unit's override — resolving
+    // weekday/weekend the same way, at the type level, keeps that unchanged.
+    const weekendDays = await loadWeekendDays(tx, tenantId)
+    const anchor = zonedTimeToUtc(date, '12:00', timeZone)
+    const weekdayRate = Number(resourceRows[0].typeRate)
+    const weekendRate = resourceRows[0].typeWeekendRate === null ? null : Number(resourceRows[0].typeWeekendRate)
+    const rate = resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
 
     const dow = weekdayInZone(date, timeZone)
     const [hours] = await tx
@@ -505,6 +538,6 @@ export async function getPublicAvailableStartsForType(
       slotMinutes: 30,
     })
 
-    return { starts, allStarts }
+    return { starts, allStarts, rate: rate.toFixed(2) }
   })
 }

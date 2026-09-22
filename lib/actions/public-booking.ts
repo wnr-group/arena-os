@@ -45,6 +45,11 @@ export type AvailabilityResult = {
    * single-resource page has had (getPublicResourceAvailability).
    */
   allStarts?: string[]
+  /** M22 #4: the effective hourly rate for the SELECTED date (weekday or
+   *  weekend, per lib/booking/rate.ts:resolveDayRate) — the wizard prices its
+   *  live estimate/deposit off this instead of a static, date-blind rate, so
+   *  the quote never drifts from what createPublicBooking actually charges. */
+  rate?: string
   error?: string
 }
 
@@ -79,6 +84,7 @@ export async function getPublicAvailability(
   return {
     starts: result.starts.map((s) => ({ startsAt: s.start.toISOString(), resourceId: s.resourceId })),
     allStarts: result.allStarts.map((d) => d.toISOString()),
+    rate: result.rate,
   }
 }
 
@@ -89,7 +95,7 @@ const resourceAvailabilityInput = z.object({
 })
 
 export type PublicResourceAvailabilityResult =
-  | { starts: string[]; allStarts: string[]; isClosed: boolean }
+  | { starts: string[]; allStarts: string[]; isClosed: boolean; rate: string }
   | { error: string }
 
 /** Same as getPublicAvailability, but for one specific resource unit rather
@@ -123,6 +129,7 @@ export async function getPublicResourceAvailability(
     starts: result.starts.map((d) => d.toISOString()),
     allStarts: result.allStarts.map((d) => d.toISOString()),
     isClosed: result.isClosed,
+    rate: result.rate,
   }
 }
 
