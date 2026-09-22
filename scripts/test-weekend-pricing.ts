@@ -36,6 +36,8 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { createBookingCore, priceBookingSlots } from '../lib/booking/service'
+import { loadBookingLines } from '../lib/billing/invoice'
+import { priceBill, round2 } from '../lib/billing/pricing'
 import { isWeekendDay, resolveDayRate } from '../lib/booking/rate'
 import { loadEnv } from './env'
 // lib/booking/walkin.ts statically imports @/db (for a `withUser` it never
@@ -264,10 +266,12 @@ async function testReservedBookings() {
   }
 
   // ── f. per-head multiplies the resolved day rate by players ──────────────
+  let snookerBookingIdForT8 = ''
   {
     const r = await bookAndLoad(snookerA.rows[0].id, sat('10:00'), sat('12:00'), 3)
     check('T8 Snooker on a weekend: rate_applied stays the PER-PLAYER weekend rate: 80.00', r.rateApplied === '80.00')
     check('T8 …slot_total = 480.00 (3 players × ₹80 × 2h)', r.slotTotal === '480.00')
+    snookerBookingIdForT8 = r.bookingId
   }
 
   // ── g. business_profiles.weekend_days is tenant-configurable ─────────────
@@ -382,6 +386,60 @@ async function testReservedBookings() {
     ])
     check('T10 rate_applied stays frozen at 150.00 after the type\'s rates change to 999.00', rows[0].rate_applied === '150.00')
     check('T10 …slot_total stays frozen at 300.00 — the raised bill does not move', rows[0].slot_total === '300.00')
+  }
+
+  // ── k. M22 #5: snapshot freeze also holds against a WEEKEND_DAYS change —
+  // not just a resource-type rate change (block j above). A booking taken
+  // while Saturday counted as weekend must keep its weekend rate even after
+  // the tenant later redefines its weekend days to exclude Saturday.
+  {
+    // Snooker (per-head, weekend_rate=80) — not Pool, whose weekend_rate is
+    // null and so wouldn't distinguish a real freeze from "was already the
+    // same price either way."
+    const r2 = await bookAndLoad(snookerA.rows[0].id, sat('14:00'), sat('16:00'), 2)
+    check('T17 setup: Saturday booking on Snooker bills the weekend rate before the change: 80.00', r2.rateApplied === '80.00')
+
+    await ownerPool.query(`update business_profiles set weekend_days = '{}' where tenant_id = $1`, [tenantId])
+    const { rows } = await ownerPool.query(`select rate_applied, slot_total from booking_slots where booking_id = $1`, [
+      r2.bookingId,
+    ])
+    check(
+      'T17 …rate_applied STAYS 80.00 after weekend_days is cleared to {} (no day is weekend anymore)',
+      rows[0].rate_applied === '80.00',
+    )
+    check('T17 …slot_total stays frozen too: 320.00 (2 players × ₹80 × 2h)', rows[0].slot_total === '320.00')
+
+    // A NEW booking on the same Saturday, taken AFTER the change, correctly
+    // gets the now-current (weekday) rate — proves this is a freeze on the
+    // old booking, not a resolver that's stuck reading a stale weekend_days.
+    const r3 = await bookAndLoad(snookerA.rows[0].id, sat('17:00'), sat('18:00'), 2)
+    check(
+      'T17 …but a NEW Saturday booking taken after the change bills the current (weekday) rate: 50.00',
+      r3.rateApplied === '50.00',
+    )
+
+    // Restore the default for anything after this block.
+    await ownerPool.query(`update business_profiles set weekend_days = '{0,6}' where tenant_id = $1`, [tenantId])
+  }
+
+  // ── l. M22 #5: reconciles to the paise through the SAME billing path a
+  // raised invoice uses (loadBookingLines -> priceBill) — not just
+  // priceBookingSlots' own return value. Reuses the T8 per-head weekend
+  // booking (Snooker, 3 players × ₹80/hr weekend rate × 2h = ₹480.00).
+  {
+    const lines = await withUser(userId, (tx) => loadBookingLines(tx, tenantId, snookerBookingIdForT8, TZ))
+    check('T18 loadBookingLines returns exactly one line for the weekend per-head booking', lines.length === 1)
+    const [line] = lines
+    check(
+      'T18 …qty × unitPrice reconstructs the weekend total: qty=6 (3 players × 2h), unitPrice=80',
+      line.qty === 6 && line.unitPrice === 80,
+    )
+    const bill = priceBill({ lines: [line], discount: round2(480 * 0.1) })
+    check('T18 …prices to exactly 480.00 through priceBill before any discount', round2(line.qty * line.unitPrice) === 480)
+    check(
+      'T18 …a 10% discount on top of the weekend total reconciles to the paise: subtotal − discount + tax = total',
+      round2(bill.subtotal - bill.discount + bill.taxTotal) === bill.total,
+    )
   }
 
   await ownerPool.query('delete from tenants where id = $1', [tenantId])
