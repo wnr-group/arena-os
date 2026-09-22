@@ -25,6 +25,7 @@ export function listResourceTypes(ctx: ActiveContext) {
         name: resourceTypes.name,
         description: resourceTypes.description,
         hourlyRate: resourceTypes.hourlyRate,
+        weekendRate: resourceTypes.weekendRate,
         bufferMinutes: resourceTypes.bufferMinutes,
         capacity: resourceTypes.capacity,
         color: resourceTypes.color,

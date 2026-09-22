@@ -36,6 +36,9 @@ type TypeRow = {
   name: string
   description: string | null
   hourlyRate: string
+  /** M22 #3: null = no weekend pricing configured for this type — weekend
+   *  bills identically to weekday (see lib/booking/rate.ts:resolveDayRate). */
+  weekendRate: string | null
   bufferMinutes: number
   capacity: number | null
   color: string | null
@@ -218,6 +221,12 @@ export function ResourceTypesManager({
                   {!isRestaurant && (
                     <td className="px-4 py-3 text-muted-foreground">
                       {formatMoney(row.hourlyRate, currency)}/{row.pricingMode === 'per_head' ? 'player/hr' : 'hr'}
+                      {row.weekendRate && (
+                        <p className="text-xs">
+                          {formatMoney(row.weekendRate, currency)}/{row.pricingMode === 'per_head' ? 'player/hr' : 'hr'}{' '}
+                          weekend
+                        </p>
+                      )}
                     </td>
                   )}
                   {!isRestaurant && (
@@ -391,6 +400,7 @@ function TypeModal({
   const [name, setName] = useState(row?.name ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
   const [rate, setRate] = useState(row?.hourlyRate ?? '')
+  const [weekendRate, setWeekendRate] = useState(row?.weekendRate ?? '')
   const [buffer, setBuffer] = useState(String(row?.bufferMinutes ?? 0))
   const [capacity, setCapacity] = useState(row?.capacity ? String(row.capacity) : '')
   const [color, setColor] = useState(row?.color ?? '')
@@ -415,6 +425,7 @@ function TypeModal({
       name?: string
       description?: string
       rate?: string
+      weekendRate?: string
       buffer?: string
       capacity?: string
       minPlayers?: string
@@ -423,7 +434,11 @@ function TypeModal({
     else if (name.trim().length < 2) e.name = 'Name must be at least 2 characters.'
     else if (name.trim().length > 100) e.name = 'Name must be at most 100 characters.'
     if (description.trim() && description.trim().length < 5) e.description = 'Description must be at least 5 characters.'
-    if (rate !== '' && Number.isNaN(Number(rate))) e.rate = 'Enter a valid rate.'
+    if (rate !== '' && (Number.isNaN(Number(rate)) || Number(rate) < 0)) e.rate = 'Enter a valid rate.'
+    // Blank is valid (M22 #3: no weekend pricing) — only reject a value that
+    // was actually entered but isn't a non-negative number.
+    if (weekendRate !== '' && (Number.isNaN(Number(weekendRate)) || Number(weekendRate) < 0))
+      e.weekendRate = 'Enter a valid rate, or leave it blank.'
     if (buffer !== '' && (Number.isNaN(Number(buffer)) || !Number.isInteger(Number(buffer))))
       e.buffer = 'Buffer must be a whole number.'
     if (capacity !== '' && (Number.isNaN(Number(capacity)) || Number(capacity) <= 0))
@@ -431,7 +446,7 @@ function TypeModal({
     if (pricingMode === 'per_head' && (Number.isNaN(Number(minPlayers)) || !Number.isInteger(Number(minPlayers)) || Number(minPlayers) < 1))
       e.minPlayers = 'Minimum players must be a whole number of at least 1.'
     return e
-  }, [name, description, rate, buffer, capacity, pricingMode, minPlayers])
+  }, [name, description, rate, weekendRate, buffer, capacity, pricingMode, minPlayers])
   const isValid = Object.keys(errors).length === 0
   // A rate scoped to 'food' only isn't valid on a resource type — the server
   // rejects it too (lib/actions/resources.ts) — but keep the current
@@ -468,6 +483,7 @@ function TypeModal({
           name: name.trim(),
           description,
           hourlyRate: rate === '' ? 0 : Number(rate),
+          weekendRate: weekendRate === '' ? null : Number(weekendRate),
           bufferMinutes: buffer === '' ? 0 : Number(buffer),
           capacity: capacity === '' ? undefined : Number(capacity),
           color,
@@ -611,9 +627,7 @@ function TypeModal({
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className={label}>
-                      {pricingMode === 'per_head'
-                        ? `${currencySymbol(currency)} per player / hour`
-                        : `${currencySymbol(currency)} per hour`}
+                      Weekday rate ({pricingMode === 'per_head' ? `${currencySymbol(currency)}/player/hr` : `${currencySymbol(currency)}/hr`})
                     </label>
                     <input
                       className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
@@ -626,16 +640,35 @@ function TypeModal({
                     {submitted && errors.rate && <p className={errorText}>{errors.rate}</p>}
                   </div>
                   <div>
-                    <label className={label}>Buffer (minutes)</label>
+                    <label className={label}>Weekend rate (optional)</label>
                     <input
-                      className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
+                      className={`${input} ${submitted && errors.weekendRate ? inputInvalid : ''}`}
                       type="number"
                       min="0"
-                      value={buffer}
-                      onChange={(e) => setBuffer(e.target.value)}
+                      step="0.01"
+                      placeholder="Same as weekday"
+                      value={weekendRate}
+                      onChange={(e) => setWeekendRate(e.target.value)}
                     />
-                    {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
+                    {submitted && errors.weekendRate && <p className={errorText}>{errors.weekendRate}</p>}
                   </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Weekend rate applies on the days set under{' '}
+                  <span className="font-medium text-foreground">Weekend days</span> above, tenant-wide — there is no
+                  per-station weekend override. A station&apos;s own rate override (on the Resources page) only ever
+                  changes the weekday rate.
+                </p>
+                <div>
+                  <label className={label}>Buffer (minutes)</label>
+                  <input
+                    className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
+                    type="number"
+                    min="0"
+                    value={buffer}
+                    onChange={(e) => setBuffer(e.target.value)}
+                  />
+                  {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
                 </div>
                 {pricingMode === 'per_head' && (
                   <div>
