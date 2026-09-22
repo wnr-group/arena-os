@@ -39,6 +39,7 @@ import { createBookingCore, priceBookingSlots, BookingError } from '../lib/booki
 import { loadBookingLines } from '../lib/billing/invoice'
 import { priceBill, round2 } from '../lib/billing/pricing'
 import { isWeekendDay, resolveDayRate } from '../lib/booking/rate'
+import { weekdayInZone, todayInZone } from '../lib/booking/time'
 import { loadEnv } from './env'
 // lib/booking/walkin.ts statically imports @/db (for a `withUser` it never
 // actually gets called from here — this test uses its own local `withUser`
@@ -529,7 +530,13 @@ async function testWalkins() {
   )
 
   const ctx = { tenantId, timezone: TZ, membershipId }
-  const todayWeekday = new Date().getDay()
+  // Bugfix: new Date().getDay() reads the TEST RUNNER's local timezone, not
+  // the tenant's (TZ = Asia/Kolkata) — startWalkinCore resolves the same
+  // "now" instant in TZ (via ctx.timezone), so near midnight the runner and
+  // the tenant can land on different weekdays, configuring the WRONG day as
+  // weekend and failing nondeterministically. Derive it the same way
+  // isWeekendDay itself does: weekdayInZone(todayInZone(TZ, now), TZ).
+  const todayWeekday = weekdayInZone(todayInZone(TZ), TZ)
   const notTodayWeekday = (todayWeekday + 1) % 7
 
   async function rateApplied(bookingId: string): Promise<string> {
