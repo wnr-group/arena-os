@@ -13,10 +13,12 @@ import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, tax
 import { durationHours } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { todayInZone } from './time'
+import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
 import { getInvoiceSettlement } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -72,10 +74,16 @@ export type PricedBookingSlot = {
  * to "per player" (see resourceTypes.hourlyRate's comment in db/schema.ts).
  * A per_resource slot (the default, and every pre-existing type) is priced
  * exactly as before; head_count plays no part in its total.
+ *
+ * M22 #2: each slot's base rate is resolved by ITS OWN startsAt day — a
+ * weekday slot bills resourceTypes.weekendRate ?? weekdayRate; weekdayRate
+ * is resources.hourlyRateOverride ?? resourceTypes.hourlyRate, unchanged.
+ * weekendRate = null means no weekend pricing configured, so every day
+ * prices identically to today. See lib/booking/rate.ts:resolveDayRate.
  */
 export async function priceBookingSlots(
   tx: Db,
-  ctx: { tenantId: string },
+  ctx: { tenantId: string; timezone: string },
   input: { branchId: string; slots: CreateBookingSlotInput[]; headCount?: number },
 ): Promise<{ subtotal: number; slots: PricedBookingSlot[] }> {
   for (const s of input.slots) {
@@ -93,6 +101,7 @@ export async function priceBookingSlots(
       branchId: resources.branchId,
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
+      typeWeekendRate: resourceTypes.weekendRate,
       rateOverride: resources.hourlyRateOverride,
       pricingMode: resourceTypes.pricingMode,
       minPlayers: resourceTypes.minPlayers,
@@ -121,12 +130,20 @@ export async function priceBookingSlots(
     ? await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')
     : null
 
+  // M22 #2: the tenant's weekend-day set, loaded once for the whole call —
+  // every slot below resolves its own rate against this SAME set, so two
+  // slots in one booking can never disagree on what counts as a weekend.
+  const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
+
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
   const slots = input.slots.map((s) => {
     const r = byId.get(s.resourceId)!
-    const rate = Number(r.rateOverride ?? r.typeRate)
-    const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
+    const startsAt = new Date(s.startsAt)
+    const weekdayRate = Number(r.rateOverride ?? r.typeRate)
+    const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
+    const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
+    const hours = durationHours(startsAt, new Date(s.endsAt))
 
     let headCount: number | null = null
     let total: number
@@ -149,7 +166,7 @@ export async function priceBookingSlots(
 
     return {
       resourceId: s.resourceId,
-      startsAt: new Date(s.startsAt),
+      startsAt,
       endsAt: new Date(s.endsAt),
       rateApplied: rate.toFixed(2),
       slotTotal: total.toFixed(2),

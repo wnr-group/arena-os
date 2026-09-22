@@ -277,7 +277,7 @@ export async function createPublicBooking(
     let deposit = 0
     if (v.payNow) {
       const priced = await withPublicTenant(tenant.id, (tx) =>
-        priceBookingSlots(tx, { tenantId: tenant.id }, { branchId: branch.id, slots, headCount }),
+        priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, { branchId: branch.id, slots, headCount }),
       )
       const rupees = round2(priced.subtotal)
       const amountPaise = paise(rupees)

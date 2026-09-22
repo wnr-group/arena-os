@@ -34,7 +34,9 @@ import { resources, resourceTypes, bookings, bookingSlots, taxRates, happyHours 
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
+import { resolveDayRate } from './rate'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -310,6 +312,7 @@ export async function startWalkinCore(
       status: resources.status,
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
+      typeWeekendRate: resourceTypes.weekendRate,
       rateOverride: resources.hourlyRateOverride,
       taxPercent: taxRates.percent,
       pricingMode: resourceTypes.pricingMode,
@@ -331,14 +334,21 @@ export async function startWalkinCore(
   }
   if (resource.status !== 'available') throw new BookingError('This station is not available.')
 
-  const rate = Number(resource.rateOverride ?? resource.typeRate)
+  const weekdayRate = Number(resource.rateOverride ?? resource.typeRate)
   // A zero EFFECTIVE rate (a per-resource override, not just the type rate
   // already rejected above) would price a timed session to ₹0 — indistinguishable
   // from the `slot_total > 0` "already checked out?" sentinel loadWalkinForCheckout
   // relies on, which would then misfire and lock the booking as uncheckoutable.
-  if (rate <= 0) {
+  if (weekdayRate <= 0) {
     throw new BookingError('This resource isn’t set up as an hourly station.')
   }
+  // M22 #2: resolved by the session's START day and snapshotted onto
+  // rate_applied below — checkout/extend read the snapshot back
+  // (loadWalkinForCheckout), never re-resolve it, so a walk-in that runs
+  // past midnight still bills the day it started on.
+  const weekendRate = resource.typeWeekendRate === null ? null : Number(resource.typeWeekendRate)
+  const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
+  const rate = resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
   const taxPercent =
     resource.taxPercent ?? (await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')) ?? '0'
 
