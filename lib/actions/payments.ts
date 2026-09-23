@@ -100,6 +100,11 @@ export async function recordPayment(
     // booking page. bookingId is read server-side from the invoice, never sent.
     if (result.bookingId) revalidatePath(`/pos/${result.bookingId}`)
     revalidatePath('/bookings')
+    // A settling tender can complete the booking (or, for a restaurant, flip a
+    // table to "needs cleaning") — refresh the floor map and kitchen too, same
+    // as the old manual completion did.
+    revalidatePath('/floor')
+    revalidatePath('/kitchen')
 
     return {
       paymentId: result.paymentId,
@@ -314,6 +319,8 @@ export async function payInvoiceFromWallet(
 
     if (result.bookingId) revalidatePath(`/pos/${result.bookingId}`)
     revalidatePath('/bookings')
+    revalidatePath('/floor')
+    revalidatePath('/kitchen')
     return { balance: result.balance, settled: result.settled, bookingCompleted: result.bookingCompleted }
   } catch (e) {
     return failWallet(e, 'payment')

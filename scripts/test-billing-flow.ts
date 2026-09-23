@@ -938,6 +938,20 @@ async function main() {
         p.completed === false && (await statusOf(b3.bookingId)) === 'cancelled',
       )
     }
+
+    // (5) a RESTAURANT tenant is excluded — full payment must NOT auto-complete,
+    // so its table keeps the paid → needs-cleaning → cleaned flow. (Kept last:
+    // it flips A's industry, and cleanup drops the tenant right after.)
+    await ownerPool.query("update tenants set industry='restaurant' where id=$1", [A.tenantId])
+    const b5 = await makeBooking(A, { status: 'checked_in' })
+    const inv5 = await bill(A.userId, A.tenantId, { bookingId: b5.bookingId })
+    if (inv5.ok) {
+      const p = await payAndMaybeComplete(inv5.invoiceId, 900)
+      check(
+        'T-AC5 a restaurant booking is NOT auto-completed on full payment',
+        p.completed === false && (await statusOf(b5.bookingId)) === 'checked_in',
+      )
+    }
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────

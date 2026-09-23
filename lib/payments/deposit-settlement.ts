@@ -185,8 +185,14 @@ export async function applyPaidDepositsToInvoice(
     if (recorded) {
       // A carried-over deposit that fully settles the booking's bill completes
       // it, the same payment-driven path a cashier's final tender takes.
+      // Wrapped so an auto-complete hiccup never rolls back a deposit that was
+      // already carried onto the invoice (fail-open, like the money path here).
       if (recorded.settled && recorded.bookingId) {
-        await completeBookingIfFullySettled(tx, tenantId, recorded.bookingId)
+        try {
+          await completeBookingIfFullySettled(tx, tenantId, recorded.bookingId)
+        } catch (e) {
+          console.error(`deposit carry-over: auto-complete failed for booking ${recorded.bookingId}`, e)
+        }
       }
       result.applied.push({
         intentId: deposit.intentId,

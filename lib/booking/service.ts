@@ -9,7 +9,7 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates, tenants } from '@/db/schema'
 import { durationHours } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
@@ -776,17 +776,34 @@ export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId
  * (lib/actions/billing.ts), always inside that same transaction, so clearing
  * the last balance and closing the booking commit together or not at all.
  *
- * Returns false and writes nothing when: the booking was never billed, ANY
- * live check still owes (so a partial payment leaves it open and a split bill
- * completes only on the LAST check paid), or the booking is not in an active
- * confirmed/checked_in status (so an already-completed/cancelled/no-show
- * booking is never touched). Returns true when it actually flipped the row.
+ * Returns false and writes nothing when: the tenant is a restaurant (see
+ * below), the booking was never billed, ANY live check still owes (so a
+ * partial payment leaves it open and a split bill completes only on the LAST
+ * check paid), or the booking is not in an active confirmed/checked_in status
+ * (so an already-completed/cancelled/no-show booking is never touched). Returns
+ * true when it actually flipped the row.
+ *
+ * RESTAURANTS are deliberately excluded: a restaurant table goes
+ * booking→paid→'needs cleaning'→free, and that middle state is derived from the
+ * booking still being active with a live invoice (lib/booking/table-status.ts).
+ * Auto-completing on payment would free the table the instant the guest pays,
+ * skipping the cleaning step and killing the FloorView "Table cleaned" button.
+ * So a restaurant keeps its existing manual close-out (that button, which is
+ * itself gated on a settled bill); auto-complete is for verticals with no such
+ * post-payment step.
  */
 export async function completeBookingIfFullySettled(
   tx: Db,
   tenantId: string,
   bookingId: string,
 ): Promise<boolean> {
+  const [t] = await tx
+    .select({ industry: tenants.industry })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1)
+  if (t?.industry === 'restaurant') return false
+
   const billing = await findLiveBilling(tx, tenantId, bookingId)
   if (!billing) return false
   const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
