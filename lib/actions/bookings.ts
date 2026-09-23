@@ -31,6 +31,7 @@ import {
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { issueInvoiceForBooking, BillingError } from '@/lib/billing/invoice'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -175,10 +176,17 @@ export async function startWalkin(input: z.input<typeof startWalkinInput>): Prom
  * Free/occupied hourly stations for the walk-in start form's station picker.
  * Same industry/role gate as startWalkin — read-only, but a restaurant
  * tenant or unauthorized role has no legitimate reason to see it either.
+ *
+ * M22 bugfix: also returns the tenant's weekend_days, alongside each
+ * resource's weekendRate (WalkinResourceOption) — the form combines them
+ * with lib/booking/rate.ts's isWeekendDay/resolveDayRate (the SAME pure
+ * resolver startWalkinCore itself uses) to show a live rate estimate that
+ * tracks the staff-chosen start time, instead of always showing the
+ * weekday rate even when that start time falls on a weekend.
  */
 export async function listWalkinResources(
   branchId: string,
-): Promise<{ error?: string; resources?: WalkinResourceOption[] }> {
+): Promise<{ error?: string; resources?: WalkinResourceOption[]; weekendDays?: number[] }> {
   try {
     const ctx = await requireContext()
     if (ctx.tenant.industry === 'restaurant') {
@@ -187,8 +195,11 @@ export async function listWalkinResources(
     if (!canManageWalkins(ctx.role)) {
       throw new AuthError('You do not have permission to start a walk-in.')
     }
-    const resources = await listWalkinResourcesForBranch(ctx, branchId)
-    return { resources }
+    const [resources, weekendDays] = await Promise.all([
+      listWalkinResourcesForBranch(ctx, branchId),
+      withUser(ctx.user.id, (tx) => loadWeekendDays(tx, ctx.tenant.id)),
+    ])
+    return { resources, weekendDays }
   } catch (e) {
     return fail(e)
   }

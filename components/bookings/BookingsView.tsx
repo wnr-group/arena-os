@@ -42,7 +42,10 @@ type Slot = {
   slotId: string
   resourceId: string
   startsAt: string
-  endsAt: string
+  /** Null for an open-tab walk-in still running (M21) — no committed end
+   *  until checkout. Rendered as an open-ended "Ongoing" bar/label rather
+   *  than a fixed time range. */
+  endsAt: string | null
   bookingId: string
   bookingNumber: string
   customerName: string | null
@@ -230,7 +233,9 @@ export function BookingsView({
         total: string
         resourceNames: string[]
         startsAt: string
-        endsAt: string
+        /** Null if ANY of the booking's slots is still open-ended — same
+         *  "still ongoing" reading a single slot's null endsAt gets. */
+        endsAt: string | null
         representative: Slot
       }
     >()
@@ -254,7 +259,7 @@ export function BookingsView({
       } else {
         if (resourceName) existing.resourceNames.push(resourceName)
         if (s.startsAt < existing.startsAt) existing.startsAt = s.startsAt
-        if (s.endsAt > existing.endsAt) existing.endsAt = s.endsAt
+        if (existing.endsAt !== null && (s.endsAt === null || s.endsAt > existing.endsAt)) existing.endsAt = s.endsAt
       }
     }
     return [...byId.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt))
@@ -303,6 +308,12 @@ export function BookingsView({
 
   /** Minutes from the start of the displayed day; may be < 0 or > 1440. */
   const minutesIntoDay = (iso: string) => (new Date(iso).getTime() - dayStartMs) / 60_000
+
+  // The moving right edge for an open-tab walk-in's bar (null endsAt) — it
+  // has no committed end yet, so it's drawn from its start to "now" instead
+  // of a fixed time. A snapshot at render time, not a ticking clock; the
+  // page's own Refresh button is what advances it, same as everything else here.
+  const nowMinutes = useMemo(() => minutesIntoDay(new Date().toISOString()), [dayStartMs])
 
   const firstHour = Math.floor(openMin / 60)
   const lastHour = Math.ceil(closeMin / 60)
@@ -487,23 +498,30 @@ export function BookingsView({
                       />
                     ))}
                     {rowSlots.map((s) => {
+                      // An open-tab walk-in (M21) has no committed end yet —
+                      // its bar is drawn to "now" instead of a fixed time,
+                      // and keeps growing on every refresh rather than
+                      // sitting at a right edge that would misleadingly
+                      // imply the session is already over.
+                      const isOngoing = s.endsAt === null
                       const left = pct(minutesIntoDay(s.startsAt))
-                      const right = pct(minutesIntoDay(s.endsAt))
+                      const right = pct(isOngoing ? nowMinutes : minutesIntoDay(s.endsAt!))
                       const width = Math.max(2, right - left)
                       // Started before today, or runs past midnight — worth
                       // saying, since the times below are the booking's own.
                       const carriedIn = minutesIntoDay(s.startsAt) < 0
-                      const runsOver = minutesIntoDay(s.endsAt) > 1440
+                      const runsOver = !isOngoing && minutesIntoDay(s.endsAt!) > 1440
                       return (
                         <span
                           key={s.slotId}
                           onClick={(e) => {
+                            e.preventDefault()
                             e.stopPropagation()
                             setSelected(s)
                           }}
                           className={`absolute inset-y-2 overflow-hidden rounded-md px-2 py-1 text-left text-xs shadow-sm ${
                             STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white'
-                          }`}
+                          } ${isOngoing ? 'border-r-2 border-dashed border-white/70' : ''}`}
                           style={{ left: `${left}%`, width: `${width}%` }}
                         >
                           <span className="block truncate font-medium">
@@ -511,7 +529,15 @@ export function BookingsView({
                           </span>
                           <span className="block truncate opacity-90">
                             {carriedIn && '↤ '}
-                            {timeInZone(s.startsAt, timeZone)}–{timeInZone(s.endsAt, timeZone)}
+                            {timeInZone(s.startsAt, timeZone)}–
+                            {isOngoing ? (
+                              <span className="inline-flex items-center gap-1">
+                                <span className="inline-block size-1.5 animate-pulse rounded-full bg-white" />
+                                Ongoing
+                              </span>
+                            ) : (
+                              timeInZone(s.endsAt!, timeZone)
+                            )}
                             {runsOver && ' ↦'}
                           </span>
                         </span>
@@ -611,7 +637,7 @@ export function BookingsView({
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{b.resourceNames.join(', ')}</td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {timeInZone(b.startsAt, timeZone)}–{timeInZone(b.endsAt, timeZone)}
+                        {timeInZone(b.startsAt, timeZone)}–{b.endsAt ? timeInZone(b.endsAt, timeZone) : 'Ongoing'}
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -688,7 +714,10 @@ export function BookingsView({
               <Row k="Customer" v={selected.customerName || 'Walk-in'} />
               {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
               <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
-              <Row k="Time" v={`${timeInZone(selected.startsAt, timeZone)}–${timeInZone(selected.endsAt, timeZone)}`} />
+              <Row
+                k="Time"
+                v={`${timeInZone(selected.startsAt, timeZone)}–${selected.endsAt ? timeInZone(selected.endsAt, timeZone) : 'Ongoing'}`}
+              />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
               <Row k="Total" v={formatMoney(selected.total, currency)} />
               {Number(selected.deposit) > 0 && (

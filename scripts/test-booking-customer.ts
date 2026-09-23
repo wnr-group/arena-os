@@ -74,13 +74,17 @@ async function main() {
     contact: { phone?: string | null; name?: string | null; email?: string | null },
   ) {
     return withUser(t.userId, async (tx) => {
-      const customerId = await resolveBookingCustomer(tx, t.tenantId, contact)
+      const resolved = await resolveBookingCustomer(tx, t.tenantId, contact)
       const num = `BC-${String(++seq).padStart(3, '0')}`
+      // Mirrors createBookingCore's own fallback exactly: a typed name wins;
+      // a blank one falls back to the resolved customer's directory name
+      // (not straight to null) — see resolveBookingCustomer's doc comment.
+      const customerName = contact.name?.trim() || resolved?.name || null
       const r = await tx.execute(sql`
         insert into bookings (tenant_id, branch_id, booking_number, customer_id,
                               customer_name, customer_phone, total)
-        values (${t.tenantId}, ${t.branchId}, ${num}, ${customerId},
-                ${contact.name ?? null}, ${contact.phone ?? null}, '0')
+        values (${t.tenantId}, ${t.branchId}, ${num}, ${resolved?.id ?? null},
+                ${customerName}, ${contact.phone ?? null}, '0')
         returning id, customer_id, customer_name, customer_phone
       `)
       return r.rows[0] as {
@@ -112,6 +116,16 @@ async function main() {
   check('second booking reuses the SAME customer', b2.customer_id === b1.customer_id)
   check('…and created no duplicate', (await countCustomers(A.tenantId, '+919876543210')) === 1)
 
+  // ── 2b. a returning customer with a BLANK name falls back to the
+  // directory's stored name — createBookingCore's own fallback
+  // (input.customerName?.trim() || resolvedCustomer?.name || null), not a
+  // straight-to-null write. findOrCreateCustomer never overwrites an
+  // existing customer's name, so the directory is still "Asha Iyer" here
+  // (set by b1, untouched by b2's differing typed name "Asha I.").
+  const b2blank = await makeBooking(A, { phone: '9876543210', name: '' })
+  check('blank name on a returning customer falls back to the directory name', b2blank.customer_name === 'Asha Iyer')
+  check('…still linked to the same customer', b2blank.customer_id === b1.customer_id)
+
   // ── 3 & 4. snapshots keep what was typed, not the normalised/stored value ─
   check('customer_name snapshot retained', b1.customer_name === 'Asha Iyer')
   check('customer_phone snapshot retained verbatim', b1.customer_phone === '98765 43210')
@@ -136,12 +150,13 @@ async function main() {
   check('…while the link still points at the customer', after.customer_id === b1.customer_id)
 
   // ── 6. the profile's history query returns exactly this customer's bookings
+  // (b1, b2, and 2b's blank-name booking — all three linked to b1.customer_id)
   await withUser(A.userId, async (tx) => {
     const r = await tx.execute(sql`
       select id from bookings
       where tenant_id = ${A.tenantId} and customer_id = ${b1.customer_id}
     `)
-    check('profile history query returns both linked bookings', r.rows.length === 2)
+    check('profile history query returns all three linked bookings', r.rows.length === 3)
   })
 
   // ── 7. historical bookings with NULL customer_id still work ───────────────

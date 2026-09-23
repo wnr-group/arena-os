@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resourceTypes, resources, workingHours, taxRates } from '@/db/schema'
+import { resourceTypes, resources, workingHours, taxRates, businessProfiles } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
@@ -43,6 +43,20 @@ const resourceTypeInput = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   description: z.string().trim().optional(),
   hourlyRate: z.coerce.number().min(0),
+  // M22 #3: the weekend hourly rate — blank means "no weekend pricing", which
+  // must land as null (same blank-means-null discipline as resourceInput's
+  // hourlyRateOverride below), not 0 (a real, free weekend rate). z.null()
+  // MUST come before z.coerce.number() in the union: z.coerce.number()
+  // itself coerces a bare `null` to 0 (Number(null) === 0) and z.union tries
+  // branches in order, so a number-first union would silently accept null as
+  // 0 and never reach z.null() at all — the preprocess step alone doesn't
+  // save it.
+  weekendRate: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.null(), z.coerce.number().min(0)]),
+    )
+    .optional(),
   bufferMinutes: z.coerce.number().int().min(0).default(0),
   capacity: z.coerce.number().int().positive().optional(),
   color: z.string().trim().optional(),
@@ -93,6 +107,7 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         name: v.name,
         description: v.description || null,
         hourlyRate: v.hourlyRate.toFixed(2),
+        weekendRate: v.weekendRate === null || v.weekendRate === undefined ? null : v.weekendRate.toFixed(2),
         bufferMinutes: v.bufferMinutes,
         capacity: v.capacity ?? null,
         color: v.color || null,
@@ -174,10 +189,13 @@ const resourceInput = z.object({
   // null. Guard the coercion: z.coerce.number('') is 0, not NaN, so without this
   // an empty string would silently store 0.00 and price the resource at ₹0
   // (`rate ?? typeRate` only falls back on null). Explicit 0 stays 0 (free).
+  // z.null() MUST come before z.coerce.number() in the union below — see
+  // resourceTypeInput's weekendRate above for why (a number-first union lets
+  // z.coerce.number() itself silently coerce null to 0, defeating the guard).
   hourlyRateOverride: z
     .preprocess(
       (v) => (v === '' || v === null || v === undefined ? null : v),
-      z.union([z.coerce.number().min(0), z.null()]),
+      z.union([z.null(), z.coerce.number().min(0)]),
     )
     .optional(),
   status: z.enum(['available', 'maintenance', 'inactive']).default('available'),
@@ -306,6 +324,36 @@ export async function saveWorkingHours(input: z.input<typeof hoursInput>): Promi
       }
     })
     revalidatePath('/settings/hours')
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── weekend days (M22 #3) ────────────────────────────────────────────────────
+// Manager-gated (not owner-only, unlike business-profile.ts's legal-identity
+// fields — see requireOwner's own doc comment) since this is pricing
+// configuration, the same authority level as a resource type's own rates.
+const weekendDaysInput = z.array(z.number().int().min(0).max(6)).max(7)
+
+/**
+ * Which weekdays count as "weekend" for a resource type's weekend_rate
+ * (M22 #3) — tenant-wide, in business_profiles.weekend_days, not per type.
+ * An empty array is valid: it makes every type's weekend_rate a no-op
+ * without having to clear each one individually.
+ */
+export async function saveWeekendDays(input: number[]): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    const days = [...new Set(weekendDaysInput.parse(input))].sort((a, b) => a - b)
+    await withUser(ctx.user.id, (tx) =>
+      tx
+        .insert(businessProfiles)
+        .values({ tenantId: ctx.tenant.id, weekendDays: days })
+        .onConflictDoUpdate({ target: businessProfiles.tenantId, set: { weekendDays: days } }),
+    )
+    revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
   } catch (e) {

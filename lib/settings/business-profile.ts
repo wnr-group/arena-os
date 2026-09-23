@@ -95,6 +95,26 @@ export async function loadBusinessProfile(
   return row ?? null
 }
 
+/** Weekend days when a tenant has no business_profiles row yet (M22 #2) —
+ *  mirrors business_profiles.weekend_days' own DB default. */
+export const DEFAULT_WEEKEND_DAYS = [0, 6]
+
+/**
+ * The weekday numbers (0=Sun...6=Sat) this tenant treats as weekend for
+ * pricing (M22 #2) — read once per pricing call by priceBookingSlots
+ * (lib/booking/service.ts) and startWalkinCore (lib/booking/walkin.ts), same
+ * "read inside the billing/booking transaction" discipline as
+ * loadInvoicePrefix below.
+ */
+export async function loadWeekendDays(tx: Db, tenantId: string): Promise<number[]> {
+  const [row] = await tx
+    .select({ weekendDays: businessProfiles.weekendDays })
+    .from(businessProfiles)
+    .where(eq(businessProfiles.tenantId, tenantId))
+    .limit(1)
+  return row?.weekendDays ?? DEFAULT_WEEKEND_DAYS
+}
+
 /**
  * The prefix invoice numbering should use, falling back to the default when the
  * tenant has not configured a profile. Read inside the billing transaction, so

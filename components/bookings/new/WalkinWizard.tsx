@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Check, Gamepad2, Loader2, Timer, Users, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
+import { isWeekendDay } from '@/lib/booking/rate'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
@@ -40,6 +41,11 @@ type ResourceOption = {
   typeName: string
   hourlyRate: string
   typeHourlyRate: string
+  /** M22 bugfix: the type's weekend rate (null = no weekend pricing). Always
+   *  the TYPE's own rate, never a per-station override — combine with
+   *  weekendDays (below) via isWeekendDay/effectiveRate so the estimate
+   *  tracks the chosen start time the same way startWalkinCore prices it. */
+  weekendRate: string | null
   capacity: number | null
   isFree: boolean
   hasUpcomingBooking: boolean
@@ -56,9 +62,27 @@ type ResourceTypeGroup = {
   id: string
   name: string
   hourlyRate: string
+  weekendRate: string | null
   capacity: number | null
   pricingMode: string
   resources: ResourceOption[]
+}
+
+/** M22 bugfix: the rate a station actually bills at `startAt` — weekday or
+ *  weekend, resolved with the SAME pure functions (lib/booking/rate.ts)
+ *  startWalkinCore itself uses server-side, so this estimate can never
+ *  drift from what actually gets charged. A per-station override (baked
+ *  into `weekdayRate` by the server) only ever applies on a weekday — see
+ *  WalkinResourceOption's own doc comment. */
+function effectiveRate(
+  weekdayRate: string,
+  weekendRate: string | null,
+  startAt: Date,
+  timeZone: string,
+  weekendDays: number[],
+): number {
+  if (weekendRate !== null && isWeekendDay(startAt, timeZone, weekendDays)) return Number(weekendRate)
+  return Number(weekdayRate)
 }
 
 /**
@@ -87,12 +111,20 @@ export function WalkinWizard({
 
   const [resources, setResources] = useState<ResourceOption[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // M22 bugfix: arrives in the SAME response as `resources`, so there's no
+  // "flat rate, then updates" transition to handle — by the time resources
+  // is non-null this is already set too. Defaults to [] (no day is weekend)
+  // purely so effectiveRate has something to read before that first load.
+  const [weekendDays, setWeekendDays] = useState<number[]>([])
   useEffect(() => {
     let cancelled = false
     listWalkinResources(branchId).then((r) => {
       if (cancelled) return
       if (r.error) setLoadError(r.error)
-      else setResources(r.resources ?? [])
+      else {
+        setResources(r.resources ?? [])
+        setWeekendDays(r.weekendDays ?? [])
+      }
     })
     return () => {
       cancelled = true
@@ -152,7 +184,8 @@ export function WalkinWizard({
       ? 'Enter a valid 10-digit phone number.'
       : null
 
-  const startAtIso = useMemo(() => new Date(baseNow.getTime() + offsetMin * 60_000).toISOString(), [baseNow, offsetMin])
+  const startAt = useMemo(() => new Date(baseNow.getTime() + offsetMin * 60_000), [baseNow, offsetMin])
+  const startAtIso = useMemo(() => startAt.toISOString(), [startAt])
   const freeResources = resources?.filter((r) => r.isFree) ?? []
   const selectedResource = freeResources.find((r) => r.id === resourceId) ?? null
   const isPerHead = selectedResource?.pricingMode === 'per_head'
@@ -172,6 +205,7 @@ export function WalkinWizard({
           id: r.resourceTypeId,
           name: r.typeName,
           hourlyRate: r.typeHourlyRate,
+          weekendRate: r.weekendRate,
           capacity: r.capacity,
           pricingMode: r.pricingMode,
           resources: [],
@@ -279,7 +313,7 @@ export function WalkinWizard({
                         onClick={() => pickResourceType(g)}
                         icon={<Gamepad2 size={18} />}
                         title={g.name}
-                        subtitle={`${formatMoney(Number(g.hourlyRate), currency)} / ${g.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
+                        subtitle={`${formatMoney(effectiveRate(g.hourlyRate, g.weekendRate, startAt, timeZone, weekendDays), currency)} / ${g.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
                         badge={
                           g.capacity != null ? (
                             <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
@@ -469,12 +503,22 @@ export function WalkinWizard({
                     k={mode === 'timed' ? 'Estimated total' : 'Rate'}
                     v={
                       selectedResource
-                        ? mode === 'timed'
-                          ? formatMoney(
-                              (Number(selectedResource.hourlyRate) * durationMin * (isPerHead ? headCount : 1)) / 60,
-                              currency,
+                        ? (() => {
+                            // M22 bugfix: resolved against the ACTUAL chosen
+                            // start time (startAt, nudged by offsetMin), not
+                            // just "now" — a nudge can push the session onto
+                            // the other side of a weekday/weekend boundary.
+                            const rate = effectiveRate(
+                              selectedResource.hourlyRate,
+                              selectedResource.weekendRate,
+                              startAt,
+                              timeZone,
+                              weekendDays,
                             )
-                          : `${formatMoney(Number(selectedResource.hourlyRate), currency)} / ${isPerHead ? 'player / hr' : 'hr'}`
+                            return mode === 'timed'
+                              ? formatMoney((rate * durationMin * (isPerHead ? headCount : 1)) / 60, currency)
+                              : `${formatMoney(rate, currency)} / ${isPerHead ? 'player / hr' : 'hr'}`
+                          })()
                         : '—'
                     }
                   />

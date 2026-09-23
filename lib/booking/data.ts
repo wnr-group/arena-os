@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNotNull, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   resourceTypes,
@@ -25,6 +25,7 @@ export function listResourceTypes(ctx: ActiveContext) {
         name: resourceTypes.name,
         description: resourceTypes.description,
         hourlyRate: resourceTypes.hourlyRate,
+        weekendRate: resourceTypes.weekendRate,
         bufferMinutes: resourceTypes.bufferMinutes,
         capacity: resourceTypes.capacity,
         color: resourceTypes.color,
@@ -146,10 +147,15 @@ export function listTables(ctx: ActiveContext, branchId: string) {
  * BookingsView), so it renders flush to the left edge rather than at the hour
  * it originally started.
  *
- * M21: an open-tab walk-in's slot has no ends_at until checkout, so it's
- * excluded here for now — the inline-timer story (AROS-199) needs to render
- * it specially (no fixed right edge) rather than inherit this timeline's
- * fixed-interval layout, so it isn't just a filter to lift later.
+ * M21: an open-tab walk-in's slot has no ends_at until checkout — it used to
+ * be excluded here entirely, which meant a walk-in vanished from both the
+ * timeline and the Bookings table the instant it was checked in, with
+ * nothing anywhere on this page to show it existed. `endsAt` is returned as
+ * `null` for exactly that case (still active, no committed end yet) —
+ * BookingsView renders it as an open-ended "Ongoing" bar instead of
+ * inheriting the fixed-interval layout every other slot gets. Every other
+ * slot (a normal reserved booking, or a timed walk-in, both of which always
+ * have a real endsAt) is completely unaffected.
  */
 export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
   const dayStart = zonedTimeToUtc(dateStr, '00:00', tz)
@@ -180,11 +186,13 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
           eq(bookings.branchId, branchId),
           eq(bookingSlots.active, true),
           lt(bookingSlots.startsAt, dayEnd),
-          gt(bookingSlots.endsAt, dayStart),
-          isNotNull(bookingSlots.endsAt),
+          // An open-tab walk-in (null ends_at) is still genuinely occupying
+          // its resource — kept in this set rather than filtered out as if
+          // it had already ended (same reasoning as the availability
+          // queries' isNull(...) branch, see lib/actions/availability.ts).
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
         ),
       )
-      .orderBy(asc(bookingSlots.startsAt))
-      .then((rows) => rows.filter((r): r is typeof r & { endsAt: Date } => r.endsAt !== null)),
+      .orderBy(asc(bookingSlots.startsAt)),
   )
 }

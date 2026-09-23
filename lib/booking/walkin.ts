@@ -34,7 +34,9 @@ import { resources, resourceTypes, bookings, bookingSlots, taxRates, happyHours 
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
+import { resolveDayRate } from './rate'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -67,6 +69,17 @@ export type WalkinResourceOption = {
    *  whichever unit happens to be first in the group (which could carry its
    *  own override and show a misleadingly different price). */
   typeHourlyRate: string
+  /** M22 bugfix: the type's weekend rate — null means no weekend pricing
+   *  configured. `hourlyRate`/`typeHourlyRate` above are always the WEEKDAY
+   *  rate (a per-station override never applies on a weekend, same as
+   *  everywhere else in M22); on a weekend day the caller must use this
+   *  instead, for EVERY station of the type, not just override-free ones.
+   *  Combine with the tenant's weekend_days (returned alongside this list by
+   *  the caller, e.g. lib/actions/bookings.ts's listWalkinResources) and
+   *  lib/booking/rate.ts's isWeekendDay/resolveDayRate — the SAME pure
+   *  resolver startWalkinCore itself uses — so the estimate the staff form
+   *  shows can never drift from what startWalkinCore actually charges. */
+  weekendRate: string | null
   capacity: number | null
   /** No active booking on it right now — see the module doc comment above. */
   isFree: boolean
@@ -98,6 +111,7 @@ export async function listWalkinResources(
         typeName: resourceTypes.name,
         rateOverride: resources.hourlyRateOverride,
         typeRate: resourceTypes.hourlyRate,
+        weekendRate: resourceTypes.weekendRate,
         capacity: resourceTypes.capacity,
         pricingMode: resourceTypes.pricingMode,
         minPlayers: resourceTypes.minPlayers,
@@ -156,6 +170,7 @@ export async function listWalkinResources(
       typeName: r.typeName,
       hourlyRate: r.rateOverride ?? r.typeRate,
       typeHourlyRate: r.typeRate,
+      weekendRate: r.weekendRate,
       capacity: r.capacity,
       isFree: !occupiedNow.has(r.id),
       hasUpcomingBooking: hasUpcoming.has(r.id),
@@ -310,6 +325,7 @@ export async function startWalkinCore(
       status: resources.status,
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
+      typeWeekendRate: resourceTypes.weekendRate,
       rateOverride: resources.hourlyRateOverride,
       taxPercent: taxRates.percent,
       pricingMode: resourceTypes.pricingMode,
@@ -331,13 +347,30 @@ export async function startWalkinCore(
   }
   if (resource.status !== 'available') throw new BookingError('This station is not available.')
 
-  const rate = Number(resource.rateOverride ?? resource.typeRate)
+  const weekdayRate = Number(resource.rateOverride ?? resource.typeRate)
   // A zero EFFECTIVE rate (a per-resource override, not just the type rate
   // already rejected above) would price a timed session to ₹0 — indistinguishable
   // from the `slot_total > 0` "already checked out?" sentinel loadWalkinForCheckout
   // relies on, which would then misfire and lock the booking as uncheckoutable.
-  if (rate <= 0) {
+  if (weekdayRate <= 0) {
     throw new BookingError('This resource isn’t set up as an hourly station.')
+  }
+  // M22 #2: resolved by the session's START day and snapshotted onto
+  // rate_applied below — checkout/extend read the snapshot back
+  // (loadWalkinForCheckout), never re-resolve it, so a walk-in that runs
+  // past midnight still bills the day it started on.
+  const weekendRate = resource.typeWeekendRate === null ? null : Number(resource.typeWeekendRate)
+  const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
+  const rate = resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
+  // Re-check the RESOLVED rate, not just weekdayRate above: a type can set
+  // weekend_rate to exactly 0 (a free-on-weekends config) independently of
+  // a positive weekday rate. That would slip past the weekdayRate guard yet
+  // still produce the same zero-rate hazard it exists to prevent — a timed
+  // walk-in's checkout ends up with slotTotal = '0.00', indistinguishable
+  // from loadWalkinForCheckout's "not yet checked out" sentinel, so it can
+  // be checked out again (or skipped from billing) instead of being blocked.
+  if (rate <= 0) {
+    throw new BookingError('This resource isn’t set up as an hourly station on weekends.')
   }
   const taxPercent =
     resource.taxPercent ?? (await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')) ?? '0'
@@ -360,7 +393,7 @@ export async function startWalkinCore(
     headCount = requested
   }
 
-  const customerId = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
+  const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
 
@@ -370,9 +403,9 @@ export async function startWalkinCore(
       tenantId: ctx.tenantId,
       branchId: input.branchId,
       bookingNumber,
-      customerName: input.name?.trim() || null,
+      customerName: input.name?.trim() || resolvedCustomer?.name || null,
       customerPhone: input.phone,
-      customerId,
+      customerId: resolvedCustomer?.id ?? null,
       status: 'checked_in',
       source: 'walk_in',
       channel: 'walkin',

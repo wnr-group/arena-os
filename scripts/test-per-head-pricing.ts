@@ -278,7 +278,7 @@ async function testBookingSlots() {
     'T7 no head_count supplied on a per_head type is rejected (not defaulted to 1)',
     () =>
       withUser(userId, (tx) =>
-        priceBookingSlots(tx, { tenantId }, { branchId, slots: [{ resourceId: snookerResource.rows[0].id, startsAt: day(14).toISOString(), endsAt: day(15).toISOString() }] }),
+        priceBookingSlots(tx, { tenantId, timezone: TZ }, { branchId, slots: [{ resourceId: snookerResource.rows[0].id, startsAt: day(14).toISOString(), endsAt: day(15).toISOString() }] }),
       ),
     'priced per player',
   )
