@@ -14,8 +14,10 @@
  *     early — never a discount for leaving before time's up
  *   - checking out past the committed end is refused with the intended
  *     "Extend the session before checking out" message, not a generic error
- *   - after extending past "now", the same booking checks out successfully,
- *     billed for committed + extension, exactly reproducing the preview
+ *   - after extending past "now", the same booking checks out successfully;
+ *     billing it (M22 follow-up: a separate createInvoiceForBooking call now,
+ *     not part of checkout itself) charges committed + extension, exactly
+ *     reproducing the preview
  *   - a second checkout, or an extend after checkout, is refused
  *   - extend refuses an open-tab walk-in (it has no committed end to move)
  *
@@ -36,6 +38,7 @@ const check = (l: string, c: boolean) => {
 async function main() {
   loadEnv()
   const { startWalkin, extendWalkin, checkoutWalkin, previewWalkinCheckout } = await import('../lib/actions/bookings')
+  const { createInvoiceForBooking } = await import('../lib/actions/billing')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
@@ -219,7 +222,11 @@ async function main() {
     const result = await checkoutWalkin({ bookingId })
     check('checkout succeeds while the committed end is still in the future', !result.error)
     check('checkout total matches the preview exactly: ₹150.00', result.total === 150)
-    check('checkout returns a raised invoice', Boolean(result.invoiceId) && Boolean(result.invoiceNumber))
+
+    // M22 follow-up: checkout only prices/freezes the session now — the same
+    // POS bill screen a reserved booking uses raises the actual invoice.
+    const billed = await createInvoiceForBooking({ bookingId })
+    check('the bill screen then raises the invoice for the checked-out session', !billed.error && Boolean(billed.invoiceId))
 
     const invoice = await owner.query<{ total: string }>(`select total from invoices where booking_id = $1`, [bookingId])
     check('the invoice total is ₹150.00', Number(invoice.rows[0]?.total) === 150)

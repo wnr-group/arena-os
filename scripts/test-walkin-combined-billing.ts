@@ -1,10 +1,15 @@
 /**
- * Combined billing for a walk-in (M21 #8 QA pass) — checkoutWalkin's own
- * invoice must fold the elapsed-time session AND any open food together,
- * apply the customer's membership discount, and compute resource GST
- * correctly, exactly as lib/billing/invoice.ts does for any other booking
- * (checkoutWalkin just reuses issueInvoiceForBooking — this proves the
- * reuse is real, not just claimed by its doc comment).
+ * Combined billing for a walk-in (M21 #8 QA pass) — the invoice raised for a
+ * checked-out walk-in must fold the elapsed-time session AND any open food
+ * together, apply the customer's membership discount, and compute resource
+ * GST correctly, exactly as lib/billing/invoice.ts does for any other
+ * booking (createInvoiceForBooking just reuses issueInvoiceForBooking — this
+ * proves the reuse is real, not just claimed by its doc comment).
+ *
+ * M22 follow-up: checkoutWalkin itself no longer raises this invoice — it
+ * only prices/freezes the session. createInvoiceForBooking (the same POS
+ * bill screen action a reserved booking's "Generate bill" calls) is what
+ * actually raises it here now, on the closed-out walk-in.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-combined-billing.ts
  *
@@ -33,6 +38,7 @@ const check = (l: string, c: boolean) => {
 async function main() {
   loadEnv()
   const { startWalkin, checkoutWalkin } = await import('../lib/actions/bookings')
+  const { createInvoiceForBooking } = await import('../lib/actions/billing')
   const { purchaseCustomerMembership } = await import('../lib/actions/customer-memberships')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -182,12 +188,14 @@ async function main() {
   check('checkout succeeds', !result.error)
   // checkoutWalkin's own `total` field is checkoutWalkinCore's session-only
   // price (₹400) — NOT the invoice's combined total once food/discount/tax
-  // are folded in. The UI never surfaces this field (it only reads
-  // invoiceId/invoiceNumber and routes to /pos, where the real invoice total
-  // below is what's actually shown/charged), so this isn't user-facing, but
-  // worth pinning explicitly so the distinction can't quietly go misread.
+  // are folded in. M22 follow-up: checkoutWalkin no longer raises the
+  // invoice at all — the UI routes to /pos and raises it there (same
+  // createInvoiceForBooking call the bill screen's "Generate bill" makes),
+  // where the real invoice total below is what's actually shown/charged.
   check('checkout result.total is the session-ONLY price (₹400), not the combined invoice total', result.total === 400)
-  check('checkout returns exactly one invoice', Boolean(result.invoiceId) && Boolean(result.invoiceNumber))
+
+  const billed = await createInvoiceForBooking({ bookingId })
+  check('the bill screen then raises exactly one invoice, folding in the food', !billed.error && Boolean(billed.invoiceId))
 
   const invCount = await owner.query<{ n: string }>(`select count(*)::text as n from invoices where booking_id=$1`, [
     bookingId,
@@ -203,7 +211,7 @@ async function main() {
     membership_discount: string
     membership_discount_percent: string
   }>(`select subtotal, discount, tax_total, total, customer_membership_id, membership_discount, membership_discount_percent from invoices where id=$1`, [
-    result.invoiceId,
+    billed.invoiceId,
   ])
   const row = inv.rows[0]
   check('subtotal is ₹500.00 (400 booking + 100 food)', Number(row.subtotal) === 500)
@@ -216,7 +224,7 @@ async function main() {
 
   const items = await owner.query<{ kind: string; description: string; unit_price: string; tax_rate: string }>(
     `select kind, description, unit_price, tax_rate from invoice_items where invoice_id=$1 order by kind`,
-    [result.invoiceId],
+    [billed.invoiceId],
   )
   check('two invoice lines: one booking, one food', items.rows.length === 2)
   const bookingLine = items.rows.find((r) => r.kind === 'booking')

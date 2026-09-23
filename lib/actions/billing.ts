@@ -6,10 +6,10 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { bookings } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
-import { canBill, isManager, type MemberRole } from '@/lib/auth/roles'
+import { canBill, canBillBooking, isManager, type MemberRole } from '@/lib/auth/roles'
 import { previewPromoForBooking } from '@/lib/billing/data'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
-import { BookingError, updateBookingHeadCountCore } from '@/lib/booking/service'
+import { BookingError, loadBookingChannel, updateBookingHeadCountCore } from '@/lib/booking/service'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
 import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
 import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
@@ -90,12 +90,19 @@ export async function previewPromoCodeForBooking(
 ): Promise<PromoPreviewResult> {
   try {
     const ctx = await requireContext()
+    const v = previewPromoInput.parse(input)
+
     // Same gate as raising the bill: previewing a code reveals what it is
-    // worth, so it is for the people who are allowed to apply it.
-    if (!canBill(ctx.role)) {
+    // worth, so it is for the people who are allowed to apply it —
+    // including canBillBooking's walk-in exception (see its own doc
+    // comment), resolved from a trusted, server-side read of the channel,
+    // never the client. A booking that doesn't exist (channel null) is left
+    // to previewPromoForBooking's own "Booking not found" below, rather than
+    // reported as a permission error here.
+    const channel = await withUser(ctx.user.id, (tx) => loadBookingChannel(tx, ctx.tenant.id, v.bookingId))
+    if (channel !== null && !canBillBooking(ctx.role, channel)) {
       throw new AuthError('You do not have permission to raise a bill.')
     }
-    const v = previewPromoInput.parse(input)
 
     const promo = await previewPromoForBooking(ctx, v.bookingId, v.promoCode)
     // The reason is the cashier-readable text validatePromo() already produces
@@ -146,15 +153,23 @@ export async function createInvoiceForBooking(
 ): Promise<CreateInvoiceResult> {
   try {
     const ctx = await requireContext()
-    if (!canBill(ctx.role)) {
-      throw new AuthError('You do not have permission to raise a bill.')
-    }
     const v = createInvoiceInput.parse(input)
     const comp = resolveCompInput(ctx, v.compAmount, v.compReason)
 
-    const issued = await withUser(ctx.user.id, (tx) =>
-      issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { ...v, comp }),
-    )
+    const issued = await withUser(ctx.user.id, async (tx) => {
+      // Gated on the booking's OWN channel, resolved fresh inside this same
+      // transaction (never trusted from the client) — canBillBooking's
+      // walk-in exception (see its own doc comment) is why this can no
+      // longer be a flat canBill(ctx.role) check up front. A booking that
+      // doesn't exist (channel null) is left to issueInvoiceForBooking's own
+      // "Booking not found" below, rather than reported as a permission
+      // error here.
+      const channel = await loadBookingChannel(tx, ctx.tenant.id, v.bookingId)
+      if (channel !== null && !canBillBooking(ctx.role, channel)) {
+        throw new AuthError('You do not have permission to raise a bill.')
+      }
+      return issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { ...v, comp })
+    })
 
     revalidatePath('/bookings')
     return { invoiceId: issued.invoiceId, invoiceNumber: issued.invoiceNumber }

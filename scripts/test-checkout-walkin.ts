@@ -19,8 +19,11 @@
  *     that was legitimately allowed against this walk-in's true occupancy
  *     when it started, turning that later insert's own success into THIS
  *     checkout's failure instead
- *   - issueInvoiceForBooking is genuinely reused: an invoice is raised in
- *     the same transaction, with the elapsed-time line correctly priced
+ *   - M22 follow-up: checkoutWalkin no longer raises an invoice by itself —
+ *     it only prices/freezes the session. createInvoiceForBooking (the same
+ *     action the POS bill screen's "Generate bill" button calls) then
+ *     raises the bill on the closed tab, with the elapsed-time line
+ *     correctly priced — issueInvoiceForBooking is genuinely reused
  *   - a second checkout attempt is refused (already checked out)
  *   - THE ACTUAL BUG FIX: once checked out, the same resource can host a
  *     brand new walk-in — before checkout this is refused outright (same
@@ -218,7 +221,17 @@ async function main() {
     const result = await checkoutWalkin({ bookingId: openTabBookingId })
     check('checkout succeeds', !result.error)
     check('checkout total matches the preview exactly: ₹100.00', result.total === 100)
-    check('checkout returns a raised invoice', Boolean(result.invoiceId) && Boolean(result.invoiceNumber))
+    check(
+      "checkout no longer raises an invoice by itself (CheckoutWalkinResult has no invoiceId/invoiceNumber field at all)",
+      !('invoiceId' in result) && !('invoiceNumber' in result),
+    )
+
+    // M22 follow-up: closing the tab only prices/freezes the session now —
+    // raising the bill is a separate step, on the same POS bill screen a
+    // reserved booking uses. Same server action (createInvoiceForBooking)
+    // the bill screen's "Generate bill" button calls.
+    const billed = await createInvoiceForBooking({ bookingId: openTabBookingId })
+    check('the bill screen can then raise the invoice for the closed tab', !billed.error && Boolean(billed.invoiceId))
 
     const slot = await owner.query<{ ends_at: string | null; slot_total: string; starts_at: string }>(
       `select ends_at, slot_total, starts_at from booking_slots where booking_id = $1`,
@@ -360,10 +373,17 @@ async function main() {
     check('…and no invoice was raised at all (not even for the food alone)', invoiceCount.rows[0].n === '0')
 
     // The legit path still works and the earlier rejection did not lock the
-    // booking: checkoutWalkin prices the session and bills it WITH the food.
+    // booking: checkoutWalkin prices the session (M22 follow-up: it no
+    // longer bills by itself), then createInvoiceForBooking bills it WITH
+    // the food, same as the bill screen's "Generate bill" would.
     const co = await checkoutWalkin({ bookingId })
-    check('…checkoutWalkin then succeeds (booking not locked by the rejected bill)', !co.error && Boolean(co.invoiceId))
-    check('…and it bills session + food in one invoice (total exceeds the ₹50 food alone)', (co.total ?? 0) > 50)
+    check('…checkoutWalkin then succeeds (booking not locked by the rejected bill)', !co.error && Boolean(co.bookingId))
+    const rebilled = await createInvoiceForBooking({ bookingId })
+    check('…and the bill screen bills session + food in one invoice (total exceeds the ₹50 food alone)', !rebilled.error)
+    const rebilledInvoice = await owner.query<{ total: string }>(`select total from invoices where id = $1`, [
+      rebilled.invoiceId,
+    ])
+    check('…invoice total exceeds the ₹50 food alone', Number(rebilledInvoice.rows[0]?.total ?? 0) > 50)
   }
 
   // ══ 3c. floor_staff can start, extend AND check out a walk-in end-to-end
@@ -388,8 +408,19 @@ async function main() {
 
     const checkedOut = await checkoutWalkin({ bookingId })
     check(
-      'floor_staff can check out a walk-in themselves — the deliberate M21 #7 exception to canBill',
-      !checkedOut.error && Boolean(checkedOut.invoiceId),
+      'floor_staff can check out a walk-in themselves — the deliberate M21 #7 exception to canManageWalkins',
+      !checkedOut.error && Boolean(checkedOut.bookingId),
+    )
+
+    // M22 follow-up: the exception now has to carry through to the bill
+    // screen's OWN action too, or floor_staff could close a tab and then get
+    // stuck unable to actually bill it — canBillBooking's walk-in carve-out
+    // (lib/auth/roles.ts) is what keeps this self-service, still as
+    // floor_staff, no cashier handoff.
+    const billed = await createInvoiceForBooking({ bookingId })
+    check(
+      'floor_staff can ALSO raise the bill themselves — canBillBooking carries the M21 #7 exception forward',
+      !billed.error && Boolean(billed.invoiceId),
     )
 
     await signInAs(ownerUserId, slug)

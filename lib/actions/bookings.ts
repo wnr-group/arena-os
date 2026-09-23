@@ -31,7 +31,7 @@ import {
   WALKIN_EXTEND_MAX_MINUTES,
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
-import { issueInvoiceForBooking, BillingError } from '@/lib/billing/invoice'
+import { BillingError } from '@/lib/billing/invoice'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
@@ -259,7 +259,7 @@ const checkoutWalkinInput = z.object({
   headCount: z.coerce.number().int().min(1).optional(),
 })
 
-type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number; invoiceId?: string; invoiceNumber?: string }
+type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number }
 
 /**
  * Read-only: what checkoutWalkin would charge for the given end time, for the
@@ -303,28 +303,36 @@ export async function previewWalkinCheckout(
 /**
  * Close out a walk-in's session — an open tab's end time (M21 #4) or a timed
  * session's committed end plus any extensions (M21 #5, blocked until the
- * operator extends past "now" if it's already passed): price it and raise
- * the bill in one transaction, reusing issueInvoiceForBooking so membership
- * discount, loyalty, resource GST and any open food orders fold in exactly
- * as they would for any other booking. The caller (the checkout dialog)
- * then routes to /pos/[bookingId], which already renders straight to the
- * payment panel once an invoice exists — no separate "raise bill" click, no
- * online prepay.
+ * operator extends past "now" if it's already passed): prices it and freezes
+ * the slot (checkoutWalkinCore), same as before.
  *
- * DELIBERATE exception to the general billing gate (M21 #7, product-owner
- * confirmed — see BILLING_ROLES's own doc comment in lib/auth/roles.ts):
- * this DOES raise a real GST invoice, and receptionist/floor_staff — both in
- * WALKIN_ROLES — are otherwise excluded from BILLING_ROLES because they
- * never issue one anywhere else in the app (createInvoiceForBooking et al.
- * all gate on canBill). Walk-in checkout is the one carve-out: on-shift
- * floor staff who started or extended a session are trusted to close it out
- * themselves too, rather than needing to hand off to a cashier. Gated on
- * canManageWalkins alone, on purpose — do not add a canBill check here
- * without revisiting that product decision first.
+ * M22 follow-up (user-reported): this used to ALSO raise the invoice in the
+ * same transaction, straight to the amount checkoutWalkinCore computed, with
+ * no chance to review it or apply a discount first — unlike a reserved
+ * booking, which always goes through the POS bill screen (review the
+ * amount, optionally discount/promo/loyalty/comp, THEN "Generate bill")
+ * before an invoice exists. Closing a walk-in tab no longer raises the
+ * invoice at all: it now hands off to that SAME bill screen
+ * (/pos/[bookingId] → BillScreen) instead, exactly like a reserved booking —
+ * getBillableForBooking already renders a checked-out-but-unbilled walk-in
+ * correctly (loadBookingLines bills it as one qty=1 line at the frozen
+ * slot_total the instant ends_at/slot_total are set, same as any other
+ * pre-bill booking), so no new pre-bill code was needed here, only removing
+ * the invoice step.
+ *
+ * canManageWalkins (receptionist/floor_staff included, M21 #7) still gates
+ * CLOSING the tab — nothing changes there. What changed is who may then
+ * raise the bill on that follow-on screen: canBillBooking (lib/auth/roles.ts)
+ * carries the SAME walk-in exception forward into createInvoiceForBooking/
+ * previewPromoCodeForBooking (lib/actions/billing.ts) and the /pos page
+ * itself, so on-shift floor staff can still close AND bill a walk-in
+ * themselves, without a cashier handoff — see canBillBooking's own doc
+ * comment for the full reasoning. A RESERVED booking on that same screen
+ * still requires plain canBill, unchanged.
  *
  * The booking itself is NOT marked completed here — that stays gated on
  * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
- * actually settles this invoice.
+ * actually settles the invoice raised from the bill screen.
  */
 export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>): Promise<CheckoutWalkinResult> {
   try {
@@ -337,24 +345,13 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
     }
     const v = checkoutWalkinInput.parse(input)
 
-    const result = await withUser(ctx.user.id, async (tx) => {
-      const checkout = await checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v)
-      const invoice = await issueInvoiceForBooking(
-        tx,
-        { id: ctx.tenant.id, timezone: ctx.tenant.timezone },
-        { bookingId: checkout.bookingId },
-      )
-      return { ...checkout, invoice }
-    })
+    const result = await withUser(ctx.user.id, (tx) =>
+      checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+    )
 
     revalidatePath('/bookings')
     revalidatePath(`/pos/${result.bookingId}`)
-    return {
-      bookingId: result.bookingId,
-      total: result.total,
-      invoiceId: result.invoice.invoiceId,
-      invoiceNumber: result.invoice.invoiceNumber,
-    }
+    return { bookingId: result.bookingId, total: result.total }
   } catch (e) {
     return fail(e)
   }

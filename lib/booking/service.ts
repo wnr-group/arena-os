@@ -27,6 +27,24 @@ type Db = NodePgDatabase<typeof schema>
 /** Booking rule violations the caller is allowed to show verbatim. */
 export class BookingError extends Error {}
 
+/**
+ * A booking's own `channel` ('walkin' | 'staff' | 'online'), read fresh
+ * inside the caller's transaction. Exists so lib/actions/billing.ts's
+ * billing actions can resolve canBillBooking's channel argument from a
+ * trusted, server-side source — never from the client — before gating
+ * whether this caller may raise the bill for it. Null when the booking
+ * doesn't exist (or belongs to another tenant, indistinguishable under
+ * RLS), same "quiet, not found" shape every other by-id lookup here uses.
+ */
+export async function loadBookingChannel(tx: Db, tenantId: string, bookingId: string): Promise<string | null> {
+  const [row] = await tx
+    .select({ channel: bookings.channel })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .limit(1)
+  return row?.channel ?? null
+}
+
 export type CreateBookingSlotInput = { resourceId: string; startsAt: string; endsAt: string }
 
 export type CreateBookingInput = {

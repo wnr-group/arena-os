@@ -22,6 +22,12 @@ const QUICK_EXTEND_MINUTES = [15, 30, 60]
  * to the Extend control, not as a dead-end error. Billed time is always the
  * committed end (extensions included), never however long the session
  * actually ran — see lib/booking/walkin.ts's resolveCheckoutWindow.
+ *
+ * M22 follow-up: checking out no longer raises the invoice itself — it only
+ * prices/freezes the session, then hands off to the same POS bill screen a
+ * reserved booking uses (/pos/[bookingId]) for review/discount before the
+ * bill is actually raised. See checkoutWalkin's own doc comment
+ * (lib/actions/bookings.ts).
  */
 export function TimedWalkinDialog({
   booking,
@@ -125,11 +131,11 @@ export function TimedWalkinDialog({
         bookingId: booking.bookingId,
         headCount: isPerHead ? headCount : undefined,
       })
-      if (r.error || !r.invoiceId) {
+      if (r.error || !r.bookingId) {
         setCheckoutError(r.error ?? 'Could not check out this session.')
         return
       }
-      toast.success(`Invoice ${r.invoiceNumber} raised for ${booking.bookingNumber}.`)
+      toast.success(`${booking.bookingNumber} checked out — review the bill.`)
       router.push(`/pos/${booking.bookingId}`)
     })
   }
@@ -268,7 +274,7 @@ export function TimedWalkinDialog({
             onClick={checkout}
           >
             {checkingOut && <Loader2 size={14} className="animate-spin" />}
-            Check out &amp; raise bill
+            Check out
           </button>
         </div>
       </div>

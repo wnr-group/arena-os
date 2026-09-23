@@ -13,15 +13,21 @@ const OFFSET_STEP_MIN = 5
 const OFFSET_MAX_MIN = 30
 
 /**
- * "Close tab" — confirm an open-tab walk-in's end time, price it by elapsed
- * time, and raise the bill in one step (M21 #4). Bespoke dialog for the same
- * reason VoidCompDialog is: this needs a live-updating end-time control, not
- * a yes/no confirm.
+ * "Close tab" — confirm an open-tab walk-in's end time and price it by
+ * elapsed time (M21 #4). Bespoke dialog for the same reason VoidCompDialog
+ * is: this needs a live-updating end-time control, not a yes/no confirm.
  *
  * The shown amount comes from previewWalkinCheckout — the exact same
  * priceElapsedTime call checkoutWalkin itself makes — so as long as nothing
  * else touches this booking between the last preview and the confirm click,
- * what's on screen is what gets billed, to the paisa.
+ * what's on screen is what gets frozen onto the slot.
+ *
+ * M22 follow-up: this no longer raises the invoice itself. Closing the tab
+ * only prices/freezes the session; the caller then lands on the same POS
+ * bill screen a reserved booking uses (/pos/[bookingId]), where staff review
+ * the amount and can apply a discount/promo/loyalty before actually raising
+ * the bill — see checkoutWalkin's own doc comment (lib/actions/bookings.ts)
+ * for the full reasoning.
  */
 export function WalkinCheckoutDialog({
   booking,
@@ -99,11 +105,11 @@ export function WalkinCheckoutDialog({
         endAt: endAtIso,
         headCount: isPerHead ? headCount : undefined,
       })
-      if (r.error || !r.invoiceId) {
+      if (r.error || !r.bookingId) {
         setError(r.error ?? 'Could not close this tab.')
         return
       }
-      toast.success(`Invoice ${r.invoiceNumber} raised for ${booking.bookingNumber}.`)
+      toast.success(`Tab closed for ${booking.bookingNumber} — review the bill.`)
       router.push(`/pos/${booking.bookingId}`)
     })
   }
@@ -215,7 +221,7 @@ export function WalkinCheckoutDialog({
             onClick={confirm}
           >
             {pending && <Loader2 size={14} className="animate-spin" />}
-            Close tab &amp; raise bill
+            Close tab
           </button>
         </div>
       </div>
