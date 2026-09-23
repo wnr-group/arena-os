@@ -156,36 +156,42 @@ export function ResourceBookingPage({
   // make) and prefer that. Before a slot is picked (the per-duration list
   // above), there's no specific time yet, so it stays the flat estimate —
   // it can never be happy-hour-accurate regardless.
-  const [quote, setQuote] = useState<{ total: number } | null>(null)
-  const [quoteLoading, setQuoteLoading] = useState(false)
+  // Keyed by the exact (resource, startsAt, endsAt) it was quoted for, so a
+  // slower in-flight request for a slot the customer has since changed away
+  // from can never be mistaken for the current slot's price (the previous
+  // slot's total no longer bleeds through while a new quote loads).
+  const [quote, setQuote] = useState<{ key: string; total: number } | null>(null)
+  const [quoteLoadingKey, setQuoteLoadingKey] = useState<string | null>(null)
+  const quoteKey = startsAt && endsAt ? `${resource.id}|${startsAt}|${endsAt}` : null
+  const quoteLoading = quoteKey !== null && quoteLoadingKey === quoteKey
   // M22 follow-up (cosmetic, no money impact): once a slot is picked, ONLY
   // the real per-slot quote may stand in for the total — never the flat,
   // date-level estimate above (see public-availability.ts's doc comment on
   // why that figure can disagree with the real charge for a tenant whose
   // working hours cross midnight). null means "not yet known" (still
-  // loading, or the request failed) — Continue/Confirm are gated on this
-  // being non-null (see canContinue/the Confirm button below), so nothing
-  // can ever be confirmed against a stale or wrong figure; the UI shows a
-  // loading/error state in its place instead of guessing.
-  const total = startsAt ? (quote?.total ?? null) : priceFor(duration)
-  const quoteErrored = startsAt !== null && !quoteLoading && quote === null
+  // loading, or the request failed, or stale for the current slot) —
+  // Continue/Confirm are gated on this being non-null (see canContinue/the
+  // Confirm button below), so nothing can ever be confirmed against a stale
+  // or wrong figure; the UI shows a loading/error state in its place instead
+  // of guessing.
+  const total = startsAt ? (quote && quote.key === quoteKey ? quote.total : null) : priceFor(duration)
+  const quoteErrored = startsAt !== null && !quoteLoading && total === null
 
   useEffect(() => {
     if (!startsAt || !endsAt) {
-      setQuote(null)
-      setQuoteLoading(false)
+      setQuoteLoadingKey(null)
       return
     }
+    const key = `${resource.id}|${startsAt}|${endsAt}`
     let cancelled = false
-    setQuoteLoading(true)
+    setQuoteLoadingKey(key)
     getPublicBookingQuote({ resourceId: resource.id, startsAt, endsAt }).then((r) => {
       if (cancelled) return
-      setQuoteLoading(false)
+      setQuoteLoadingKey((k) => (k === key ? null : k))
       if (r.error || r.total === undefined) {
-        setQuote(null)
         return
       }
-      setQuote({ total: r.total })
+      setQuote({ key, total: r.total })
     })
     return () => {
       cancelled = true

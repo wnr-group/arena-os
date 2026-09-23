@@ -232,6 +232,7 @@ export function FutureWizard({
     let cancelled = false
     setQuoteLoading(true)
     setQuoteError(null)
+    setQuote(null)
     quoteBooking({
       branchId,
       resourceId: selectedSlot.resourceId,
