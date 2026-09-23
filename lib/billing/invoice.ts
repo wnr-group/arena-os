@@ -171,6 +171,14 @@ export function formatInvoiceNumber(prefix: string, period: string, value: numbe
  * and writes the result onto `slot_total`. That one case bills as a single
  * qty=1 line at the already-priced total instead.
  *
+ * A RESERVED slot that itself straddled a happy-hour rule (M23 #1,
+ * `booking_slots.happy_hour_applied`) is the same exception for the same
+ * reason: priceBookingSlots also blends per segment, so `rate_applied` is an
+ * AVERAGE rate that reconstructs the slot's true total only up to rounding,
+ * not exactly. Flagged slots bill qty=1 at `slot_total` too; an untouched
+ * slot (the overwhelming majority) keeps the hours × rate_applied
+ * decomposition below, unchanged.
+ *
  * Only ACTIVE slots are billed: the 0003 trigger clears `active` when a booking
  * is cancelled or marked no-show, so a released slot never reaches the till.
  */
@@ -209,6 +217,8 @@ export async function loadBookingLines(
       // every pre-existing booking.
       headCount: bookingSlots.headCount,
       pricingMode: bookingSlots.pricingMode,
+      // M23 #1 — see this function's doc comment.
+      happyHourApplied: bookingSlots.happyHourApplied,
     })
     .from(bookingSlots)
     .where(
@@ -238,10 +248,12 @@ export async function loadBookingLines(
       description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
-      ...(isWalkin
+      ...(isWalkin || s.happyHourApplied
         ? // qty=1, unitPrice=the whole priced total — same "one computed
           // charge" shape priceElapsedTime itself returns, rather than a
           // qty/rate pair that would need to multiply back to that figure.
+          // M23 #1: a happy-hour-blended RESERVED slot takes this same
+          // shape, for the same reason — see this function's doc comment.
           { qty: 1, unitPrice: Number(s.slotTotal) }
         : {
             // M21 per-head #2: rateApplied is per PLAYER for a per_head slot

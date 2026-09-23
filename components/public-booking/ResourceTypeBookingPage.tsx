@@ -25,6 +25,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail } from '@/lib/booking/public-availability'
 import {
   getPublicAvailability,
+  getPublicBookingQuote,
   createPublicBooking,
   createBookingPaymentIntent,
   lookupPublicCustomerByPhone,
@@ -131,10 +132,62 @@ export function ResourceTypeBookingPage({
   const isPerHead = resourceType.pricingMode === 'per_head'
   const headCount = isPerHead ? Math.max(1, resourceType.minPlayers) : 1
   const priceFor = (minutes: number) => (hourlyRate * minutes * headCount) / 60
-  const total = priceFor(duration)
   const endsAt = selectedSlot
     ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     : null
+
+  // Happy hours #3: once a specific start time (and its auto-assigned unit)
+  // is picked, the flat day-level rate above can no longer represent the
+  // true price — happy hours are time-of-day, not date — so re-quote the
+  // exact [startsAt, endsAt) window server-side (the same priceBookingSlots
+  // call createPublicBooking's pay-now deposit and createBookingCore itself
+  // make) and prefer that. Before a slot is picked (the per-duration list
+  // above), there's no specific time yet, so it stays the flat estimate —
+  // it can never be happy-hour-accurate regardless.
+  // Keyed by the exact (resource, startsAt, endsAt) it was quoted for, so a
+  // slower in-flight request for a slot the customer has since changed away
+  // from can never be mistaken for the current slot's price (the previous
+  // slot's total no longer bleeds through while a new quote loads).
+  const [quote, setQuote] = useState<{ key: string; total: number } | null>(null)
+  const [quoteLoadingKey, setQuoteLoadingKey] = useState<string | null>(null)
+  const quoteKey =
+    selectedSlot && endsAt ? `${selectedSlot.resourceId}|${selectedSlot.startsAt}|${endsAt}` : null
+  const quoteLoading = quoteKey !== null && quoteLoadingKey === quoteKey
+  // M22 follow-up (cosmetic, no money impact): once a slot is picked, ONLY
+  // the real per-slot quote may stand in for the total — never the flat,
+  // date-level estimate above (see public-availability.ts's doc comment on
+  // why that figure can disagree with the real charge for a tenant whose
+  // working hours cross midnight). null means "not yet known" (still
+  // loading, or the request failed, or stale for the current slot) —
+  // Continue/Confirm are gated on this being non-null (see canContinue/the
+  // Confirm button below), so nothing can ever be confirmed against a stale
+  // or wrong figure; the UI shows a loading/error state in its place instead
+  // of guessing.
+  const total = selectedSlot ? (quote && quote.key === quoteKey ? quote.total : null) : priceFor(duration)
+  const quoteErrored = selectedSlot !== null && !quoteLoading && total === null
+
+  useEffect(() => {
+    if (!selectedSlot || !endsAt) {
+      setQuoteLoadingKey(null)
+      return
+    }
+    const key = `${selectedSlot.resourceId}|${selectedSlot.startsAt}|${endsAt}`
+    let cancelled = false
+    setQuoteLoadingKey(key)
+    getPublicBookingQuote({ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt }).then((r) => {
+      if (cancelled) return
+      setQuoteLoadingKey((k) => (k === key ? null : k))
+      if (r.error || r.total === undefined) {
+        return
+      }
+      setQuote({ key, total: r.total })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSlot?.startsAt, selectedSlot?.resourceId, endsAt])
+
   // Slots already in the past (only relevant for today) are dropped rather
   // than shown disabled — there's nothing useful for the customer to do with
   // a start time that's already gone.
@@ -257,7 +310,7 @@ export function ResourceTypeBookingPage({
   }
 
   function confirm() {
-    if (!selectedSlot || !endsAt) return
+    if (!selectedSlot || !endsAt || total === null) return
     setConfirmError(null)
     startTransition(async () => {
       const r = await createPublicBooking({
@@ -494,6 +547,7 @@ export function ResourceTypeBookingPage({
               players={players}
               setPlayers={setPlayers}
               total={total}
+              totalLoading={quoteLoading}
               hourlyRate={hourlyRate}
               onContinue={() => setStep('details')}
             />
@@ -601,11 +655,20 @@ export function ResourceTypeBookingPage({
                 {isPerHead && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
                   <span>Total</span>
-                  <span className="tabular-nums text-primary">{formatMoney(total, tenant.currency)}</span>
+                  <span className="flex items-center gap-1.5 tabular-nums text-primary">
+                    {quoteLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
+                    {total === null ? (quoteLoading ? '—' : 'Unavailable') : formatMoney(total, tenant.currency)}
+                  </span>
                 </div>
               </div>
 
-              {razorpayConfigured && total > 0 && (
+              {quoteErrored && (
+                <p className="mt-3 text-sm text-destructive">
+                  Could not price this booking — check your connection and try again.
+                </p>
+              )}
+
+              {razorpayConfigured && (total ?? 0) > 0 && (
                 <div className="mt-6">
                   <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
                   <div className="grid grid-cols-2 gap-2">
@@ -639,6 +702,8 @@ export function ResourceTypeBookingPage({
                 onClick={confirm}
                 disabled={
                   pending ||
+                  quoteLoading ||
+                  total === null ||
                   !phoneLookup.checked ||
                   (!phoneLookup.found && !name.trim())
                 }
@@ -698,6 +763,7 @@ function SummaryPanel({
   players,
   setPlayers,
   total,
+  totalLoading,
   hourlyRate,
   onContinue,
 }: {
@@ -710,11 +776,16 @@ function SummaryPanel({
   endsAt: string | null
   players: number
   setPlayers: (n: number) => void
-  total: number
+  total: number | null
+  totalLoading?: boolean
   hourlyRate: number
   onContinue: () => void
 }) {
-  const canContinue = Boolean(startsAt)
+  // M22 follow-up: a slot alone isn't enough — the real per-slot quote must
+  // have landed too, so "Continue" can never carry a stale/wrong total
+  // through to the details step. See the `total` computation's own comment
+  // above for why this is `null` while loading or on a failed quote.
+  const canContinue = Boolean(startsAt) && total !== null
 
   return (
     <aside className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:sticky lg:top-20">
@@ -781,13 +852,18 @@ function SummaryPanel({
         </div>
         <div className="flex items-center justify-between text-base font-extrabold text-foreground">
           <span>Total payable</span>
-          <span className="tabular-nums text-primary">{formatMoney(total, currency)}</span>
+          <span className="flex items-center gap-1.5 tabular-nums text-primary">
+            {totalLoading && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
+            {total === null ? (totalLoading ? '—' : 'Unavailable') : formatMoney(total, currency)}
+          </span>
         </div>
       </div>
 
       {!canContinue && (
         <p className="mt-4 rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-          Select a date, duration and start time to continue.
+          {startsAt && total === null && !totalLoading
+            ? 'Could not price this booking — check your connection and try again.'
+            : 'Select a date, duration and start time to continue.'}
         </p>
       )}
 

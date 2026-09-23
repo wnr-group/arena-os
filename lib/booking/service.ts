@@ -12,6 +12,7 @@ import type * as schema from '@/db/schema'
 import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
 import { durationHours } from './availability'
 import { round2 } from '@/lib/billing/pricing'
+import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
 import { todayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
@@ -19,11 +20,30 @@ import { findLiveBilling } from '@/lib/billing/invoice'
 import { getInvoiceSettlement } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
+import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 
 type Db = NodePgDatabase<typeof schema>
 
 /** Booking rule violations the caller is allowed to show verbatim. */
 export class BookingError extends Error {}
+
+/**
+ * A booking's own `channel` ('walkin' | 'staff' | 'online'), read fresh
+ * inside the caller's transaction. Exists so lib/actions/billing.ts's
+ * billing actions can resolve canBillBooking's channel argument from a
+ * trusted, server-side source — never from the client — before gating
+ * whether this caller may raise the bill for it. Null when the booking
+ * doesn't exist (or belongs to another tenant, indistinguishable under
+ * RLS), same "quiet, not found" shape every other by-id lookup here uses.
+ */
+export async function loadBookingChannel(tx: Db, tenantId: string, bookingId: string): Promise<string | null> {
+  const [row] = await tx
+    .select({ channel: bookings.channel })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .limit(1)
+  return row?.channel ?? null
+}
 
 export type CreateBookingSlotInput = { resourceId: string; startsAt: string; endsAt: string }
 
@@ -60,6 +80,10 @@ export type PricedBookingSlot = {
   headCount: number | null
   /** Snapshot of the resource type's pricing_mode at booking time. */
   pricingMode: string
+  /** M23 #1: true when at least one segment of this slot's window billed at
+   *  a happy-hour-discounted rate — see db/schema.ts's column comment and
+   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. */
+  happyHourApplied: boolean
 }
 
 /**
@@ -80,6 +104,36 @@ export type PricedBookingSlot = {
  * is resources.hourlyRateOverride ?? resourceTypes.hourlyRate, unchanged.
  * weekendRate = null means no weekend pricing configured, so every day
  * prices identically to today. See lib/booking/rate.ts:resolveDayRate.
+ *
+ * M22 follow-up (adversarial review of PR #29, item 2): resolving by "the
+ * slot's own startsAt day" is only correct because a single continuous
+ * session is always ONE slot — a Fri 23:00 -> Sat 02:00 booking bills the
+ * Friday (start-day) rate across the whole window, as the spec requires,
+ * BECAUSE there is only one row to resolve. `input.slots` is an array
+ * (today used solely for multiple RESOURCES in the same time window, e.g. two
+ * PS5s booked together — every existing caller, FutureWizard.tsx and
+ * public-booking.ts alike, emits exactly one slot per resource for a
+ * continuous session). If a future caller ever split ONE session across
+ * midnight into two time-contiguous slots on the SAME resource, each half
+ * would silently resolve against its OWN day's rate instead of the whole
+ * session's start-day rate — a real money bug, not just a display one. The
+ * validation loop below refuses that shape outright (same-resource slots
+ * that touch or overlap) rather than let it silently misprice, since
+ * nothing legitimate ever needs two slots for one resource that touch: a
+ * true continuous session is always exactly one slot with the full range.
+ *
+ * M23 #1: once the day rate is resolved, the slot's own [startsAt, endsAt)
+ * is split at every active happy-hour rule boundary inside it and each
+ * segment is discounted — priceTimeRangeSegments (lib/billing/elapsed-time.ts),
+ * the same per-segment engine priceElapsedTime already uses for a walk-in's
+ * elapsed time, just against the slot's own EXACT, already-known window
+ * (no 30-min floor or 15-min round-up — a reserved slot's end is a firm
+ * commitment, not an elapsed measurement). Composition order is fixed:
+ * resolve the day rate -> happy-hour discount per segment -> × headCount —
+ * never the other order, so a per-head happy-hour rule discounts the
+ * PER-PLAYER rate, not some pre-multiplied total. When no rule ever fires
+ * for a slot, this reproduces flat rate × hours exactly, so an untouched
+ * booking is byte-identical to before this ticket.
  */
 export async function priceBookingSlots(
   tx: Db,
@@ -89,6 +143,34 @@ export async function priceBookingSlots(
   for (const s of input.slots) {
     if (new Date(s.endsAt) <= new Date(s.startsAt)) {
       throw new BookingError('Each slot must end after it starts.')
+    }
+  }
+
+  // M22 follow-up: refuse two slots on the SAME resource whose windows touch
+  // or overlap — see this function's own doc comment for why. A legitimate
+  // multi-slot booking is always different RESOURCES in the same window,
+  // never the same resource split across two time ranges, so this can never
+  // reject a real booking; it only catches a caller that (accidentally)
+  // split one continuous session in two, which each-slot-resolves-by-its-
+  // own-day-rate would otherwise misprice across a midnight boundary without
+  // any error at all.
+  {
+    const byResource = new Map<string, CreateBookingSlotInput[]>()
+    for (const s of input.slots) {
+      const list = byResource.get(s.resourceId) ?? []
+      list.push(s)
+      byResource.set(s.resourceId, list)
+    }
+    for (const list of byResource.values()) {
+      if (list.length < 2) continue
+      const sorted = [...list].sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime())
+      for (let i = 1; i < sorted.length; i++) {
+        if (new Date(sorted[i].startsAt).getTime() <= new Date(sorted[i - 1].endsAt).getTime()) {
+          throw new BookingError(
+            'A resource cannot have two touching or overlapping slots in the same booking — book it as one continuous slot instead.',
+          )
+        }
+      }
     }
   }
 
@@ -135,15 +217,33 @@ export async function priceBookingSlots(
   // slots in one booking can never disagree on what counts as a weekend.
   const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
 
+  // M23 #1: the tenant's active happy-hour rules, loaded once for the whole
+  // call — every slot below is matched against this SAME set, same "load
+  // once, apply per slot" discipline as weekendDays above.
+  const happyHourRules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
   const slots = input.slots.map((s) => {
     const r = byId.get(s.resourceId)!
     const startsAt = new Date(s.startsAt)
+    const endsAt = new Date(s.endsAt)
     const weekdayRate = Number(r.rateOverride ?? r.typeRate)
     const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
     const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
-    const hours = durationHours(startsAt, new Date(s.endsAt))
+    const hours = durationHours(startsAt, endsAt)
+
+    // M23 #1: split the slot at every happy-hour rule boundary inside it and
+    // discount each segment — see this function's doc comment for the
+    // composition order. `rawTotal` is unrounded and, for a per_head slot,
+    // is still the PER-PLAYER figure — headCount multiplies below.
+    const { total: rawTotal, discounted } = priceTimeRangeSegments(
+      startsAt,
+      endsAt,
+      rate,
+      happyHourRules,
+      ctx.timezone,
+    )
 
     let headCount: number | null = null
     let total: number
@@ -158,23 +258,32 @@ export async function priceBookingSlots(
         )
       }
       headCount = requested
-      total = headCount * rate * hours
+      total = headCount * rawTotal
     } else {
-      total = rate * hours
+      total = rawTotal
     }
     subtotal += total
+
+    // The blended (happy-hour-net) rate this slot billed at, per hour (per
+    // player, for per_head) — reconstructs to `rate` exactly when no rule
+    // fired (discounted === false), so an untouched booking's rate_applied
+    // is byte-identical to before this ticket. Display-only when discounted:
+    // loadBookingLines (lib/billing/invoice.ts) bills a flagged slot off
+    // slot_total directly, never by reconstructing hours × this rate.
+    const blendedRate = rawTotal / hours
 
     return {
       resourceId: s.resourceId,
       startsAt,
-      endsAt: new Date(s.endsAt),
-      rateApplied: rate.toFixed(2),
+      endsAt,
+      rateApplied: blendedRate.toFixed(2),
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
       taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
       headCount,
       pricingMode: r.pricingMode,
+      happyHourApplied: discounted,
     }
   })
 
@@ -360,6 +469,9 @@ export async function updateBookingHeadCountCore(
       startsAt: bookingSlots.startsAt,
       endsAt: bookingSlots.endsAt,
       slotTotal: bookingSlots.slotTotal,
+      headCount: bookingSlots.headCount,
+      // M23 follow-up — see the re-price loop below.
+      happyHourApplied: bookingSlots.happyHourApplied,
     })
     .from(bookingSlots)
     .where(
@@ -395,8 +507,24 @@ export async function updateBookingHeadCountCore(
   let newSubtotal = 0
   for (const s of slots) {
     if (s.pricingMode === 'per_head' && s.endsAt !== null) {
-      const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
-      const slotTotal = round2(input.headCount * Number(s.rateApplied) * hours)
+      // M23 follow-up: rate_applied is a per-hour BLEND rounded to cents
+      // (priceBookingSlots) — for a happy-hour slot, flat headCount × rate ×
+      // hours can't reproduce the exact per-segment total
+      // priceTimeRangeSegments actually billed (same reason loadBookingLines
+      // bills a flagged slot off slot_total directly rather than
+      // reconstructing it — see happyHourApplied's doc comment in
+      // db/schema.ts). headCount is a plain multiplier applied AFTER
+      // segmenting (priceBookingSlots' own composition order), so scaling
+      // the already-segment-accurate stored total by the headCount ratio
+      // reproduces exactly what re-running priceTimeRangeSegments at the new
+      // headCount would, without needing the original (frozen, no-longer-
+      // reconstructible) pre-discount rate. An unflagged slot's flat
+      // reconstruction is exact either way, since rate_applied IS the plain
+      // rate there.
+      const oldHeadCount = s.headCount ?? 1
+      const slotTotal = s.happyHourApplied
+        ? round2((Number(s.slotTotal) / oldHeadCount) * input.headCount)
+        : round2(input.headCount * Number(s.rateApplied) * durationHours(new Date(s.startsAt), new Date(s.endsAt)))
       newSubtotal += slotTotal
       await tx
         .update(bookingSlots)

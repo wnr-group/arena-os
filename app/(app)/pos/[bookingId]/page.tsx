@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canBill, isManager } from '@/lib/auth/roles'
+import { canBillBooking, isManager } from '@/lib/auth/roles'
 import { getBillableForBooking } from '@/lib/billing/data'
 import { BillScreen } from '@/components/pos/BillScreen'
 
@@ -20,7 +20,21 @@ export default async function PosBillPage({
   const { bookingId } = await params
   if (!UUID.test(bookingId)) notFound()
 
-  if (!canBill(ctx.role)) {
+  // Tenant-scoped: another workspace's bookingId returns null under RLS, which
+  // is indistinguishable from "no such booking" — so the URL leaks nothing.
+  //
+  // Loaded BEFORE the permission gate below (unlike the plain canBill check
+  // this used to be) because canBillBooking needs the booking's own channel
+  // to decide: a walk-in's checkout no longer raises its own invoice — it
+  // closes the session and hands off here, same as a reserved booking — so
+  // floor staff/receptionist (canManageWalkins, not canBill) must still be
+  // able to land on and use THIS screen for a walk-in, while every reserved
+  // booking still requires plain canBill. See canBillBooking's own doc
+  // comment (lib/auth/roles.ts) for the full reasoning.
+  const data = await getBillableForBooking(ctx, bookingId)
+  if (!data) notFound()
+
+  if (!canBillBooking(ctx.role, data.booking.channel)) {
     return (
       <div className="px-6 py-10">
         <div className="mx-auto max-w-md rounded-lg border border-dashed p-10 text-center">
@@ -34,11 +48,6 @@ export default async function PosBillPage({
       </div>
     )
   }
-
-  // Tenant-scoped: another workspace's bookingId returns null under RLS, which
-  // is indistinguishable from "no such booking" — so the URL leaks nothing.
-  const data = await getBillableForBooking(ctx, bookingId)
-  if (!data) notFound()
 
   // Only plain serialisable data crosses to the client: Date → ISO string.
   const settlement = data.settlement

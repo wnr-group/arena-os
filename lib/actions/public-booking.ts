@@ -133,6 +133,63 @@ export async function getPublicResourceAvailability(
   }
 }
 
+const quoteInput = z.object({
+  resourceId: z.string().uuid(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+})
+
+export type PublicBookingQuoteResult = { error?: string; total?: number }
+
+/**
+ * Happy hours #3: read-only price quote for the SELECTED slot on the public
+ * booking pages (ResourceBookingPage.tsx / ResourceTypeBookingPage.tsx) — the
+ * exact same priceBookingSlots call createPublicBooking's pay-now deposit
+ * (and createBookingCore itself) makes, so the displayed total/deposit can
+ * never drift from what actually gets charged.
+ *
+ * getPublicAvailability's/getPublicResourceAvailability's own `rate` field
+ * stays day-level only (weekday/weekend, M22 #4) — happy hours are
+ * time-of-day, not date, so they can only be resolved once an exact
+ * [startsAt, endsAt) window is chosen; this fills that gap for the two
+ * screens that show a REAL, about-to-be-booked total. Mirrors
+ * lib/actions/bookings.ts's quoteBooking (Happy hours #2, staff wizard),
+ * just under public auth: rate-limited, tenant resolved from the subdomain,
+ * and headCount is resolved server-side (resolvePublicHeadCount) rather than
+ * trusted from the client — same discipline createPublicBooking itself uses,
+ * since a per_head public booking never lets the customer choose a count.
+ */
+export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Promise<PublicBookingQuoteResult> {
+  if (!rateLimit(`quote:${await callerIp()}`, 40, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return tenant
+
+  const v = quoteInput.safeParse(raw)
+  if (!v.success) return { error: 'Invalid request.' }
+  if (new Date(v.data.endsAt) <= new Date(v.data.startsAt)) {
+    return { error: 'That slot is no longer valid — please pick another.' }
+  }
+
+  const branch = await getPublicBranch(tenant.id)
+  if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
+
+  try {
+    const result = await withPublicTenant(tenant.id, async (tx) => {
+      const headCount = await resolvePublicHeadCount(tx, tenant.id, [v.data.resourceId])
+      return priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
+        branchId: branch.id,
+        slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt }],
+        headCount,
+      })
+    })
+    return { total: result.subtotal }
+  } catch (e) {
+    if (e instanceof BookingError) return { error: e.message }
+    return { error: 'Could not price this booking.' }
+  }
+}
+
 const phoneLookupInput = z.object({
   phone: z.string().trim().min(1),
 })

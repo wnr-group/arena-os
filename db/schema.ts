@@ -354,6 +354,14 @@ export const bookingSlots = pgTable(
     // rateApplied/taxRatePercent above. Null/null for a per_resource booking.
     headCount: smallint('head_count'),
     pricingMode: text('pricing_mode'),
+    // M23 #1: true when at least one segment of this slot's window actually
+    // billed at a happy-hour-discounted rate — set at booking time, never
+    // recomputed. loadBookingLines (lib/billing/invoice.ts) reads this to
+    // decide how to bill the slot: a flat hours × rate_applied reconstruction
+    // cannot reproduce a per-segment blend, so a flagged slot bills as its
+    // already-computed slot_total instead, same shape a walk-in's happy-hour
+    // blend already uses.
+    happyHourApplied: boolean('happy_hour_applied').notNull().default(false),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),

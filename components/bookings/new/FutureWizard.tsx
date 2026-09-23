@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { CalendarDays, Check, Clock, Gamepad2, Loader2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { getAvailableStartsForType } from '@/lib/actions/availability'
-import { createBooking, lookupCustomerByPhone } from '@/lib/actions/bookings'
+import { createBooking, lookupCustomerByPhone, quoteBooking } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { addDays } from '@/lib/booking/time'
@@ -209,6 +209,51 @@ export function FutureWizard({
         : null
 
   const endsAtIso = selectedSlot ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString() : null
+
+  // Happy hours #2: the live, server-computed quote for the SELECTED slot —
+  // the exact same priceBookingSlots call createBooking itself makes (day
+  // rate -> happy-hour discount per segment -> x players), so the amount
+  // shown here can never drift from what gets charged. priceFor() above
+  // (the pre-slot duration list) stays a flat client-side estimate — it has
+  // no specific start time yet, so it can never be happy-hour-accurate
+  // anyway; this quote only covers the two screens that show a REAL,
+  // about-to-be-booked total (the Slot-step summary and Confirm).
+  const [quote, setQuote] = useState<{ total: number } | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!selectedSlot || !endsAtIso) {
+      setQuote(null)
+      setQuoteError(null)
+      setQuoteLoading(false)
+      return
+    }
+    let cancelled = false
+    setQuoteLoading(true)
+    setQuoteError(null)
+    setQuote(null)
+    quoteBooking({
+      branchId,
+      resourceId: selectedSlot.resourceId,
+      startsAt: selectedSlot.startsAt,
+      endsAt: endsAtIso,
+      headCount: isPerHead ? headCount : undefined,
+    }).then((r) => {
+      if (cancelled) return
+      setQuoteLoading(false)
+      if (r.error || r.total === undefined) {
+        setQuoteError(r.error ?? 'Could not price this booking.')
+        setQuote(null)
+        return
+      }
+      setQuote({ total: r.total })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId, selectedSlot?.startsAt, selectedSlot?.resourceId, endsAtIso, headCount, isPerHead])
 
 /** Validates the customer fields and advances to the Confirm step, without
    *  creating anything yet — the actual createBooking call only happens from
@@ -485,7 +530,17 @@ export function FutureWizard({
                     v={endsAtIso ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}` : '—'}
                   />
                   {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
-                  <SummaryRow k="Price" v={formatMoney(priceFor(duration), currency)} />
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="text-muted-foreground">Price</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-foreground">
+                      {quoteLoading && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
+                      {quoteError ? (
+                        <span className="text-destructive">{quoteError}</span>
+                      ) : (
+                        formatMoney(quote?.total ?? priceFor(duration), currency)
+                      )}
+                    </dd>
+                  </div>
                 </dl>
               </div>
             )}
@@ -580,13 +635,26 @@ export function FutureWizard({
                 {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
                   <span>Total</span>
-                  <span className="tabular-nums">{formatMoney(priceFor(duration), currency)}</span>
+                  <span className="flex items-center gap-1.5 tabular-nums">
+                    {quoteLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
+                    {quoteError ? (
+                      <span className="text-sm font-medium text-destructive">{quoteError}</span>
+                    ) : (
+                      formatMoney(quote?.total ?? priceFor(duration), currency)
+                    )}
+                  </span>
                 </div>
               </dl>
             </div>
 
             {error && <p className={wizardError}>{error}</p>}
-            <WizardFooter onBack={() => setStep(2)} onNext={submit} nextLabel="Confirm booking" pending={pending} />
+            <WizardFooter
+              onBack={() => setStep(2)}
+              onNext={submit}
+              nextLabel="Confirm booking"
+              pending={pending}
+              nextDisabled={quoteLoading || !quote}
+            />
           </div>
         )}
       </WizardCard>

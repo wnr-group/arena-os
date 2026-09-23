@@ -86,6 +86,28 @@ function effectiveRate(
 }
 
 /**
+ * M22 follow-up (cosmetic, no money impact — adversarial review of PR #29):
+ * true when the resolved rate at `startAt` is <= 0 — the EXACT condition
+ * startWalkinCore's own guard rejects on server-side (lib/booking/walkin.ts:
+ * `if (rate <= 0) throw new BookingError(...)`), most commonly a
+ * free-on-weekends config (weekend_rate = 0 with a positive weekday rate).
+ * Without this, the wizard showed "₹0.00 / hr" — reading as a legitimate
+ * free promotion — and only surfaced the rejection after the operator
+ * already tried to submit. Checked purely to warn/disable early; the server
+ * re-checks this itself regardless, so nothing here can let a bad booking
+ * through even if this client-side copy ever drifted.
+ */
+function isUnbillable(
+  weekdayRate: string,
+  weekendRate: string | null,
+  startAt: Date,
+  timeZone: string,
+  weekendDays: number[],
+): boolean {
+  return effectiveRate(weekdayRate, weekendRate, startAt, timeZone, weekendDays) <= 0
+}
+
+/**
  * Walk-in wizard (M21 #3) — Station → Customer → Start & billing. Same
  * startWalkin/listWalkinResources/lookupCustomerByPhone logic as the modal
  * this replaced; only the presentation changed (one step at a time instead
@@ -189,6 +211,12 @@ export function WalkinWizard({
   const freeResources = resources?.filter((r) => r.isFree) ?? []
   const selectedResource = freeResources.find((r) => r.id === resourceId) ?? null
   const isPerHead = selectedResource?.pricingMode === 'per_head'
+  // M22 follow-up: see isUnbillable's own doc comment. Recomputed against
+  // the ACTUAL chosen start time (startAt, nudged by offsetMin) — same
+  // reasoning the Rate/Estimated-total row below already applies.
+  const unbillable = selectedResource
+    ? isUnbillable(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays)
+    : false
 
   useEffect(() => {
     setHeadCount(selectedResource?.minPlayers ?? 1)
@@ -524,10 +552,24 @@ export function WalkinWizard({
                   />
                 </dl>
               </div>
+
+              {unbillable && (
+                <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3.5 py-2.5 text-sm text-destructive">
+                  {selectedResource?.typeName} isn&rsquo;t set up for{' '}
+                  {isWeekendDay(startAt, timeZone, weekendDays) ? 'weekend' : 'weekday'} bookings — starting now will
+                  be rejected. Pick a different station, or ask an owner to set a rate for this one.
+                </p>
+              )}
             </div>
 
             {error && step === 2 && <p className={wizardError}>{error}</p>}
-            <WizardFooter onBack={() => setStep(1)} onNext={submit} nextLabel="Start walk-in" pending={pending} />
+            <WizardFooter
+              onBack={() => setStep(1)}
+              onNext={submit}
+              nextLabel="Start walk-in"
+              pending={pending}
+              nextDisabled={unbillable}
+            />
           </div>
         )}
       </WizardCard>

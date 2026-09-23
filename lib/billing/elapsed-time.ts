@@ -134,6 +134,74 @@ export function billableEndTime(start: Date, end: Date): Date {
   return new Date(start.getTime() + billableMinutes * MINUTE_MS)
 }
 
+export type SegmentedPrice = {
+  /** Unrounded — the caller rounds once, after any head_count multiplier. */
+  total: number
+  /** Whether at least one segment actually billed at a discounted rate —
+   *  false means this window reproduces plain `rate × hours` exactly, so a
+   *  caller can skip any special-cased snapshotting (see priceBookingSlots'
+   *  and loadBookingLines' happyHourApplied handling). */
+  discounted: boolean
+}
+
+/**
+ * Price a fixed `[start, end)` window against `rate`, splitting at every
+ * happy-hour rule boundary strictly inside it and discounting each segment.
+ * This is the shared core both priceElapsedTime (below, a walk-in's ROUNDED
+ * elapsed time) and priceBookingSlots (lib/booking/service.ts, a RESERVED
+ * booking's exact, already-known start/end — no 30-min floor or 15-min
+ * round-up applies there, since a reserved slot's end is a firm commitment,
+ * not an elapsed measurement) use — one rule-matching/tie-break
+ * implementation, so the two engines can never resolve a boundary
+ * differently.
+ *
+ * Half-open per rule window ([start, end)) throughout — see ruleActiveAt.
+ */
+export function priceTimeRangeSegments(
+  start: Date,
+  end: Date,
+  rate: number,
+  happyHours: HappyHourRule[],
+  tenantTimezone: string,
+): SegmentedPrice {
+  const startMs = start.getTime()
+  const endMs = end.getTime()
+
+  // Segment boundaries: the window's own edges, plus every happy-hour rule
+  // edge that falls strictly inside it — the only instants the effective
+  // rate can change.
+  const boundaries = new Set<number>([startMs, endMs])
+  const lastDate = todayInZone(tenantTimezone, new Date(endMs))
+  // Start a day BEFORE the window: an overnight window anchored on the prior
+  // day can end inside it (e.g. its 01:00 tail). Edges outside
+  // [startMs, endMs) are filtered out below, so the extra day is safe.
+  for (let d = addDays(todayInZone(tenantTimezone, start), -1); ; d = addDays(d, 1)) {
+    for (const rule of happyHours) {
+      const w = ruleWindowOnDate(rule, d, tenantTimezone)
+      if (!w) continue
+      if (w.startsAt > startMs && w.startsAt < endMs) boundaries.add(w.startsAt)
+      if (w.endsAt > startMs && w.endsAt < endMs) boundaries.add(w.endsAt)
+    }
+    if (d === lastDate) break
+  }
+  const sorted = [...boundaries].sort((a, b) => a - b)
+
+  let total = 0
+  let discounted = false
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const segStartMs = sorted[i]
+    const segEndMs = sorted[i + 1]
+    const minutes = (segEndMs - segStartMs) / MINUTE_MS
+    if (minutes <= 0) continue
+    const active = ruleActiveAt(segStartMs, happyHours, rate, tenantTimezone)
+    const effectiveRate = active ? Math.max(0, rate - discountAmount(rate, active)) : rate
+    if (active) discounted = true
+    total += (minutes / 60) * effectiveRate
+  }
+
+  return { total, discounted }
+}
+
 /**
  * Price an elapsed-time session (a walk-in's open tab, or any start→end
  * window on an hourly resource) into a single `kind: 'booking'` BillLine.
@@ -153,40 +221,9 @@ export function priceElapsedTime(
    *  resource, i.e. every call site that predates this parameter. */
   headCount: number = 1,
 ): BillLine {
-  const startMs = start.getTime()
-  const billableEndMs = billableEndTime(start, end).getTime()
+  const billableEnd = billableEndTime(start, end)
+  const { total } = priceTimeRangeSegments(start, billableEnd, rate, happyHours, tenantTimezone)
 
-  // Segment boundaries: the window's own edges, plus every happy-hour rule
-  // edge that falls strictly inside it — the only instants the effective
-  // rate can change.
-  const boundaries = new Set<number>([startMs, billableEndMs])
-  const lastDate = todayInZone(tenantTimezone, new Date(billableEndMs))
-  // Start a day BEFORE the session: an overnight window anchored on the prior
-  // day can end inside the session (e.g. its 01:00 tail). Edges outside
-  // [startMs, billableEndMs) are filtered out below, so the extra day is safe.
-  for (let d = addDays(todayInZone(tenantTimezone, start), -1); ; d = addDays(d, 1)) {
-    for (const rule of happyHours) {
-      const w = ruleWindowOnDate(rule, d, tenantTimezone)
-      if (!w) continue
-      if (w.startsAt > startMs && w.startsAt < billableEndMs) boundaries.add(w.startsAt)
-      if (w.endsAt > startMs && w.endsAt < billableEndMs) boundaries.add(w.endsAt)
-    }
-    if (d === lastDate) break
-  }
-  const sorted = [...boundaries].sort((a, b) => a - b)
-
-  let total = 0
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const segStartMs = sorted[i]
-    const segEndMs = sorted[i + 1]
-    const minutes = (segEndMs - segStartMs) / MINUTE_MS
-    if (minutes <= 0) continue
-    const active = ruleActiveAt(segStartMs, happyHours, rate, tenantTimezone)
-    const effectiveRate = active ? Math.max(0, rate - discountAmount(rate, active)) : rate
-    total += (minutes / 60) * effectiveRate
-  }
-
-  const billableEnd = new Date(billableEndMs)
   return {
     description: `${formatTimeInZone(start, tenantTimezone)}–${formatTimeInZone(billableEnd, tenantTimezone)}`,
     kind: 'booking',
