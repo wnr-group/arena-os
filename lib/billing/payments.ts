@@ -460,13 +460,14 @@ export async function recordVerifiedGatewayPayment(
     gatewayOrderId: string
     gatewayPaymentId: string
   },
-): Promise<{ paymentId: string; settled: boolean } | null> {
+): Promise<{ paymentId: string; settled: boolean; bookingId: string | null } | null> {
   const [invoice] = await tx
     .select({
       id: invoices.id,
       status: invoices.status,
       total: invoices.total,
       branchId: invoices.branchId,
+      bookingId: invoices.bookingId,
     })
     .from(invoices)
     .where(and(eq(invoices.id, params.invoiceId), eq(invoices.tenantId, params.tenantId)))
@@ -510,5 +511,5 @@ export async function recordVerifiedGatewayPayment(
     await settleInvoicePaid(tx, params.tenantId, invoice.id)
   }
 
-  return { paymentId: payment.id, settled }
+  return { paymentId: payment.id, settled, bookingId: invoice.bookingId }
 }

@@ -804,14 +804,12 @@ export function BookingsView({
                   loading={actingAction === 'check_in'}
                 />
               )}
-              {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                <ActBtn
-                  label="Complete"
-                  onClick={() => act('complete', () => setBookingStatus(selected.bookingId, 'completed'))}
-                  pending={pending}
-                  loading={actingAction === 'complete'}
-                />
-              )}
+              {/* No standalone "Complete" here: a booking now completes only as
+                  part of settling its bill (recordPayment auto-completes once
+                  every check is fully paid — lib/booking/service.ts
+                  completeBookingIfFullySettled). Completing an unbilled booking
+                  by hand used to strand it (unbillable afterward), so that path
+                  is gone; staff go to "Bill" and collect payment instead. */}
               {selected.status === 'confirmed' && (
                 <ActBtn
                   label="No-show"

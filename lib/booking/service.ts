@@ -766,6 +766,54 @@ export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId
   }
 }
 
+/**
+ * Complete a booking IFF its bill is now fully settled across every live check
+ * — the payment-driven replacement for the manual "Complete" button, which
+ * could strand an unbilled booking (setBookingStatus's completed gate passes
+ * vacuously when no invoice exists, after which prepareBookingBill refuses the
+ * now-'completed' booking). Called from every payment settle seam
+ * (lib/actions/payments.ts) and right after a zero-balance bill is raised
+ * (lib/actions/billing.ts), always inside that same transaction, so clearing
+ * the last balance and closing the booking commit together or not at all.
+ *
+ * Returns false and writes nothing when: the booking was never billed, ANY
+ * live check still owes (so a partial payment leaves it open and a split bill
+ * completes only on the LAST check paid), or the booking is not in an active
+ * confirmed/checked_in status (so an already-completed/cancelled/no-show
+ * booking is never touched). Returns true when it actually flipped the row.
+ */
+export async function completeBookingIfFullySettled(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<boolean> {
+  const billing = await findLiveBilling(tx, tenantId, bookingId)
+  if (!billing) return false
+  const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
+  for (const invoiceId of invoiceIds) {
+    const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
+    // Same fail-closed reasoning as assertBookingFullyPaid above: findLiveBilling
+    // just proved this invoice exists in this transaction, so a null settlement
+    // is an unexpected state, not a settled one.
+    if (!settlement) throw new Error(`Settlement missing for invoice ${invoiceId}.`)
+    if (settlement.payable) return false
+  }
+  const done = await tx
+    .update(bookings)
+    .set({ status: 'completed', completedAt: new Date() })
+    .where(
+      and(
+        eq(bookings.id, bookingId),
+        eq(bookings.tenantId, tenantId),
+        // Only from an active status — never re-complete or resurrect a
+        // cancelled/no-show booking that somehow shares a settled invoice.
+        inArray(bookings.status, ['confirmed', 'checked_in']),
+      ),
+    )
+    .returning({ id: bookings.id })
+  return done.length > 0
+}
+
 export type TransferTableInput = { bookingId: string; targetResourceId: string }
 
 /** Move a table session to a different table. Its orders "come with it" for

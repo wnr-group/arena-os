@@ -9,7 +9,7 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill, canBillBooking, isManager, type MemberRole } from '@/lib/auth/roles'
 import { previewPromoForBooking } from '@/lib/billing/data'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
-import { BookingError, loadBookingChannel, updateBookingHeadCountCore } from '@/lib/booking/service'
+import { BookingError, loadBookingChannel, updateBookingHeadCountCore, completeBookingIfFullySettled } from '@/lib/booking/service'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
 import { computeServiceCharge, priceBill } from '@/lib/billing/pricing'
 import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
@@ -168,7 +168,13 @@ export async function createInvoiceForBooking(
       if (channel !== null && !canBillBooking(ctx.role, channel)) {
         throw new AuthError('You do not have permission to raise a bill.')
       }
-      return issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { ...v, comp })
+      const inv = await issueInvoiceForBooking(tx, { id: ctx.tenant.id, timezone: ctx.tenant.timezone }, { ...v, comp })
+      // A zero-balance bill (₹0 total, or fully comped) has nothing to collect,
+      // so it is settled the instant it is raised — complete the booking now,
+      // the same payment-driven path a paid bill takes on its final tender. A
+      // bill that still owes is a no-op here and completes later via recordPayment.
+      await completeBookingIfFullySettled(tx, ctx.tenant.id, v.bookingId)
+      return inv
     })
 
     revalidatePath('/bookings')

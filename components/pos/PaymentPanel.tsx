@@ -79,8 +79,19 @@ export function PaymentPanel({
   isRestaurant,
   timeZone,
   currency,
+  completesBooking = false,
 }: {
   settlement: SettlementView
+  /**
+   * True when fully settling THIS invoice would complete the whole booking —
+   * i.e. a single (non-split) bill, or the last still-owing check of a split.
+   * Resolved by BillScreen (which alone knows every sibling check). When a
+   * tender clears the full balance and this is true, the button says so, and
+   * the server completes the booking in the same transaction as the payment
+   * (lib/actions/payments.ts → completeBookingIfFullySettled). Display only —
+   * the server re-checks every check before it flips the booking.
+   */
+  completesBooking?: boolean
   /**
    * The customer's ledger balance and what may be spent here, resolved
    * server-side. Null when the bill has no customer, in which case the
@@ -131,6 +142,12 @@ export function PaymentPanel({
   const money = (n: number | string) => formatMoney(n, currency)
   const amount = Number(amountText)
   const settled = paise(settlement.balance) <= 0 || settlement.status === 'paid'
+
+  // This tender clears the FULL remaining balance of this invoice, and settling
+  // this invoice is what completes the booking (single bill, or the last owing
+  // split check) — so the button promises the completion the server will do.
+  const willCompleteBooking =
+    completesBooking && !settled && Number.isFinite(amount) && paise(amount) === paise(settlement.balance)
 
   // Wallet is selectable only when there is a customer with money to spend.
   const walletBalance = wallet?.balance ?? 0
@@ -446,7 +463,11 @@ export function PaymentPanel({
             className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending && <Loader2 size={14} className="animate-spin" />}
-            {pending ? 'Recording…' : 'Record payment'}
+            {pending
+              ? 'Recording…'
+              : willCompleteBooking
+                ? 'Collect payment & complete booking'
+                : 'Record payment'}
           </button>
           <p className="text-center text-xs text-muted-foreground">
             The balance is re-checked on the server before the payment is taken.
