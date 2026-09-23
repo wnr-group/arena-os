@@ -12,6 +12,7 @@ import type * as schema from '@/db/schema'
 import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates } from '@/db/schema'
 import { durationHours } from './availability'
 import { round2 } from '@/lib/billing/pricing'
+import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
 import { todayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
@@ -19,6 +20,7 @@ import { findLiveBilling } from '@/lib/billing/invoice'
 import { getInvoiceSettlement } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
+import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -60,6 +62,10 @@ export type PricedBookingSlot = {
   headCount: number | null
   /** Snapshot of the resource type's pricing_mode at booking time. */
   pricingMode: string
+  /** M23 #1: true when at least one segment of this slot's window billed at
+   *  a happy-hour-discounted rate — see db/schema.ts's column comment and
+   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. */
+  happyHourApplied: boolean
 }
 
 /**
@@ -80,6 +86,19 @@ export type PricedBookingSlot = {
  * is resources.hourlyRateOverride ?? resourceTypes.hourlyRate, unchanged.
  * weekendRate = null means no weekend pricing configured, so every day
  * prices identically to today. See lib/booking/rate.ts:resolveDayRate.
+ *
+ * M23 #1: once the day rate is resolved, the slot's own [startsAt, endsAt)
+ * is split at every active happy-hour rule boundary inside it and each
+ * segment is discounted — priceTimeRangeSegments (lib/billing/elapsed-time.ts),
+ * the same per-segment engine priceElapsedTime already uses for a walk-in's
+ * elapsed time, just against the slot's own EXACT, already-known window
+ * (no 30-min floor or 15-min round-up — a reserved slot's end is a firm
+ * commitment, not an elapsed measurement). Composition order is fixed:
+ * resolve the day rate -> happy-hour discount per segment -> × headCount —
+ * never the other order, so a per-head happy-hour rule discounts the
+ * PER-PLAYER rate, not some pre-multiplied total. When no rule ever fires
+ * for a slot, this reproduces flat rate × hours exactly, so an untouched
+ * booking is byte-identical to before this ticket.
  */
 export async function priceBookingSlots(
   tx: Db,
@@ -135,15 +154,33 @@ export async function priceBookingSlots(
   // slots in one booking can never disagree on what counts as a weekend.
   const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
 
+  // M23 #1: the tenant's active happy-hour rules, loaded once for the whole
+  // call — every slot below is matched against this SAME set, same "load
+  // once, apply per slot" discipline as weekendDays above.
+  const happyHourRules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
   const slots = input.slots.map((s) => {
     const r = byId.get(s.resourceId)!
     const startsAt = new Date(s.startsAt)
+    const endsAt = new Date(s.endsAt)
     const weekdayRate = Number(r.rateOverride ?? r.typeRate)
     const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
     const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
-    const hours = durationHours(startsAt, new Date(s.endsAt))
+    const hours = durationHours(startsAt, endsAt)
+
+    // M23 #1: split the slot at every happy-hour rule boundary inside it and
+    // discount each segment — see this function's doc comment for the
+    // composition order. `rawTotal` is unrounded and, for a per_head slot,
+    // is still the PER-PLAYER figure — headCount multiplies below.
+    const { total: rawTotal, discounted } = priceTimeRangeSegments(
+      startsAt,
+      endsAt,
+      rate,
+      happyHourRules,
+      ctx.timezone,
+    )
 
     let headCount: number | null = null
     let total: number
@@ -158,23 +195,32 @@ export async function priceBookingSlots(
         )
       }
       headCount = requested
-      total = headCount * rate * hours
+      total = headCount * rawTotal
     } else {
-      total = rate * hours
+      total = rawTotal
     }
     subtotal += total
+
+    // The blended (happy-hour-net) rate this slot billed at, per hour (per
+    // player, for per_head) — reconstructs to `rate` exactly when no rule
+    // fired (discounted === false), so an untouched booking's rate_applied
+    // is byte-identical to before this ticket. Display-only when discounted:
+    // loadBookingLines (lib/billing/invoice.ts) bills a flagged slot off
+    // slot_total directly, never by reconstructing hours × this rate.
+    const blendedRate = rawTotal / hours
 
     return {
       resourceId: s.resourceId,
       startsAt,
-      endsAt: new Date(s.endsAt),
-      rateApplied: rate.toFixed(2),
+      endsAt,
+      rateApplied: blendedRate.toFixed(2),
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
       taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
       headCount,
       pricingMode: r.pricingMode,
+      happyHourApplied: discounted,
     }
   })
 

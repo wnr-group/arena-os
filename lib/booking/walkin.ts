@@ -30,7 +30,7 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, taxRates, happyHours } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, taxRates } from '@/db/schema'
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
@@ -38,7 +38,7 @@ import { resolveDayRate } from './rate'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
-import type { HappyHourRule } from '@/lib/happy-hours/apply'
+import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 
@@ -602,24 +602,6 @@ function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefin
     )
   }
   return headCount
-}
-
-/** Tenant's active happy-hour rules, in the shape priceElapsedTime expects —
- *  same select shape lib/orders/service.ts's food pricing already uses. */
-async function loadActiveHappyHourRules(tx: Db, tenantId: string): Promise<HappyHourRule[]> {
-  return tx
-    .select({
-      id: happyHours.id,
-      name: happyHours.name,
-      daysOfWeek: happyHours.daysOfWeek,
-      startTime: happyHours.startTime,
-      endTime: happyHours.endTime,
-      discountType: happyHours.discountType,
-      discountValue: happyHours.discountValue,
-      isActive: happyHours.isActive,
-    })
-    .from(happyHours)
-    .where(and(eq(happyHours.tenantId, tenantId), eq(happyHours.isActive, true)))
 }
 
 /**
