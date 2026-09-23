@@ -363,8 +363,16 @@ async function testServiceChargeComposition() {
     `insert into tax_rates (tenant_id,name,percent,applies_to,is_active) values ($1,'GST 18%','18.00','resources',true)`,
     [tenantId],
   )
+  // appliesTo='food', deliberately NOT 'resources' or 'both': the service
+  // charge tax rate is resolved by its exact FK id (loadServiceChargeConfig
+  // joins on serviceChargeTaxRateId directly, ignoring appliesTo), but a
+  // 'both'/'resources' row here would ALSO count as a second eligible
+  // 'resources'-scope rate for resolveScopeDefaultTaxPercent — making the
+  // GST 18% row above ambiguous (2 eligible rows -> null -> silently falls
+  // back to 0% on the booking line). Keeping it food-scoped avoids that
+  // collision while still being independently referenceable by id.
   const scTax = await ownerPool.query<{ id: string }>(
-    `insert into tax_rates (tenant_id,name,percent,applies_to,is_active) values ($1,'GST 5%','5.00','both',true) returning id`,
+    `insert into tax_rates (tenant_id,name,percent,applies_to,is_active) values ($1,'GST 5%','5.00','food',true) returning id`,
     [tenantId],
   )
   await ownerPool.query(

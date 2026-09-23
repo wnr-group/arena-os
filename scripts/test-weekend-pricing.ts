@@ -376,6 +376,54 @@ async function testReservedBookings() {
     check('T11 priceBookingSlots called directly resolves the same weekend rate: subtotal = 150', priced.subtotal === 150)
   }
 
+  // ── i2. M22 follow-up (adversarial review of PR #29, item 2): a multi-slot
+  // booking is only ever legitimate across DIFFERENT resources in the same
+  // window — priceBookingSlots must refuse the same resource split into two
+  // time-touching/overlapping slots, since resolving each by its OWN day
+  // would silently misprice a session that crosses midnight (Fri slot ->
+  // weekday rate, Sat slot -> weekend rate) instead of billing the whole
+  // session at its start-day rate. No current caller ever does this — this
+  // guards against a future one doing it by accident.
+  {
+    const differentResources = await withUser(userId, (tx) =>
+      priceBookingSlots(tx, { tenantId, timezone: TZ }, {
+        branchId,
+        slots: [
+          { resourceId: ps5A.rows[0].id, startsAt: sat('10:00').toISOString(), endsAt: sat('11:00').toISOString() },
+          { resourceId: poolA.rows[0].id, startsAt: sat('10:00').toISOString(), endsAt: sat('11:00').toISOString() },
+        ],
+      }),
+    )
+    check(
+      'T20 the one legitimate multi-slot shape — two DIFFERENT resources in the same window — still prices fine: subtotal = 270 (150 weekend PS5 + 120 Pool)',
+      differentResources.subtotal === 270,
+    )
+
+    async function expectRejected(slots: { resourceId: string; startsAt: string; endsAt: string }[]) {
+      try {
+        await withUser(userId, (tx) => priceBookingSlots(tx, { tenantId, timezone: TZ }, { branchId, slots }))
+        return false
+      } catch (e) {
+        return e instanceof BookingError && /touching or overlapping/.test(e.message)
+      }
+    }
+
+    const touchingAtMidnight = await expectRejected([
+      { resourceId: ps5A.rows[0].id, startsAt: fri('23:00').toISOString(), endsAt: sat('00:00').toISOString() },
+      { resourceId: ps5A.rows[0].id, startsAt: sat('00:00').toISOString(), endsAt: sat('02:00').toISOString() },
+    ])
+    check(
+      'T20 the SAME resource split into two slots touching exactly at the Fri/Sat midnight boundary is REFUSED, not silently split-priced',
+      touchingAtMidnight,
+    )
+
+    const overlapping = await expectRejected([
+      { resourceId: ps5A.rows[0].id, startsAt: sat('10:00').toISOString(), endsAt: sat('12:00').toISOString() },
+      { resourceId: ps5A.rows[0].id, startsAt: sat('11:00').toISOString(), endsAt: sat('13:00').toISOString() },
+    ])
+    check('T20 …and the same resource with two OVERLAPPING slots is refused too', overlapping)
+  }
+
   // ── j. snapshot freeze: a later resource-type rate change can't reprice ──
   {
     const r = await bookAndLoad(ps5A.rows[0].id, sat('20:00'), sat('22:00'))

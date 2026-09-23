@@ -87,6 +87,23 @@ export type PricedBookingSlot = {
  * weekendRate = null means no weekend pricing configured, so every day
  * prices identically to today. See lib/booking/rate.ts:resolveDayRate.
  *
+ * M22 follow-up (adversarial review of PR #29, item 2): resolving by "the
+ * slot's own startsAt day" is only correct because a single continuous
+ * session is always ONE slot — a Fri 23:00 -> Sat 02:00 booking bills the
+ * Friday (start-day) rate across the whole window, as the spec requires,
+ * BECAUSE there is only one row to resolve. `input.slots` is an array
+ * (today used solely for multiple RESOURCES in the same time window, e.g. two
+ * PS5s booked together — every existing caller, FutureWizard.tsx and
+ * public-booking.ts alike, emits exactly one slot per resource for a
+ * continuous session). If a future caller ever split ONE session across
+ * midnight into two time-contiguous slots on the SAME resource, each half
+ * would silently resolve against its OWN day's rate instead of the whole
+ * session's start-day rate — a real money bug, not just a display one. The
+ * validation loop below refuses that shape outright (same-resource slots
+ * that touch or overlap) rather than let it silently misprice, since
+ * nothing legitimate ever needs two slots for one resource that touch: a
+ * true continuous session is always exactly one slot with the full range.
+ *
  * M23 #1: once the day rate is resolved, the slot's own [startsAt, endsAt)
  * is split at every active happy-hour rule boundary inside it and each
  * segment is discounted — priceTimeRangeSegments (lib/billing/elapsed-time.ts),
@@ -108,6 +125,34 @@ export async function priceBookingSlots(
   for (const s of input.slots) {
     if (new Date(s.endsAt) <= new Date(s.startsAt)) {
       throw new BookingError('Each slot must end after it starts.')
+    }
+  }
+
+  // M22 follow-up: refuse two slots on the SAME resource whose windows touch
+  // or overlap — see this function's own doc comment for why. A legitimate
+  // multi-slot booking is always different RESOURCES in the same window,
+  // never the same resource split across two time ranges, so this can never
+  // reject a real booking; it only catches a caller that (accidentally)
+  // split one continuous session in two, which each-slot-resolves-by-its-
+  // own-day-rate would otherwise misprice across a midnight boundary without
+  // any error at all.
+  {
+    const byResource = new Map<string, CreateBookingSlotInput[]>()
+    for (const s of input.slots) {
+      const list = byResource.get(s.resourceId) ?? []
+      list.push(s)
+      byResource.set(s.resourceId, list)
+    }
+    for (const list of byResource.values()) {
+      if (list.length < 2) continue
+      const sorted = [...list].sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime())
+      for (let i = 1; i < sorted.length; i++) {
+        if (new Date(sorted[i].startsAt).getTime() <= new Date(sorted[i - 1].endsAt).getTime()) {
+          throw new BookingError(
+            'A resource cannot have two touching or overlapping slots in the same booking — book it as one continuous slot instead.',
+          )
+        }
+      }
     }
   }
 
