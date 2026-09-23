@@ -25,6 +25,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail } from '@/lib/booking/public-availability'
 import {
   getPublicAvailability,
+  getPublicBookingQuote,
   createPublicBooking,
   createBookingPaymentIntent,
   lookupPublicCustomerByPhone,
@@ -131,10 +132,45 @@ export function ResourceTypeBookingPage({
   const isPerHead = resourceType.pricingMode === 'per_head'
   const headCount = isPerHead ? Math.max(1, resourceType.minPlayers) : 1
   const priceFor = (minutes: number) => (hourlyRate * minutes * headCount) / 60
-  const total = priceFor(duration)
   const endsAt = selectedSlot
     ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString()
     : null
+
+  // Happy hours #3: once a specific start time (and its auto-assigned unit)
+  // is picked, the flat day-level rate above can no longer represent the
+  // true price — happy hours are time-of-day, not date — so re-quote the
+  // exact [startsAt, endsAt) window server-side (the same priceBookingSlots
+  // call createPublicBooking's pay-now deposit and createBookingCore itself
+  // make) and prefer that. Before a slot is picked (the per-duration list
+  // above), there's no specific time yet, so it stays the flat estimate —
+  // it can never be happy-hour-accurate regardless.
+  const [quote, setQuote] = useState<{ total: number } | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const total = selectedSlot && quote ? quote.total : priceFor(duration)
+
+  useEffect(() => {
+    if (!selectedSlot || !endsAt) {
+      setQuote(null)
+      setQuoteLoading(false)
+      return
+    }
+    let cancelled = false
+    setQuoteLoading(true)
+    getPublicBookingQuote({ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt }).then((r) => {
+      if (cancelled) return
+      setQuoteLoading(false)
+      if (r.error || r.total === undefined) {
+        setQuote(null)
+        return
+      }
+      setQuote({ total: r.total })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSlot?.startsAt, selectedSlot?.resourceId, endsAt])
+
   // Slots already in the past (only relevant for today) are dropped rather
   // than shown disabled — there's nothing useful for the customer to do with
   // a start time that's already gone.
@@ -494,6 +530,7 @@ export function ResourceTypeBookingPage({
               players={players}
               setPlayers={setPlayers}
               total={total}
+              totalLoading={quoteLoading}
               hourlyRate={hourlyRate}
               onContinue={() => setStep('details')}
             />
@@ -601,7 +638,10 @@ export function ResourceTypeBookingPage({
                 {isPerHead && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
                   <span>Total</span>
-                  <span className="tabular-nums text-primary">{formatMoney(total, tenant.currency)}</span>
+                  <span className="flex items-center gap-1.5 tabular-nums text-primary">
+                    {quoteLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
+                    {formatMoney(total, tenant.currency)}
+                  </span>
                 </div>
               </div>
 
@@ -639,6 +679,7 @@ export function ResourceTypeBookingPage({
                 onClick={confirm}
                 disabled={
                   pending ||
+                  quoteLoading ||
                   !phoneLookup.checked ||
                   (!phoneLookup.found && !name.trim())
                 }
@@ -698,6 +739,7 @@ function SummaryPanel({
   players,
   setPlayers,
   total,
+  totalLoading,
   hourlyRate,
   onContinue,
 }: {
@@ -711,6 +753,7 @@ function SummaryPanel({
   players: number
   setPlayers: (n: number) => void
   total: number
+  totalLoading?: boolean
   hourlyRate: number
   onContinue: () => void
 }) {
@@ -781,7 +824,10 @@ function SummaryPanel({
         </div>
         <div className="flex items-center justify-between text-base font-extrabold text-foreground">
           <span>Total payable</span>
-          <span className="tabular-nums text-primary">{formatMoney(total, currency)}</span>
+          <span className="flex items-center gap-1.5 tabular-nums text-primary">
+            {totalLoading && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
+            {formatMoney(total, currency)}
+          </span>
         </div>
       </div>
 
