@@ -146,7 +146,17 @@ export function ResourceTypeBookingPage({
   // it can never be happy-hour-accurate regardless.
   const [quote, setQuote] = useState<{ total: number } | null>(null)
   const [quoteLoading, setQuoteLoading] = useState(false)
-  const total = selectedSlot && quote ? quote.total : priceFor(duration)
+  // M22 follow-up (cosmetic, no money impact): once a slot is picked, ONLY
+  // the real per-slot quote may stand in for the total — never the flat,
+  // date-level estimate above (see public-availability.ts's doc comment on
+  // why that figure can disagree with the real charge for a tenant whose
+  // working hours cross midnight). null means "not yet known" (still
+  // loading, or the request failed) — Continue/Confirm are gated on this
+  // being non-null (see canContinue/the Confirm button below), so nothing
+  // can ever be confirmed against a stale or wrong figure; the UI shows a
+  // loading/error state in its place instead of guessing.
+  const total = selectedSlot ? (quote?.total ?? null) : priceFor(duration)
+  const quoteErrored = selectedSlot !== null && !quoteLoading && quote === null
 
   useEffect(() => {
     if (!selectedSlot || !endsAt) {
@@ -293,7 +303,7 @@ export function ResourceTypeBookingPage({
   }
 
   function confirm() {
-    if (!selectedSlot || !endsAt) return
+    if (!selectedSlot || !endsAt || total === null) return
     setConfirmError(null)
     startTransition(async () => {
       const r = await createPublicBooking({
@@ -640,12 +650,18 @@ export function ResourceTypeBookingPage({
                   <span>Total</span>
                   <span className="flex items-center gap-1.5 tabular-nums text-primary">
                     {quoteLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
-                    {formatMoney(total, tenant.currency)}
+                    {total === null ? (quoteLoading ? '—' : 'Unavailable') : formatMoney(total, tenant.currency)}
                   </span>
                 </div>
               </div>
 
-              {razorpayConfigured && total > 0 && (
+              {quoteErrored && (
+                <p className="mt-3 text-sm text-destructive">
+                  Could not price this booking — check your connection and try again.
+                </p>
+              )}
+
+              {razorpayConfigured && (total ?? 0) > 0 && (
                 <div className="mt-6">
                   <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
                   <div className="grid grid-cols-2 gap-2">
@@ -680,6 +696,7 @@ export function ResourceTypeBookingPage({
                 disabled={
                   pending ||
                   quoteLoading ||
+                  total === null ||
                   !phoneLookup.checked ||
                   (!phoneLookup.found && !name.trim())
                 }
@@ -752,12 +769,16 @@ function SummaryPanel({
   endsAt: string | null
   players: number
   setPlayers: (n: number) => void
-  total: number
+  total: number | null
   totalLoading?: boolean
   hourlyRate: number
   onContinue: () => void
 }) {
-  const canContinue = Boolean(startsAt)
+  // M22 follow-up: a slot alone isn't enough — the real per-slot quote must
+  // have landed too, so "Continue" can never carry a stale/wrong total
+  // through to the details step. See the `total` computation's own comment
+  // above for why this is `null` while loading or on a failed quote.
+  const canContinue = Boolean(startsAt) && total !== null
 
   return (
     <aside className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:sticky lg:top-20">
@@ -826,14 +847,16 @@ function SummaryPanel({
           <span>Total payable</span>
           <span className="flex items-center gap-1.5 tabular-nums text-primary">
             {totalLoading && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
-            {formatMoney(total, currency)}
+            {total === null ? (totalLoading ? '—' : 'Unavailable') : formatMoney(total, currency)}
           </span>
         </div>
       </div>
 
       {!canContinue && (
         <p className="mt-4 rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-          Select a date, duration and start time to continue.
+          {startsAt && total === null && !totalLoading
+            ? 'Could not price this booking — check your connection and try again.'
+            : 'Select a date, duration and start time to continue.'}
         </p>
       )}
 

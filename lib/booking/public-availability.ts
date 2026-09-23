@@ -210,6 +210,26 @@ export async function getPublicAvailableStarts(
     // the quote here can never drift from what createPublicBooking actually
     // charges. Anchored at noon on `date`, matching weekdayInZone's own
     // DST-edge-avoidance convention.
+    //
+    // M22 follow-up (cosmetic, no money impact — adversarial review of PR #29):
+    // this is a per-DATE estimate, shown before any specific start time is
+    // chosen, so it necessarily approximates "what day is this" with one
+    // instant. That's exact for every ordinary tenant (working hours within a
+    // single calendar day). If a tenant's working hours ever cross midnight,
+    // a customer browsing "Friday" could pick a candidate start time that
+    // actually falls on Saturday, and this noon-Friday-anchored figure could
+    // then disagree with the real per-slot rate for that pick. That's fine —
+    // it's exactly what this estimate is, an approximation before a slot is
+    // known — but it means callers must NEVER treat this `rate` as the final
+    // confirmed price once a specific slot IS selected. The real per-slot
+    // price (which resolves by the SLOT's own actual start, never this
+    // date-level anchor) is lib/actions/public-booking.ts's
+    // getPublicBookingQuote (Happy hours #3) — see
+    // components/public-booking/ResourceBookingPage.tsx /
+    // ResourceTypeBookingPage.tsx, which fall back to THIS rate only for the
+    // pre-selection duration list, and never once a slot is chosen (they show
+    // a loading/error state instead of this figure rather than risk it being
+    // stale for the midnight-crossing edge case).
     const weekendDays = await loadWeekendDays(tx, tenantId)
     const anchor = zonedTimeToUtc(date, '12:00', timeZone)
     const weekdayRate = Number(res.weekdayRate ?? res.typeRate)
@@ -459,6 +479,13 @@ export async function getPublicAvailableStartsForType(
     // type, but the price it quotes has always been the TYPE's own rate (see
     // getPublicResourceType) rather than any one unit's override — resolving
     // weekday/weekend the same way, at the type level, keeps that unchanged.
+    //
+    // M22 follow-up: same noon-of-`date` anchor, same known approximation
+    // for a tenant whose working hours cross midnight — see
+    // getPublicAvailableStarts' own doc comment above for the full reasoning
+    // and why callers must never treat this as the final price once a slot
+    // is chosen (getPublicBookingQuote resolves that by the slot's own
+    // actual start).
     const weekendDays = await loadWeekendDays(tx, tenantId)
     const anchor = zonedTimeToUtc(date, '12:00', timeZone)
     const weekdayRate = Number(resourceRows[0].typeRate)
