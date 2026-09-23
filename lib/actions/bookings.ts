@@ -9,6 +9,7 @@ import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
+  priceBookingSlots,
   seatTableSessionCore,
   requestBillCore,
   transferTableCore,
@@ -98,6 +99,47 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
 
     revalidatePath('/bookings')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const quoteBookingInput = z.object({
+  branchId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  // M21 per-head #4: required only when the resource turns out to be
+  // per_head — priceBookingSlots itself validates that, same as createBooking.
+  headCount: z.coerce.number().int().min(1).optional(),
+})
+
+/**
+ * Happy hours #2: read-only price quote for the staff "New Booking" wizard's
+ * (FutureWizard.tsx) live estimate — the exact same priceBookingSlots call
+ * createBooking itself makes (day rate -> happy-hour discount per segment ->
+ * x players, see lib/booking/service.ts), so what the wizard shows before
+ * booking can never drift from what createBooking actually charges. Writes
+ * nothing, same "preview, don't commit" shape as previewWalkinCheckout below.
+ *
+ * No extra role/industry gate beyond requireContext() — same as createBooking
+ * itself, which this merely previews.
+ */
+export async function quoteBooking(
+  input: z.input<typeof quoteBookingInput>,
+): Promise<{ error?: string; total?: number }> {
+  try {
+    const ctx = await requireContext()
+    const v = quoteBookingInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      priceBookingSlots(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, {
+        branchId: v.branchId,
+        slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }],
+        headCount: v.headCount,
+      }),
+    )
+    return { total: result.subtotal }
   } catch (e) {
     return fail(e)
   }
