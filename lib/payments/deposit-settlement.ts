@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { paymentIntents, payments } from '@/db/schema'
 import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
+import { completeBookingIfFullySettled } from '@/lib/booking/service'
 import { round2 } from '@/lib/billing/pricing'
 
 /**
@@ -160,7 +161,7 @@ export async function applyPaidDepositsToInvoice(
 
     if (paise(deposit.amount) <= 0) continue
 
-    let recorded: { paymentId: string; settled: boolean } | null
+    let recorded: { paymentId: string; settled: boolean; bookingId: string | null } | null
     try {
       // The shared M1 path: locks the invoice, re-reads capturedTotal(), and
       // applies the same `alreadyPaid + amount <= total` rule in paise that a
@@ -182,6 +183,17 @@ export async function applyPaidDepositsToInvoice(
     }
 
     if (recorded) {
+      // A carried-over deposit that fully settles the booking's bill completes
+      // it, the same payment-driven path a cashier's final tender takes.
+      // Wrapped so an auto-complete hiccup never rolls back a deposit that was
+      // already carried onto the invoice (fail-open, like the money path here).
+      if (recorded.settled && recorded.bookingId) {
+        try {
+          await completeBookingIfFullySettled(tx, tenantId, recorded.bookingId)
+        } catch (e) {
+          console.error(`deposit carry-over: auto-complete failed for booking ${recorded.bookingId}`, e)
+        }
+      }
       result.applied.push({
         intentId: deposit.intentId,
         gatewayPaymentId: deposit.gatewayPaymentId,

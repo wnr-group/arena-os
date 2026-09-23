@@ -330,9 +330,10 @@ export async function previewWalkinCheckout(
  * comment for the full reasoning. A RESERVED booking on that same screen
  * still requires plain canBill, unchanged.
  *
- * The booking itself is NOT marked completed here — that stays gated on
- * assertBookingFullyPaid via the existing setBookingStatus, once the cashier
- * actually settles the invoice raised from the bill screen.
+ * The booking itself is NOT marked completed here — a walk-in (non-restaurant)
+ * now auto-completes when the invoice raised from the bill screen is fully
+ * settled (completeBookingIfFullySettled, via recordPayment), not by a separate
+ * manual step.
  */
 export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>): Promise<CheckoutWalkinResult> {
   try {

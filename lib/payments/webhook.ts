@@ -6,6 +6,7 @@ import type * as schema from '@/db/schema'
 import { bookings, invoices, orders, paymentIntents, tenants, webhookEvents } from '@/db/schema'
 import { issueInvoiceForOrder } from '@/lib/billing/invoice'
 import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
+import { completeBookingIfFullySettled } from '@/lib/booking/service'
 import { applyPaidDepositsToInvoice, backfillDepositOrderIds } from './deposit-settlement'
 import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
@@ -421,6 +422,20 @@ export async function applyVerifiedPaymentWebhook(
       throw new Error(
         `order_payment webhook: recordVerifiedGatewayPayment refused invoice ${issued.invoiceId} for intent ${intent.id}`,
       )
+    }
+
+    // A gateway payment that fully settles a booking's invoice completes the
+    // booking, same as a cashier's final tender does (lib/actions/payments.ts).
+    // Guarded on bookingId: a standalone online order invoice has none. Wrapped
+    // so a completion hiccup can never fail a webhook for money that ALREADY
+    // moved — the money-recording contract of this path is fail-open, and an
+    // un-completed booking is recoverable; a retried/failed webhook is not.
+    if (recorded.settled && recorded.bookingId) {
+      try {
+        await completeBookingIfFullySettled(tx, verifiedTenantId, recorded.bookingId)
+      } catch (e) {
+        console.error(`order_payment webhook: auto-complete failed for booking ${recorded.bookingId}`, e)
+      }
     }
 
     // Release the order: visible to /kitchen (acceptanceStatus='accepted')

@@ -10,6 +10,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { branches } from '@/db/schema'
 import { BillingError } from '@/lib/billing/invoice'
+import { completeBookingIfFullySettled } from '@/lib/booking/service'
 import {
   PaymentError,
   recordPaymentForInvoice,
@@ -55,6 +56,8 @@ type RecordPaymentResult = {
   paid?: number
   balance?: number
   settled?: boolean
+  /** True when this tender settled the whole booking and auto-completed it. */
+  bookingCompleted?: boolean
 }
 
 /** Same shape as lib/actions/billing.ts:fail() — only safe text reaches the till. */
@@ -83,20 +86,32 @@ export async function recordPayment(
     }
     const v = recordPaymentInputSchema.parse(input)
 
-    const result = await withUser(ctx.user.id, (tx) =>
-      recordPaymentForInvoice(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
-    )
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const r = await recordPaymentForInvoice(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v)
+      // Full settlement (of every split check) auto-completes the booking in
+      // this same transaction — the payment-driven replacement for the manual
+      // Complete button. A partial payment leaves bookingCompleted false.
+      const bookingCompleted =
+        r.settled && r.bookingId ? await completeBookingIfFullySettled(tx, ctx.tenant.id, r.bookingId) : false
+      return { ...r, bookingCompleted }
+    })
 
     // The POS screen is keyed by booking, so revalidate the invoice's own
     // booking page. bookingId is read server-side from the invoice, never sent.
     if (result.bookingId) revalidatePath(`/pos/${result.bookingId}`)
     revalidatePath('/bookings')
+    // A settling tender can complete the booking (or, for a restaurant, flip a
+    // table to "needs cleaning") — refresh the floor map and kitchen too, same
+    // as the old manual completion did.
+    revalidatePath('/floor')
+    revalidatePath('/kitchen')
 
     return {
       paymentId: result.paymentId,
       paid: result.paid,
       balance: result.balance,
       settled: result.settled,
+      bookingCompleted: result.bookingCompleted,
     }
   } catch (e) {
     return fail(e)
@@ -213,6 +228,8 @@ type WalletResult = {
   balance?: number
   invoiceNumber?: string
   settled?: boolean
+  /** True when this tender settled the whole booking and auto-completed it. */
+  bookingCompleted?: boolean
 }
 
 function failWallet(e: unknown, op: string): WalletResult {
@@ -289,17 +306,22 @@ export async function payInvoiceFromWallet(
     }
     const v = walletPaymentInputSchema.parse(input)
 
-    const result = await withUser(ctx.user.id, (tx) =>
-      recordWalletPaymentForInvoice(
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const r = await recordWalletPaymentForInvoice(
         tx,
         { tenantId: ctx.tenant.id, membershipId: ctx.membershipId },
         v,
-      ),
-    )
+      )
+      const bookingCompleted =
+        r.settled && r.bookingId ? await completeBookingIfFullySettled(tx, ctx.tenant.id, r.bookingId) : false
+      return { ...r, bookingCompleted }
+    })
 
     if (result.bookingId) revalidatePath(`/pos/${result.bookingId}`)
     revalidatePath('/bookings')
-    return { balance: result.balance, settled: result.settled }
+    revalidatePath('/floor')
+    revalidatePath('/kitchen')
+    return { balance: result.balance, settled: result.settled, bookingCompleted: result.bookingCompleted }
   } catch (e) {
     return failWallet(e, 'payment')
   }

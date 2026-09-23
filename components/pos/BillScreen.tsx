@@ -533,6 +533,9 @@ export function BillScreen({
                     isRestaurant={isRestaurant}
                     timeZone={timeZone}
                     currency={currency}
+                    // Settling THIS check completes the booking only when every
+                    // OTHER check is already paid — i.e. this is the last one owing.
+                    completesBooking={splitChecks.every((o) => o.invoiceId === c.invoiceId || !o.settlement.payable)}
                   />
                 </div>
               ))}
@@ -581,6 +584,8 @@ export function BillScreen({
               isRestaurant={isRestaurant}
               timeZone={timeZone}
               currency={currency}
+              // A single (non-split) bill: settling it completes the booking.
+              completesBooking
             />
           </div>
         ) : (

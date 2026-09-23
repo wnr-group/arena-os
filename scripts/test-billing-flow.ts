@@ -32,6 +32,8 @@ import {
   nextInvoiceNumber,
 } from '../lib/billing/invoice'
 import { voidInvoiceRecord } from '../lib/billing/refunds'
+import { recordPaymentForInvoice } from '../lib/billing/payments'
+import { completeBookingIfFullySettled } from '../lib/booking/service'
 import { canBill } from '../lib/auth/roles'
 import { todayInZone } from '../lib/booking/time'
 import { loadEnv } from './env'
@@ -874,6 +876,82 @@ async function main() {
     check('…and the demonstration left it open', unchanged.status === 'open')
 
     await intruder.end()
+  }
+
+  // ── auto-complete on full settlement (the payment-driven "Complete") ────────
+  {
+    console.log('\n── auto-complete on full payment ──')
+    const statusOf = async (bookingId: string) =>
+      (await ownerPool.query<{ status: string }>('select status from bookings where id=$1', [bookingId]))
+        .rows[0].status
+
+    // Exactly what the recordPayment action does: take the tender, then, on a
+    // settling one, run completeBookingIfFullySettled in the same transaction.
+    async function payAndMaybeComplete(invoiceId: string, amount: number) {
+      return withUser(A.userId, async (tx) => {
+        const r = await recordPaymentForInvoice(
+          tx,
+          { tenantId: A.tenantId, membershipId: A.membershipId },
+          { invoiceId, method: 'cash', amount },
+        )
+        const completed =
+          r.settled && r.bookingId ? await completeBookingIfFullySettled(tx, A.tenantId, r.bookingId) : false
+        return { ...r, completed }
+      })
+    }
+
+    // (1) a partial payment leaves the booking open
+    const b1 = await makeBooking(A, { status: 'checked_in' }) // ₹900 of charges
+    const inv1 = await bill(A.userId, A.tenantId, { bookingId: b1.bookingId })
+    check('T-AC1 booking billed', inv1.ok)
+    if (inv1.ok) {
+      const p1 = await payAndMaybeComplete(inv1.invoiceId, 400)
+      check('T-AC1 a partial payment does not settle the invoice', p1.settled === false)
+      check('T-AC1 …and the booking stays checked_in', (await statusOf(b1.bookingId)) === 'checked_in')
+
+      // (2) the payment that clears the balance auto-completes the booking
+      const p2 = await payAndMaybeComplete(inv1.invoiceId, 500)
+      check('T-AC2 the final payment settles the invoice', p2.settled === true)
+      check('T-AC2 …and auto-completes the booking', p2.completed === true)
+      check('T-AC2 …booking status is now completed', (await statusOf(b1.bookingId)) === 'completed')
+    }
+
+    // (3) a single full tender completes in one go
+    const b2 = await makeBooking(A, { status: 'checked_in' })
+    const inv2 = await bill(A.userId, A.tenantId, { bookingId: b2.bookingId })
+    if (inv2.ok) {
+      const p = await payAndMaybeComplete(inv2.invoiceId, 900)
+      check(
+        'T-AC3 one full tender settles and completes',
+        p.completed === true && (await statusOf(b2.bookingId)) === 'completed',
+      )
+    }
+
+    // (4) a non-active booking is never resurrected to completed
+    const b3 = await makeBooking(A, { status: 'checked_in' })
+    const inv3 = await bill(A.userId, A.tenantId, { bookingId: b3.bookingId })
+    if (inv3.ok) {
+      await ownerPool.query("update bookings set status='cancelled' where id=$1", [b3.bookingId])
+      const p = await payAndMaybeComplete(inv3.invoiceId, 900)
+      check(
+        'T-AC4 a cancelled booking is not flipped to completed by a payment',
+        p.completed === false && (await statusOf(b3.bookingId)) === 'cancelled',
+      )
+    }
+
+    // (5) a RESTAURANT tenant is excluded — full payment must NOT auto-complete,
+    // so its table keeps the paid → needs-cleaning → cleaned flow. (Kept last:
+    // it flips A's industry, and cleanup drops the tenant right after.)
+    await ownerPool.query("update tenants set industry='restaurant' where id=$1", [A.tenantId])
+    const b5 = await makeBooking(A, { status: 'checked_in' })
+    const inv5 = await bill(A.userId, A.tenantId, { bookingId: b5.bookingId })
+    if (inv5.ok) {
+      const p = await payAndMaybeComplete(inv5.invoiceId, 900)
+      check(
+        'T-AC5 a restaurant booking is NOT auto-completed on full payment',
+        p.completed === false && (await statusOf(b5.bookingId)) === 'checked_in',
+      )
+    }
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────
