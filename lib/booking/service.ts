@@ -469,6 +469,9 @@ export async function updateBookingHeadCountCore(
       startsAt: bookingSlots.startsAt,
       endsAt: bookingSlots.endsAt,
       slotTotal: bookingSlots.slotTotal,
+      headCount: bookingSlots.headCount,
+      // M23 follow-up — see the re-price loop below.
+      happyHourApplied: bookingSlots.happyHourApplied,
     })
     .from(bookingSlots)
     .where(
@@ -504,8 +507,24 @@ export async function updateBookingHeadCountCore(
   let newSubtotal = 0
   for (const s of slots) {
     if (s.pricingMode === 'per_head' && s.endsAt !== null) {
-      const hours = durationHours(new Date(s.startsAt), new Date(s.endsAt))
-      const slotTotal = round2(input.headCount * Number(s.rateApplied) * hours)
+      // M23 follow-up: rate_applied is a per-hour BLEND rounded to cents
+      // (priceBookingSlots) — for a happy-hour slot, flat headCount × rate ×
+      // hours can't reproduce the exact per-segment total
+      // priceTimeRangeSegments actually billed (same reason loadBookingLines
+      // bills a flagged slot off slot_total directly rather than
+      // reconstructing it — see happyHourApplied's doc comment in
+      // db/schema.ts). headCount is a plain multiplier applied AFTER
+      // segmenting (priceBookingSlots' own composition order), so scaling
+      // the already-segment-accurate stored total by the headCount ratio
+      // reproduces exactly what re-running priceTimeRangeSegments at the new
+      // headCount would, without needing the original (frozen, no-longer-
+      // reconstructible) pre-discount rate. An unflagged slot's flat
+      // reconstruction is exact either way, since rate_applied IS the plain
+      // rate there.
+      const oldHeadCount = s.headCount ?? 1
+      const slotTotal = s.happyHourApplied
+        ? round2((Number(s.slotTotal) / oldHeadCount) * input.headCount)
+        : round2(input.headCount * Number(s.rateApplied) * durationHours(new Date(s.startsAt), new Date(s.endsAt)))
       newSubtotal += slotTotal
       await tx
         .update(bookingSlots)

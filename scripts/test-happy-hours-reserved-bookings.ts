@@ -33,7 +33,7 @@ import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { createBookingCore, priceBookingSlots } from '../lib/booking/service'
+import { createBookingCore, priceBookingSlots, updateBookingHeadCountCore } from '../lib/booking/service'
 import { loadBookingLines } from '../lib/billing/invoice'
 import { priceBill, round2 } from '../lib/billing/pricing'
 import { priceElapsedTime, priceTimeRangeSegments } from '../lib/billing/elapsed-time'
@@ -333,6 +333,37 @@ async function testReservedBookingsHappyHours() {
       'T7 …reconciles to the paise with a discount on top: subtotal − discount + tax = total',
       round2(bill.subtotal - bill.discount + bill.taxTotal) === bill.total,
     )
+  }
+
+  // ── g2. editing head_count on a happy-hour-blended per-head slot must
+  // reprice off the exact stored segment total, not a flat reconstruction
+  // through rate_applied — rate_applied is a per-segment BLEND rounded to
+  // cents (see updateBookingHeadCountCore's doc comment), so hours × that
+  // rounded rate × a new head_count drifts from the true total. Same Sat
+  // 16:30–18:00 booking as T7 (rawTotal/player = 80 exactly), 3 → 5 players:
+  //   correct: 5 × 80 = 400.00
+  //   flat rate_applied (53.33, rounded from 53.333…) reconstruction:
+  //   5 × 53.33 × 1.5h = 399.98 — a cent short, and wrong.
+  {
+    await withUser(userId, (tx) =>
+      updateBookingHeadCountCore(tx, { tenantId }, { bookingId: perHeadBookingId, headCount: 5 }),
+    )
+    const { rows } = await ownerPool.query(
+      `select b.subtotal, b.total, s.slot_total, s.head_count as slot_head_count
+       from bookings b join booking_slots s on s.booking_id = b.id where b.id = $1`,
+      [perHeadBookingId],
+    )
+    const row = rows[0]
+    check(
+      'T7b editing 3→5 players on a happy-hour-blended slot: slot_total = 400.00 (segment-accurate, not 399.98)',
+      row.slot_total === '400.00',
+    )
+    check('T7b …bookings.subtotal/total refreshed to 400.00', row.subtotal === '400.00' && row.total === '400.00')
+    check('T7b …booking_slots.head_count snapshot = 5', row.slot_head_count === 5)
+
+    const lines = await withUser(userId, (tx) => loadBookingLines(tx, tenantId, perHeadBookingId, TZ))
+    const billed = round2(lines.reduce((s, l) => s + l.qty * l.unitPrice, 0))
+    check('T7b …and the billed line reconciles to 400.00', billed === 400)
   }
 
   // ── h. composition order, proven directly via priceBookingSlots: resolve
