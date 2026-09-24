@@ -612,15 +612,24 @@ type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'n
  * Server action: transition a booking's status, gating 'completed' on a
  * fully-paid bill, refusing 'no_show' for a walk-in (M21 #8 QA pass — see
  * below), and cancelling its open orders on 'cancelled'.
+ *
+ * `reason` is required for 'cancelled' — re-checked here, not just in the UI,
+ * since this action is the only path (staff or otherwise) that can write the
+ * status. Ignored for every other transition.
  */
-export async function setBookingStatus(id: string, status: BookingStatus): Promise<Result> {
+export async function setBookingStatus(id: string, status: BookingStatus, reason?: string): Promise<Result> {
   try {
     const ctx = await requireContext()
     const now = new Date()
     const set: Partial<typeof bookings.$inferInsert> = { status }
     if (status === 'checked_in') set.checkedInAt = now
     else if (status === 'completed') set.completedAt = now
-    else if (status === 'cancelled') set.cancelledAt = now
+    else if (status === 'cancelled') {
+      const trimmed = reason?.trim()
+      if (!trimmed) return { error: 'Please provide a reason for cancelling this booking.' }
+      set.cancelledAt = now
+      set.cancellationReason = trimmed
+    }
 
     await withUser(ctx.user.id, async (tx) => {
       if (status === 'completed') {
@@ -664,8 +673,8 @@ export async function setBookingStatus(id: string, status: BookingStatus): Promi
 }
 
 /** Server action: cancel a booking (thin wrapper over setBookingStatus). */
-export async function cancelBooking(id: string): Promise<Result> {
-  return setBookingStatus(id, 'cancelled')
+export async function cancelBooking(id: string, reason: string): Promise<Result> {
+  return setBookingStatus(id, 'cancelled', reason)
 }
 
 const CONFIRMATION_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i

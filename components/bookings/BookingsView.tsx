@@ -21,11 +21,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { DepositButton } from './DepositButton'
+import { CancelBookingDialog } from './CancelBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
+import { setBookingStatus } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -55,6 +55,11 @@ type Slot = {
   total: string
   /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
   deposit: string
+  /** False once the booking is cancelled/no-show (trg_bookings_sync_slots,
+   *  0003) — the resource is free again. The Timeline only draws active
+   *  slots; the Bookings table shows every status regardless. */
+  active: boolean
+  cancellationReason: string | null
 }
 export type OrderItemLine = {
   itemId: string
@@ -206,9 +211,9 @@ export function BookingsView({
   canToggle86: boolean
 }) {
   const router = useRouter()
-  const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
   const [selected, setSelected] = useState<Slot | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
@@ -349,24 +354,6 @@ export function BookingsView({
     return `/bookings/new?${params.toString()}`
   }
 
-  async function handleCancel(slot: Slot) {
-    await confirm({
-      title: `Cancel booking ${slot.bookingNumber}?`,
-      description: `This will cancel ${slot.customerName || 'this walk-in'}'s booking. This cannot be undone.`,
-      confirmText: 'Cancel booking',
-      cancelText: 'Keep booking',
-      onConfirm: async () => {
-        const r = await cancelBooking(slot.bookingId)
-        if (r.error) toast.error(r.error)
-        else {
-          setSelected(null)
-          router.refresh()
-          toast.success(`Booking ${slot.bookingNumber} cancelled.`)
-        }
-      },
-    })
-  }
-
   return (
     <div className="px-6 py-6">
       {/* header */}
@@ -469,7 +456,11 @@ export function BookingsView({
 
             {/* resource rows */}
             {resources.map((r) => {
-              const rowSlots = slots.filter((s) => s.resourceId === r.id)
+              // Cancelled/no-show slots are excluded here on purpose — the
+              // Timeline shows what is actually occupying each resource right
+              // now, and a cancelled booking has freed it. They still appear
+              // in the Bookings table below (bookingsList uses every slot).
+              const rowSlots = slots.filter((s) => s.resourceId === r.id && s.active)
               return (
                 <div key={r.id} className="flex items-stretch border-t">
                   <div className="flex w-36 shrink-0 items-center gap-2 py-3 pr-3">
@@ -641,6 +632,7 @@ export function BookingsView({
                       </td>
                       <td className="px-4 py-3">
                         <span
+                          title={b.status === 'cancelled' ? (b.representative.cancellationReason ?? undefined) : undefined}
                           className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${
                             STATUS_BADGE[b.status] ?? 'bg-muted text-muted-foreground'
                           }`}
@@ -677,7 +669,16 @@ export function BookingsView({
                           )
                         })()}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatMoney(b.total, currency)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {/* Once a bill exists, the INVOICE's total is the real
+                            figure — bookings.total stays '0.00' for a walk-in
+                            until checkout (startWalkinCore/checkoutWalkinCore,
+                            lib/booking/walkin.ts) prices the session, even
+                            though a food order against it may already be
+                            billed and owing. Showing 0 here next to "due" in
+                            the Payment column read as broken. */}
+                        {formatMoney(paymentStates[b.bookingId]?.total ?? Number(b.total), currency)}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex justify-end">
                           <button
@@ -819,10 +820,17 @@ export function BookingsView({
                   loading={actingAction === 'no_show'}
                 />
               )}
-              {selected.status !== 'completed' && (
-                <ActBtn label="Cancel" variant="danger" onClick={() => handleCancel(selected)} pending={pending} />
+              {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
+                <ActBtn label="Cancel" variant="danger" onClick={() => setCancelTarget(selected)} pending={pending} />
               )}
             </div>
+
+            {selected.status === 'cancelled' && selected.cancellationReason && (
+              <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                <p className="font-medium text-destructive">Cancellation reason</p>
+                <p className="mt-0.5 text-muted-foreground">{selected.cancellationReason}</p>
+              </div>
+            )}
 
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
@@ -959,6 +967,21 @@ export function BookingsView({
               toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
             }
             router.refresh()
+          }}
+        />
+      )}
+
+      {cancelTarget && (
+        <CancelBookingDialog
+          bookingId={cancelTarget.bookingId}
+          title={`Cancel booking ${cancelTarget.bookingNumber}?`}
+          description={`This will cancel ${cancelTarget.customerName || 'this walk-in'}'s booking. This cannot be undone.`}
+          onClose={() => setCancelTarget(null)}
+          onDone={() => {
+            setCancelTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`Booking ${cancelTarget.bookingNumber} cancelled.`)
           }}
         />
       )}

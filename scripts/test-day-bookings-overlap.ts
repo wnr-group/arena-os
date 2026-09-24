@@ -194,14 +194,22 @@ async function main() {
       minutesIntoDay(ist(D1, '18:00'), D2) < 0 && minutesIntoDay(ist(D3, '09:00'), D2) > 1440)
   }
 
-  // ══ 6. cancelled slots stay out ══════════════════════════════════════════
+  // ══ 6. an inactive (cancelled/no-show) slot still appears ═══════════════
+  // Reversed by this ticket: listDayBookings used to filter to `active = true`,
+  // which meant the instant a booking was cancelled it vanished from this
+  // query entirely — including from the Bookings page's own "Cancelled"
+  // status filter, whose whole job is to show it. It is `active`, not absence
+  // from this list, that BookingsView now uses to keep a freed slot off the
+  // Timeline while still listing it in the Bookings table.
   console.log('\n── an inactive slot ──')
   {
     await wipe()
     await slot('CANCELLED', ist(D1, '22:00'), ist(D2, '02:00'))
     await owner.query('update booking_slots set active=false where tenant_id=$1', [tenantId])
-    check('an inactive slot is on neither day',
-      (await namesOn(D1)).length === 0 && (await namesOn(D2)).length === 0)
+    check('it still appears on the day it starts', (await namesOn(D1)).includes('CANCELLED'))
+    check('…and on the day it was still running', (await namesOn(D2)).includes('CANCELLED'))
+    const rows = await listDayBookings(ctx, branchId, D1, TZ)
+    check('…flagged inactive, so the Timeline can filter it out', rows.every((r) => r.active === false))
   }
 
   // ══ 7. tenant isolation ══════════════════════════════════════════════════
