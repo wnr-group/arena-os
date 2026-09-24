@@ -17,7 +17,7 @@ import { BookingWizard } from '@/components/bookings/new/BookingWizard'
 export default async function NewBookingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string; resourceTypeId?: string; tab?: string }>
+  searchParams: Promise<{ date?: string; resourceTypeId?: string; resourceId?: string; tab?: string }>
 }) {
   const ctx = await getActiveContext()
   if (!ctx) return null
@@ -66,6 +66,7 @@ export default async function NewBookingPage({
       initialDate={initialDate}
       initialTab={initialTab}
       initialResourceTypeId={sp.resourceTypeId}
+      initialResourceId={sp.resourceId}
       resources={resources}
       walkinEnabled={walkinEnabled}
     />

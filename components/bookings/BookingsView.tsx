@@ -345,13 +345,19 @@ export function BookingsView({
    * that type, now via a query param instead of local state, and forces the
    * Future tab open since picking a spot on the calendar only ever means a
    * future booking, never a walk-in.
+   *
+   * `resourceId` is set when the click landed on a specific device's row
+   * (rather than the generic "New booking" button) — the wizard then locks
+   * the flow to that exact unit instead of auto-assigning a free one of its
+   * type (FutureWizard's `lockedResource`).
    */
-  function newBookingHref(resourceTypeId?: string): string {
+  function newBookingHref(resourceTypeId?: string, resourceId?: string): string {
     const params = new URLSearchParams({ date })
     if (resourceTypeId) {
       params.set('resourceTypeId', resourceTypeId)
       params.set('tab', 'future')
     }
+    if (resourceId) params.set('resourceId', resourceId)
     return `/bookings/new?${params.toString()}`
   }
 
@@ -477,9 +483,9 @@ export function BookingsView({
                     </div>
                   </div>
                   <Link
-                    href={newBookingHref(r.resourceTypeId)}
+                    href={newBookingHref(r.resourceTypeId, r.id)}
                     className="relative block h-16 flex-1 cursor-copy"
-                    title="Click to add a future booking of this resource type"
+                    title={`Click to book ${r.name}`}
                   >
                     {/* hour gridlines */}
                     {hourTicks.map((h) => (
@@ -510,6 +516,12 @@ export function BookingsView({
                             e.preventDefault()
                             e.stopPropagation()
                             setSelected(s)
+                            const until = isOngoing ? 'now' : timeInZone(s.endsAt!, timeZone)
+                            toast.warning(
+                              `${r.name} is already booked ${timeInZone(s.startsAt, timeZone)}–${until}${
+                                s.customerName ? ` for ${s.customerName}` : ''
+                              }.`,
+                            )
                           }}
                           className={`absolute inset-y-2 overflow-hidden rounded-md px-2 py-1 text-left text-xs shadow-sm ${
                             STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white'
