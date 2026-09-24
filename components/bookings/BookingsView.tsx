@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Eye,
   Loader2,
   Plus,
   RefreshCw,
@@ -680,13 +681,27 @@ export function BookingsView({
                         {formatMoney(paymentStates[b.bookingId]?.total ?? Number(b.total), currency)}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex justify-end">
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => setSelected(b.representative)}
-                            className="rounded-lg px-3 py-1.5 text-sm font-medium text-primary hover:underline"
+                            aria-label={`View booking ${b.bookingNumber}`}
+                            title="View details"
+                            className="rounded-lg border border-blue-500/40 p-2 text-blue-600 transition hover:bg-blue-500/10 dark:text-blue-400"
                           >
-                            View
+                            <Eye size={16} />
                           </button>
+                          {/* Only the statuses lib/billing/invoice.ts will actually
+                              bill — same gate the detail drawer's Bill link uses. */}
+                          {(b.status === 'confirmed' || b.status === 'checked_in') && (
+                            <Link
+                              href={`/pos/${b.bookingId}`}
+                              aria-label={`Bill booking ${b.bookingNumber}`}
+                              title="Bill"
+                              className="rounded-lg border border-emerald-500/40 p-2 text-emerald-600 transition hover:bg-emerald-500/10 dark:text-emerald-400"
+                            >
+                              <ReceiptText size={16} />
+                            </Link>
+                          )}
                         </div>
                       </td>
                     </tr>
