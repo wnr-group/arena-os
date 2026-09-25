@@ -2,19 +2,18 @@
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Gamepad2, Loader2, Timer, Users, Zap } from 'lucide-react'
+import { Check, Loader2, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isWeekendDay } from '@/lib/booking/rate'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { StepProgress } from './StepProgress'
+import { WalkInAvailabilityCalendar } from './WalkInAvailabilityCalendar'
 import {
   WizardCard,
   WizardFooter,
   SelectableTile,
-  SelectableTileSkeleton,
   ChipRow,
   wizardInput,
   wizardLabel,
@@ -22,7 +21,7 @@ import {
   wizardError,
 } from './wizard-ui'
 
-const STEPS = ['Station', 'Customer', 'Start & billing']
+const STEPS = ['Availability', 'Customer', 'Billing']
 
 /** Mirrors lib/booking/walkin.ts's WALKIN_START_WINDOW_MINUTES (5-min steps within it). */
 const START_OFFSET_STEP_MIN = 5
@@ -49,23 +48,19 @@ type ResourceOption = {
   capacity: number | null
   isFree: boolean
   hasUpcomingBooking: boolean
+  /** M23: this resource's own next active booking, if any — what the "check
+   *  availability" calendar (WalkInAvailabilityCalendar) uses to compute how
+   *  long a walk-in could run here before it. */
+  nextBooking: {
+    startsAt: string
+    endsAt: string | null
+    bookingNumber: string
+    customerName: string | null
+  } | null
   /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
    *  Start & billing step's Players field. */
   pricingMode: string
   minPlayers: number
-}
-/** One tile per device type — same card (icon, price/hr subtitle, capacity
- *  badge) as the future-booking wizard's Devices step, and the same
- *  auto-assign-a-free-unit rule: staff pick "PS5 Station", not a specific
- *  numbered unit. */
-type ResourceTypeGroup = {
-  id: string
-  name: string
-  hourlyRate: string
-  weekendRate: string | null
-  capacity: number | null
-  pricingMode: string
-  resources: ResourceOption[]
 }
 
 /** M22 bugfix: the rate a station actually bills at `startAt` — weekday or
@@ -123,7 +118,6 @@ export function WalkinWizard({
   currency: string
 }) {
   const router = useRouter()
-  const confirm = useConfirm()
   const [step, setStep] = useState(0)
 
   // Fixed at mount so the stepper's "now" doesn't visibly creep while the
@@ -223,41 +217,15 @@ export function WalkinWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceId])
 
-  // Grouped by type, same as the future-booking wizard's Devices step — only
-  // types with at least one free unit right now show up at all.
-  const resourceTypeGroups = useMemo(() => {
-    const byType = new Map<string, ResourceTypeGroup>()
-    for (const r of freeResources) {
-      if (!byType.has(r.resourceTypeId))
-        byType.set(r.resourceTypeId, {
-          id: r.resourceTypeId,
-          name: r.typeName,
-          hourlyRate: r.typeHourlyRate,
-          weekendRate: r.weekendRate,
-          capacity: r.capacity,
-          pricingMode: r.pricingMode,
-          resources: [],
-        })
-      byType.get(r.resourceTypeId)!.resources.push(r)
-    }
-    return [...byType.values()]
-  }, [freeResources])
-
-  async function pickResourceType(group: ResourceTypeGroup) {
-    const r = group.resources[0]
-    if (r) await pickResource(r)
-  }
-
-  async function pickResource(r: ResourceOption) {
-    if (r.hasUpcomingBooking) {
-      const ok = await confirm({
-        title: `${r.name} has a booking later today`,
-        description: 'An open-ended walk-in here may still be running when that booking is due to start. Continue anyway?',
-        confirmText: 'Start here anyway',
-        variant: 'default',
-      })
-      if (!ok) return
-    }
+  // M23: picking a device now happens inside WalkInAvailabilityCalendar,
+  // which shows the actual next-booking time (or "open-ended") before staff
+  // ever click — the old confirm-before-picking popup this replaced was the
+  // only way to surface that same fact when the picker was a plain tile
+  // grid with no time information on it at all. The calendar itself already
+  // refuses a click on an occupied-right-now resource or one whose window
+  // has closed at the currently-selected start time (see its own disabled
+  // logic), so nothing further needs checking here.
+  function pickResource(r: { id: string }) {
     setResourceId(r.id)
   }
 
@@ -312,47 +280,59 @@ export function WalkinWizard({
       <WizardCard>
         {step === 0 && (
           <div>
-            <h2 className="text-lg font-semibold">Which device?</h2>
+            <h2 className="text-lg font-semibold">Check availability</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              A free unit of this type is assigned automatically — only types with a free unit right now are shown.
+              Pick a start time, then a free device — the window shown is how long it&rsquo;s open before its next
+              booking, not a fixed end time for the walk-in.
             </p>
 
-            <div className="mt-5">
+            <div className="mt-5 max-w-sm">
+              <label className={wizardLabel}>Start time</label>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOffsetMin((m) => Math.max(-START_OFFSET_MAX_MIN, m - START_OFFSET_STEP_MIN))}
+                  disabled={offsetMin <= -START_OFFSET_MAX_MIN}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                >
+                  − {START_OFFSET_STEP_MIN} min
+                </button>
+                <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                  {timeInZone(startAtIso, timeZone)}
+                  {offsetMin !== 0 && (
+                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                      ({offsetMin > 0 ? `+${offsetMin}` : offsetMin} min)
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOffsetMin((m) => Math.min(START_OFFSET_MAX_MIN, m + START_OFFSET_STEP_MIN))}
+                  disabled={offsetMin >= START_OFFSET_MAX_MIN}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                >
+                  + {START_OFFSET_STEP_MIN} min
+                </button>
+              </div>
+              <p className={wizardHint}>Up to {START_OFFSET_MAX_MIN} minutes either side of now.</p>
+            </div>
+
+            <div className="mt-6">
               {resources === null ? (
                 loadError ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">{loadError}</p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                    {Array.from({ length: 8 }).map((_, i) => (
-                      <SelectableTileSkeleton key={i} />
-                    ))}
-                  </div>
+                  <p className="py-8 text-center text-sm text-muted-foreground">Checking availability…</p>
                 )
-              ) : resourceTypeGroups.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">No stations are free right now.</p>
               ) : (
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {resourceTypeGroups.map((g) => {
-                    const selected = g.resources.some((r) => r.id === resourceId)
-                    return (
-                      <SelectableTile
-                        key={g.id}
-                        selected={selected}
-                        onClick={() => pickResourceType(g)}
-                        icon={<Gamepad2 size={18} />}
-                        title={g.name}
-                        subtitle={`${formatMoney(effectiveRate(g.hourlyRate, g.weekendRate, startAt, timeZone, weekendDays), currency)} / ${g.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
-                        badge={
-                          g.capacity != null ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                              <Users size={12} /> Up to {g.capacity}
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    )
-                  })}
-                </div>
+                <WalkInAvailabilityCalendar
+                  resources={resources}
+                  timeZone={timeZone}
+                  currency={currency}
+                  startAtIso={startAtIso}
+                  selectedResourceId={resourceId}
+                  onSelect={pickResource}
+                />
               )}
             </div>
 
@@ -429,40 +409,13 @@ export function WalkinWizard({
 
         {step === 2 && (
           <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
-            <h2 className="text-lg font-semibold">Start time & billing</h2>
+            <h2 className="text-lg font-semibold">Billing</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Starting at <span className="font-medium text-foreground">{timeInZone(startAtIso, timeZone)}</span> on{' '}
+              <span className="font-medium text-foreground">{selectedResource?.name}</span>.
+            </p>
 
             <div className="mt-5 space-y-5">
-              <div>
-                <label className={wizardLabel}>Start time</label>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setOffsetMin((m) => Math.max(-START_OFFSET_MAX_MIN, m - START_OFFSET_STEP_MIN))}
-                    disabled={offsetMin <= -START_OFFSET_MAX_MIN}
-                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
-                  >
-                    − {START_OFFSET_STEP_MIN} min
-                  </button>
-                  <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
-                    {timeInZone(startAtIso, timeZone)}
-                    {offsetMin !== 0 && (
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                        ({offsetMin > 0 ? `+${offsetMin}` : offsetMin} min)
-                      </span>
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setOffsetMin((m) => Math.min(START_OFFSET_MAX_MIN, m + START_OFFSET_STEP_MIN))}
-                    disabled={offsetMin >= START_OFFSET_MAX_MIN}
-                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
-                  >
-                    + {START_OFFSET_STEP_MIN} min
-                  </button>
-                </div>
-                <p className={wizardHint}>Up to {START_OFFSET_MAX_MIN} minutes either side of now.</p>
-              </div>
-
               <div>
                 <label className={wizardLabel}>Billing</label>
                 <div className="mt-2 grid grid-cols-2 gap-3">

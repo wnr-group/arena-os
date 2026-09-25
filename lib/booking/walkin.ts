@@ -83,8 +83,21 @@ export type WalkinResourceOption = {
   capacity: number | null
   /** No active booking on it right now — see the module doc comment above. */
   isFree: boolean
-  /** Free right now, but has a scheduled booking later today (or beyond). */
+  /** Free right now, but has a scheduled booking later today (or beyond).
+   *  Derived from `nextBooking` below — kept as its own field because it
+   *  predates it and the confirm-before-picking prompt only needs the
+   *  boolean. */
   hasUpcomingBooking: boolean
+  /** The resource's own next active (confirmed/checked_in) booking, if any —
+   *  what the "check availability" calendar (M23) uses to compute how long a
+   *  walk-in could run before it, and what pickResource's confirm prompt
+   *  names. Null exactly when hasUpcomingBooking is false. */
+  nextBooking: {
+    startsAt: string
+    endsAt: string | null
+    bookingNumber: string
+    customerName: string | null
+  } | null
   /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
    *  start form's Players field. */
   pricingMode: string
@@ -149,8 +162,19 @@ export async function listWalkinResources(
       )
     const occupiedNow = new Set(occupiedRows.map((r) => r.resourceId))
 
+    // Every upcoming active slot for these resources, earliest first — then
+    // reduced to "first seen per resourceId" in JS below rather than a SQL
+    // DISTINCT ON, matching this codebase's own preference for a small
+    // in-memory reduction over a per-group SQL trick (see lib/payroll/run.ts)
+    // for a result set this size (one branch's resources).
     const upcomingRows = await tx
-      .select({ resourceId: bookingSlots.resourceId })
+      .select({
+        resourceId: bookingSlots.resourceId,
+        startsAt: bookingSlots.startsAt,
+        endsAt: bookingSlots.endsAt,
+        bookingNumber: bookings.bookingNumber,
+        customerName: bookings.customerName,
+      })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
       .where(
@@ -161,22 +185,38 @@ export async function listWalkinResources(
           inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
         ),
       )
-    const hasUpcoming = new Set(upcomingRows.map((r) => r.resourceId))
+      .orderBy(asc(bookingSlots.startsAt))
 
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      resourceTypeId: r.resourceTypeId,
-      typeName: r.typeName,
-      hourlyRate: r.rateOverride ?? r.typeRate,
-      typeHourlyRate: r.typeRate,
-      weekendRate: r.weekendRate,
-      capacity: r.capacity,
-      isFree: !occupiedNow.has(r.id),
-      hasUpcomingBooking: hasUpcoming.has(r.id),
-      pricingMode: r.pricingMode,
-      minPlayers: r.minPlayers,
-    }))
+    const nextBookingByResource = new Map<string, (typeof upcomingRows)[number]>()
+    for (const row of upcomingRows) {
+      if (!nextBookingByResource.has(row.resourceId)) nextBookingByResource.set(row.resourceId, row)
+    }
+
+    return rows.map((r) => {
+      const next = nextBookingByResource.get(r.id)
+      return {
+        id: r.id,
+        name: r.name,
+        resourceTypeId: r.resourceTypeId,
+        typeName: r.typeName,
+        hourlyRate: r.rateOverride ?? r.typeRate,
+        typeHourlyRate: r.typeRate,
+        weekendRate: r.weekendRate,
+        capacity: r.capacity,
+        isFree: !occupiedNow.has(r.id),
+        hasUpcomingBooking: Boolean(next),
+        nextBooking: next
+          ? {
+              startsAt: next.startsAt.toISOString(),
+              endsAt: next.endsAt ? next.endsAt.toISOString() : null,
+              bookingNumber: next.bookingNumber,
+              customerName: next.customerName,
+            }
+          : null,
+        pricingMode: r.pricingMode,
+        minPlayers: r.minPlayers,
+      }
+    })
   })
 }
 
