@@ -37,6 +37,7 @@ export function BookingWizard({
   initialDate,
   initialTab,
   initialResourceTypeId,
+  initialResourceId,
   resources,
   walkinEnabled,
 }: {
@@ -47,6 +48,7 @@ export function BookingWizard({
   initialDate: string
   initialTab: 'walkin' | 'future'
   initialResourceTypeId?: string
+  initialResourceId?: string
   resources: WizardResource[]
   walkinEnabled: boolean
 }) {
@@ -95,6 +97,7 @@ export function BookingWizard({
             today={today}
             initialDate={initialDate}
             initialResourceTypeId={initialResourceTypeId}
+            initialResourceId={initialResourceId}
             resources={resources}
           />
         )}

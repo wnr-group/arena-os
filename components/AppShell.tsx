@@ -21,11 +21,39 @@ function initialsOf(name: string) {
   )
 }
 
+/** The tenant's mark in the sidebar header: their uploaded website logo
+ *  (Settings → Website → Branding) when there is one, else the same
+ *  initials badge this always showed — same size/shape either way so
+ *  neither swap reflows the header. */
+function TenantMark({ tenantName, logoUrl, gradient }: { tenantName: string; logoUrl: string | null; gradient?: boolean }) {
+  if (logoUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={logoUrl}
+        alt={tenantName}
+        className="size-9 shrink-0 rounded-xl object-cover shadow-md shadow-primary/20"
+      />
+    )
+  }
+  return (
+    <div
+      className={cn(
+        'flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-primary-foreground shadow-md shadow-primary/20',
+        gradient ? 'bg-gradient-to-tr from-primary to-primary-hover' : 'bg-primary',
+      )}
+    >
+      {initialsOf(tenantName)}
+    </div>
+  )
+}
+
 /** Dashboard shell: sidebar nav, top bar and content frame shared across every authenticated tenant page. */
 export function AppShell({
   industryLabel,
   industry,
   tenantName,
+  logoUrl,
   role,
   userFullName,
   userEmail,
@@ -38,6 +66,11 @@ export function AppShell({
   industryLabel: string
   industry: string
   tenantName: string
+  /** The tenant's website logo, straight off the draft (Settings → Website →
+   *  Branding) — shows the moment it's uploaded, with no separate Publish
+   *  step required. Null when nothing's been uploaded yet, which falls back
+   *  to the initials badge below. */
+  logoUrl: string | null
   role: MemberRole
   userFullName: string | null
   userEmail: string
@@ -81,9 +114,7 @@ export function AppShell({
             collapsed && 'justify-center px-3',
           )}
         >
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
-            {initialsOf(tenantName)}
-          </div>
+          <TenantMark tenantName={tenantName} logoUrl={logoUrl} />
           {!collapsed && (
             <div className="min-w-0">
               <p className="truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
@@ -142,9 +173,7 @@ export function AppShell({
           <div className="relative flex w-72 max-w-[80vw] flex-1 flex-col bg-accent border-r border-border-strong shadow-2xl transition-transform duration-300 ease-out animate-in slide-in-from-left">
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div className="flex items-center gap-3">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-primary-hover text-sm font-bold text-primary-foreground shadow-md shadow-primary/20">
-                  {initialsOf(tenantName)}
-                </div>
+                <TenantMark tenantName={tenantName} logoUrl={logoUrl} gradient />
                 <div className="min-w-0">
                   <p className="truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
                     {industryLabel}

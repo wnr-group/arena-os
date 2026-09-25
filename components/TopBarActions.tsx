@@ -13,15 +13,43 @@ const POLL_INTERVAL_MS = 60_000
  *  "sound enabled" choice carries over now that this lives in the top bar. */
 const SOUND_PREF_KEY = 'arena.sessions.soundEnabled'
 
+/** Bookings currently inside their heads-up window, persisted across page
+ *  loads — without this, headsUpRef started empty on every mount, so a
+ *  booking that had already been alerted for (page open earlier, or a
+ *  previous visit) rang the chime again on every reload, not just the one
+ *  genuine crossing. */
+const ALERTED_STORAGE_KEY = 'arena.sessions.headsUpAlertedIds'
+
+function loadAlertedIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = window.localStorage.getItem(ALERTED_STORAGE_KEY)
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function saveAlertedIds(ids: Set<string>) {
+  try {
+    window.localStorage.setItem(ALERTED_STORAGE_KEY, JSON.stringify([...ids]))
+  } catch {
+    // Storage full/unavailable (private browsing) — the alarm still works
+    // for this tab, it just loses the "don't repeat" memory across reloads.
+  }
+}
+
 function isCheckedOut(s: ActiveWalkinAlarmRow): boolean {
   return s.billingMode === 'open_tab' ? s.endsAt !== null : Number(s.slotTotal) > 0
 }
 
 /**
  * The dashboard top bar's right-hand cluster: a notification bell
- * (placeholder — no behavior yet), the global walk-in time's-up alarm
- * (relocated off the Sessions page so it fires from anywhere in the app,
- * not just while that one page is open), and the account/profile menu.
+ * (placeholder — no behavior yet), the global walk-in heads-up alarm — it
+ * chimes warningMinutes before a timed session ends (5 min by default),
+ * not at the moment it actually ends, so staff have time to act — relocated
+ * off the Sessions page so it fires from anywhere in the app, not just
+ * while that one page is open, and the account/profile menu.
  *
  * The alarm polls the same active-walk-ins read SessionsBoard uses, but
  * independently — SessionsBoard keeps its own per-card countdown/visuals for
@@ -52,6 +80,16 @@ export function TopBarActions({
   // ── sound toggle + unlock ────────────────────────────────────────────
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(false)
+  // Read inside tick() instead of the `soundEnabled` state directly — state
+  // loads from localStorage a tick after mount, and the poll effect below
+  // doesn't depend on it, so without this a tick that runs before that load
+  // resolves would see a stale `false`, skip the chime, but still mark the
+  // booking as alerted — silently eating the one alarm this crossing was
+  // ever going to get.
+  const soundEnabledRef = useRef(false)
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled
+  }, [soundEnabled])
   useEffect(() => {
     setSoundEnabled(typeof window !== 'undefined' && window.localStorage.getItem(SOUND_PREF_KEY) === '1')
   }, [])
@@ -80,10 +118,12 @@ export function TopBarActions({
 
   // ── poll + alarm ─────────────────────────────────────────────────────
   const alarmedRef = useRef<Set<string>>(new Set())
-  // Tracks bookings whose heads-up toast has already fired, separately from
-  // alarmedRef's time's-up set — a session passes through this set on its
-  // way to becoming alarmed, never re-firing once it's inside the window.
-  const headsUpRef = useRef<Set<string>>(new Set())
+  // Tracks bookings whose heads-up toast + chime have already fired, seeded
+  // from localStorage (see loadAlertedIds) so a page reload doesn't treat an
+  // already-alerted booking as a fresh crossing. A session passes through
+  // this set on its way to becoming alarmed, never re-firing once it's
+  // inside the window — until it's extended back out and re-enters later.
+  const headsUpRef = useRef<Set<string>>(loadAlertedIds())
   const [alarmedCount, setAlarmedCount] = useState(0)
 
   useEffect(() => {
@@ -103,7 +143,6 @@ export function TopBarActions({
         if (remaining <= 0) {
           stillAlarmed.add(s.bookingId)
           if (!alarmedRef.current.has(s.bookingId)) {
-            if (soundEnabled) audioRef.current?.play().catch(() => {})
             toast.error(`Time's up — ${s.resourceName} (${label})`, {
               action: { label: 'View sessions', onClick: () => router.push('/sessions') },
             })
@@ -113,6 +152,13 @@ export function TopBarActions({
         if (remaining <= s.warningMinutes * 60_000) {
           stillHeadsUp.add(s.bookingId)
           if (!headsUpRef.current.has(s.bookingId)) {
+            // The chime rings HERE — warningMinutes before the session ends
+            // (5 min by default) — not at the moment it actually ends. That
+            // gives staff time to act instead of finding out only once it's
+            // already over.
+            if (soundEnabledRef.current) {
+              audioRef.current?.play().catch(() => {})
+            }
             toast.warning(`${s.warningMinutes} min left — ${s.resourceName} (${label})`, {
               action: { label: 'View sessions', onClick: () => router.push('/sessions') },
             })
@@ -123,6 +169,7 @@ export function TopBarActions({
       // A booking that's since been extended past the warning window drops
       // back out of stillHeadsUp, so re-crossing it later fires again.
       headsUpRef.current = stillHeadsUp
+      saveAlertedIds(stillHeadsUp)
       setAlarmedCount(stillAlarmed.size)
     }
 
@@ -132,7 +179,10 @@ export function TopBarActions({
       cancelled = true
       clearInterval(id)
     }
-  }, [active, branchId, soundEnabled, router])
+    // soundEnabled deliberately excluded — see soundEnabledRef's own comment
+    // above; restarting this poll on every toggle would re-run tick()
+    // immediately with a build-up risk of the same stale-read race.
+  }, [active, branchId, router])
 
   // ── profile dropdown ─────────────────────────────────────────────────
   const [profileOpen, setProfileOpen] = useState(false)

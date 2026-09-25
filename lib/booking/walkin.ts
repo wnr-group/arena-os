@@ -18,13 +18,18 @@
  *     constraint would reject it outright anyway, so there is nothing to
  *     "allow" there.
  *   - A resource that's free right now but has a booking scheduled LATER
- *     today is still fully selectable (`hasUpcomingBooking: true`) — an open
- *     tab's eventual end isn't known yet, so this can't be resolved either
- *     way up front. The UI warns and lets the operator decide; if they're
- *     wrong and it genuinely overlaps once the times are known, the SAME
- *     exclusion constraint (and lib/actions/bookings.ts's existing 23P01
- *     handling) catches it then — no separate "conflict override" flag is
- *     threaded through the write path, on purpose.
+ *     today is still selectable for a TIMED session (`hasUpcomingBooking:
+ *     true`) — a timed session's end is known up front and might genuinely
+ *     fit before that later booking, so this can't be resolved either way
+ *     until the duration is picked. The UI warns and lets the operator
+ *     decide; if they're wrong and it genuinely overlaps once the times are
+ *     known, the SAME exclusion constraint (and lib/actions/bookings.ts's
+ *     existing 23P01 handling) catches it then — no separate "conflict
+ *     override" flag is threaded through the write path, on purpose.
+ *   - An OPEN TAB has no such ambiguity: its ends_at is null until checkout,
+ *     so it overlaps ANY future active booking on the resource regardless of
+ *     duration. startWalkinCore rejects that combination itself, up front —
+ *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
@@ -81,10 +86,30 @@ export type WalkinResourceOption = {
    *  shows can never drift from what startWalkinCore actually charges. */
   weekendRate: string | null
   capacity: number | null
+  /** The type's own photo, or null — what the walk-in device-type card and
+   *  its per-device rows show in place of a generic icon (M23 follow-up).
+   *  Always the TYPE's image, never a per-unit override: every device of a
+   *  type is the same physical thing (a PS5 station, a snooker table), so
+   *  one photo per type is enough, same as the future-booking wizard's
+   *  device-type step would if it showed photos. */
+  typeImageUrl: string | null
   /** No active booking on it right now — see the module doc comment above. */
   isFree: boolean
-  /** Free right now, but has a scheduled booking later today (or beyond). */
+  /** Free right now, but has a scheduled booking later today (or beyond).
+   *  Derived from `nextBooking` below — kept as its own field because it
+   *  predates it and the confirm-before-picking prompt only needs the
+   *  boolean. */
   hasUpcomingBooking: boolean
+  /** The resource's own next active (confirmed/checked_in) booking, if any —
+   *  what the "check availability" calendar (M23) uses to compute how long a
+   *  walk-in could run before it, and what pickResource's confirm prompt
+   *  names. Null exactly when hasUpcomingBooking is false. */
+  nextBooking: {
+    startsAt: string
+    endsAt: string | null
+    bookingNumber: string
+    customerName: string | null
+  } | null
   /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
    *  start form's Players field. */
   pricingMode: string
@@ -113,6 +138,7 @@ export async function listWalkinResources(
         typeRate: resourceTypes.hourlyRate,
         weekendRate: resourceTypes.weekendRate,
         capacity: resourceTypes.capacity,
+        typeImageUrl: resourceTypes.imageUrl,
         pricingMode: resourceTypes.pricingMode,
         minPlayers: resourceTypes.minPlayers,
       })
@@ -149,8 +175,19 @@ export async function listWalkinResources(
       )
     const occupiedNow = new Set(occupiedRows.map((r) => r.resourceId))
 
+    // Every upcoming active slot for these resources, earliest first — then
+    // reduced to "first seen per resourceId" in JS below rather than a SQL
+    // DISTINCT ON, matching this codebase's own preference for a small
+    // in-memory reduction over a per-group SQL trick (see lib/payroll/run.ts)
+    // for a result set this size (one branch's resources).
     const upcomingRows = await tx
-      .select({ resourceId: bookingSlots.resourceId })
+      .select({
+        resourceId: bookingSlots.resourceId,
+        startsAt: bookingSlots.startsAt,
+        endsAt: bookingSlots.endsAt,
+        bookingNumber: bookings.bookingNumber,
+        customerName: bookings.customerName,
+      })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
       .where(
@@ -161,22 +198,39 @@ export async function listWalkinResources(
           inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
         ),
       )
-    const hasUpcoming = new Set(upcomingRows.map((r) => r.resourceId))
+      .orderBy(asc(bookingSlots.startsAt))
 
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      resourceTypeId: r.resourceTypeId,
-      typeName: r.typeName,
-      hourlyRate: r.rateOverride ?? r.typeRate,
-      typeHourlyRate: r.typeRate,
-      weekendRate: r.weekendRate,
-      capacity: r.capacity,
-      isFree: !occupiedNow.has(r.id),
-      hasUpcomingBooking: hasUpcoming.has(r.id),
-      pricingMode: r.pricingMode,
-      minPlayers: r.minPlayers,
-    }))
+    const nextBookingByResource = new Map<string, (typeof upcomingRows)[number]>()
+    for (const row of upcomingRows) {
+      if (!nextBookingByResource.has(row.resourceId)) nextBookingByResource.set(row.resourceId, row)
+    }
+
+    return rows.map((r) => {
+      const next = nextBookingByResource.get(r.id)
+      return {
+        id: r.id,
+        name: r.name,
+        resourceTypeId: r.resourceTypeId,
+        typeName: r.typeName,
+        hourlyRate: r.rateOverride ?? r.typeRate,
+        typeHourlyRate: r.typeRate,
+        weekendRate: r.weekendRate,
+        capacity: r.capacity,
+        typeImageUrl: r.typeImageUrl,
+        isFree: !occupiedNow.has(r.id),
+        hasUpcomingBooking: Boolean(next),
+        nextBooking: next
+          ? {
+              startsAt: next.startsAt.toISOString(),
+              endsAt: next.endsAt ? next.endsAt.toISOString() : null,
+              bookingNumber: next.bookingNumber,
+              customerName: next.customerName,
+            }
+          : null,
+        pricingMode: r.pricingMode,
+        minPlayers: r.minPlayers,
+      }
+    })
   })
 }
 
@@ -346,6 +400,35 @@ export async function startWalkinCore(
     throw new BookingError('This resource isn’t set up as an hourly station.')
   }
   if (resource.status !== 'available') throw new BookingError('This station is not available.')
+
+  // An open tab has no end time until checkout (module doc comment above) —
+  // unlike a timed session, which might legitimately fit before a later
+  // booking, an open tab's unbounded ends_at overlaps ANY future active slot
+  // on this resource, no matter how far off. That makes it the one case
+  // where the module's own "warn but let the exclusion constraint decide"
+  // policy doesn't apply — there's no ambiguity to defer, so it's rejected
+  // here with a clear reason instead of surfacing as a raw 23P01 later.
+  if (input.mode === 'open_tab') {
+    const [futureSlot] = await tx
+      .select({ startsAt: bookingSlots.startsAt })
+      .from(bookingSlots)
+      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .where(
+        and(
+          eq(bookingSlots.resourceId, resource.id),
+          eq(bookingSlots.active, true),
+          gt(bookingSlots.startsAt, startAt),
+          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+        ),
+      )
+      .orderBy(asc(bookingSlots.startsAt))
+      .limit(1)
+    if (futureSlot) {
+      throw new BookingError(
+        'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
+      )
+    }
+  }
 
   const weekdayRate = Number(resource.rateOverride ?? resource.typeRate)
   // A zero EFFECTIVE rate (a per-resource override, not just the type rate

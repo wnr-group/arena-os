@@ -475,7 +475,7 @@ async function main() {
     ])
     check('…and its status is unchanged (still checked_in)', statusAfterRefusal.rows[0]?.status === 'checked_in')
 
-    const cancelled = await cancelBooking(bookingId)
+    const cancelled = await cancelBooking(bookingId, 'test cleanup')
     check('cancelling the same walk-in before checkout succeeds', !cancelled.error)
 
     const slotAfterCancel = await owner.query<{ active: boolean }>(
