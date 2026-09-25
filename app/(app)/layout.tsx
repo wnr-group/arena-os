@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
 import { ROLE_LABELS, canManageWalkins } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
+import { getPublishedBranding } from '@/lib/website/public'
 import { AppShell } from '@/components/AppShell'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
@@ -59,6 +60,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       })
     : null
 
+  // The website builder's PUBLISHED logo (Settings → Website → Branding) —
+  // the same getPublishedBranding every public page reads (see its own doc
+  // comment in lib/website/public.ts), so the sidebar shows exactly what
+  // customers see, never an unpublished draft. Null until the tenant has
+  // uploaded one and published at least once, which falls back to the
+  // initials badge AppShell already draws.
+  const { logoUrl } = await getPublishedBranding(tenant.id)
+
   return (
     // Merge note: the responsive AppShell (from main) replaced the inline
     // sidebar/header this file used to render. The `no-print` chrome-hiding that
@@ -67,6 +76,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       industryLabel={INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
       industry={tenant.industry}
       tenantName={tenant.name}
+      logoUrl={logoUrl}
       role={role}
       userFullName={user.fullName}
       userEmail={user.email}
