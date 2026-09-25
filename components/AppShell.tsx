@@ -21,7 +21,7 @@ function initialsOf(name: string) {
   )
 }
 
-/** The tenant's mark in the sidebar header: their published website logo
+/** The tenant's mark in the sidebar header: their uploaded website logo
  *  (Settings → Website → Branding) when there is one, else the same
  *  initials badge this always showed — same size/shape either way so
  *  neither swap reflows the header. */
@@ -66,11 +66,10 @@ export function AppShell({
   industryLabel: string
   industry: string
   tenantName: string
-  /** The tenant's published website logo (Settings → Website → Branding),
-   *  or null when they haven't uploaded/published one — falls back to the
-   *  initials badge below. Same source every public page reads
-   *  (getPublishedBranding), so the dashboard and the public site never
-   *  show two different logos. */
+  /** The tenant's website logo, straight off the draft (Settings → Website →
+   *  Branding) — shows the moment it's uploaded, with no separate Publish
+   *  step required. Null when nothing's been uploaded yet, which falls back
+   *  to the initials badge below. */
   logoUrl: string | null
   role: MemberRole
   userFullName: string | null

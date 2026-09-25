@@ -4,7 +4,7 @@ import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
 import { ROLE_LABELS, canManageWalkins } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
-import { getPublishedBranding } from '@/lib/website/public'
+import { getWebsiteSettings } from '@/lib/website/data'
 import { AppShell } from '@/components/AppShell'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
@@ -60,13 +60,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       })
     : null
 
-  // The website builder's PUBLISHED logo (Settings → Website → Branding) —
-  // the same getPublishedBranding every public page reads (see its own doc
-  // comment in lib/website/public.ts), so the sidebar shows exactly what
-  // customers see, never an unpublished draft. Null until the tenant has
-  // uploaded one and published at least once, which falls back to the
-  // initials badge AppShell already draws.
-  const { logoUrl } = await getPublishedBranding(tenant.id)
+  // The website builder's DRAFT logo (Settings → Website → Branding) — the
+  // same row the editor's own live preview reads (lib/website/data.ts's
+  // getWebsiteSettings). Deliberately the draft, not getPublishedBranding's
+  // published-only snapshot: an owner who's just uploaded a logo expects the
+  // dashboard to reflect it immediately, not only after a separate Publish
+  // click (which governs the PUBLIC site going live, an unrelated concern
+  // for this internal sidebar). Null until one's been uploaded at all, which
+  // falls back to the initials badge AppShell already draws.
+  const websiteSettings = await getWebsiteSettings(ctx)
+  const logoUrl = websiteSettings?.logoUrl ?? null
 
   return (
     // Merge note: the responsive AppShell (from main) replaced the inline
