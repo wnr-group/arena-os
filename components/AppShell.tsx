@@ -32,7 +32,7 @@ function TenantMark({ tenantName, logoUrl, gradient }: { tenantName: string; log
       <img
         src={logoUrl}
         alt={tenantName}
-        className="size-9 shrink-0 rounded-xl object-cover shadow-md shadow-primary/20"
+        className="size-9 shrink-0 rounded-xl bg-card object-contain shadow-md shadow-primary/20"
       />
     )
   }
