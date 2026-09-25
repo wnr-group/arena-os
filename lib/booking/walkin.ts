@@ -81,6 +81,13 @@ export type WalkinResourceOption = {
    *  shows can never drift from what startWalkinCore actually charges. */
   weekendRate: string | null
   capacity: number | null
+  /** The type's own photo, or null — what the walk-in device-type card and
+   *  its per-device rows show in place of a generic icon (M23 follow-up).
+   *  Always the TYPE's image, never a per-unit override: every device of a
+   *  type is the same physical thing (a PS5 station, a snooker table), so
+   *  one photo per type is enough, same as the future-booking wizard's
+   *  device-type step would if it showed photos. */
+  typeImageUrl: string | null
   /** No active booking on it right now — see the module doc comment above. */
   isFree: boolean
   /** Free right now, but has a scheduled booking later today (or beyond).
@@ -126,6 +133,7 @@ export async function listWalkinResources(
         typeRate: resourceTypes.hourlyRate,
         weekendRate: resourceTypes.weekendRate,
         capacity: resourceTypes.capacity,
+        typeImageUrl: resourceTypes.imageUrl,
         pricingMode: resourceTypes.pricingMode,
         minPlayers: resourceTypes.minPlayers,
       })
@@ -203,6 +211,7 @@ export async function listWalkinResources(
         typeHourlyRate: r.typeRate,
         weekendRate: r.weekendRate,
         capacity: r.capacity,
+        typeImageUrl: r.typeImageUrl,
         isFree: !occupiedNow.has(r.id),
         hasUpcomingBooking: Boolean(next),
         nextBooking: next

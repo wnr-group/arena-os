@@ -46,6 +46,9 @@ type ResourceOption = {
    *  tracks the chosen start time the same way startWalkinCore prices it. */
   weekendRate: string | null
   capacity: number | null
+  /** The type's own photo, or null — see WalkinResourceOption's own doc
+   *  comment (lib/booking/walkin.ts). */
+  typeImageUrl: string | null
   isFree: boolean
   hasUpcomingBooking: boolean
   /** M23: this resource's own next active booking, if any — what the "check

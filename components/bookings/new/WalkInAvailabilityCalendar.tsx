@@ -34,6 +34,9 @@ export type WalkinAvailabilityResource = {
   typeHourlyRate: string
   weekendRate: string | null
   capacity: number | null
+  /** The type's own photo, or null — shown in place of the generic device
+   *  icon on both the type card and this type's device rows (M23 follow-up). */
+  typeImageUrl: string | null
   pricingMode: string
   minPlayers: number
   /** No active booking on it right now. An occupied resource is shown (per
@@ -85,7 +88,15 @@ export function WalkInAvailabilityCalendar({
   const types = useMemo(() => {
     const byType = new Map<
       string,
-      { id: string; name: string; hourlyRate: string; pricingMode: string; capacity: number | null; rows: WalkinAvailabilityResource[] }
+      {
+        id: string
+        name: string
+        hourlyRate: string
+        pricingMode: string
+        capacity: number | null
+        imageUrl: string | null
+        rows: WalkinAvailabilityResource[]
+      }
     >()
     for (const r of resources) {
       if (!byType.has(r.resourceTypeId)) {
@@ -95,6 +106,7 @@ export function WalkInAvailabilityCalendar({
           hourlyRate: r.typeHourlyRate,
           pricingMode: r.pricingMode,
           capacity: r.capacity,
+          imageUrl: r.typeImageUrl,
           rows: [],
         })
       }
@@ -142,7 +154,14 @@ export function WalkInAvailabilityCalendar({
                 key={t.id}
                 selected={false}
                 onClick={() => setSelectedTypeId(t.id)}
-                icon={<Gamepad2 size={18} />}
+                icon={
+                  t.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={t.imageUrl} alt="" className="size-full rounded-lg object-cover" />
+                  ) : (
+                    <Gamepad2 size={18} />
+                  )
+                }
                 title={t.name}
                 subtitle={`${formatMoney(Number(t.hourlyRate), currency)}/${t.pricingMode === 'per_head' ? 'player' : 'hr'}`}
                 badge={
@@ -222,7 +241,7 @@ export function WalkInAvailabilityCalendar({
             >
               <div className="flex w-40 shrink-0 items-center gap-2.5 px-3.5 py-3">
                 <span
-                  className={`flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                  className={`flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors ${
                     isSelected
                       ? 'bg-gradient-to-br from-primary to-primary-hover text-primary-foreground shadow-sm'
                       : r.isFree
@@ -230,14 +249,14 @@ export function WalkInAvailabilityCalendar({
                         : 'bg-muted text-muted-foreground'
                   }`}
                 >
-                  <Gamepad2 size={16} />
+                  {r.typeImageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={r.typeImageUrl} alt="" className="size-full object-cover" />
+                  ) : (
+                    <Gamepad2 size={16} />
+                  )}
                 </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-foreground">{r.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {formatMoney(Number(r.hourlyRate), currency)}/{r.pricingMode === 'per_head' ? 'player' : 'hr'}
-                  </p>
-                </div>
+                <p className="min-w-0 truncate text-sm font-bold text-foreground">{r.name}</p>
               </div>
 
               <div className="relative min-h-16 flex-1 border-l border-border/60 py-2.5 pr-2.5">
