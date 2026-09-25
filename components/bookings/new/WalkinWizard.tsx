@@ -282,8 +282,9 @@ export function WalkinWizard({
           <div>
             <h2 className="text-lg font-semibold">Check availability</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Pick a start time, then a free device — the window shown is how long it&rsquo;s open before its next
-              booking, not a fixed end time for the walk-in.
+              First, tell us when the customer is starting. Then pick a device that&rsquo;s free — we&rsquo;ll show how
+              long it&rsquo;s open for, just so you know if another booking is coming up. It&rsquo;s not a time limit;
+              the customer can stay until you check them out.
             </p>
 
             <div className="mt-5 max-w-sm">
@@ -322,7 +323,15 @@ export function WalkinWizard({
                 loadError ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">{loadError}</p>
                 ) : (
-                  <p className="py-8 text-center text-sm text-muted-foreground">Checking availability…</p>
+                  <div className="flex flex-col items-center justify-center gap-3 py-14">
+                    <span className="relative flex size-10 items-center justify-center">
+                      <span className="absolute inset-0 animate-ping rounded-full bg-primary/20" />
+                      <span className="relative flex size-10 items-center justify-center rounded-full bg-primary/10">
+                        <Loader2 size={20} className="animate-spin text-primary" />
+                      </span>
+                    </span>
+                    <p className="text-sm font-medium text-muted-foreground">Checking which devices are free…</p>
+                  </div>
                 )
               ) : (
                 <WalkInAvailabilityCalendar

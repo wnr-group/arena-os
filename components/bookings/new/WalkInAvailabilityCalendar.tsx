@@ -126,8 +126,8 @@ export function WalkInAvailabilityCalendar({
 
   if (!activeType) {
     return (
-      <div className="overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-lg shadow-black/[0.04] ring-1 ring-border/40">
-        <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Pick a device type</p>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Which device type?</p>
         <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {types.map((t) => {
             // "Free" here means bookable at the CHOSEN start time, not merely
