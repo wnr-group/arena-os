@@ -18,13 +18,18 @@
  *     constraint would reject it outright anyway, so there is nothing to
  *     "allow" there.
  *   - A resource that's free right now but has a booking scheduled LATER
- *     today is still fully selectable (`hasUpcomingBooking: true`) — an open
- *     tab's eventual end isn't known yet, so this can't be resolved either
- *     way up front. The UI warns and lets the operator decide; if they're
- *     wrong and it genuinely overlaps once the times are known, the SAME
- *     exclusion constraint (and lib/actions/bookings.ts's existing 23P01
- *     handling) catches it then — no separate "conflict override" flag is
- *     threaded through the write path, on purpose.
+ *     today is still selectable for a TIMED session (`hasUpcomingBooking:
+ *     true`) — a timed session's end is known up front and might genuinely
+ *     fit before that later booking, so this can't be resolved either way
+ *     until the duration is picked. The UI warns and lets the operator
+ *     decide; if they're wrong and it genuinely overlaps once the times are
+ *     known, the SAME exclusion constraint (and lib/actions/bookings.ts's
+ *     existing 23P01 handling) catches it then — no separate "conflict
+ *     override" flag is threaded through the write path, on purpose.
+ *   - An OPEN TAB has no such ambiguity: its ends_at is null until checkout,
+ *     so it overlaps ANY future active booking on the resource regardless of
+ *     duration. startWalkinCore rejects that combination itself, up front —
+ *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
@@ -395,6 +400,35 @@ export async function startWalkinCore(
     throw new BookingError('This resource isn’t set up as an hourly station.')
   }
   if (resource.status !== 'available') throw new BookingError('This station is not available.')
+
+  // An open tab has no end time until checkout (module doc comment above) —
+  // unlike a timed session, which might legitimately fit before a later
+  // booking, an open tab's unbounded ends_at overlaps ANY future active slot
+  // on this resource, no matter how far off. That makes it the one case
+  // where the module's own "warn but let the exclusion constraint decide"
+  // policy doesn't apply — there's no ambiguity to defer, so it's rejected
+  // here with a clear reason instead of surfacing as a raw 23P01 later.
+  if (input.mode === 'open_tab') {
+    const [futureSlot] = await tx
+      .select({ startsAt: bookingSlots.startsAt })
+      .from(bookingSlots)
+      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .where(
+        and(
+          eq(bookingSlots.resourceId, resource.id),
+          eq(bookingSlots.active, true),
+          gt(bookingSlots.startsAt, startAt),
+          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+        ),
+      )
+      .orderBy(asc(bookingSlots.startsAt))
+      .limit(1)
+    if (futureSlot) {
+      throw new BookingError(
+        'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
+      )
+    }
+  }
 
   const weekdayRate = Number(resource.rateOverride ?? resource.typeRate)
   // A zero EFFECTIVE rate (a per-resource override, not just the type rate

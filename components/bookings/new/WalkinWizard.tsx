@@ -222,6 +222,27 @@ export function WalkinWizard({
   const unbillable = selectedResource
     ? isUnbillable(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays)
     : false
+  // An open tab has no end time until checkout — unlike a timed session,
+  // which might genuinely fit before a later booking, an open tab's
+  // unbounded end WILL overlap any future booking on the resource, no
+  // matter the gap. 'unavailable' (the start is already past the next
+  // booking) is excluded here because that case already drops the
+  // selection entirely, in the effect below — this is specifically the
+  // "there's room right now, but not forever" case open_tab can't honor.
+  const openTabBlockedByFutureBooking = selectedResource
+    ? computeAvailabilityWindow(startAtIso, selectedResource.nextBooking?.startsAt ?? null).status === 'available'
+    : false
+
+  // Default mode is 'open_tab' (see useState below) and resource selection
+  // happens a step before billing mode does — so a pick that's fine at
+  // step 0 can still land on a resource open_tab can't honor by the time
+  // step 2 is reached, or the start time can nudge into that state after
+  // mode was already set to open_tab. Switch to 'timed' automatically
+  // rather than leaving the operator stuck on a disabled Start button with
+  // no obvious next step.
+  useEffect(() => {
+    if (mode === 'open_tab' && openTabBlockedByFutureBooking) setMode('timed')
+  }, [mode, openTabBlockedByFutureBooking])
 
   useEffect(() => {
     setHeadCount(selectedResource?.minPlayers ?? 1)
@@ -267,6 +288,15 @@ export function WalkinWizard({
     }
     if (checkingPhone) {
       setError('Still checking that phone number — try again in a moment.')
+      return
+    }
+    // Belt-and-suspenders: the mode tile disables itself and the effect
+    // above auto-switches away from open_tab as soon as this becomes true,
+    // but re-check here too — same reasoning as every other guard in this
+    // function, since state can change between render and click.
+    if (mode === 'open_tab' && openTabBlockedByFutureBooking) {
+      setError('This station has a later booking — an open tab has no end time, so it would overlap. Pick Timed instead.')
+      setStep(2)
       return
     }
     setPending(true)
@@ -465,9 +495,14 @@ export function WalkinWizard({
                   <SelectableTile
                     selected={mode === 'open_tab'}
                     onClick={() => setMode('open_tab')}
+                    disabled={openTabBlockedByFutureBooking}
                     icon={<Zap size={18} />}
                     title="Open tab"
-                    subtitle="Bill by elapsed time at checkout"
+                    subtitle={
+                      openTabBlockedByFutureBooking
+                        ? 'Unavailable — this station has a later booking'
+                        : 'Bill by elapsed time at checkout'
+                    }
                   />
                   <SelectableTile
                     selected={mode === 'timed'}
