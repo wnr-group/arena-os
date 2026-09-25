@@ -263,22 +263,31 @@ export function WalkinWizard({
     // own duration/pricing is right and so startWalkinCore's ±30-min
     // window (lib/booking/walkin.ts) doesn't reject a perfectly good
     // zero-offset walk-in just because the form was open too long.
-    const r = await startWalkin({
-      branchId,
-      resourceId,
-      phone,
-      name: name.trim() || undefined,
-      startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
-      mode,
-      durationMin: mode === 'timed' ? durationMin : undefined,
-      headCount: isPerHead ? headCount : undefined,
-    })
-    if (r.error) {
-      setError(r.error)
+    try {
+      const r = await startWalkin({
+        branchId,
+        resourceId,
+        phone,
+        name: name.trim() || undefined,
+        startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
+        mode,
+        durationMin: mode === 'timed' ? durationMin : undefined,
+        headCount: isPerHead ? headCount : undefined,
+      })
+      if (r.error) {
+        setError(r.error)
+        setPending(false)
+      } else {
+        toast.success(`Walk-in ${r.bookingNumber} started.`)
+        router.push('/bookings')
+      }
+    } catch {
+      // The server action itself rejected (network drop, deploy mismatch) —
+      // distinct from r.error, which is a normal in-band failure. Without
+      // this the button stayed disabled forever since setPending(false)
+      // above never ran.
+      setError('Something went wrong — check your connection and try again.')
       setPending(false)
-    } else {
-      toast.success(`Walk-in ${r.bookingNumber} started.`)
-      router.push('/bookings')
     }
   }
 

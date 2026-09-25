@@ -347,20 +347,29 @@ export function FutureWizard({
       return
     }
     setPending(true)
-    const r = await createBooking({
-      branchId,
-      source: 'walk_in',
-      customerName,
-      customerPhone,
-      slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
-      headCount: isPerHead ? headCount : undefined,
-    })
-    if (r.error) {
-      setError(r.error)
+    try {
+      const r = await createBooking({
+        branchId,
+        source: 'walk_in',
+        customerName,
+        customerPhone,
+        slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
+        headCount: isPerHead ? headCount : undefined,
+      })
+      if (r.error) {
+        setError(r.error)
+        setPending(false)
+      } else {
+        toast.success(`Booking ${r.bookingNumber} created.`)
+        router.push('/bookings')
+      }
+    } catch {
+      // The server action itself rejected (network drop, deploy mismatch) —
+      // distinct from r.error, which is a normal in-band failure. Without
+      // this the button stayed disabled forever since setPending(false)
+      // above never ran.
+      setError('Something went wrong — check your connection and try again.')
       setPending(false)
-    } else {
-      toast.success(`Booking ${r.bookingNumber} created.`)
-      router.push('/bookings')
     }
   }
 
