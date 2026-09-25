@@ -254,14 +254,22 @@ export function WalkInAvailabilityCalendar({
       <div className="mt-2.5 space-y-2">
         {activeType.rows.map((r) => {
           const isSelected = r.id === selectedResourceId
+          // A row can be r.isFree (unoccupied right now) yet still have no
+          // window to offer at the CHOSEN start — the same computation the
+          // type card's freeCount and the availability bar below both use.
+          // Without checking it here too, the row stayed clickable even
+          // though its own bar was already rendering the red "overlaps the
+          // next booking" state.
+          const rowWindow = computeAvailabilityWindow(startAtIso, r.nextBooking?.startsAt ?? null)
+          const rowSelectable = r.isFree && rowWindow.status !== 'unavailable'
           return (
             <button
               key={r.id}
               type="button"
-              disabled={!r.isFree}
-              onClick={() => r.isFree && onSelect(r)}
+              disabled={!rowSelectable}
+              onClick={() => rowSelectable && onSelect(r)}
               className={`group relative flex w-full items-stretch gap-0 overflow-hidden rounded-2xl border text-left transition-all duration-200 ${
-                !r.isFree
+                !rowSelectable
                   ? 'cursor-not-allowed border-border/60 bg-muted/30 opacity-70'
                   : isSelected
                     ? 'border-primary bg-accent/60 shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30'
@@ -273,7 +281,7 @@ export function WalkInAvailabilityCalendar({
                   className={`flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors ${
                     isSelected
                       ? 'bg-gradient-to-br from-primary to-primary-hover text-primary-foreground shadow-sm'
-                      : r.isFree
+                      : rowSelectable
                         ? 'bg-accent text-accent-foreground'
                         : 'bg-muted text-muted-foreground'
                   }`}

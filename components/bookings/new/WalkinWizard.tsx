@@ -6,6 +6,7 @@ import { Check, Loader2, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isWeekendDay } from '@/lib/booking/rate'
+import { computeAvailabilityWindow } from '@/lib/booking/walkin-availability'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { StepProgress } from './StepProgress'
@@ -227,6 +228,18 @@ export function WalkinWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceId])
 
+  // Staff can pick a resource, then nudge the start time (the ±30-min
+  // offsetMin buttons) until its window closes against its own next
+  // booking — the calendar's row disable only guards the click itself, not
+  // a selection made before the start time moved. Drop the stale pick so
+  // Continue disables again instead of letting the wizard carry a selection
+  // the server would reject via the exclusion constraint.
+  useEffect(() => {
+    if (!selectedResource) return
+    const window = computeAvailabilityWindow(startAtIso, selectedResource.nextBooking?.startsAt ?? null)
+    if (window.status === 'unavailable') setResourceId(null)
+  }, [selectedResource, startAtIso])
+
   // M23: picking a device now happens inside WalkInAvailabilityCalendar,
   // which shows the actual next-booking time (or "open-ended") before staff
   // ever click — the old confirm-before-picking popup this replaced was the
@@ -234,7 +247,8 @@ export function WalkinWizard({
   // grid with no time information on it at all. The calendar itself already
   // refuses a click on an occupied-right-now resource or one whose window
   // has closed at the currently-selected start time (see its own disabled
-  // logic), so nothing further needs checking here.
+  // logic); the effect above covers the case where the start time moves
+  // out from under an already-made selection.
   function pickResource(r: { id: string }) {
     setResourceId(r.id)
   }
