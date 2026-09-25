@@ -228,7 +228,6 @@ export function WalkInAvailabilityCalendar({
 
       <div className="mt-2.5 space-y-2">
         {activeType.rows.map((r) => {
-          const window = computeAvailabilityWindow(startAtIso, r.nextBooking?.startsAt ?? null)
           const isSelected = r.id === selectedResourceId
           return (
             <button
@@ -273,7 +272,12 @@ export function WalkInAvailabilityCalendar({
                     Occupied right now
                   </div>
                 ) : (
-                  <ResourceAvailabilityBar startAtIso={startAtIso} window={window} timeZone={timeZone} isSelected={isSelected} />
+                  <ResourceAvailabilityBar
+                    startAtIso={startAtIso}
+                    nextBooking={r.nextBooking}
+                    timeZone={timeZone}
+                    isSelected={isSelected}
+                  />
                 )}
               </div>
 
@@ -320,18 +324,23 @@ export function WalkInAvailabilityCalendar({
 
 /** One row's mini timeline: an AVAILABLE segment from the selected start,
  *  up to whichever comes first — the visual axis edge or the next booking —
- *  followed by a BOOKED segment when that next booking falls within view. */
+ *  followed by a BOOKED segment when that next booking falls within view.
+ *  Each segment is labelled with its exact start–end time, the same
+ *  `{start}–{end or Ongoing}` convention the Bookings-page Timeline's own
+ *  booking bars use (components/bookings/BookingsView.tsx), so a slot reads
+ *  the same way in both places. */
 function ResourceAvailabilityBar({
   startAtIso,
-  window,
+  nextBooking,
   timeZone,
   isSelected,
 }: {
   startAtIso: string
-  window: ReturnType<typeof computeAvailabilityWindow>
+  nextBooking: WalkinAvailabilityResource['nextBooking']
   timeZone: string
   isSelected: boolean
 }) {
+  const window = computeAvailabilityWindow(startAtIso, nextBooking?.startsAt ?? null)
   const availableMinutes = window.status === 'available' ? window.availableMinutes : AXIS_MINUTES
   const visibleAvailable = Math.min(availableMinutes, AXIS_MINUTES)
   const availableWidthPct = (visibleAvailable / AXIS_MINUTES) * 100
@@ -356,27 +365,36 @@ function ResourceAvailabilityBar({
 
       {window.status === 'unavailable' ? (
         <div className="absolute inset-y-1.5 left-1 right-1 flex items-center gap-1.5 rounded-full bg-gradient-to-r from-destructive/15 to-destructive/5 px-3 text-xs font-semibold text-destructive shadow-sm ring-1 ring-destructive/20">
-          <Ban size={12} /> Overlaps the next booking
+          <Ban size={12} /> Overlaps the next booking at {timeInZone(window.nextBookingStartsAt, timeZone)}
         </div>
       ) : (
         <>
           <div
-            className="absolute inset-y-1.5 flex items-center overflow-hidden rounded-l-full pl-3 text-xs font-semibold text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300"
+            className="absolute inset-y-1.5 flex flex-col justify-center overflow-hidden rounded-l-full py-1 pl-3 text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300"
             style={{
               left: '0%',
               width: `${availableWidthPct}%`,
               background: 'linear-gradient(90deg, rgba(16,185,129,0.22), rgba(16,185,129,0.09))',
             }}
           >
-            <span className="truncate">{window.status === 'open_ended' ? 'Open — no upcoming booking' : 'Available'}</span>
+            <span className="truncate text-xs font-semibold">{window.status === 'open_ended' ? 'Open' : 'Free'}</span>
+            <span className="truncate text-[11px] opacity-90">
+              {timeInZone(startAtIso, timeZone)}–{window.status === 'open_ended' ? 'Open' : timeInZone(window.nextBookingStartsAt, timeZone)}
+            </span>
           </div>
-          {window.status === 'available' && bookedWidthPct > 0 && (
+          {window.status === 'available' && bookedWidthPct > 0 && nextBooking && (
             <div
-              className="absolute inset-y-1.5 right-1 flex items-center overflow-hidden rounded-r-full bg-gradient-to-r from-zinc-500 to-zinc-600 px-3 text-xs font-semibold text-white shadow-sm dark:from-zinc-600 dark:to-zinc-700"
+              className="absolute inset-y-1.5 right-1 flex flex-col justify-center overflow-hidden rounded-r-full bg-gradient-to-r from-zinc-500 to-zinc-600 py-1 px-3 text-white shadow-sm dark:from-zinc-600 dark:to-zinc-700"
               style={{ left: `${availableWidthPct}%`, width: `${bookedWidthPct}%` }}
-              title={window.nextBookingStartsAt ? `Booked from ${timeInZone(window.nextBookingStartsAt, timeZone)}` : undefined}
+              title={`${nextBooking.customerName || 'Booked'} ${timeInZone(nextBooking.startsAt, timeZone)}–${
+                nextBooking.endsAt ? timeInZone(nextBooking.endsAt, timeZone) : 'Ongoing'
+              }`}
             >
-              <span className="truncate">Booked {timeInZone(window.nextBookingStartsAt, timeZone)}</span>
+              <span className="truncate text-xs font-semibold">{nextBooking.customerName || 'Booked'}</span>
+              <span className="truncate text-[11px] opacity-90">
+                {timeInZone(nextBooking.startsAt, timeZone)}–
+                {nextBooking.endsAt ? timeInZone(nextBooking.endsAt, timeZone) : 'Ongoing'}
+              </span>
             </div>
           )}
         </>
