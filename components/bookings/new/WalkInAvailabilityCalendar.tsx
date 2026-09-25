@@ -424,7 +424,7 @@ function ResourceAvailabilityBar({
         <>
           <div
             className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300 ${
-              showBookedSegment ? 'rounded-l-full' : 'rounded-full'
+              showBookedSegment ? 'rounded-l-md' : 'rounded-md'
             }`}
             style={{
               left: '0%',
@@ -439,7 +439,7 @@ function ResourceAvailabilityBar({
           </div>
           {showBookedSegment && nextBooking && (
             <div
-              className="absolute inset-y-1.5 right-1 flex flex-col justify-center overflow-hidden rounded-r-full bg-gradient-to-r from-zinc-500 to-zinc-600 py-1 px-3 text-white shadow-sm dark:from-zinc-600 dark:to-zinc-700"
+              className="absolute inset-y-1.5 right-1 flex flex-col justify-center overflow-hidden rounded-r-md bg-gradient-to-r from-zinc-500 to-zinc-600 py-1 px-3 text-white shadow-sm dark:from-zinc-600 dark:to-zinc-700"
               style={{ left: `${availableWidthPct}%`, width: `${bookedWidthPct}%` }}
               title={`${nextBooking.customerName || 'Booked'} ${timeInZone(nextBooking.startsAt, timeZone)}–${
                 nextBooking.endsAt ? timeInZone(nextBooking.endsAt, timeZone) : 'Ongoing'
