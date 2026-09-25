@@ -379,7 +379,9 @@ function ResourceAvailabilityBar({
         <span className={`size-2 rounded-full ring-2 ring-card ${isSelected ? 'bg-primary' : 'bg-foreground/70'}`} />
       </span>
       <span
-        className={`absolute inset-y-0.5 z-10 w-0.5 rounded-full ${isSelected ? 'bg-primary' : 'bg-foreground/50'}`}
+        className={`absolute inset-y-0.5 z-10 w-[3px] rounded-full shadow-[0_0_0_1px_rgba(255,255,255,0.5)] dark:shadow-[0_0_0_1px_rgba(0,0,0,0.4)] ${
+          isSelected ? 'bg-primary' : 'bg-foreground/90'
+        }`}
         style={{ left: '0%' }}
       />
 
