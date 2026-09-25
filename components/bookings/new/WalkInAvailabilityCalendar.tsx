@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { ArrowLeft, Ban, CalendarClock, CheckCircle2, Gamepad2, Sparkles, Users } from 'lucide-react'
-import { formatMoney, timeInZone } from '@/lib/format'
+import { dateInZone, formatMoney, timeInZone } from '@/lib/format'
 import { computeAvailabilityWindow, formatAvailableWindow } from '@/lib/booking/walkin-availability'
 import { SelectableTile } from './wizard-ui'
 
@@ -139,7 +139,10 @@ export function WalkInAvailabilityCalendar({
   if (!activeType) {
     return (
       <div>
-        <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Which device type?</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Which device type?</p>
+          <p className="text-xs font-semibold text-muted-foreground">{dateInZone(startAtIso, timeZone)}</p>
+        </div>
         <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {types.map((t) => {
             // "Free" here means bookable at the CHOSEN start time, not merely
@@ -211,7 +214,9 @@ export function WalkInAvailabilityCalendar({
 
       {/* time axis header — shared by this type's rows below */}
       <div className="flex text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-        <div className="w-40 shrink-0" />
+        <div className="flex w-40 shrink-0 items-center normal-case tracking-normal text-foreground">
+          {dateInZone(startAtIso, timeZone)}
+        </div>
         <div className="relative h-5 flex-1">
           {Array.from({ length: AXIS_HOURS + 1 }, (_, i) => i).map((h) => (
             <span key={h} className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${(h / AXIS_HOURS) * 100}%` }}>
