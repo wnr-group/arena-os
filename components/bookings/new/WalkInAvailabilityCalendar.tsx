@@ -288,7 +288,7 @@ export function WalkInAvailabilityCalendar({
                 <p className="min-w-0 truncate text-sm font-bold text-foreground">{r.name}</p>
               </div>
 
-              <div className="relative min-h-16 flex-1 border-l border-border/60 py-2.5 pr-2.5">
+              <div className="relative min-h-20 flex-1 border-l border-border/60 py-2.5 pr-2.5">
                 {!r.isFree ? (
                   <div className="flex h-full items-center gap-1.5 pl-3 text-xs font-semibold text-destructive/90">
                     <span className="flex size-5 items-center justify-center rounded-full bg-destructive/10">
@@ -398,7 +398,7 @@ function ResourceAvailabilityBar({
   const showBookedSegment = window.status === 'available' && bookedWidthPct > 0 && Boolean(nextBooking)
 
   return (
-    <div className="relative h-full min-h-12 pl-3">
+    <div className="relative h-full min-h-16 pl-3">
       {/* hour gridlines, matching the header above */}
       {Array.from({ length: axisFullHours + 1 }, (_, i) => i).map((h) => (
         <span key={h} className="absolute inset-y-0 w-px bg-border/70" style={{ left: `calc(${((h * 60) / axisMinutes) * 100}% + 0.1px)` }} />
