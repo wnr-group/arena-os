@@ -360,6 +360,11 @@ function ResourceAvailabilityBar({
     const bookedEndMinutes = Math.min(visibleAvailable + Math.max(0, bookingDurationMinutes), AXIS_MINUTES)
     bookedWidthPct = Math.max(0, ((bookedEndMinutes - visibleAvailable) / AXIS_MINUTES) * 100)
   }
+  // Whether a grey block actually renders after the free segment — when it
+  // doesn't (open-ended, or the booking is fully clipped off-axis), the free
+  // segment is the only thing in the bar and must round on BOTH ends to sit
+  // inside the row's own rounded corners, not leave a hard square edge.
+  const showBookedSegment = window.status === 'available' && bookedWidthPct > 0 && Boolean(nextBooking)
 
   return (
     <div className="relative h-full min-h-12 pl-3">
@@ -385,7 +390,9 @@ function ResourceAvailabilityBar({
       ) : (
         <>
           <div
-            className="absolute inset-y-1.5 flex flex-col justify-center overflow-hidden rounded-l-full py-1 pl-3 text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300"
+            className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300 ${
+              showBookedSegment ? 'rounded-l-full' : 'rounded-full'
+            }`}
             style={{
               left: '0%',
               width: `${availableWidthPct}%`,
@@ -397,7 +404,7 @@ function ResourceAvailabilityBar({
               {timeInZone(startAtIso, timeZone)}–{window.status === 'open_ended' ? 'Open' : timeInZone(window.nextBookingStartsAt, timeZone)}
             </span>
           </div>
-          {window.status === 'available' && bookedWidthPct > 0 && nextBooking && (
+          {showBookedSegment && nextBooking && (
             <div
               className="absolute inset-y-1.5 right-1 flex flex-col justify-center overflow-hidden rounded-r-full bg-gradient-to-r from-zinc-500 to-zinc-600 py-1 px-3 text-white shadow-sm dark:from-zinc-600 dark:to-zinc-700"
               style={{ left: `${availableWidthPct}%`, width: `${bookedWidthPct}%` }}
