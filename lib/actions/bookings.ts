@@ -613,11 +613,21 @@ type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'n
  * fully-paid bill, refusing 'no_show' for a walk-in (M21 #8 QA pass — see
  * below), and cancelling its open orders on 'cancelled'.
  *
- * `reason` is required for 'cancelled' — re-checked here, not just in the UI,
- * since this action is the only path (staff or otherwise) that can write the
- * status. Ignored for every other transition.
+ * `reason` is required for 'cancelled' — re-checked at runtime below (not
+ * just in the UI), since this action is the only path (staff or otherwise)
+ * that can write the status. Ignored for every other transition. The
+ * conditional rest tuple below encodes that same requirement at the type
+ * level: calling with the literal 'cancelled' won't compile without a
+ * reason, while a caller holding a broader BookingStatus value (not
+ * narrowed to a single literal) still gets the optional form, since the
+ * runtime check is what actually guards that case.
  */
-export async function setBookingStatus(id: string, status: BookingStatus, reason?: string): Promise<Result> {
+export async function setBookingStatus<S extends BookingStatus>(
+  id: string,
+  status: S,
+  ...args: S extends 'cancelled' ? [reason: string] : [reason?: string]
+): Promise<Result> {
+  const reason = args[0]
   try {
     const ctx = await requireContext()
     const now = new Date()
