@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { ArrowLeft, Ban, CalendarClock, CheckCircle2, Gamepad2, Sparkles, Users } from 'lucide-react'
 import { dateInZone, formatMoney, timeInZone } from '@/lib/format'
 import { computeAvailabilityWindow, formatAvailableWindow } from '@/lib/booking/walkin-availability'
+import { todayInZone, zonedTimeToUtc } from '@/lib/booking/time'
 import { SelectableTile } from './wizard-ui'
 
 /**
@@ -54,14 +55,35 @@ export type WalkinAvailabilityResource = {
   } | null
 }
 
-/** The visual time axis's span — long enough to cover the longest a timed
- *  walk-in can run (WALKIN_MAX_DURATION_MINUTES, lib/booking/walkin.ts), so
- *  the bar for a fully-open evening doesn't feel arbitrarily truncated. A
- *  next booking further out than this still gets an entirely accurate
- *  headline ("Available for 6h 10m") — the axis is only ever a picture, the
- *  numbers never round to what fits on screen. */
-const AXIS_HOURS = 5
-const AXIS_MINUTES = AXIS_HOURS * 60
+/** Floor on the visual time axis's span — long enough to cover the longest a
+ *  timed walk-in can run (WALKIN_MAX_DURATION_MINUTES, lib/booking/walkin.ts),
+ *  so the bar for a fully-open evening doesn't feel arbitrarily truncated.
+ *  The axis itself is whichever is LONGER: this floor, or the time left
+ *  until closing (see computeAxisMinutes) — a booking later that evening
+ *  (e.g. 21:30) must still fall inside the visible window, not vanish past a
+ *  fixed early cutoff. A next booking further out than the final axis length
+ *  still gets an entirely accurate headline ("Available for 6h 10m") — the
+ *  axis is only ever a picture, the numbers never round to what fits on
+ *  screen. */
+const AXIS_MIN_MINUTES = 5 * 60
+
+/** Hard-coded pending a real "closing time" source (working_hours' own
+ *  close_time isn't threaded into this component) — 11pm covers this
+ *  business's actual hours today, and is far better than the fixed 5-hour
+ *  window silently hiding a real booking. Revisit if a tenant's own closing
+ *  time needs to flow through here instead. */
+const AXIS_CLOSE_TIME = '23:00'
+
+/** The axis's total length in minutes: from `startAtIso` to closing time the
+ *  same calendar day (in `timeZone`), floored at AXIS_MIN_MINUTES so a very
+ *  late start (already within that floor of closing) still gets a
+ *  sensibly wide bar instead of a sliver. */
+function computeAxisMinutes(startAtIso: string, timeZone: string): number {
+  const start = new Date(startAtIso)
+  const closingToday = zonedTimeToUtc(todayInZone(timeZone, start), AXIS_CLOSE_TIME, timeZone)
+  const minutesUntilClose = (closingToday.getTime() - start.getTime()) / 60_000
+  return Math.max(AXIS_MIN_MINUTES, minutesUntilClose)
+}
 
 export function WalkInAvailabilityCalendar({
   resources,
@@ -117,6 +139,9 @@ export function WalkInAvailabilityCalendar({
 
   const selected = resources.find((r) => r.id === selectedResourceId) ?? null
   const selectedWindow = selected ? computeAvailabilityWindow(startAtIso, selected.nextBooking?.startsAt ?? null) : null
+
+  const axisMinutes = useMemo(() => computeAxisMinutes(startAtIso, timeZone), [startAtIso, timeZone])
+  const axisFullHours = Math.floor(axisMinutes / 60)
 
   // Which device TYPE's rows are on screen. Lazily seeded from whatever
   // resource is already picked (e.g. this component remounting because the
@@ -218,8 +243,8 @@ export function WalkInAvailabilityCalendar({
           {dateInZone(startAtIso, timeZone)}
         </div>
         <div className="relative h-5 flex-1">
-          {Array.from({ length: AXIS_HOURS + 1 }, (_, i) => i).map((h) => (
-            <span key={h} className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${(h / AXIS_HOURS) * 100}%` }}>
+          {Array.from({ length: axisFullHours + 1 }, (_, i) => i).map((h) => (
+            <span key={h} className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${((h * 60) / axisMinutes) * 100}%` }}>
               {h === 0 ? timeInZone(startAtIso, timeZone) : timeInZone(addMinutesIso(startAtIso, h * 60), timeZone)}
             </span>
           ))}
@@ -277,6 +302,8 @@ export function WalkInAvailabilityCalendar({
                     nextBooking={r.nextBooking}
                     timeZone={timeZone}
                     isSelected={isSelected}
+                    axisMinutes={axisMinutes}
+                    axisFullHours={axisFullHours}
                   />
                 )}
               </div>
@@ -334,16 +361,20 @@ function ResourceAvailabilityBar({
   nextBooking,
   timeZone,
   isSelected,
+  axisMinutes,
+  axisFullHours,
 }: {
   startAtIso: string
   nextBooking: WalkinAvailabilityResource['nextBooking']
   timeZone: string
   isSelected: boolean
+  axisMinutes: number
+  axisFullHours: number
 }) {
   const window = computeAvailabilityWindow(startAtIso, nextBooking?.startsAt ?? null)
-  const availableMinutes = window.status === 'available' ? window.availableMinutes : AXIS_MINUTES
-  const visibleAvailable = Math.min(availableMinutes, AXIS_MINUTES)
-  const availableWidthPct = (visibleAvailable / AXIS_MINUTES) * 100
+  const availableMinutes = window.status === 'available' ? window.availableMinutes : axisMinutes
+  const visibleAvailable = Math.min(availableMinutes, axisMinutes)
+  const availableWidthPct = (visibleAvailable / axisMinutes) * 100
 
   // The grey block is the booking's OWN span — a 30-minute booking must draw
   // exactly 30 minutes wide, however much of the axis is left after it, not
@@ -357,8 +388,8 @@ function ResourceAvailabilityBar({
     const bookingDurationMinutes = nextBooking.endsAt
       ? (new Date(nextBooking.endsAt).getTime() - new Date(nextBooking.startsAt).getTime()) / 60_000
       : Infinity
-    const bookedEndMinutes = Math.min(visibleAvailable + Math.max(0, bookingDurationMinutes), AXIS_MINUTES)
-    bookedWidthPct = Math.max(0, ((bookedEndMinutes - visibleAvailable) / AXIS_MINUTES) * 100)
+    const bookedEndMinutes = Math.min(visibleAvailable + Math.max(0, bookingDurationMinutes), axisMinutes)
+    bookedWidthPct = Math.max(0, ((bookedEndMinutes - visibleAvailable) / axisMinutes) * 100)
   }
   // Whether a grey block actually renders after the free segment — when it
   // doesn't (open-ended, or the booking is fully clipped off-axis), the free
@@ -369,8 +400,8 @@ function ResourceAvailabilityBar({
   return (
     <div className="relative h-full min-h-12 pl-3">
       {/* hour gridlines, matching the header above */}
-      {Array.from({ length: AXIS_HOURS + 1 }, (_, i) => i).map((h) => (
-        <span key={h} className="absolute inset-y-0 w-px bg-border/70" style={{ left: `calc(${(h / AXIS_HOURS) * 100}% + 0.1px)` }} />
+      {Array.from({ length: axisFullHours + 1 }, (_, i) => i).map((h) => (
+        <span key={h} className="absolute inset-y-0 w-px bg-border/70" style={{ left: `calc(${((h * 60) / axisMinutes) * 100}% + 0.1px)` }} />
       ))}
 
       {/* start marker — a small pulsing dot, the same "live" cue the
