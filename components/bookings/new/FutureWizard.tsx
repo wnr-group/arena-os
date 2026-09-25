@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CalendarDays, Check, Clock, Gamepad2, Loader2, Users } from 'lucide-react'
 import { toast } from 'sonner'
@@ -210,7 +210,14 @@ export function FutureWizard({
   const [phoneChecked, setPhoneChecked] = useState(false)
   const [existingCustomerName, setExistingCustomerName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [pending, start] = useTransition()
+  // Plain state, not useTransition — router.push() called from inside a
+  // startTransition's async callback (after an await) was silently getting
+  // dropped: React ends OUR transition the moment this callback returns,
+  // and that re-render appears to abort the navigation transition
+  // router.push() had just started, so the URL never actually changed even
+  // though createBooking had already succeeded. Keeping "is this submitting"
+  // as ordinary state sidesteps the interaction entirely.
+  const [pending, setPending] = useState(false)
 
   // Keyed on whether a NAME is known, not on whether a customer row exists —
   // customers.name is nullable, so a returning customer can be found with no
@@ -322,7 +329,7 @@ export function FutureWizard({
     setStep(3)
   }
 
-  function submit() {
+  async function submit() {
     setError(null)
     if (!selectedSlot) {
       setError('Pick a start time first.')
@@ -339,21 +346,22 @@ export function FutureWizard({
       setStep(2)
       return
     }
-    start(async () => {
-      const r = await createBooking({
-        branchId,
-        source: 'walk_in',
-        customerName,
-        customerPhone,
-        slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
-        headCount: isPerHead ? headCount : undefined,
-      })
-      if (r.error) setError(r.error)
-      else {
-        toast.success(`Booking ${r.bookingNumber} created.`)
-        router.push('/bookings')
-      }
+    setPending(true)
+    const r = await createBooking({
+      branchId,
+      source: 'walk_in',
+      customerName,
+      customerPhone,
+      slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
+      headCount: isPerHead ? headCount : undefined,
     })
+    if (r.error) {
+      setError(r.error)
+      setPending(false)
+    } else {
+      toast.success(`Booking ${r.bookingNumber} created.`)
+      router.push('/bookings')
+    }
   }
 
   return (

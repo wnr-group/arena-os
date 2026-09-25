@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, Loader2, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
@@ -161,7 +161,14 @@ export function WalkinWizard({
   const [mode, setMode] = useState<'open_tab' | 'timed'>('open_tab')
   const [durationMin, setDurationMin] = useState(60)
   const [error, setError] = useState<string | null>(null)
-  const [pending, start] = useTransition()
+  // Plain state, not useTransition — router.push() called from inside a
+  // startTransition's async callback (after an await) was silently getting
+  // dropped: React ends OUR transition the moment this callback returns,
+  // and that re-render appears to abort the navigation transition
+  // router.push() had just started, so the URL never actually changed even
+  // though startWalkin had already succeeded. Keeping "is this submitting"
+  // as ordinary state sidesteps the interaction entirely.
+  const [pending, setPending] = useState(false)
 
   // M21 per-head #4: player count for a per_head station — defaults to the
   // type's min_players, reset whenever a different station is picked. No
@@ -232,7 +239,7 @@ export function WalkinWizard({
     setResourceId(r.id)
   }
 
-  function submit() {
+  async function submit() {
     setError(null)
     if (!resourceId) {
       setError('Pick a station first.')
@@ -248,30 +255,31 @@ export function WalkinWizard({
       setError('Still checking that phone number — try again in a moment.')
       return
     }
-    start(async () => {
-      // Derived fresh here, NOT from baseNow (which only exists to keep the
-      // stepper's displayed "now" from visibly creeping while the form sits
-      // open) — a wizard left open for a while must still submit a start
-      // time close to the actual moment of submission, both so the booking's
-      // own duration/pricing is right and so startWalkinCore's ±30-min
-      // window (lib/booking/walkin.ts) doesn't reject a perfectly good
-      // zero-offset walk-in just because the form was open too long.
-      const r = await startWalkin({
-        branchId,
-        resourceId,
-        phone,
-        name: name.trim() || undefined,
-        startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
-        mode,
-        durationMin: mode === 'timed' ? durationMin : undefined,
-        headCount: isPerHead ? headCount : undefined,
-      })
-      if (r.error) setError(r.error)
-      else {
-        toast.success(`Walk-in ${r.bookingNumber} started.`)
-        router.push('/bookings')
-      }
+    setPending(true)
+    // Derived fresh here, NOT from baseNow (which only exists to keep the
+    // stepper's displayed "now" from visibly creeping while the form sits
+    // open) — a wizard left open for a while must still submit a start
+    // time close to the actual moment of submission, both so the booking's
+    // own duration/pricing is right and so startWalkinCore's ±30-min
+    // window (lib/booking/walkin.ts) doesn't reject a perfectly good
+    // zero-offset walk-in just because the form was open too long.
+    const r = await startWalkin({
+      branchId,
+      resourceId,
+      phone,
+      name: name.trim() || undefined,
+      startAt: new Date(Date.now() + offsetMin * 60_000).toISOString(),
+      mode,
+      durationMin: mode === 'timed' ? durationMin : undefined,
+      headCount: isPerHead ? headCount : undefined,
     })
+    if (r.error) {
+      setError(r.error)
+      setPending(false)
+    } else {
+      toast.success(`Walk-in ${r.bookingNumber} started.`)
+      router.push('/bookings')
+    }
   }
 
   return (
