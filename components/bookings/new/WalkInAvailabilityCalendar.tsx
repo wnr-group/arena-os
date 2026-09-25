@@ -344,7 +344,22 @@ function ResourceAvailabilityBar({
   const availableMinutes = window.status === 'available' ? window.availableMinutes : AXIS_MINUTES
   const visibleAvailable = Math.min(availableMinutes, AXIS_MINUTES)
   const availableWidthPct = (visibleAvailable / AXIS_MINUTES) * 100
-  const bookedWidthPct = window.status === 'available' ? 100 - availableWidthPct : 0
+
+  // The grey block is the booking's OWN span — a 30-minute booking must draw
+  // exactly 30 minutes wide, however much of the axis is left after it, not
+  // "everything left in the axis" (the bug this fixes: a 15:00–15:30 booking
+  // was drawing all the way to the right edge). Clipped at the axis edge if
+  // the booking would otherwise run past it; a null endsAt (no committed end
+  // yet) draws to the axis edge on purpose, same as Timeline's own "Ongoing"
+  // bar for that case.
+  let bookedWidthPct = 0
+  if (window.status === 'available' && nextBooking) {
+    const bookingDurationMinutes = nextBooking.endsAt
+      ? (new Date(nextBooking.endsAt).getTime() - new Date(nextBooking.startsAt).getTime()) / 60_000
+      : Infinity
+    const bookedEndMinutes = Math.min(visibleAvailable + Math.max(0, bookingDurationMinutes), AXIS_MINUTES)
+    bookedWidthPct = Math.max(0, ((bookedEndMinutes - visibleAvailable) / AXIS_MINUTES) * 100)
+  }
 
   return (
     <div className="relative h-full min-h-12 pl-3">
