@@ -277,6 +277,9 @@ export const bookings = pgTable(
     checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /** Why it was cancelled (migration 0097). Null until a cancellation happens;
+     *  never cleared afterward, even if the booking is later reused. */
+    cancellationReason: text('cancellation_reason'),
     /**
      * Raised (migration 0047) when a CUSTOMER cancels a booking the venue is
      * holding a deposit against. Nothing is refunded automatically — this is
