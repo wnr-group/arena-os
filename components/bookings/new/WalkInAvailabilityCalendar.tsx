@@ -431,7 +431,7 @@ function ResourceAvailabilityBar({
       ) : (
         <>
           <div
-            className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-300 ${
+            className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-emerald-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-200 ${
               showBookedSegment ? 'rounded-l-md' : 'rounded-md'
             }`}
             style={{
