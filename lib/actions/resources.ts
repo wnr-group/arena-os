@@ -290,6 +290,7 @@ const dayInput = z.object({
   openTime: z.string().regex(/^\d{2}:\d{2}$/),
   closeTime: z.string().regex(/^\d{2}:\d{2}$/),
   isClosed: z.boolean(),
+  open24h: z.boolean().default(false),
 })
 const hoursInput = z.object({
   branchId: z.string().uuid(),
@@ -301,7 +302,11 @@ export async function saveWorkingHours(input: z.input<typeof hoursInput>): Promi
     const ctx = await requireManager()
     const v = hoursInput.parse(input)
     for (const d of v.days) {
-      if (!d.isClosed && d.closeTime <= d.openTime) {
+      if (d.isClosed && d.open24h) {
+        return { error: `A day can't be both closed and open 24 hours (day ${d.dayOfWeek}).` }
+      }
+      // open/close only matter for a normal (not closed, not 24h) day.
+      if (!d.isClosed && !d.open24h && d.closeTime <= d.openTime) {
         return { error: `Close time must be after open time (day ${d.dayOfWeek}).` }
       }
     }
@@ -316,10 +321,11 @@ export async function saveWorkingHours(input: z.input<typeof hoursInput>): Promi
             openTime: d.openTime,
             closeTime: d.closeTime,
             isClosed: d.isClosed,
+            open24h: d.open24h,
           })
           .onConflictDoUpdate({
             target: [workingHours.branchId, workingHours.dayOfWeek],
-            set: { openTime: d.openTime, closeTime: d.closeTime, isClosed: d.isClosed },
+            set: { openTime: d.openTime, closeTime: d.closeTime, isClosed: d.isClosed, open24h: d.open24h },
           })
       }
     })

@@ -28,7 +28,7 @@ export type AvailabilityResponse = {
   isClosed?: boolean
 }
 
-const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
+const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
 export async function getAvailableStarts(
   raw: z.input<typeof input>,
@@ -53,6 +53,7 @@ export async function getAvailableStarts(
           openTime: workingHours.openTime,
           closeTime: workingHours.closeTime,
           isClosed: workingHours.isClosed,
+          open24h: workingHours.open24h,
         })
         .from(workingHours)
         .where(and(eq(workingHours.branchId, v.branchId), eq(workingHours.dayOfWeek, dow)))
@@ -172,6 +173,7 @@ export async function getAvailableStartsForType(
           openTime: workingHours.openTime,
           closeTime: workingHours.closeTime,
           isClosed: workingHours.isClosed,
+          open24h: workingHours.open24h,
         })
         .from(workingHours)
         .where(and(eq(workingHours.branchId, v.branchId), eq(workingHours.dayOfWeek, dow)))

@@ -6,6 +6,10 @@ export type DayHours = {
   openTime: string // 'HH:mm'
   closeTime: string // 'HH:mm'
   isClosed: boolean
+  /** Open a full 24 hours (00:00 → next midnight); open/close are ignored when
+   *  set (migration 0098). Optional so existing callers/DEFAULT_HOURS that
+   *  predate it read as false. */
+  open24h?: boolean
 }
 
 export type AvailabilityOptions = {
@@ -65,8 +69,17 @@ export function availableStartTimes(
 
   const slotMinutes = opts.slotMinutes ?? 30
   const buffer = opts.bufferMinutes ?? 0
-  const dayOpen = zonedTimeToUtc(dateStr, hours.openTime, timeZone)
-  const dayClose = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
+  // "Open 24 hours" (migration 0098): the day runs 00:00 → the NEXT midnight,
+  // so the final 11:30 PM–12:00 AM slot fits (a same-day close time can never
+  // reach midnight). open/close are ignored for such a day.
+  const dayOpen = zonedTimeToUtc(dateStr, hours.open24h ? '00:00' : hours.openTime, timeZone)
+  let dayClose: Date
+  if (hours.open24h) {
+    dayClose = zonedTimeToUtc(dateStr, '00:00', timeZone)
+    dayClose.setUTCDate(dayClose.getUTCDate() + 1)
+  } else {
+    dayClose = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
+  }
 
   const out: Date[] = []
   const step = slotMinutes * MIN
