@@ -233,6 +233,9 @@ export const workingHours = pgTable(
     openTime: text('open_time').notNull().default('10:00'),
     closeTime: text('close_time').notNull().default('22:00'),
     isClosed: boolean('is_closed').notNull().default(false),
+    /** Open a full 24 hours (00:00 → next midnight), ignoring open/close times
+     *  (migration 0098). Never combined with is_closed. */
+    open24h: boolean('open_24h').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

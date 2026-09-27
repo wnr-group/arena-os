@@ -31,6 +31,7 @@ export default async function HoursSettingsPage() {
       openTime: h?.openTime ?? '10:00',
       closeTime: h?.closeTime ?? '22:00',
       isClosed: h?.isClosed ?? false,
+      open24h: h?.open24h ?? false,
     }
   })
 
