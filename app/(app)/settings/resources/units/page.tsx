@@ -1,11 +1,12 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
-import { listResourceTypes, listResources } from '@/lib/booking/data'
+import { listResourceTypes, listResources, listResourceSetups } from '@/lib/booking/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { and, eq } from 'drizzle-orm'
 import { ResourcesManager } from '@/components/settings/ResourcesManager'
+import type { ResourceSetupRow } from '@/components/settings/ResourceSetupsModal'
 
 export default async function ResourcesUnitsPage() {
   const ctx = await getActiveContext()
@@ -21,13 +22,31 @@ export default async function ResourcesUnitsPage() {
       .limit(1),
   )
 
-  const [types, res] = await Promise.all([
+  const [types, res, setups] = await Promise.all([
     listResourceTypes(ctx),
     branch ? listResources(ctx, branch.id) : Promise.resolve([]),
+    branch ? listResourceSetups(ctx, branch.id) : Promise.resolve([]),
   ])
 
   if (!branch) {
     return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
+  }
+
+  // M24 #3: group by resourceId for ResourcesManager's per-unit Setups editor.
+  // rateUnit is narrowed from the column's plain `text` type — the DB's own
+  // check constraint (0099_studio_setups.sql) is what actually enforces it's
+  // always 'hour' or 'day'.
+  const setupsByResource: Record<string, ResourceSetupRow[]> = {}
+  for (const s of setups) {
+    ;(setupsByResource[s.resourceId] ??= []).push({
+      id: s.id,
+      resourceId: s.resourceId,
+      name: s.name,
+      rate: s.rate,
+      rateUnit: s.rateUnit === 'day' ? 'day' : 'hour',
+      isActive: s.isActive,
+      sortOrder: s.sortOrder,
+    })
   }
 
   return (
@@ -57,6 +76,7 @@ export default async function ResourcesUnitsPage() {
           typeDescription: r.typeDescription,
           qrToken: r.qrToken,
         }))}
+        setupsByResource={setupsByResource}
       />
     </div>
   )

@@ -4,6 +4,7 @@ import { withUser } from '@/db'
 import {
   resourceTypes,
   resources,
+  resourceSetups,
   workingHours,
   bookings,
   bookingSlots,
@@ -74,6 +75,31 @@ export function listResources(ctx: ActiveContext, branchId: string) {
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
       .where(and(eq(resources.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
       .orderBy(asc(resources.sortOrder), asc(resources.name)),
+  )
+}
+
+/**
+ * A branch's resource_setups (M24 #3) — every named setup on every resource
+ * in this branch, active or not (the settings editor manages both), for the
+ * units settings page's per-unit "Setups" editor. Grouped by resourceId on
+ * the client; ordering here just needs to be stable within a resource.
+ */
+export function listResourceSetups(ctx: ActiveContext, branchId: string) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: resourceSetups.id,
+        resourceId: resourceSetups.resourceId,
+        name: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+        isActive: resourceSetups.isActive,
+        sortOrder: resourceSetups.sortOrder,
+      })
+      .from(resourceSetups)
+      .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
+      .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
   )
 }
 

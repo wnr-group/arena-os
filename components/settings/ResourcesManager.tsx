@@ -20,12 +20,14 @@ import {
   ChevronDown,
   Loader2,
   QrCode,
+  Layers,
 } from 'lucide-react'
 import { upsertResource, deleteResource } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
+import { ResourceSetupsModal, type ResourceSetupRow } from './ResourceSetupsModal'
 
 type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
 type ResourceStatus = 'available' | 'maintenance' | 'inactive'
@@ -43,6 +45,7 @@ type ResourceRow = {
   qrToken: string
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: ResourceRow }
+type SetupsTarget = { resourceId: string; resourceName: string }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void, onSettled?: () => void) => void
 type View = 'table' | 'grid'
 
@@ -72,6 +75,7 @@ export function ResourcesManager({
   industry,
   types,
   resources,
+  setupsByResource,
 }: {
   branchId: string
   currency: string
@@ -80,12 +84,16 @@ export function ResourcesManager({
   industry: string
   types: TypeOption[]
   resources: ResourceRow[]
+  /** M24 #3 — every resource's named setups, keyed by resourceId. A resource
+   *  with none simply gets an empty editor ("no setups yet"), not an error. */
+  setupsByResource: Record<string, ResourceSetupRow[]>
 }) {
   const router = useRouter()
   const confirm = useConfirm()
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [setupsTarget, setSetupsTarget] = useState<SetupsTarget | null>(null)
   // Restaurant tenants only see the table view — a table list reads better
   // as rows than as photo cards, and there's no grid toggle for them to
   // switch away with (see below). Every other industry keeps grid as the
@@ -296,6 +304,9 @@ export function ResourcesManager({
                 deleting={deletingId === row.id}
                 onEdit={() => setModal({ mode: 'edit', row })}
                 onDelete={() => handleDelete(row)}
+                onSetups={
+                  isRestaurant ? undefined : () => setSetupsTarget({ resourceId: row.id, resourceName: row.name })
+                }
               />
             )
           })}
@@ -358,6 +369,17 @@ export function ResourcesManager({
                         >
                           <QrCode size={16} />
                         </Link>
+                        {!isRestaurant && (
+                          <button
+                            className={btn}
+                            disabled={pending}
+                            onClick={() => setSetupsTarget({ resourceId: row.id, resourceName: row.name })}
+                            aria-label="Setups"
+                            title="Setups"
+                          >
+                            <Layers size={16} />
+                          </button>
+                        )}
                         <button
                           className={btn}
                           disabled={pending}
@@ -394,6 +416,16 @@ export function ResourcesManager({
           pending={pending}
           run={run}
           onClose={() => setModal(null)}
+        />
+      )}
+
+      {setupsTarget && (
+        <ResourceSetupsModal
+          resourceId={setupsTarget.resourceId}
+          resourceName={setupsTarget.resourceName}
+          currency={currency}
+          setups={setupsByResource[setupsTarget.resourceId] ?? []}
+          onClose={() => setSetupsTarget(null)}
         />
       )}
     </div>
@@ -508,6 +540,7 @@ function ResourceCard({
   deleting,
   onEdit,
   onDelete,
+  onSetups,
 }: {
   row: ResourceRow
   rate: string | null
@@ -516,6 +549,8 @@ function ResourceCard({
   deleting: boolean
   onEdit: () => void
   onDelete: () => void
+  /** Undefined hides the button — a restaurant table has no setups (M24 #3). */
+  onSetups?: () => void
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-lg">
@@ -532,6 +567,18 @@ function ResourceCard({
         >
           <QrCode size={13} />
         </Link>
+        {onSetups && (
+          <button
+            type="button"
+            className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={pending}
+            onClick={onSetups}
+            aria-label="Setups"
+            title="Setups"
+          >
+            <Layers size={13} />
+          </button>
+        )}
         <button
           type="button"
           className="rounded-md border border-border/60 bg-background/90 p-1.5 text-foreground shadow-sm backdrop-blur-sm hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
