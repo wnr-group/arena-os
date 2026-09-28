@@ -29,7 +29,7 @@
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-studio-setups-public.ts
  */
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomInt } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
 
@@ -50,6 +50,7 @@ async function main() {
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const tag = randomBytes(3).toString('hex')
+  const digits = String(randomInt(0, 1_000_000_000)).padStart(9, '0')
 
   const t = await owner.query<{ id: string }>(
     `insert into tenants (slug,name,status,timezone,industry) values ($1,'Pub Setups QA Co','active','Asia/Kolkata','recording_studio') returning id`,
@@ -115,7 +116,7 @@ async function main() {
   check('3-day Royal quotes 18000.00 (3 x 6000)', q2.total === 18000, q2)
 
   // ── create + pay-now deposit matches the quote to the paise ─────────────
-  const phone = `9${tag.padStart(9, '0').slice(0, 9)}`
+  const phone = `9${digits}`
   const created = await createPublicBooking({
     resourceId,
     startsAt: range1.startsAt!,
@@ -149,7 +150,7 @@ async function main() {
     startsAt: range1.startsAt!,
     endsAt: new Date(new Date(range1.startsAt!).getTime() + 2 * 60 * 60_000).toISOString(),
     customerName: 'Second Customer',
-    customerPhone: `8${tag.padStart(9, '0').slice(0, 9)}`,
+    customerPhone: `8${digits}`,
     setupId: kitchenId,
     website: '',
   })
@@ -161,7 +162,7 @@ async function main() {
     startsAt: range1.startsAt!,
     endsAt: range1.endsAt!,
     customerName: 'Third Customer',
-    customerPhone: `7${tag.padStart(9, '0').slice(0, 9)}`,
+    customerPhone: `7${digits}`,
     website: '',
   })
   check('overlapping base-rate (no setup) booking on the same set is refused with a clear message', /just taken/i.test(baseRateOverlap.error ?? ''), baseRateOverlap)

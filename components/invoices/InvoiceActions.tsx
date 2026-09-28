@@ -69,7 +69,10 @@ export function InvoiceActions({
       {!alreadyVoid && (
         <p className="mb-2 max-w-md text-xs text-muted-foreground">
           Made a mistake on this bill? Refund any payment first, then void the
-          invoice — you can then raise a corrected bill for the same booking.
+          invoice —{' '}
+          {bookingId
+            ? 'you can then raise a corrected bill for the same booking.'
+            : 'you can then create a corrected sale.'}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">

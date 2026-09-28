@@ -203,7 +203,8 @@ async function main() {
     slots: [{ resourceId: otherRes.rows[0].id, startsAt: otherStart.toISOString(), endsAt: otherEnd.toISOString() }],
   })
   if (!otherCreated.bookingId) throw new Error(`other-tenant createBooking failed: ${otherCreated.error}`)
-  await setBookingStatus(otherCreated.bookingId, 'checked_in')
+  const otherCheckIn = await setBookingStatus(otherCreated.bookingId, 'checked_in')
+  if (otherCheckIn.error) throw new Error(`other-tenant check-in failed: ${otherCheckIn.error}`)
 
   g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': slug }
   g.__ARENA_TEST_SESSION = CASHIER.token

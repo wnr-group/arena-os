@@ -259,10 +259,12 @@ export function BookingsView({
       confirmText: 'Remove',
       onConfirm: async () => {
         setLineActionId(itemId)
-        const r = await removeOrderItem(itemId)
-        setLineActionId(null)
-        if (r.error) toast.error(r.error)
-        else router.refresh()
+        startLine(async () => {
+          const r = await removeOrderItem(itemId)
+          setLineActionId(null)
+          if (r.error) toast.error(r.error)
+          else router.refresh()
+        })
       },
     })
   }

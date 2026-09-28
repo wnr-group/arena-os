@@ -741,6 +741,28 @@ async function lockActiveOrderItem(tx: Db, tenantId: string, orderItemId: string
 }
 
 /**
+ * M25 #3's in-place correction (edit qty / remove) is a plain data-entry fix
+ * for a line that "never happened for real" (see editOrderItemQuantityCore's
+ * doc comment) — it assumes the kitchen never acted on it. lockActiveOrderItem
+ * doesn't check that on its own (void/comp, its other caller, deliberately
+ * still allows a COMP after the ticket is served — see applyVoidDecision), so
+ * editOrderItemQuantityCore/removeOrderItemCore call this separately: once the
+ * order's KOT is `served`, the line is no longer a typo to quietly fix, it's a
+ * correction that belongs in the void/comp flow (with a reason, on the
+ * record).
+ */
+async function assertKotNotServed(tx: Db, tenantId: string, orderId: string): Promise<void> {
+  const [ticket] = await tx
+    .select({ status: kots.status })
+    .from(kots)
+    .where(and(eq(kots.orderId, orderId), eq(kots.tenantId, tenantId)))
+    .limit(1)
+  if (ticket?.status === 'served') {
+    throw new OrderError('This item has already been served — use void or comp to correct it instead.')
+  }
+}
+
+/**
  * The actual money-moving step, shared by requestVoidOrderItemCore's
  * auto-approve path (a manager/owner requesting their own) and
  * decideVoidRequestCore's approve path (a manager approving someone else's
@@ -886,6 +908,7 @@ export async function editOrderItemQuantityCore(
   }
 
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  await assertKotNotServed(tx, actor.tenantId, row.orderId)
   const newLineTotal = (Number(row.unitPrice) * input.newQty).toFixed(2)
 
   await tx
@@ -917,6 +940,7 @@ export async function removeOrderItemCore(
   input: RemoveOrderItemInput,
 ): Promise<OrderLineCorrectionResult> {
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  await assertKotNotServed(tx, actor.tenantId, row.orderId)
 
   await tx.delete(orderItems).where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
 

@@ -190,6 +190,7 @@ export function ResourceBookingPage({
       setRangeWindow(null)
       setRangeError('End date must be on or after the start date.')
       setRangeConflict(false)
+      setRangeLoading(false)
       return
     }
     let cancelled = false
@@ -226,7 +227,10 @@ export function ResourceBookingPage({
   // shown here always matches what createPublicBooking actually charges.
   const isPerHead = resource.pricingMode === 'per_head'
   const headCount = isPerHead ? Math.max(1, resource.minPlayers) : 1
-  const priceFor = (minutes: number) => (hourlyRate * minutes * headCount) / 60
+  const priceFor = (minutes: number) => {
+    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : hourlyRate * headCount
+    return (rate * minutes) / 60
+  }
   const endsAt = startsAt ? new Date(new Date(startsAt).getTime() + duration * 60_000).toISOString() : null
 
   // Happy hours #3: once a specific start time is picked, the flat

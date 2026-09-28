@@ -13,6 +13,8 @@
  *     one of several leaves the order open and the KOT alone
  *   - both refuse once the order is billed or cancelled (lockActiveOrderItem's
  *     existing rule, reused verbatim — same message void/comp already gives)
+ *   - both refuse once the order's KOT has been served — a served line is no
+ *     longer a typo to quietly fix, it belongs to void/comp instead
  *   - both write an audit_log row (order_item.edit / order_item.remove)
  *   - available on a gaming_cafe tenant (no restaurant gate)
  *   - cross-tenant order item id fails closed
@@ -92,13 +94,15 @@ async function main() {
   )
 
   const actor = { tenantId, membershipId }
+  let otherTenantId: string | null = null
 
   let bookingSeq = 0
   async function makeBooking() {
     const n = ++bookingSeq
     const bk = await ownerPool.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total)
-       values ($1,$2,$3,'confirmed','0','0') returning id`,
+       values ($1,$2,$3,'confirmed','0','0')
+       on conflict (tenant_id,booking_number) do update set status='confirmed' returning id`,
       [tenantId, branchId, `TB-OLC-${n}`],
     )
     return bk.rows[0].id
@@ -138,6 +142,7 @@ async function main() {
     }
   }
 
+  try {
   // ══ 1. edit quantity up and down ═══════════════════════════════════════════
   console.log('\n── edit quantity ──')
   const bk1 = await makeBooking()
@@ -227,18 +232,44 @@ async function main() {
     'already cancelled',
   )
 
+  // ══ 6b. refused once the order's KOT has been served ═══════════════════════
+  // CodeRabbit review (PR #34): lockActiveOrderItem only checked the order was
+  // open, not whether the kitchen had already served it — a served line could
+  // be silently quantity-edited or deleted instead of going through void/comp.
+  console.log('\n── refused once the KOT is served ──')
+  const bk6 = await makeBooking()
+  const order6 = await place(bk6, [{ menuItemId: burger.rows[0].id, qty: 1 }])
+  const [line6] = await itemsOf(order6.id)
+  await ownerPool.query(`update kots set status='served' where order_id=$1`, [order6.id])
+  await expectRejected(
+    'edit refused once the KOT is served',
+    () => withUser(userId, (tx) => editOrderItemQuantityCore(tx, actor, { orderItemId: line6.id, newQty: 2 })),
+    'served',
+  )
+  await expectRejected(
+    'remove refused once the KOT is served',
+    () => withUser(userId, (tx) => removeOrderItemCore(tx, actor, { orderItemId: line6.id })),
+    'served',
+  )
+  const stillThere6 = await itemsOf(order6.id)
+  check('…the line is untouched', stillThere6.length === 1 && stillThere6[0].qty === 1)
+
   // ══ 7. cross-tenant fail-closed ════════════════════════════════════════════
   console.log('\n── cross-tenant fail-closed ──')
   const other = await ownerPool.query<{ id: string }>(
-    `insert into tenants (slug,name,status,timezone) values ($1,'Other Co','active',$2) returning id`,
+    `insert into tenants (slug,name,status,timezone) values ($1,'Other Co','active',$2)
+     on conflict (slug) do update set name=excluded.name returning id`,
     [`${slug}-other`, TZ],
   )
+  otherTenantId = other.rows[0].id
   const otherBr = await ownerPool.query<{ id: string }>(
-    `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`,
+    `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
+     on conflict (tenant_id,name) do update set is_primary=true returning id`,
     [other.rows[0].id],
   )
   const otherCat = await ownerPool.query<{ id: string }>(
-    `insert into menu_categories (tenant_id,name) values ($1,'Snacks') returning id`,
+    `insert into menu_categories (tenant_id,name) values ($1,'Snacks')
+     on conflict (tenant_id,name) do update set name=excluded.name returning id`,
     [other.rows[0].id],
   )
   const otherItem = await ownerPool.query<{ id: string }>(
@@ -246,15 +277,18 @@ async function main() {
     [other.rows[0].id, otherCat.rows[0].id],
   )
   const otherUser = await ownerPool.query<{ id: string }>(
-    `insert into users (email,password_hash) values ($1,'x') returning id`,
+    `insert into users (email,password_hash) values ($1,'x')
+     on conflict (email) do update set email=excluded.email returning id`,
     [`owner-other@${slug}.test`],
   )
   await ownerPool.query(
-    `insert into memberships (tenant_id,user_id,role,status) values ($1,$2,'owner','active')`,
+    `insert into memberships (tenant_id,user_id,role,status) values ($1,$2,'owner','active')
+     on conflict (tenant_id,user_id) do update set role='owner', status='active'`,
     [other.rows[0].id, otherUser.rows[0].id],
   )
   const otherBooking = await ownerPool.query<{ id: string }>(
-    `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total) values ($1,$2,$3,'confirmed','0','0') returning id`,
+    `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total) values ($1,$2,$3,'confirmed','0','0')
+     on conflict (tenant_id,booking_number) do update set status='confirmed' returning id`,
     [other.rows[0].id, otherBr.rows[0].id, `TB-OLC-OTHER`],
   )
   const otherOrder = await withUser(otherUser.rows[0].id, (tx) =>
@@ -270,13 +304,17 @@ async function main() {
     () => withUser(userId, (tx) => editOrderItemQuantityCore(tx, actor, { orderItemId: otherLine.id, newQty: 2 })),
     'not found',
   )
-
-  await ownerPool.query('delete from tenants where id = $1', [other.rows[0].id])
-  await ownerPool.query('delete from tenants where id = $1', [tenantId])
-  await ownerPool.query(`delete from users where email = $1`, [`owner@${slug}.test`])
-  await ownerPool.query(`delete from users where email = $1`, [`owner-other@${slug}.test`])
-  await ownerPool.end()
-  await appPool.end()
+  } finally {
+    // Guaranteed cleanup (even if an assertion above threw) so a broken run
+    // never leaves fixtures behind to collide with — or silently reuse stale
+    // state in — the next run.
+    if (otherTenantId) await ownerPool.query('delete from tenants where id = $1', [otherTenantId]).catch(() => {})
+    await ownerPool.query('delete from tenants where id = $1', [tenantId]).catch(() => {})
+    await ownerPool.query(`delete from users where email = $1`, [`owner@${slug}.test`]).catch(() => {})
+    await ownerPool.query(`delete from users where email = $1`, [`owner-other@${slug}.test`]).catch(() => {})
+    await ownerPool.end()
+    await appPool.end()
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)

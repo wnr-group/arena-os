@@ -124,7 +124,10 @@ export async function cancelOrder(orderId: string): Promise<Result> {
 
 const editOrderItemQuantityInput = z.object({
   orderItemId: z.string().uuid(),
-  newQty: z.coerce.number().int().min(0),
+  newQty: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().int().min(0),
+  ),
 })
 
 type OrderLineCorrectionResult = Result & { removed?: boolean }

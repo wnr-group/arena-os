@@ -179,7 +179,10 @@ export function FutureWizard({
   const chooseSetStepNum = showChooseSet ? deviceStepNum + 1 : null
   const setupStepNum = showSetupPicker ? (chooseSetStepNum ?? deviceStepNum) + 1 : null
 
-  const priceFor = (minutes: number) => (hourlyRate * minutes * (isPerHead ? headCount : 1)) / 60
+  const priceFor = (minutes: number) => {
+    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : hourlyRate * (isPerHead ? headCount : 1)
+    return (rate * minutes) / 60
+  }
 
   const dateOptions = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
   const [date, setDate] = useState(initialDate)
@@ -295,6 +298,7 @@ export function FutureWizard({
       setRangeWindow(null)
       setRangeError('End date must be on or after the start date.')
       setRangeConflict(false)
+      setRangeLoading(false)
       return
     }
     let cancelled = false
