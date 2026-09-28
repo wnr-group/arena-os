@@ -26,7 +26,7 @@ import { CancelBookingDialog } from './CancelBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-import { setBookingStatus } from '@/lib/actions/bookings'
+import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -839,6 +839,20 @@ export function BookingsView({
                   onClick={() => act('check_in', () => setBookingStatus(selected.bookingId, 'checked_in'))}
                   pending={pending}
                   loading={actingAction === 'check_in'}
+                />
+              )}
+              {/* M25 #1: reverts an accidental check-in. Hidden once a bill
+                  exists (paymentStates absence means no live invoice, same
+                  signal the receipt link above already uses) — the action
+                  re-checks server-side regardless, this just keeps staff
+                  from hitting that error needlessly. */}
+              {selected.status === 'checked_in' && !paymentStates[selected.bookingId] && (
+                <ActBtn
+                  label="Undo check-in"
+                  variant="muted"
+                  onClick={() => act('undo_check_in', () => undoCheckIn(selected.bookingId))}
+                  pending={pending}
+                  loading={actingAction === 'undo_check_in'}
                 />
               )}
               {/* No standalone "Complete" here: a booking now completes only as

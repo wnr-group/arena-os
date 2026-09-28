@@ -922,6 +922,64 @@ export async function completeBookingIfFullySettled(
   return done.length > 0
 }
 
+/**
+ * M25 #1 — revert an accidental check-in (checked_in -> confirmed) and clear
+ * checked_in_at back to null, so a later re-check-in stamps a fresh
+ * timestamp rather than leaving a stale one from the reverted attempt.
+ * setBookingStatus (lib/actions/bookings.ts) never clears this column on any
+ * transition — a naive "just set status back" would leave it stale.
+ *
+ * Guarded to only fire from 'checked_in' (not confirmed/completed/etc, so
+ * this can never resurrect a cancelled/no-show/completed booking), and
+ * refuses once a live (non-void) invoice exists — findLiveBilling, same
+ * "money movement is its own decision, void first" discipline
+ * lib/billing/refunds.ts documents for void/refund. A VOIDED invoice does
+ * not block this (findLiveBilling excludes it), since voiding already made
+ * the booking billable again.
+ *
+ * No manager gate here or in the calling action — access matches check-in
+ * itself (requireContext only); these two guards are the actual safety net,
+ * enforced regardless of role.
+ *
+ * The slot is untouched either way: the booking_slots sync trigger (0003)
+ * only frees a slot on cancelled/no_show, so reverting to confirmed has no
+ * exclusion-constraint implication.
+ */
+export async function undoCheckInCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  bookingId: string,
+): Promise<void> {
+  const [booking] = await tx
+    .select({ id: bookings.id, status: bookings.status, checkedInAt: bookings.checkedInAt })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+    .for('update')
+    .limit(1)
+  if (!booking) throw new BookingError('Booking not found.')
+  if (booking.status !== 'checked_in') {
+    throw new BookingError('This booking is not checked in.')
+  }
+
+  const live = await findLiveBilling(tx, ctx.tenantId, bookingId)
+  if (live) {
+    throw new BookingError('This booking has already been billed — void the bill first.')
+  }
+
+  await tx
+    .update(bookings)
+    .set({ status: 'confirmed', checkedInAt: null })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
+    action: 'booking.uncheckin',
+    entityType: 'booking',
+    entityId: bookingId,
+    before: { status: 'checked_in', checkedInAt: booking.checkedInAt?.toISOString() ?? null },
+    after: { status: 'confirmed', checkedInAt: null },
+  })
+}
+
 export type TransferTableInput = { bookingId: string; targetResourceId: string }
 
 /** Move a table session to a different table. Its orders "come with it" for

@@ -16,6 +16,7 @@ import {
   mergeTablesCore,
   splitTableCore,
   assertBookingFullyPaid,
+  undoCheckInCore,
   BookingError,
 } from '@/lib/booking/service'
 import {
@@ -698,6 +699,25 @@ export async function setBookingStatus<S extends BookingStatus>(
 /** Server action: cancel a booking (thin wrapper over setBookingStatus). */
 export async function cancelBooking(id: string, reason: string): Promise<Result> {
   return setBookingStatus(id, 'cancelled', reason)
+}
+
+/**
+ * M25 #1 — revert an accidental check-in. Same access as check-in itself
+ * (requireContext only, no manager gate) — undoCheckInCore's own guards
+ * (must currently be checked_in, no live invoice) are the actual safety
+ * net, enforced regardless of role.
+ */
+export async function undoCheckIn(id: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    await withUser(ctx.user.id, (tx) =>
+      undoCheckInCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, id),
+    )
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
 }
 
 const CONFIRMATION_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
