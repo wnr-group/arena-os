@@ -77,6 +77,10 @@ const createInput = z.object({
         resourceId: z.string().uuid(),
         startsAt: z.string().datetime(),
         endsAt: z.string().datetime(),
+        // M24 #4: an optional named setup for this slot — priceBookingSlots
+        // re-validates it belongs to this resource/tenant and is active, same
+        // as quoteBookingInput's setupId above.
+        setupId: z.string().uuid().optional(),
       }),
     )
     .min(1, 'Add at least one resource slot'),

@@ -10,6 +10,7 @@ import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 
 type Result = { error?: string }
 
@@ -318,6 +319,15 @@ const resourceSetupInput = z.object({
 export async function upsertResourceSetup(input: z.input<typeof resourceSetupInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
+    // M24: Setups is scoped to a handful of studio-type industries — gated
+    // here, not just by hiding the button in ResourcesManager, same
+    // "hiding a button is convenience, never a guard" discipline
+    // upsertResourceType's own per_head/restaurant gate above already
+    // follows. gaming_cafe (and every other non-studio industry) keeps its
+    // existing independent-unit resource model untouched.
+    if (!industryHasStudioSetups(ctx.tenant.industry)) {
+      throw new AuthError('Setups are not available for this type of business.')
+    }
     const v = resourceSetupInput.parse(input)
     await withUser(ctx.user.id, async (tx) => {
       // The resource this setup attaches to must belong to THIS tenant —

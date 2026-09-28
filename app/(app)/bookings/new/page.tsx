@@ -3,8 +3,9 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { canManageWalkins } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
-import { listResources } from '@/lib/booking/data'
+import { listResources, listResourceSetups } from '@/lib/booking/data'
 import { todayInZone } from '@/lib/booking/time'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { BookingWizard } from '@/components/bookings/new/BookingWizard'
 
 /**
@@ -38,7 +39,33 @@ export default async function NewBookingPage({
   const isRestaurant = ctx.tenant.industry === 'restaurant'
   const walkinEnabled = !isRestaurant && canManageWalkins(ctx.role)
 
-  const allResources = await listResources(ctx, branch.id)
+  // M24 #4: Setups only exists for a handful of studio-type industries (see
+  // lib/booking/studio-setups.ts) — gaming_cafe keeps its existing
+  // independent-unit model (PS5-1, PS5-2, Snooker-1, …) untouched, so skip
+  // the query entirely rather than fetch data no resource of theirs could
+  // ever have (upsertResourceSetup gates creation the same way).
+  const setupsEnabled = industryHasStudioSetups(ctx.tenant.industry)
+  const [allResources, allSetups] = await Promise.all([
+    listResources(ctx, branch.id),
+    setupsEnabled ? listResourceSetups(ctx, branch.id) : Promise.resolve([]),
+  ])
+
+  // M24 #4: active setups grouped by resource, for the wizard's per-unit
+  // setup picker — mirrors the exact grouping app/(app)/settings/resources/
+  // units/page.tsx already does for the settings editor, except filtered to
+  // isActive here (a staff booking flow has no reason to offer a retired
+  // setup, unlike that owner-facing editor which manages both).
+  const setupsByResource: Record<string, { id: string; name: string; rate: string; rateUnit: 'hour' | 'day' }[]> = {}
+  for (const s of allSetups) {
+    if (!s.isActive) continue
+    ;(setupsByResource[s.resourceId] ??= []).push({
+      id: s.id,
+      name: s.name,
+      rate: s.rate,
+      rateUnit: s.rateUnit === 'day' ? 'day' : 'hour',
+    })
+  }
+
   const resources = allResources
     .filter((r) => r.status !== 'inactive')
     .map((r) => ({
@@ -51,6 +78,7 @@ export default async function NewBookingPage({
       capacity: r.typeCapacity,
       pricingMode: r.pricingMode,
       minPlayers: r.minPlayers,
+      setups: setupsByResource[r.id] ?? [],
     }))
 
   const today = todayInZone(ctx.tenant.timezone)

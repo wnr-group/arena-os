@@ -27,6 +27,7 @@ import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { ResourceSetupsModal, type ResourceSetupRow } from './ResourceSetupsModal'
 
 type TypeOption = { id: string; name: string; hourlyRate: string; imageUrl: string | null; isActive: boolean }
@@ -99,6 +100,14 @@ export function ResourcesManager({
   // switch away with (see below). Every other industry keeps grid as the
   // default, unaffected.
   const isRestaurant = industry === 'restaurant'
+  // M24: the Setups editor only makes sense for the handful of industries
+  // whose physical resources get redressed into named priced configurations
+  // (a studio's Set A becoming "Kitchen" vs "Royal") — NOT gaming_cafe,
+  // which keeps its existing independent-unit model (PS5-1, PS5-2, …), and
+  // not restaurant either. Gated here (not just server-side in
+  // upsertResourceSetup) so the button/action never even appears for a
+  // tenant it doesn't apply to.
+  const showSetups = industryHasStudioSetups(industry)
   const [view, setView] = useState<View>(isRestaurant ? 'table' : 'grid')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -305,7 +314,7 @@ export function ResourcesManager({
                 onEdit={() => setModal({ mode: 'edit', row })}
                 onDelete={() => handleDelete(row)}
                 onSetups={
-                  isRestaurant ? undefined : () => setSetupsTarget({ resourceId: row.id, resourceName: row.name })
+                  showSetups ? () => setSetupsTarget({ resourceId: row.id, resourceName: row.name }) : undefined
                 }
               />
             )
@@ -369,7 +378,7 @@ export function ResourcesManager({
                         >
                           <QrCode size={16} />
                         </Link>
-                        {!isRestaurant && (
+                        {showSetups && (
                           <button
                             className={btn}
                             disabled={pending}

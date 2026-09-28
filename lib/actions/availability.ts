@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { resources, resourceTypes, workingHours, bookingSlots } from '@/db/schema'
 import { requireContext } from '@/lib/auth/guard'
-import { availableStartTimes, type Interval } from '@/lib/booking/availability'
+import { availableStartTimes, dayWindow, type Interval } from '@/lib/booking/availability'
 import { weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
 
 const input = z.object({
@@ -241,6 +241,92 @@ export async function getAvailableStartsForType(
       })
 
       return { timeZone: tz, starts, allStarts: allStarts.map((d) => d.toISOString()), isClosed: resolvedHours.isClosed }
+    })
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Something went wrong.' }
+  }
+}
+
+const dayRangeInput = z.object({
+  branchId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+})
+
+export type DayRangeWindowResponse = {
+  error?: string
+  /** D1's open instant — the exact "D1 open" boundary daysInRange/priceBookingSlots expect for a per-day setup. */
+  startsAt?: string
+  /** Dn's close instant — the "Dn close" boundary. */
+  endsAt?: string
+  /** True if this resource already has an active booking overlapping the window — purely advisory (see below). */
+  conflict?: boolean
+}
+
+/**
+ * Resolves a per-day setup's staff-picked date range (M24 #4) into the exact
+ * "D1 open -> Dn close" instants priceBookingSlots/daysInRange already price
+ * against (see scripts/test-studio-setups-pricing.ts) — the wizard only ever
+ * picks two calendar dates, all open/close-hour math (including open24h)
+ * stays server-side, same discipline getAvailableStarts/
+ * getAvailableStartsForType already keep for the hourly picker.
+ *
+ * Also runs a read-only pre-check against this resource's existing active
+ * bookings so the wizard can warn before the customer even tries to submit —
+ * purely advisory: the DB's exclusion constraint (booking_slots_no_overlap,
+ * migration 0003) is still the real guard createBooking relies on, so a race
+ * here can only ever fail closed at submit time, never double-book.
+ */
+export async function getDayRangeWindow(raw: z.input<typeof dayRangeInput>): Promise<DayRangeWindowResponse> {
+  try {
+    const ctx = await requireContext()
+    const v = dayRangeInput.parse(raw)
+    if (v.endDate < v.startDate) return { error: 'End date must be on or after the start date.' }
+    const tz = ctx.tenant.timezone
+
+    return await withUser(ctx.user.id, async (tx) => {
+      const [res] = await tx
+        .select({ id: resources.id })
+        .from(resources)
+        .where(and(eq(resources.id, v.resourceId), eq(resources.tenantId, ctx.tenant.id)))
+      if (!res) return { error: 'Resource not found.' }
+
+      const startDow = weekdayInZone(v.startDate, tz)
+      const endDow = weekdayInZone(v.endDate, tz)
+      const hoursRows = await tx
+        .select({
+          dayOfWeek: workingHours.dayOfWeek,
+          openTime: workingHours.openTime,
+          closeTime: workingHours.closeTime,
+          isClosed: workingHours.isClosed,
+          open24h: workingHours.open24h,
+        })
+        .from(workingHours)
+        .where(and(eq(workingHours.branchId, v.branchId), inArray(workingHours.dayOfWeek, [...new Set([startDow, endDow])])))
+      const hoursByDow = new Map(hoursRows.map((h) => [h.dayOfWeek, h]))
+      const startHours = hoursByDow.get(startDow) ?? DEFAULT_HOURS
+      const endHours = hoursByDow.get(endDow) ?? DEFAULT_HOURS
+      if (startHours.isClosed) return { error: `The business is closed on ${v.startDate}. Choose a different start date.` }
+      if (endHours.isClosed) return { error: `The business is closed on ${v.endDate}. Choose a different end date.` }
+
+      const startsAt = dayWindow(v.startDate, tz, startHours).open
+      const endsAt = dayWindow(v.endDate, tz, endHours).close
+
+      const conflictRows = await tx
+        .select({ id: bookingSlots.id })
+        .from(bookingSlots)
+        .where(
+          and(
+            eq(bookingSlots.resourceId, v.resourceId),
+            eq(bookingSlots.active, true),
+            lt(bookingSlots.startsAt, endsAt),
+            or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, startsAt)),
+          ),
+        )
+        .limit(1)
+
+      return { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(), conflict: conflictRows.length > 0 }
     })
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }

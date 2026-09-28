@@ -55,6 +55,28 @@ export function isRangeAvailable(
 }
 
 /**
+ * A local date's open/close instants for a given DayHours (M24 #4: pulled out
+ * of availableStartTimes so getDayRangeWindow — which needs D1's open and a
+ * DIFFERENT day Dn's close, not one day's own pair — can share the exact same
+ * open24h handling instead of re-deriving it).
+ *
+ * "Open 24 hours" (migration 0098): the day runs 00:00 → the NEXT midnight,
+ * so the final 11:30 PM–12:00 AM slot fits (a same-day close time can never
+ * reach midnight). open/close are ignored for such a day.
+ */
+export function dayWindow(dateStr: string, timeZone: string, hours: DayHours): { open: Date; close: Date } {
+  const open = zonedTimeToUtc(dateStr, hours.open24h ? '00:00' : hours.openTime, timeZone)
+  let close: Date
+  if (hours.open24h) {
+    close = zonedTimeToUtc(dateStr, '00:00', timeZone)
+    close.setUTCDate(close.getUTCDate() + 1)
+  } else {
+    close = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
+  }
+  return { open, close }
+}
+
+/**
  * Candidate start times (as instants) at which a booking of `durationMinutes`
  * can be placed on a single resource for a given local date.
  */
@@ -69,17 +91,7 @@ export function availableStartTimes(
 
   const slotMinutes = opts.slotMinutes ?? 30
   const buffer = opts.bufferMinutes ?? 0
-  // "Open 24 hours" (migration 0098): the day runs 00:00 → the NEXT midnight,
-  // so the final 11:30 PM–12:00 AM slot fits (a same-day close time can never
-  // reach midnight). open/close are ignored for such a day.
-  const dayOpen = zonedTimeToUtc(dateStr, hours.open24h ? '00:00' : hours.openTime, timeZone)
-  let dayClose: Date
-  if (hours.open24h) {
-    dayClose = zonedTimeToUtc(dateStr, '00:00', timeZone)
-    dayClose.setUTCDate(dayClose.getUTCDate() + 1)
-  } else {
-    dayClose = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
-  }
+  const { open: dayOpen, close: dayClose } = dayWindow(dateStr, timeZone, hours)
 
   const out: Date[] = []
   const step = slotMinutes * MIN
