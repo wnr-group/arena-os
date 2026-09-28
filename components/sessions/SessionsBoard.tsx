@@ -1,9 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlarmClock, BellRing, Clock, ReceiptText, RefreshCw, Timer } from 'lucide-react'
-import { previewWalkinCheckout } from '@/lib/actions/bookings'
+import { AlarmClock, BellRing, Clock, Loader2, ReceiptText, RefreshCw, RotateCcw, Timer } from 'lucide-react'
+import { toast } from 'sonner'
+import { previewWalkinCheckout, reopenWalkin } from '@/lib/actions/bookings'
 import { formatCountdown } from '@/lib/booking/countdown'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { WalkinCheckoutDialog } from '@/components/bookings/WalkinCheckoutDialog'
@@ -32,6 +33,10 @@ export type SessionRow = {
   /** Minutes before endsAt the heads-up fires — bookings.warning_minutes,
    *  per booking, not a hardcoded constant. */
   warningMinutes: number
+  /** M25 #2: false once a live (non-void) invoice exists — gates the
+   *  "Reopen tab" action, which reopenWalkinCore refuses server-side
+   *  anyway; this just keeps staff from hitting that error needlessly. */
+  hasLiveBill: boolean
 }
 
 /** Heads-up fires once per session `warningMinutes` out from its committed
@@ -155,6 +160,25 @@ export function SessionsBoard({
     else setTimedTarget(s)
   }
 
+  // M25 #2: reopen an accidentally checked-out walk-in — same "action ->
+  // toast -> refresh" shape WalkinCheckoutDialog/TimedWalkinDialog already
+  // use, just inline here since there's no dialog to confirm through.
+  const [reopeningId, setReopeningId] = useState<string | null>(null)
+  const [reopenPending, startReopen] = useTransition()
+  function handleReopen(s: SessionRow) {
+    setReopeningId(s.bookingId)
+    startReopen(async () => {
+      const r = await reopenWalkin(s.bookingId)
+      setReopeningId(null)
+      if (r.error) {
+        toast.error(r.error)
+        return
+      }
+      toast.success(`${s.resourceName}'s tab reopened.`)
+      router.refresh()
+    })
+  }
+
   return (
     <div className="px-6 py-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -211,6 +235,8 @@ export function SessionsBoard({
               alarmed={Boolean(alarms[s.bookingId]?.alarmed)}
               headsUp={Boolean(alarms[s.bookingId]?.headsUp) && !alarms[s.bookingId]?.alarmed}
               onManage={() => openManage(s)}
+              onReopen={() => handleReopen(s)}
+              reopening={reopenPending && reopeningId === s.bookingId}
             />
           ))}
         </div>
@@ -257,6 +283,8 @@ function SessionCard({
   alarmed,
   headsUp,
   onManage,
+  onReopen,
+  reopening,
 }: {
   session: SessionRow
   /** Null until mounted — see SessionsBoard's own doc comment on why `now`
@@ -269,6 +297,9 @@ function SessionCard({
    *  amber cue distinct from the red "time's up" state. */
   headsUp: boolean
   onManage: () => void
+  /** M25 #2 */
+  onReopen: () => void
+  reopening: boolean
 }) {
   const checkedOut = isCheckedOut(s)
   const [runningTotal, setRunningTotal] = useState<number | null>(checkedOut ? Number(s.slotTotal) : null)
@@ -356,12 +387,29 @@ function SessionCard({
       </div>
 
       {checkedOut ? (
-        <a
-          href={`/pos/${s.bookingId}`}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          <ReceiptText size={15} /> Pay
-        </a>
+        <div className="mt-3 flex items-center gap-2">
+          <a
+            href={`/pos/${s.bookingId}`}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            <ReceiptText size={15} /> Pay
+          </a>
+          {/* M25 #2: checked out but not yet billed — undo an accidental
+              checkout. Hidden once a live bill exists (hasLiveBill), same as
+              the Pay link's own presumption that there's something to pay
+              for; reopenWalkinCore re-checks server-side regardless. */}
+          {!s.hasLiveBill && (
+            <button
+              onClick={onReopen}
+              disabled={reopening}
+              title="Reopen tab"
+              aria-label="Reopen tab"
+              className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reopening ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+            </button>
+          )}
+        </div>
       ) : (
         <button
           onClick={onManage}

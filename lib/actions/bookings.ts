@@ -23,6 +23,7 @@ import {
   startWalkinCore,
   checkoutWalkinCore,
   extendWalkinCore,
+  reopenWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
   listActiveWalkins,
@@ -408,6 +409,33 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
     if (pg?.code === '23P01') {
       return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
     }
+    return fail(e)
+  }
+}
+
+/**
+ * M25 #2 — undo an accidental walk-in checkout. Same gate as
+ * starting/checking out/extending a walk-in; reopenWalkinCore's own guards
+ * (must actually be checked out, no live invoice, and — open-tab only — no
+ * later booking on the resource) are what actually keeps this safe,
+ * enforced regardless of role.
+ */
+export async function reopenWalkin(bookingId: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to reopen a walk-in.')
+    }
+    await withUser(ctx.user.id, (tx) =>
+      reopenWalkinCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, bookingId),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/sessions')
+    return {}
+  } catch (e) {
     return fail(e)
   }
 }

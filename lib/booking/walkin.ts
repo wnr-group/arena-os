@@ -35,7 +35,7 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, taxRates } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, taxRates, auditLog } from '@/db/schema'
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
@@ -44,10 +44,30 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
+import { findLiveBilling } from '@/lib/billing/invoice'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 
 type Db = NodePgDatabase<typeof schema>
+
+/** Same shape as lib/booking/service.ts's own private writeAudit — no shared
+ *  audit module exists; each domain keeps its own (see that file's comment). */
+type AuditActor = { tenantId: string; membershipId: string | null }
+async function writeAudit(
+  tx: Db,
+  actor: AuditActor,
+  entry: { action: string; entityType: string; entityId: string; before: Record<string, unknown>; after: Record<string, unknown> },
+): Promise<void> {
+  await tx.insert(auditLog).values({
+    tenantId: actor.tenantId,
+    actorMembershipId: actor.membershipId,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    before: entry.before,
+    after: entry.after,
+  })
+}
 
 export type WalkinMode = 'open_tab' | 'timed'
 
@@ -547,6 +567,7 @@ export type ExtendWalkinInput = { bookingId: string; addMinutes: number }
 type WalkinForCheckout = {
   bookingId: string
   slotId: string
+  resourceId: string
   startsAt: Date
   rate: number
   billingMode: WalkinMode
@@ -581,7 +602,7 @@ type WalkinForCheckout = {
  * extendWalkinCore — locks both rows, same FOR UPDATE discipline
  * prepareBookingBill uses) so none of them can drift on what counts valid.
  */
-async function loadWalkinForCheckout(
+export async function loadWalkinForCheckout(
   tx: Db,
   ctx: { tenantId: string },
   bookingId: string,
@@ -649,6 +670,7 @@ async function loadWalkinForCheckout(
   return {
     bookingId: booking.id,
     slotId: slot.id,
+    resourceId: slot.resourceId,
     startsAt: slot.startsAt,
     rate: Number(slot.rateApplied),
     billingMode: (booking.billingMode as WalkinMode) ?? 'open_tab',
@@ -866,4 +888,84 @@ export async function extendWalkinCore(
   await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
 
   return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
+}
+
+/**
+ * M25 #2 — undo an accidental walk-in checkout: reverses what
+ * checkoutWalkinCore froze, so the session resumes as though it were never
+ * closed. Locks booking + slot the same way loadWalkinForCheckout always has
+ * (status 'checked_in', channel 'walkin' — a checked-out-but-unbilled
+ * walk-in never leaves 'checked_in'; see checkoutWalkinCore's own doc
+ * comment for why).
+ *
+ * Refuses if the session was never actually checked out (nothing to
+ * reopen), if a live (non-void) invoice already exists (findLiveBilling —
+ * void it first, same "money movement is its own decision" discipline
+ * undoCheckInCore applies to check-in), and — open-tab only — if a later
+ * active booking now exists on this resource: an open tab's ends_at is
+ * about to go back to null (unbounded), which would overlap ANY such
+ * booking, the exact hazard startWalkinCore's own open-tab guard exists to
+ * prevent at start time. A timed session doesn't need this check: its
+ * ends_at (the committed end) never moves, so reopening it changes nothing
+ * the exclusion constraint would recheck.
+ *
+ * per_head: head_count is left exactly as it was — still editable through
+ * the ordinary checkout flow once the session is unbilled again.
+ */
+export async function reopenWalkinCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  bookingId: string,
+): Promise<{ bookingId: string }> {
+  const walkin = await loadWalkinForCheckout(tx, ctx, bookingId, true)
+
+  const isCheckedOut = walkin.billingMode === 'open_tab' ? walkin.slotEndsAt !== null : Number(walkin.slotTotal) > 0
+  if (!isCheckedOut) {
+    throw new BookingError('This walk-in has not been checked out yet.')
+  }
+
+  const live = await findLiveBilling(tx, ctx.tenantId, bookingId)
+  if (live) {
+    throw new BookingError('This walk-in has already been billed — void the bill before reopening.')
+  }
+
+  if (walkin.billingMode === 'open_tab') {
+    const [futureSlot] = await tx
+      .select({ startsAt: bookingSlots.startsAt })
+      .from(bookingSlots)
+      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .where(
+        and(
+          eq(bookingSlots.resourceId, walkin.resourceId),
+          eq(bookingSlots.active, true),
+          gt(bookingSlots.startsAt, walkin.startsAt),
+          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+        ),
+      )
+      .orderBy(asc(bookingSlots.startsAt))
+      .limit(1)
+    if (futureSlot) {
+      throw new BookingError(
+        'This station has a booking scheduled later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.',
+      )
+    }
+  }
+
+  const before = { billingMode: walkin.billingMode, endsAt: walkin.slotEndsAt?.toISOString() ?? null, slotTotal: walkin.slotTotal }
+
+  if (walkin.billingMode === 'open_tab') {
+    await tx.update(bookingSlots).set({ endsAt: null, slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
+  } else {
+    await tx.update(bookingSlots).set({ slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
+  }
+
+  await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
+    action: 'walkin.reopen',
+    entityType: 'booking',
+    entityId: walkin.bookingId,
+    before,
+    after: { billingMode: walkin.billingMode, endsAt: walkin.billingMode === 'open_tab' ? null : before.endsAt, slotTotal: '0.00' },
+  })
+
+  return { bookingId: walkin.bookingId }
 }
