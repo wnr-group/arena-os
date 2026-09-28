@@ -47,6 +47,7 @@ async function main() {
   const { getPublicBookingQuote, getPublicBookingDayRange, createPublicBooking } = await import(
     '../lib/actions/public-booking'
   )
+  const { getPublicResourceSetups } = await import('../lib/booking/public-availability')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const tag = randomBytes(3).toString('hex')
@@ -170,6 +171,56 @@ async function main() {
   // ── day-range now reflects the real conflict ─────────────────────────────
   const range2 = await getPublicBookingDayRange({ resourceId, startDate, endDate })
   check('day-range now reports conflict=true', range2.conflict === true, range2)
+
+  // ── crafted window: a day-rate setup must reserve the WHOLE day(s), not
+  // whatever raw startsAt/endsAt an anonymous caller sends (adversarial
+  // review, PR #34) — the legitimate site always submits
+  // getPublicBookingDayRange's own server-computed window verbatim, so this
+  // can never reject a real customer's booking. Uses a fresh, unbooked date
+  // range so the refusal is provably the alignment guard, not the overlap
+  // guard already pinned above.
+  const craftedDate = new Date()
+  craftedDate.setUTCDate(craftedDate.getUTCDate() + 30)
+  const craftedDateStr = craftedDate.toISOString().slice(0, 10)
+  const craftedOpen = new Date(`${craftedDateStr}T09:00:00+05:30`) // the real D1 open (09:00 IST, per the working_hours fixture above)
+  const sliver = await createPublicBooking({
+    resourceId,
+    startsAt: craftedOpen.toISOString(),
+    endsAt: new Date(craftedOpen.getTime() + 5 * 60_000).toISOString(), // 5 minutes, not a whole day
+    customerName: 'Crafted Sliver',
+    customerPhone: `6${digits}`,
+    setupId: royalId,
+    website: '',
+  })
+  check(
+    'a day-rate setup booked for a 5-minute sliver of a day is refused, not charged a full day and under-reserved',
+    /whole calendar days/i.test(sliver.error ?? ''),
+    sliver,
+  )
+  const offByAnHour = await createPublicBooking({
+    resourceId,
+    startsAt: new Date(craftedOpen.getTime() + 60 * 60_000).toISOString(), // 10:00 IST, not the real 09:00 open
+    endsAt: new Date(craftedOpen.getTime() + 13 * 60 * 60_000).toISOString(), // 22:00 IST — the real close
+    customerName: 'Crafted Off By An Hour',
+    customerPhone: `5${digits}`,
+    setupId: royalId,
+    website: '',
+  })
+  check(
+    'a day-rate range off by an hour from the real working-hours boundary is refused, not silently priced',
+    /whole calendar days/i.test(offByAnHour.error ?? ''),
+    offByAnHour,
+  )
+
+  // ── getPublicResourceSetups hides setups on a non-available resource ────
+  // (adversarial review, PR #34) — a stranger has no reason to see (or
+  // quote/book against) setups on a resource that's in maintenance, same
+  // reasoning getPublicResource/getPublicAvailableStarts already apply.
+  const beforeMaintenance = await getPublicResourceSetups(tenantId, resourceId)
+  check('setups are visible while the resource is available', beforeMaintenance.length > 0, beforeMaintenance)
+  await owner.query(`update resources set status = 'maintenance' where id = $1`, [resourceId])
+  const duringMaintenance = await getPublicResourceSetups(tenantId, resourceId)
+  check('setups are hidden while the resource is in maintenance', duringMaintenance.length === 0, duringMaintenance)
 
   await owner.query('delete from tenants where id = $1', [tenantId])
   await owner.end()

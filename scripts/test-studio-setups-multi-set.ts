@@ -135,10 +135,13 @@ async function main() {
   // Set A: Kitchen, 2h on Aug 15 morning.
   const setAStart = ist(2026, 8, 15, 10)
   const setAEnd = ist(2026, 8, 15, 12)
-  // Set B: Loft, a 3-day range D1 09:00 -> D3 22:00 — deliberately OVERLAPS
-  // Set A's window in wall-clock time (same days), to prove the exclusion
-  // constraint is scoped per-resource, not per-tenant/per-window.
-  const setBStart = ist(2026, 8, 15, 9)
+  // Set B: Loft, a 3-day range D1 10:00 (this branch has no working_hours
+  // row, so priceBookingSlots' day-range-alignment check falls back to
+  // DEFAULT_HOURS, 10:00-22:00, same as getDayRangeWindow would) -> D3 22:00
+  // — deliberately OVERLAPS Set A's window in wall-clock time (same days),
+  // to prove the exclusion constraint is scoped per-resource, not
+  // per-tenant/per-window.
+  const setBStart = ist(2026, 8, 15, 10)
   const setBEnd = ist(2026, 8, 17, 22)
 
   const bookingA = await withUser(userId, (tx) =>

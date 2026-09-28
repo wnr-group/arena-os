@@ -100,6 +100,19 @@ async function main() {
     [tenantId],
   )
   const branchId = b.rows[0].id
+  // priceBookingSlots (adversarial-review follow-up) now re-derives a
+  // day-rate slot's expected D1-open -> Dn-close window from THIS branch's
+  // real working_hours and refuses a mismatch — every other weekday here has
+  // no row and falls back to the app's own DEFAULT_HOURS (10:00-22:00,
+  // matching the hour literals below), but T3b/T3c's open24h boundary cases
+  // need an explicit row: Monday (Jan 12, 2026's weekday) and Tuesday
+  // (Jan 20, 2026's weekday) are set Open 24 Hours so those two scenarios'
+  // hardcoded midnight boundaries are real, server-agreed windows.
+  await ownerPool.query(
+    `insert into working_hours (tenant_id,branch_id,day_of_week,open_24h) values ($1,$2,1,true),($1,$2,2,true)
+     on conflict (branch_id,day_of_week) do update set open_24h=true`,
+    [tenantId, branchId],
+  )
   const u = await ownerPool.query<{ id: string }>(
     `insert into users (email,password_hash) values ($1,'x')
      on conflict (email) do update set email=excluded.email returning id`,
@@ -256,8 +269,12 @@ async function main() {
         slots: [
           {
             resourceId,
-            startsAt: ist(2026, 9, 1, 9).toISOString(), // D1 open
-            endsAt: ist(2026, 9, 1, 22).toISOString(), // D1 close — same calendar day
+            // Sep 2 (Wednesday) — deliberately NOT Sep 1 (Tuesday), which
+            // T3c below needs Open 24 Hours; a plain weekday here must stay
+            // on the DEFAULT_HOURS fallback (10:00-22:00), matching the
+            // hour literals below.
+            startsAt: ist(2026, 9, 2, 10).toISOString(), // D1 open
+            endsAt: ist(2026, 9, 2, 22).toISOString(), // D1 close — same calendar day
             setupId: royalId,
           },
         ],
@@ -284,7 +301,7 @@ async function main() {
         slots: [
           {
             resourceId,
-            startsAt: ist(2026, 9, 10, 9).toISOString(), // D1 open
+            startsAt: ist(2026, 9, 10, 10).toISOString(), // D1 open (Thursday, DEFAULT_HOURS)
             endsAt: ist(2026, 9, 12, 22).toISOString(), // D3 close — spans 3 calendar days
             setupId: royalId,
           },
@@ -302,9 +319,8 @@ async function main() {
   // grid it was written for), but daysInRange must still read that as the
   // END of Jan 12, not the start of a phantom 4th day. Reproduces exactly
   // what getDayRangeWindow/getPublicDayRangeWindow would hand to
-  // createBookingCore for a Jan 10 -> Jan 12 range where Jan 12 is open24h,
-  // without needing a working_hours fixture — createBookingCore prices
-  // straight off the timestamps it's given, same as T2/T3 above.
+  // createBookingCore for a Jan 10 -> Jan 12 range where Jan 12 (a Monday)
+  // is open24h per the working_hours row inserted above.
   let royalOpen24hId = ''
   {
     const booking = await withUser(userId, (tx) =>
@@ -316,7 +332,7 @@ async function main() {
         slots: [
           {
             resourceId,
-            startsAt: ist(2026, 1, 10, 9).toISOString(), // D1 open, 09:00 IST
+            startsAt: ist(2026, 1, 10, 10).toISOString(), // D1 open (Saturday, DEFAULT_HOURS)
             endsAt: ist(2026, 1, 13, 0).toISOString(), // Jan 12 is open24h -> close = Jan 13 00:00 IST
             setupId: royalId,
           },
@@ -443,6 +459,43 @@ async function main() {
         }),
       ),
     'no longer available',
+  )
+
+  // T7b/T7c (adversarial review, PR #34): a day-rate setup's whole point is
+  // that it blocks the physical set for the WHOLE day(s) booked — but
+  // nothing re-derived that from the client's raw startsAt/endsAt until this
+  // fix, so a crafted request naming a real, active Royal (day) setup with a
+  // tiny sliver of a day got charged the full day rate (daysInRange's own
+  // max(1,…) clamp) while only reserving that sliver, leaving the rest of
+  // the day double-bookable on the exact feature whose exclusivity is the
+  // point. Every legitimate caller (staff wizard, public booking page)
+  // always submits the server-computed getDayRangeWindow/
+  // getPublicDayRangeWindow window verbatim, so these can never reject a
+  // real booking.
+  await expectReject(
+    'T7b a day-rate setup booked for a 5-minute sliver of a day (not D1-open -> D1-close) is rejected',
+    () =>
+      withUser(userId, (tx) =>
+        priceBookingSlots(tx, { tenantId, timezone: TZ }, {
+          branchId,
+          slots: [{ resourceId, startsAt: ist(2026, 9, 23, 10).toISOString(), endsAt: ist(2026, 9, 23, 10, 5).toISOString(), setupId: royalId }],
+        }),
+      ),
+    'whole calendar days',
+  )
+  await expectReject(
+    'T7c a day-rate range off by an hour from the real working-hours boundary is rejected, not silently priced',
+    () =>
+      withUser(userId, (tx) =>
+        priceBookingSlots(tx, { tenantId, timezone: TZ }, {
+          branchId,
+          // Sep 23, 2026 is a Wednesday — DEFAULT_HOURS (10:00-22:00)
+          // applies (no working_hours row for this branch), so 11:00 open
+          // is one hour late, not the real D1 open.
+          slots: [{ resourceId, startsAt: ist(2026, 9, 23, 11).toISOString(), endsAt: ist(2026, 9, 25, 22).toISOString(), setupId: royalId }],
+        }),
+      ),
+    'whole calendar days',
   )
 
   // ══ 5. mutual exclusion is free — a setup blocks every other setup/base ═

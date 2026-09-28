@@ -595,11 +595,18 @@ export async function getPublicResourceSetups(tenantId: string, resourceId: stri
         rateUnit: resourceSetups.rateUnit,
       })
       .from(resourceSetups)
+      // getPublicResource/getPublicAvailableStarts (this file) both filter
+      // resources.status = 'available' — a stranger has no reason to see (or
+      // quote/book against) setups on a resource that's in maintenance, same
+      // reasoning resource_setups_public_select (0100) already applies to
+      // is_active. Missing here in the original PR (adversarial review).
+      .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(
         and(
           eq(resourceSetups.tenantId, tenantId),
           eq(resourceSetups.resourceId, resourceId),
           eq(resourceSetups.isActive, true),
+          eq(resources.status, 'available'),
         ),
       )
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),

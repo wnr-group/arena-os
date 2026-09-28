@@ -9,11 +9,11 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, resourceSetups, bookings, bookingSlots, orders, auditLog, taxRates, tenants } from '@/db/schema'
-import { durationHours, daysInRange } from './availability'
+import { resources, resourceTypes, resourceSetups, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
+import { durationHours, daysInRange, dayWindow } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
-import { todayInZone } from './time'
+import { todayInZone, weekdayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
@@ -26,6 +26,12 @@ type Db = NodePgDatabase<typeof schema>
 
 /** Booking rule violations the caller is allowed to show verbatim. */
 export class BookingError extends Error {}
+
+// Same fallback getDayRangeWindow/getPublicDayRangeWindow already use for a
+// branch with no working_hours row for a given day (lib/actions/availability.ts,
+// lib/booking/public-availability.ts) — duplicated locally rather than shared,
+// matching this codebase's existing convention for this constant.
+const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
 /**
  * A booking's own `channel` ('walkin' | 'staff' | 'online'), read fresh
@@ -255,6 +261,59 @@ export async function priceBookingSlots(
           .where(and(eq(resourceSetups.tenantId, ctx.tenantId), inArray(resourceSetups.id, setupIds)))
       : []
   const setupById = new Map(setupRows.map((r) => [r.id, r]))
+
+  // M24 #2 follow-up (adversarial review, PR #34): a day-rate setup's whole
+  // point is that it blocks the physical set for the WHOLE day(s) booked —
+  // but that's only true if the stored window actually IS the day boundary.
+  // Nothing else re-derives this from the client's raw startsAt/endsAt
+  // (createBooking/createPublicBooking only shape-validate them as ISO
+  // datetimes), so without this a day-rate setup could be booked for a
+  // five-minute sliver of a day, charged the full day rate (daysInRange's own
+  // max(1,…) clamp), while only reserving that sliver in booking_slots —
+  // leaving the rest of the day double-bookable on the exact feature whose
+  // exclusivity is the point. Recomputes the SAME D1-open -> Dn-close window
+  // getDayRangeWindow/getPublicDayRangeWindow already hand the client and
+  // refuses if the submitted slot doesn't match it exactly — the legitimate
+  // UI always submits that server-computed window verbatim, so this can
+  // never reject a real booking.
+  const dayRateSlots = input.slots.filter((s) => s.setupId && setupById.get(s.setupId)?.rateUnit === 'day')
+  if (dayRateSlots.length > 0) {
+    const dows = new Set<number>()
+    for (const s of dayRateSlots) {
+      dows.add(weekdayInZone(todayInZone(ctx.timezone, new Date(s.startsAt)), ctx.timezone))
+      dows.add(weekdayInZone(todayInZone(ctx.timezone, new Date(new Date(s.endsAt).getTime() - 1)), ctx.timezone))
+    }
+    const hoursRows = await tx
+      .select({
+        dayOfWeek: workingHours.dayOfWeek,
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.branchId, input.branchId), inArray(workingHours.dayOfWeek, [...dows])))
+    const hoursByDow = new Map(hoursRows.map((h) => [h.dayOfWeek, h]))
+
+    for (const s of dayRateSlots) {
+      const startsAt = new Date(s.startsAt)
+      const endsAt = new Date(s.endsAt)
+      const startDateStr = todayInZone(ctx.timezone, startsAt)
+      const endDateStr = todayInZone(ctx.timezone, new Date(endsAt.getTime() - 1))
+      const startHours = hoursByDow.get(weekdayInZone(startDateStr, ctx.timezone)) ?? DEFAULT_HOURS
+      const endHours = hoursByDow.get(weekdayInZone(endDateStr, ctx.timezone)) ?? DEFAULT_HOURS
+      if (startHours.isClosed || endHours.isClosed) {
+        throw new BookingError('The business is closed on one of the selected dates — choose a different range.')
+      }
+      const expectedStart = dayWindow(startDateStr, ctx.timezone, startHours).open
+      const expectedEnd = dayWindow(endDateStr, ctx.timezone, endHours).close
+      if (startsAt.getTime() !== expectedStart.getTime() || endsAt.getTime() !== expectedEnd.getTime()) {
+        throw new BookingError(
+          "A day-rate setup must be booked for whole calendar days, aligned to the business's working hours — use the date-range picker.",
+        )
+      }
+    }
+  }
 
   // Resource types with no tax_rate_id of their own fall back to the
   // tenant's sole active 'resources'/'both' rate, if unambiguous — see
