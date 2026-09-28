@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { CalendarDays, Check, Clock, Gamepad2, Layers, Loader2, Users } from 'lucide-react'
+import { CalendarDays, Check, Clock, Gamepad2, Layers, Loader2, Sparkles, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { getAvailableStarts, getAvailableStartsForType, getDayRangeWindow } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone, quoteBooking } from '@/lib/actions/bookings'
@@ -20,7 +20,16 @@ import {
   SLOT_MINUTES,
 } from '@/components/public-booking/ResourceBookingPage'
 import { StepProgress } from './StepProgress'
-import { WizardCard, WizardFooter, SelectableTile, wizardInput, wizardLabel, wizardError } from './wizard-ui'
+import {
+  WizardCard,
+  WizardFooter,
+  WizardStepHeader,
+  WizardStepPanel,
+  SelectableTile,
+  wizardInput,
+  wizardLabel,
+  wizardError,
+} from './wizard-ui'
 import type { WizardResource } from './BookingWizard'
 
 const STEPS = ['Devices', 'Slot', 'Customer', 'Confirm']
@@ -160,6 +169,15 @@ export function FutureWizard({
   }, [pinnedResourceId])
   const activeSetup = activeUnit?.setups.find((s) => s.id === setupId) ?? null
   const isDayRateSetup = activeSetup?.rateUnit === 'day'
+
+  // Numbered sub-steps for the Devices step's picker stack (device type ->
+  // choose a set -> setup) — only the sections that actually render get a
+  // number, so a type with no setups still just shows "1".
+  const showChooseSet = !lockedResource && typeHasSetups && unitsOfSelectedType.length > 1
+  const showSetupPicker = Boolean(activeUnit) && (activeUnit?.setups.length ?? 0) > 0
+  const deviceStepNum = 1
+  const chooseSetStepNum = showChooseSet ? deviceStepNum + 1 : null
+  const setupStepNum = showSetupPicker ? (chooseSetStepNum ?? deviceStepNum) + 1 : null
 
   const priceFor = (minutes: number) => (hourlyRate * minutes * (isPerHead ? headCount : 1)) / 60
 
@@ -516,72 +534,85 @@ export function FutureWizard({
       <WizardCard>
         {step === 0 && (
           <div>
-            {lockedResource ? (
-              <>
-                <h2 className="text-lg font-semibold">Device</h2>
-                <p className="mt-1 text-sm text-muted-foreground">Picked from the Timeline — booking this exact unit.</p>
-                {/* Same tile shape/size as the type-picker grid below — just
-                    one card, permanently "selected", nothing to click. */}
-                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  <div className="relative flex flex-col items-start gap-2 rounded-xl border border-primary bg-accent/60 p-4 text-left shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30">
-                    <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                      <Gamepad2 size={18} />
-                    </span>
-                    <span className="text-sm font-semibold text-foreground">{lockedResource.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {lockedResource.typeName} · {formatMoney(Number(lockedResource.hourlyRate), currency)} /{' '}
-                      {lockedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
-                    </span>
-                    <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
-                        <path
-                          fillRule="evenodd"
-                          d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </span>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <h2 className="text-lg font-semibold">Which device?</h2>
-                <p className="mt-1 text-sm text-muted-foreground">A free unit of this type is assigned automatically.</p>
-
-                {resourceTypes.length === 0 ? (
-                  <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
-                ) : (
+          <div className="space-y-6">
+            <WizardStepPanel>
+              {lockedResource ? (
+                <>
+                  <WizardStepHeader
+                    step={deviceStepNum}
+                    icon={<Gamepad2 size={15} className="text-primary" />}
+                    title="Device"
+                    subtitle="Picked from the Timeline — booking this exact unit."
+                  />
+                  {/* Same tile shape/size as the type-picker grid below — just
+                      one card, permanently "selected", nothing to click. */}
                   <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                    {resourceTypes.map((t) => (
-                      <SelectableTile
-                        key={t.id}
-                        selected={resourceTypeId === t.id}
-                        onClick={() => setResourceTypeId(t.id)}
-                        icon={<Gamepad2 size={18} />}
-                        title={t.name}
-                        subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
-                        badge={
-                          t.capacity != null ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                              <Users size={12} /> Up to {t.capacity}
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    ))}
+                    <div className="relative flex flex-col items-start gap-2 rounded-xl border border-primary bg-accent/60 p-4 text-left shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30">
+                      <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                        <Gamepad2 size={18} />
+                      </span>
+                      <span className="text-sm font-semibold text-foreground">{lockedResource.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {lockedResource.typeName} · {formatMoney(Number(lockedResource.hourlyRate), currency)} /{' '}
+                        {lockedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                      </span>
+                      <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                        <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
+                          <path
+                            fillRule="evenodd"
+                            d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </span>
+                    </div>
                   </div>
-                )}
-              </>
-            )}
+                </>
+              ) : (
+                <>
+                  <WizardStepHeader
+                    step={deviceStepNum}
+                    icon={<Gamepad2 size={15} className="text-primary" />}
+                    title="Which device?"
+                    subtitle="A free unit of this type is assigned automatically."
+                  />
 
-            {!lockedResource && typeHasSetups && unitsOfSelectedType.length > 1 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-foreground">Choose a set</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  This type has named setups — pick which physical set you&apos;re booking.
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  {resourceTypes.length === 0 ? (
+                    <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
+                  ) : (
+                    <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                      {resourceTypes.map((t) => (
+                        <SelectableTile
+                          key={t.id}
+                          selected={resourceTypeId === t.id}
+                          onClick={() => setResourceTypeId(t.id)}
+                          icon={<Gamepad2 size={18} />}
+                          title={t.name}
+                          subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
+                          badge={
+                            t.capacity != null ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                                <Users size={12} /> Up to {t.capacity}
+                              </span>
+                            ) : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </WizardStepPanel>
+
+            {showChooseSet && (
+              <WizardStepPanel>
+                <WizardStepHeader
+                  step={chooseSetStepNum!}
+                  icon={<Layers size={15} className="text-primary" />}
+                  title="Choose a set"
+                  subtitle="This type has more than one room available — pick the one you want to book."
+                />
+                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                   {unitsOfSelectedType.map((u) => (
                     <SelectableTile
                       key={u.id}
@@ -589,45 +620,54 @@ export function FutureWizard({
                       onClick={() => setPickedUnitId(u.id)}
                       icon={<Layers size={18} />}
                       title={u.name}
-                      subtitle={u.setups.length > 0 ? `${u.setups.length} setup${u.setups.length === 1 ? '' : 's'}` : 'Base rate only'}
+                      badge={
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                            u.setups.length > 0 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          {u.setups.length > 0 ? `${u.setups.length} setup${u.setups.length === 1 ? '' : 's'}` : 'Standard rate only'}
+                        </span>
+                      }
                     />
                   ))}
                 </div>
-              </div>
+              </WizardStepPanel>
             )}
 
-            {activeUnit && activeUnit.setups.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-foreground">Setup</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Optional — leave it at base rate, or pick a named setup for {activeUnit.name}.
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  <SelectableTile
+            {showSetupPicker && (
+              <WizardStepPanel>
+                <WizardStepHeader
+                  step={setupStepNum!}
+                  icon={<Sparkles size={15} className="text-primary" />}
+                  title="Choose a setup"
+                  subtitle={`Optional — pick a ready-made setup for ${activeUnit!.name}, or continue with the standard rate.`}
+                />
+                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  <SetupOptionTile
                     selected={setupId === null}
                     onClick={() => setSetupId(null)}
-                    icon={<Gamepad2 size={18} />}
-                    title="No setup"
-                    subtitle={`${formatMoney(Number(activeUnit.hourlyRate), currency)} / ${
-                      activeUnit.pricingMode === 'per_head' ? 'player / hr' : 'hr'
-                    } · base rate`}
+                    title="Standard rate"
+                    price={formatMoney(Number(activeUnit!.hourlyRate), currency)}
+                    unit={activeUnit!.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                    isBaseRate
                   />
-                  {activeUnit.setups.map((s) => (
-                    <SelectableTile
+                  {activeUnit!.setups.map((s) => (
+                    <SetupOptionTile
                       key={s.id}
                       selected={setupId === s.id}
                       onClick={() => setSetupId(s.id)}
-                      icon={<Layers size={18} />}
                       title={s.name}
-                      subtitle={`${formatMoney(Number(s.rate), currency)} / ${s.rateUnit === 'day' ? 'day' : 'hr'}`}
+                      price={formatMoney(s.rate, currency)}
+                      unit={s.rateUnit === 'day' ? 'day' : 'hr'}
                     />
                   ))}
                 </div>
-              </div>
+              </WizardStepPanel>
             )}
 
             {isPerHead && selectedType && (
-              <div className="mt-6 max-w-xs">
+              <div className="max-w-xs">
                 <label className={wizardLabel}>Players</label>
                 <div className="mt-1 flex items-center gap-2">
                   <button
@@ -654,6 +694,7 @@ export function FutureWizard({
                 </p>
               </div>
             )}
+          </div>
 
             <WizardFooter
               onNext={() => setStep(1)}
@@ -861,7 +902,7 @@ export function FutureWizard({
               <div className="mt-6 rounded-xl border border-primary/20 bg-accent/40 p-4 text-sm">
                 <dl className="space-y-1.5">
                   <SummaryRow k="Device" v={activeUnit?.name ?? selectedType?.name ?? '—'} />
-                  <SummaryRow k="Setup" v={activeSetup?.name ?? 'Base rate'} />
+                  <SummaryRow k="Setup" v={activeSetup?.name ?? 'Standard rate'} />
                   {isDayRateSetup ? (
                     <SummaryRow k="Dates" v={`${prettyDate(rangeStart, timeZone)} – ${prettyDate(rangeEnd, timeZone)}`} />
                   ) : (
@@ -1011,6 +1052,80 @@ export function FutureWizard({
         )}
       </WizardCard>
     </div>
+  )
+}
+
+/**
+ * M24 #4 UI polish — a setup option gets its own richer treatment instead of
+ * reusing the plain device/set SelectableTile: the price is the headline
+ * (this is the whole point of a setup), a "Setup" tag marks it as a named
+ * upgrade, and "No setup" reads as the deliberately plainer default rather
+ * than just another tile in the row.
+ */
+function SetupOptionTile({
+  selected,
+  onClick,
+  title,
+  price,
+  unit,
+  isBaseRate,
+}: {
+  selected: boolean
+  onClick: () => void
+  title: string
+  price: string
+  unit: string
+  isBaseRate?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative flex flex-col gap-3 rounded-xl border p-4 text-left transition-all duration-150 motion-safe:hover:-translate-y-0.5 ${
+        selected
+          ? 'border-primary bg-gradient-to-br from-primary/10 via-accent/50 to-transparent shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30'
+          : isBaseRate
+            ? 'border-dashed border-border bg-muted/10 hover:border-primary/40'
+            : 'border-border bg-card hover:border-primary/40 hover:shadow-sm'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className={`flex size-8 items-center justify-center rounded-lg transition-colors ${
+            selected
+              ? 'bg-primary text-primary-foreground'
+              : isBaseRate
+                ? 'bg-muted text-muted-foreground'
+                : 'bg-accent text-accent-foreground'
+          }`}
+        >
+          {isBaseRate ? <Gamepad2 size={15} /> : <Sparkles size={15} />}
+        </span>
+        {!isBaseRate && (
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
+            Setup
+          </span>
+        )}
+      </div>
+      <div>
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="mt-1 flex items-baseline gap-1">
+          <span className="text-lg font-bold tabular-nums text-primary">{price}</span>
+          <span className="text-xs font-medium text-muted-foreground">/ {unit}</span>
+        </p>
+      </div>
+      {selected && (
+        <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
+            <path
+              fillRule="evenodd"
+              d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </span>
+      )}
+    </button>
   )
 }
 
