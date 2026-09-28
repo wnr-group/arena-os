@@ -849,6 +849,98 @@ async function applyVoidDecision(
   return { orderId: row.orderId, bookingId: row.bookingId }
 }
 
+export type EditOrderItemQuantityInput = { orderItemId: string; newQty: number }
+export type RemoveOrderItemInput = { orderItemId: string }
+export type OrderLineCorrectionResult = { orderId: string; bookingId: string | null; removed: boolean }
+
+/**
+ * M25 #3 — in-place correction of an order line's quantity (or its removal),
+ * on a still-open (unbilled) order: gaming has no void/comp (restaurant-only,
+ * requires a reason and often manager approval — see requestVoidOrderItemCore
+ * above), so a plain data-entry mistake ("added 3 instead of 2") had NO fix
+ * at all before this. Deliberately a SEPARATE mechanism from void/comp, not a
+ * reuse of it: no reason required, no manager routing, available to every
+ * industry, and the line is corrected/deleted outright rather than flagged —
+ * this never happened for real (never served, never charged), so there is
+ * nothing for the void/comp report (M20) to remember it by.
+ *
+ * Reuses lockActiveOrderItem's exact eligibility rule (active line, order
+ * still 'open') rather than a second copy — the SAME "void or refund the
+ * invoice instead" refusal once billed that void/comp already enforces, so
+ * Corrections #4 (void invoice -> re-bill) is the one and only path back to
+ * an editable order once billing has happened.
+ *
+ * `newQty === 0` delegates to removeOrderItemCore verbatim — the ticket's
+ * own rule ("qty 0 or removeOrderItem removes the line").
+ */
+export async function editOrderItemQuantityCore(
+  tx: Db,
+  actor: AuditActor,
+  input: EditOrderItemQuantityInput,
+): Promise<OrderLineCorrectionResult> {
+  if (!Number.isInteger(input.newQty) || input.newQty < 0) {
+    throw new OrderError('Enter a whole number, 0 or more.')
+  }
+  if (input.newQty === 0) {
+    return removeOrderItemCore(tx, actor, { orderItemId: input.orderItemId })
+  }
+
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  const newLineTotal = (Number(row.unitPrice) * input.newQty).toFixed(2)
+
+  await tx
+    .update(orderItems)
+    .set({ qty: input.newQty, lineTotal: newLineTotal })
+    .where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+
+  await writeAudit(tx, actor, {
+    action: 'order_item.edit',
+    entityType: 'order_item',
+    entityId: row.itemId,
+    before: { qty: row.qty, line_total: row.lineTotal, item_name: row.itemName, order_id: row.orderId, booking_id: row.bookingId },
+    after: { qty: input.newQty, line_total: newLineTotal, item_name: row.itemName, order_id: row.orderId, booking_id: row.bookingId },
+  })
+
+  return { orderId: row.orderId, bookingId: row.bookingId, removed: false }
+}
+
+/**
+ * M25 #3 — remove one line from a still-open order outright (order_item_modifiers
+ * cascade-deletes with it). If this was the last still-not-voided line on the
+ * order, the order (and its KOT) is cancelled — same "nothing left" branch
+ * applyVoidDecision's own void path already takes, and the same predicate
+ * (comped still counts as "something happened"; only voided doesn't).
+ */
+export async function removeOrderItemCore(
+  tx: Db,
+  actor: AuditActor,
+  input: RemoveOrderItemInput,
+): Promise<OrderLineCorrectionResult> {
+  const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+
+  await tx.delete(orderItems).where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+
+  const [somethingLeft] = await tx
+    .select({ id: orderItems.id })
+    .from(orderItems)
+    .where(and(eq(orderItems.tenantId, actor.tenantId), eq(orderItems.orderId, row.orderId), ne(orderItems.voidStatus, 'voided')))
+    .limit(1)
+  if (!somethingLeft) {
+    await tx.update(orders).set({ status: 'cancelled' }).where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
+    await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+  }
+
+  await writeAudit(tx, actor, {
+    action: 'order_item.remove',
+    entityType: 'order_item',
+    entityId: row.itemId,
+    before: { qty: row.qty, line_total: row.lineTotal, item_name: row.itemName, order_id: row.orderId, booking_id: row.bookingId },
+    after: { removed: true, order_id: row.orderId, booking_id: row.bookingId },
+  })
+
+  return { orderId: row.orderId, bookingId: row.bookingId, removed: true }
+}
+
 export type RequestVoidOrderItemInput = {
   orderItemId: string
   /** 'void' = removed, ordered by mistake. 'comp' = given free. */

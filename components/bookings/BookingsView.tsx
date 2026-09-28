@@ -12,10 +12,12 @@ import {
   Clock,
   Eye,
   Loader2,
+  Minus,
   Plus,
   RefreshCw,
   Search,
   ShoppingBag,
+  Trash2,
   UserCheck,
   ReceiptText,
   X,
@@ -25,8 +27,10 @@ import { DepositButton } from './DepositButton'
 import { CancelBookingDialog } from './CancelBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
+import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -231,6 +235,37 @@ export function BookingsView({
   // Separate from `pending` above (which tracks status-change/cancel actions)
   // so refreshing the list never shows a spinner on an unrelated row button.
   const [refreshing, startRefresh] = useTransition()
+  // M25 #3: separate again from both of the above — editing/removing an
+  // order line must not disable (or spinner) the booking's own action bar,
+  // and must NOT close the drawer the way act() does on success.
+  const [lineActionId, setLineActionId] = useState<string | null>(null)
+  const [linePending, startLine] = useTransition()
+  const confirm = useConfirm()
+
+  function editQty(itemId: string, newQty: number) {
+    setLineActionId(itemId)
+    startLine(async () => {
+      const r = await editOrderItemQuantity({ orderItemId: itemId, newQty })
+      setLineActionId(null)
+      if (r.error) toast.error(r.error)
+      else router.refresh()
+    })
+  }
+
+  async function removeLine(itemId: string, itemName: string) {
+    await confirm({
+      title: `Remove ${itemName}?`,
+      description: 'This line was never served or billed — it will be removed outright, not voided.',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        setLineActionId(itemId)
+        const r = await removeOrderItem(itemId)
+        setLineActionId(null)
+        if (r.error) toast.error(r.error)
+        else router.refresh()
+      },
+    })
+  }
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -961,6 +996,48 @@ export function BookingsView({
                               <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
                                 {formatMoney(Number(it.unitPrice) * it.qty, currency)}
                               </span>
+                              {/* M25 #3: in-place quantity correction — every
+                                  industry, no manager gate (unlike the
+                                  void/comp button below, which stays
+                                  restaurant-only). editOrderItemQuantity/
+                                  removeOrderItem re-check server-side that
+                                  the order is still 'open' regardless of
+                                  this UI gate. */}
+                              {it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
+                                <span className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => editQty(it.itemId, it.qty - 1)}
+                                    title={it.qty <= 1 ? 'Remove (quantity would drop to 0)' : 'Decrease quantity'}
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Minus size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => editQty(it.itemId, it.qty + 1)}
+                                    title="Increase quantity"
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Plus size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => removeLine(it.itemId, it.itemName)}
+                                    title="Remove this line"
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {linePending && lineActionId === it.itemId ? (
+                                      <Loader2 size={12} className="animate-spin" />
+                                    ) : (
+                                      <Trash2 size={12} />
+                                    )}
+                                  </button>
+                                </span>
+                              )}
                               {canRequestVoidComp && it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
                                 <button
                                   type="button"

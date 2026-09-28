@@ -14,6 +14,8 @@ import {
   rejectOrderCore,
   requestVoidOrderItemCore,
   decideVoidRequestCore,
+  editOrderItemQuantityCore,
+  removeOrderItemCore,
   MAX_SEAT_NO,
 } from '@/lib/orders/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -112,6 +114,55 @@ export async function cancelOrder(orderId: string): Promise<Result> {
   try {
     const ctx = await requireContext()
     await withUser(ctx.user.id, (tx) => cancelOrderCore(tx, { tenantId: ctx.tenant.id }, orderId))
+    revalidatePath('/bookings')
+    revalidatePath('/kitchen')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const editOrderItemQuantityInput = z.object({
+  orderItemId: z.string().uuid(),
+  newQty: z.coerce.number().int().min(0),
+})
+
+type OrderLineCorrectionResult = Result & { removed?: boolean }
+
+/**
+ * M25 #3 — correct an order line's quantity in place (or remove it, for
+ * newQty 0) on a still-open order. Deliberately NOT the void/comp mechanism
+ * (requestVoidOrderItem below) — no reason, no manager routing, and
+ * available to every industry, not restaurant-gated: this is a plain
+ * data-entry fix ("added 3 instead of 2"), the one line correction gaming
+ * has never had. Same minimal access as placing/cancelling an order
+ * (requireContext only) — editOrderItemQuantityCore's own reuse of
+ * lockActiveOrderItem is what actually blocks it once the order is billed.
+ */
+export async function editOrderItemQuantity(
+  input: z.input<typeof editOrderItemQuantityInput>,
+): Promise<OrderLineCorrectionResult> {
+  try {
+    const ctx = await requireContext()
+    const v = editOrderItemQuantityInput.parse(input)
+    const result = await withUser(ctx.user.id, (tx) =>
+      editOrderItemQuantityCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/kitchen')
+    return { removed: result.removed }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** M25 #3 — remove one order line outright. Same access/guards as editOrderItemQuantity. */
+export async function removeOrderItem(orderItemId: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    await withUser(ctx.user.id, (tx) =>
+      removeOrderItemCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, { orderItemId }),
+    )
     revalidatePath('/bookings')
     revalidatePath('/kitchen')
     return {}
