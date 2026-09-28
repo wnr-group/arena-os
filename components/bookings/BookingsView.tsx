@@ -858,6 +858,18 @@ export function BookingsView({
                   {paymentStates[selected.bookingId].invoiceNumber}
                 </Link>
               )}
+              {/* M25 #4: discoverability for the existing refund -> void ->
+                  re-raise correction, right from the booking a wrong bill
+                  was raised against — not a new capability, and the invoice
+                  page itself still hides Refund/Void for a non-manager. */}
+              {paymentStates[selected.bookingId] && (
+                <Link
+                  href={`/invoices/${paymentStates[selected.bookingId].invoiceId}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive"
+                >
+                  Wrong bill? Correct it
+                </Link>
+              )}
               {/* Only the statuses lib/billing/invoice.ts will actually bill.
                   The action re-checks — hiding a link is not authorization. */}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (

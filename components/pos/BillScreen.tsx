@@ -474,6 +474,22 @@ export function BillScreen({
           <Link href={`/invoices/${existingInvoice.id}`} className="font-medium underline">
             View GST invoice
           </Link>
+          {/* M25 #4: this is exactly where staff land after clicking "Bill"
+           *  on a booking that turns out to already be billed — the most
+           *  likely moment someone realises the bill was wrong, so the fix
+           *  is named right here instead of only living on the invoice page
+           *  itself. Void/refund stay manager-only regardless — this is
+           *  wording, not a new capability. */}
+          {isManager && (
+            <>
+              {' '}
+              Wrong bill?{' '}
+              <Link href={`/invoices/${existingInvoice.id}`} className="font-medium underline">
+                Refund any payment, then void it
+              </Link>{' '}
+              to raise a corrected one.
+            </>
+          )}
         </Notice>
       )}
       {splitChecks && (
