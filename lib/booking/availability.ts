@@ -118,10 +118,20 @@ export function durationHours(startsAt: Date, endsAt: Date): number {
  * calendar date (todayInZone), not a raw ms/86400000 division, so it can't be
  * thrown off by a DST shift or by the two instants sitting at different
  * times of day (open vs. close).
+ *
+ * `endsAt` is an EXCLUSIVE upper bound, same convention dayWindow()'s own
+ * "close" uses — for an ordinary close time (e.g. 22:00) that's never
+ * ambiguous, but for an Open 24 Hours day dayWindow() correctly returns the
+ * NEXT calendar day's midnight (0098_working_hours_24h.sql), which would
+ * otherwise read as that next day's own date here and over-count the range
+ * by one whole day. Back off a millisecond before reading the date, so the
+ * boundary is read as the last instant the range actually covers rather
+ * than the first instant it doesn't — matches what every non-midnight close
+ * time already does correctly, without needing to special-case open24h here.
  */
 export function daysInRange(startsAt: Date, endsAt: Date, timeZone: string): number {
   const [sy, sm, sd] = todayInZone(timeZone, startsAt).split('-').map(Number)
-  const [ey, em, ed] = todayInZone(timeZone, endsAt).split('-').map(Number)
+  const [ey, em, ed] = todayInZone(timeZone, new Date(endsAt.getTime() - 1)).split('-').map(Number)
   const days = Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / (24 * 60 * MIN)) + 1
   return Math.max(1, days)
 }

@@ -296,6 +296,67 @@ async function main() {
     check('T3 3-day range: slot_total = 18000.00 (3 days × ₹6000)', rows[0].slot_total === '18000.00')
   }
 
+  // T3b: the range's LAST day is "Open 24 Hours" (0098_working_hours_24h.sql)
+  // — dayWindow() correctly resolves that day's close to the NEXT calendar
+  // day's midnight (an exclusive upper bound, right for the hourly slot
+  // grid it was written for), but daysInRange must still read that as the
+  // END of Jan 12, not the start of a phantom 4th day. Reproduces exactly
+  // what getDayRangeWindow/getPublicDayRangeWindow would hand to
+  // createBookingCore for a Jan 10 -> Jan 12 range where Jan 12 is open24h,
+  // without needing a working_hours fixture — createBookingCore prices
+  // straight off the timestamps it's given, same as T2/T3 above.
+  let royalOpen24hId = ''
+  {
+    const booking = await withUser(userId, (tx) =>
+      createBookingCore(tx, ctx, {
+        branchId,
+        source: 'staff',
+        discount: 0,
+        deposit: 0,
+        slots: [
+          {
+            resourceId,
+            startsAt: ist(2026, 1, 10, 9).toISOString(), // D1 open, 09:00 IST
+            endsAt: ist(2026, 1, 13, 0).toISOString(), // Jan 12 is open24h -> close = Jan 13 00:00 IST
+            setupId: royalId,
+          },
+        ],
+      }),
+    )
+    royalOpen24hId = booking.id
+    const { rows } = await ownerPool.query(`select slot_total from booking_slots where booking_id = $1`, [booking.id])
+    check(
+      'T3b 3-day range ending on an Open-24h day: slot_total = 18000.00 (3 days, NOT 4)',
+      rows[0].slot_total === '18000.00',
+    )
+  }
+
+  // T3c: a SINGLE day that is itself open24h (start AND end both land on
+  // literal midnight) — must still price as exactly 1 day, not 0 or 2.
+  {
+    const booking = await withUser(userId, (tx) =>
+      createBookingCore(tx, ctx, {
+        branchId,
+        source: 'staff',
+        discount: 0,
+        deposit: 0,
+        slots: [
+          {
+            resourceId,
+            startsAt: ist(2026, 1, 20, 0).toISOString(), // D1 open24h -> open = Jan 20 00:00 IST
+            endsAt: ist(2026, 1, 21, 0).toISOString(), // same day's close = Jan 21 00:00 IST
+            setupId: royalId,
+          },
+        ],
+      }),
+    )
+    const { rows } = await ownerPool.query(`select slot_total from booking_slots where booking_id = $1`, [booking.id])
+    check(
+      'T3c a single open24h day: slot_total = 6000.00 (1 day, not 0 or 2)',
+      rows[0].slot_total === '6000.00',
+    )
+  }
+
   // ══ 3. per-head is a no-op for a setup slot ═════════════════════════════
   console.log('\n── per-head + setup ──')
   {
@@ -494,6 +555,17 @@ async function main() {
     check('T14 …qty=3 (days), unitPrice=6000 (the ORIGINAL day rate — frozen, not the 9999 it was changed to)', lines[0].qty === 3 && lines[0].unitPrice === 6000)
     const priced = priceBill({ lines: [{ ...lines[0], taxPercent: 18 }] })
     check('T14 …prices to exactly 18000.00 through priceBill', priced.subtotal === 18000)
+  }
+  {
+    // T14b: loadBookingLines is a SEPARATE call site of daysInRange from
+    // priceBookingSlots (T3b already pinned the booking's own slot_total) —
+    // reconstructing the bill for the SAME open24h-ending booking must also
+    // read qty=3, not 4, or the invoice would disagree with what was charged.
+    const lines = await withUser(userId, (tx) => loadBookingLines(tx, tenantId, royalOpen24hId, TZ))
+    check('T14b open24h-ending 3-day setup: exactly one line', lines.length === 1)
+    check('T14b …qty=3 (days, NOT 4), unitPrice=6000', lines[0].qty === 3 && lines[0].unitPrice === 6000)
+    const priced = priceBill({ lines: [{ ...lines[0], taxPercent: 18 }] })
+    check('T14b …prices to exactly 18000.00 through priceBill (not 24000.00)', priced.subtotal === 18000)
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────
