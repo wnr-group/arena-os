@@ -10,6 +10,7 @@ import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/
 import { listDepositStates } from '@/lib/payments/data'
 import { listBookingPaymentStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
 function toMinutes(hhmm: string): number {
@@ -41,6 +42,11 @@ export default async function BookingsPage({
   // other industry gets neither the request button nor a modifier picker on
   // this cross-industry order screen, same scoping as /floor's own gate.
   const isRestaurant = ctx.tenant.industry === 'restaurant'
+  // A studio tenant (recording_studio/podcast_studio/dance_studio/
+  // vr_centre) doesn't sell food — hides "Take order" and the per-booking
+  // Food orders panel entirely on this page. Every other industry
+  // (gaming_cafe, restaurant) is unaffected.
+  const showFoodOrdering = !industryHasStudioSetups(ctx.tenant.industry)
 
   const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] =
     await Promise.all([
@@ -188,6 +194,7 @@ export default async function BookingsPage({
       paymentStates={paymentStates}
       canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
+      showFoodOrdering={showFoodOrdering}
     />
   )
 }

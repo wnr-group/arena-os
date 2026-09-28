@@ -161,6 +161,7 @@ export function BookingsView({
   paymentStates,
   canRequestVoidComp,
   canToggle86,
+  showFoodOrdering,
 }: {
   branchId: string
   branchName: string
@@ -210,6 +211,12 @@ export function BookingsView({
    *  setMenuItemAvailability re-checks canManageKitchen() server-side
    *  regardless (M17 #7). */
   canToggle86: boolean
+  /** Studio tenants (recording_studio/podcast_studio/dance_studio/vr_centre,
+   *  see lib/booking/studio-setups.ts) don't sell food — hides the header
+   *  "Take order" button and the per-booking "Food orders" panel/"Add
+   *  order" link entirely, rather than just disabling them. Every other
+   *  industry (gaming_cafe, restaurant) is unaffected. */
+  showFoodOrdering: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -411,13 +418,15 @@ export function BookingsView({
               <Plus size={16} /> New booking
             </Link>
           )}
-          <button
-            onClick={() => setOrderDialog({})}
-            disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
-          >
-            <ShoppingBag size={16} /> Take order
-          </button>
+          {showFoodOrdering && (
+            <button
+              onClick={() => setOrderDialog({})}
+              disabled={menuItems.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
+            >
+              <ShoppingBag size={16} /> Take order
+            </button>
+          )}
         </div>
       </div>
 
@@ -859,6 +868,7 @@ export function BookingsView({
               </div>
             )}
 
+            {showFoodOrdering && (
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-muted-foreground">Food orders</h3>
@@ -956,6 +966,7 @@ export function BookingsView({
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       )}
