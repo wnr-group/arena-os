@@ -1,4 +1,4 @@
-import { zonedTimeToUtc } from './time'
+import { zonedTimeToUtc, todayInZone } from './time'
 
 export type Interval = { startsAt: Date; endsAt: Date }
 
@@ -96,4 +96,20 @@ export function availableStartTimes(
 /** Hours (decimal) between two instants — for pricing a slot. */
 export function durationHours(startsAt: Date, endsAt: Date): number {
   return (endsAt.getTime() - startsAt.getTime()) / (60 * MIN)
+}
+
+/**
+ * Whole calendar days a per-day setup's window spans, in `timeZone` (M24 #2)
+ * — for a slot booked "D1 open -> Dn close", this is (Dn - D1) + 1, i.e. the
+ * inclusive day count a day-rate setup prices against
+ * (lib/booking/service.ts:priceBookingSlots). Computed off each instant's OWN
+ * calendar date (todayInZone), not a raw ms/86400000 division, so it can't be
+ * thrown off by a DST shift or by the two instants sitting at different
+ * times of day (open vs. close).
+ */
+export function daysInRange(startsAt: Date, endsAt: Date, timeZone: string): number {
+  const [sy, sm, sd] = todayInZone(timeZone, startsAt).split('-').map(Number)
+  const [ey, em, ed] = todayInZone(timeZone, endsAt).split('-').map(Number)
+  const days = Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / (24 * 60 * MIN)) + 1
+  return Math.max(1, days)
 }

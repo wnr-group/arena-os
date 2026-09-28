@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0097: studio setups — data model
+-- Arena OS — 0099: studio setups — data model
 --
 -- M24 #1 — the foundation the rest of the studio-setups series builds on
 -- (see docs/plans/studio-setups.md). A studio client has ONE physical set

@@ -9,8 +9,8 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates, tenants } from '@/db/schema'
-import { durationHours } from './availability'
+import { resources, resourceTypes, resourceSetups, bookings, bookingSlots, orders, auditLog, taxRates, tenants } from '@/db/schema'
+import { durationHours, daysInRange } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
 import { todayInZone } from './time'
@@ -45,7 +45,14 @@ export async function loadBookingChannel(tx: Db, tenantId: string, bookingId: st
   return row?.channel ?? null
 }
 
-export type CreateBookingSlotInput = { resourceId: string; startsAt: string; endsAt: string }
+export type CreateBookingSlotInput = {
+  resourceId: string
+  startsAt: string
+  endsAt: string
+  /** M24 #2: an optional resource_setups row this slot books at, instead of
+   *  the resource's own base rate — see priceBookingSlots' doc comment. */
+  setupId?: string
+}
 
 export type CreateBookingInput = {
   branchId: string
@@ -82,8 +89,18 @@ export type PricedBookingSlot = {
   pricingMode: string
   /** M23 #1: true when at least one segment of this slot's window billed at
    *  a happy-hour-discounted rate — see db/schema.ts's column comment and
-   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. */
+   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. Always
+   *  false for a setup slot (M24 #2) — happy hours don't apply to setups. */
   happyHourApplied: boolean
+  /** M24 #2: the resource_setups row this slot booked at, if any — null for
+   *  a base-rate slot. */
+  setupId: string | null
+  /** M24 #2: snapshot of the setup's name at booking time. Null for a
+   *  base-rate slot. */
+  setupName: string | null
+  /** M24 #2: 'hour' (default — every base-rate slot, and an hourly setup) or
+   *  'day' (a per-day setup: date-range x day rate). */
+  rateUnit: string
 }
 
 /**
@@ -134,6 +151,21 @@ export type PricedBookingSlot = {
  * PER-PLAYER rate, not some pre-multiplied total. When no rule ever fires
  * for a slot, this reproduces flat rate × hours exactly, so an untouched
  * booking is byte-identical to before this ticket.
+ *
+ * M24 #2: a slot may instead carry a `setupId` (a resource_setups row —
+ * 0099_studio_setups.sql), naming a fixed price for the resource dressed as
+ * that setup. A setup PRICES INSTEAD OF, not on top of, everything above: no
+ * weekend rate, no happy-hour discount, no per-head multiplier — "flat as
+ * named" per the design doc. Its rate_unit decides the shape:
+ *   'hour' -> rate × hours, same arithmetic as the base-rate path.
+ *   'day'  -> rate × daysInRange(startsAt, endsAt, timezone) — the slot is
+ *             expected to span whole calendar days (D1 open -> Dn close);
+ *             this is the one place per-day pricing exists.
+ * setupId is re-resolved against THIS resource + tenant and re-checked
+ * active on every call — never trusted at face value — so a stale, foreign,
+ * or deactivated setup id fails closed with a BookingError rather than
+ * silently falling back to the base rate. A slot with no setupId prices
+ * exactly as before this ticket.
  */
 export async function priceBookingSlots(
   tx: Db,
@@ -204,6 +236,26 @@ export async function priceBookingSlots(
     if (r.branchId !== input.branchId) throw new BookingError('A resource belongs to a different branch.')
   }
 
+  // M24 #2: the resource_setups rows referenced by setupId, loaded once and
+  // re-validated per slot below (resource match + active) — see this
+  // function's doc comment on why a setupId is never trusted at face value.
+  const setupIds = [...new Set(input.slots.map((s) => s.setupId).filter((id): id is string => Boolean(id)))]
+  const setupRows =
+    setupIds.length > 0
+      ? await tx
+          .select({
+            id: resourceSetups.id,
+            resourceId: resourceSetups.resourceId,
+            name: resourceSetups.name,
+            rate: resourceSetups.rate,
+            rateUnit: resourceSetups.rateUnit,
+            isActive: resourceSetups.isActive,
+          })
+          .from(resourceSetups)
+          .where(and(eq(resourceSetups.tenantId, ctx.tenantId), inArray(resourceSetups.id, setupIds)))
+      : []
+  const setupById = new Map(setupRows.map((r) => [r.id, r]))
+
   // Resource types with no tax_rate_id of their own fall back to the
   // tenant's sole active 'resources'/'both' rate, if unambiguous — see
   // resolveScopeDefaultTaxPercent. Skipped when every resource already has
@@ -228,6 +280,42 @@ export async function priceBookingSlots(
     const r = byId.get(s.resourceId)!
     const startsAt = new Date(s.startsAt)
     const endsAt = new Date(s.endsAt)
+    const taxRatePercent = Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2)
+
+    // M24 #2: a setup prices INSTEAD OF the base-rate path below — flat rate
+    // as named, no weekend/happy-hour/per-head composition. Re-validated
+    // here (resource match + active), never trusted at face value — see this
+    // function's doc comment.
+    if (s.setupId) {
+      const setup = setupById.get(s.setupId)
+      if (!setup || setup.resourceId !== s.resourceId || !setup.isActive) {
+        throw new BookingError('This setup is no longer available for the selected resource.')
+      }
+      const rate = Number(setup.rate)
+      const total =
+        setup.rateUnit === 'day'
+          ? round2(daysInRange(startsAt, endsAt, ctx.timezone) * rate)
+          : round2(rate * durationHours(startsAt, endsAt))
+      subtotal += total
+
+      return {
+        resourceId: s.resourceId,
+        startsAt,
+        endsAt,
+        rateApplied: rate.toFixed(2),
+        slotTotal: total.toFixed(2),
+        resourceName: r.name,
+        resourceTypeName: r.typeName,
+        taxRatePercent,
+        headCount: null,
+        pricingMode: r.pricingMode,
+        happyHourApplied: false,
+        setupId: setup.id,
+        setupName: setup.name,
+        rateUnit: setup.rateUnit,
+      }
+    }
+
     const weekdayRate = Number(r.rateOverride ?? r.typeRate)
     const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
     const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
@@ -280,10 +368,13 @@ export async function priceBookingSlots(
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
-      taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
+      taxRatePercent,
       headCount,
       pricingMode: r.pricingMode,
       happyHourApplied: discounted,
+      setupId: null,
+      setupName: null,
+      rateUnit: 'hour',
     }
   })
 

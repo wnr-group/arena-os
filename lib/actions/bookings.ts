@@ -112,6 +112,10 @@ const quoteBookingInput = z.object({
   // M21 per-head #4: required only when the resource turns out to be
   // per_head — priceBookingSlots itself validates that, same as createBooking.
   headCount: z.coerce.number().int().min(1).optional(),
+  // M24 #2: an optional named setup for this resource — priceBookingSlots
+  // re-validates it belongs to this resource/tenant and is active, same as
+  // headCount above.
+  setupId: z.string().uuid().optional(),
 })
 
 /**
@@ -124,6 +128,11 @@ const quoteBookingInput = z.object({
  *
  * No extra role/industry gate beyond requireContext() — same as createBooking
  * itself, which this merely previews.
+ *
+ * M24 #2: also accepts an optional setupId, so a studio wizard can quote a
+ * named setup's flat rate (hourly or per-day) the same way it already quotes
+ * a per_head resource's headCount — priceBookingSlots resolves and validates
+ * it identically for both create and quote.
  */
 export async function quoteBooking(
   input: z.input<typeof quoteBookingInput>,
@@ -135,7 +144,7 @@ export async function quoteBooking(
     const result = await withUser(ctx.user.id, (tx) =>
       priceBookingSlots(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, {
         branchId: v.branchId,
-        slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }],
+        slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }],
         headCount: v.headCount,
       }),
     )

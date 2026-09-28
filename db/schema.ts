@@ -219,7 +219,7 @@ export const resources = pgTable(
   ],
 )
 
-// M24 #1 (0097): a per-SET named priced configuration (Kitchen, Royal, …),
+// M24 #1 (0099): a per-SET named priced configuration (Kitchen, Royal, …),
 // child of the physical resource. Optional — a resource with no setups keeps
 // its base resourceTypes.hourlyRate. A booking still reserves the physical
 // resourceId, so bookingSlots' existing GiST exclusion (0003) blocks every
@@ -400,7 +400,7 @@ export const bookingSlots = pgTable(
     // already-computed slot_total instead, same shape a walk-in's happy-hour
     // blend already uses.
     happyHourApplied: boolean('happy_hour_applied').notNull().default(false),
-    // M24 #1 (0097): the resource_setups row selected for this booking, if
+    // M24 #1 (0099): the resource_setups row selected for this booking, if
     // any — snapshot discipline, same as resourceName/resourceTypeName.
     // Null for every base-rate (no-setup) booking. ON DELETE SET NULL:
     // deleting a setup definition must not delete booking history.
