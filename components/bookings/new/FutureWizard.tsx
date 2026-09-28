@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CalendarDays, Check, Clock, Gamepad2, Loader2, Users } from 'lucide-react'
 import { toast } from 'sonner'
-import { getAvailableStartsForType } from '@/lib/actions/availability'
+import { getAvailableStarts, getAvailableStartsForType } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone, quoteBooking } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
@@ -58,6 +58,7 @@ export function FutureWizard({
   today,
   initialDate,
   initialResourceTypeId,
+  initialResourceId,
   resources,
 }: {
   branchId: string
@@ -66,6 +67,12 @@ export function FutureWizard({
   today: string
   initialDate: string
   initialResourceTypeId?: string
+  /** Set when the wizard was opened from a specific device's row on the
+   *  Timeline (BookingsView) rather than the generic "New booking" button —
+   *  locks the flow to that exact unit instead of the usual
+   *  auto-assign-a-free-unit-of-this-type behaviour, and the Slot step reads
+   *  ITS OWN availability rather than the type's. */
+  initialResourceId?: string
   resources: WizardResource[]
 }) {
   const router = useRouter()
@@ -88,10 +95,16 @@ export function FutureWizard({
     return [...byType.values()]
   }, [resources])
 
+  // Computed once — a resourceId arrives once, from the URL that opened this
+  // page, and never changes underneath the wizard.
+  const [lockedResource] = useState(() => resources.find((r) => r.id === initialResourceId))
+
   const [resourceTypeId, setResourceTypeId] = useState(
-    initialResourceTypeId && resourceTypes.some((t) => t.id === initialResourceTypeId)
-      ? initialResourceTypeId
-      : (resourceTypes[0]?.id ?? ''),
+    lockedResource
+      ? lockedResource.resourceTypeId
+      : initialResourceTypeId && resourceTypes.some((t) => t.id === initialResourceTypeId)
+        ? initialResourceTypeId
+        : (resourceTypes[0]?.id ?? ''),
   )
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
   const hourlyRate = Number(selectedType?.hourlyRate ?? 0)
@@ -132,6 +145,36 @@ export function FutureWizard({
     setSlots(null)
     setIsClosed(false)
     setSlotsLoading(true)
+    // Locked to one device: read ITS OWN availability, not the type's —
+    // otherwise a start time free on some OTHER unit of the type would show
+    // as free here too, and booking it would silently reassign the customer
+    // to a different device than the one they clicked on the Timeline.
+    if (lockedResource) {
+      const resourceId = lockedResource.id
+      getAvailableStarts({ branchId, resourceId, date, durationMinutes: duration }).then((r) => {
+        if (cancelled) return
+        setSlotsLoading(false)
+        if (r.error) {
+          setSlotsError(r.error)
+          setSlots([])
+          setIsClosed(false)
+          return
+        }
+        // The whole working day, taken times included — shown disabled
+        // rather than dropped, same as the public resource booking page.
+        const availableSet = new Set(r.starts ?? [])
+        const grid = (r.allStarts ?? []).map((startsAt) => ({
+          startsAt,
+          resourceId: availableSet.has(startsAt) ? resourceId : null,
+          available: availableSet.has(startsAt),
+        }))
+        setSlots(grid)
+        setIsClosed(Boolean(r.isClosed))
+      })
+      return () => {
+        cancelled = true
+      }
+    }
     getAvailableStartsForType({ branchId, resourceTypeId, date, durationMinutes: duration }).then((r) => {
       if (cancelled) return
       setSlotsLoading(false)
@@ -155,6 +198,8 @@ export function FutureWizard({
     return () => {
       cancelled = true
     }
+    // lockedResource is set once (useState initializer) and never changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId, resourceTypeId, date, duration])
 
   const [customerName, setCustomerName] = useState('')
@@ -165,7 +210,14 @@ export function FutureWizard({
   const [phoneChecked, setPhoneChecked] = useState(false)
   const [existingCustomerName, setExistingCustomerName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [pending, start] = useTransition()
+  // Plain state, not useTransition — router.push() called from inside a
+  // startTransition's async callback (after an await) was silently getting
+  // dropped: React ends OUR transition the moment this callback returns,
+  // and that re-render appears to abort the navigation transition
+  // router.push() had just started, so the URL never actually changed even
+  // though createBooking had already succeeded. Keeping "is this submitting"
+  // as ordinary state sidesteps the interaction entirely.
+  const [pending, setPending] = useState(false)
 
   // Keyed on whether a NAME is known, not on whether a customer row exists —
   // customers.name is nullable, so a returning customer can be found with no
@@ -277,7 +329,7 @@ export function FutureWizard({
     setStep(3)
   }
 
-  function submit() {
+  async function submit() {
     setError(null)
     if (!selectedSlot) {
       setError('Pick a start time first.')
@@ -294,7 +346,8 @@ export function FutureWizard({
       setStep(2)
       return
     }
-    start(async () => {
+    setPending(true)
+    try {
       const r = await createBooking({
         branchId,
         source: 'walk_in',
@@ -303,12 +356,21 @@ export function FutureWizard({
         slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
         headCount: isPerHead ? headCount : undefined,
       })
-      if (r.error) setError(r.error)
-      else {
+      if (r.error) {
+        setError(r.error)
+        setPending(false)
+      } else {
         toast.success(`Booking ${r.bookingNumber} created.`)
         router.push('/bookings')
       }
-    })
+    } catch {
+      // The server action itself rejected (network drop, deploy mismatch) —
+      // distinct from r.error, which is a normal in-band failure. Without
+      // this the button stayed disabled forever since setPending(false)
+      // above never ran.
+      setError('Something went wrong — check your connection and try again.')
+      setPending(false)
+    }
   }
 
   return (
@@ -320,31 +382,63 @@ export function FutureWizard({
       <WizardCard>
         {step === 0 && (
           <div>
-            <h2 className="text-lg font-semibold">Which device?</h2>
-            <p className="mt-1 text-sm text-muted-foreground">A free unit of this type is assigned automatically.</p>
-
-            {resourceTypes.length === 0 ? (
-              <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
+            {lockedResource ? (
+              <>
+                <h2 className="text-lg font-semibold">Device</h2>
+                <p className="mt-1 text-sm text-muted-foreground">Picked from the Timeline — booking this exact unit.</p>
+                {/* Same tile shape/size as the type-picker grid below — just
+                    one card, permanently "selected", nothing to click. */}
+                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  <div className="relative flex flex-col items-start gap-2 rounded-xl border border-primary bg-accent/60 p-4 text-left shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30">
+                    <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                      <Gamepad2 size={18} />
+                    </span>
+                    <span className="text-sm font-semibold text-foreground">{lockedResource.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {lockedResource.typeName} · {formatMoney(Number(lockedResource.hourlyRate), currency)} /{' '}
+                      {lockedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                    </span>
+                    <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
+                        <path
+                          fillRule="evenodd"
+                          d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </>
             ) : (
-              <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                {resourceTypes.map((t) => (
-                  <SelectableTile
-                    key={t.id}
-                    selected={resourceTypeId === t.id}
-                    onClick={() => setResourceTypeId(t.id)}
-                    icon={<Gamepad2 size={18} />}
-                    title={t.name}
-                    subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
-                    badge={
-                      t.capacity != null ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                          <Users size={12} /> Up to {t.capacity}
-                        </span>
-                      ) : undefined
-                    }
-                  />
-                ))}
-              </div>
+              <>
+                <h2 className="text-lg font-semibold">Which device?</h2>
+                <p className="mt-1 text-sm text-muted-foreground">A free unit of this type is assigned automatically.</p>
+
+                {resourceTypes.length === 0 ? (
+                  <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
+                ) : (
+                  <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                    {resourceTypes.map((t) => (
+                      <SelectableTile
+                        key={t.id}
+                        selected={resourceTypeId === t.id}
+                        onClick={() => setResourceTypeId(t.id)}
+                        icon={<Gamepad2 size={18} />}
+                        title={t.name}
+                        subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
+                        badge={
+                          t.capacity != null ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                              <Users size={12} /> Up to {t.capacity}
+                            </span>
+                          ) : undefined
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
 
             {isPerHead && selectedType && (
@@ -522,7 +616,7 @@ export function FutureWizard({
             {selectedSlot && (
               <div className="mt-6 rounded-xl border border-primary/20 bg-accent/40 p-4 text-sm">
                 <dl className="space-y-1.5">
-                  <SummaryRow k="Device" v={selectedType?.name ?? '—'} />
+                  <SummaryRow k="Device" v={lockedResource?.name ?? selectedType?.name ?? '—'} />
                   <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
                   <SummaryRow k="Duration" v={durationLabel(duration)} />
                   <SummaryRow
@@ -620,7 +714,7 @@ export function FutureWizard({
 
             <div className="mt-5 rounded-lg border border-border bg-muted/40 p-4 text-sm">
               <dl className="space-y-1.5">
-                <SummaryRow k="Device" v={selectedType?.name ?? '—'} />
+                <SummaryRow k="Device" v={lockedResource?.name ?? selectedType?.name ?? '—'} />
                 <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
                 <SummaryRow
                   k="Time"

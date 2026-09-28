@@ -130,9 +130,9 @@ export async function getPublicResourceType(
   return row ?? null
 }
 
-const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
+const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
-export type PublicWorkingHours = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean }
+export type PublicWorkingHours = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean; open24h: boolean }
 
 /**
  * The branch's full weekly schedule, Sun(0)..Sat(6) — for the "Opening
@@ -148,6 +148,7 @@ export async function getPublicWorkingHours(tenantId: string, branchId: string):
         openTime: workingHours.openTime,
         closeTime: workingHours.closeTime,
         isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
       })
       .from(workingHours)
       .where(and(eq(workingHours.tenantId, tenantId), eq(workingHours.branchId, branchId)))
@@ -242,6 +243,7 @@ export async function getPublicAvailableStarts(
         openTime: workingHours.openTime,
         closeTime: workingHours.closeTime,
         isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
       })
       .from(workingHours)
       .where(and(eq(workingHours.branchId, branchId), eq(workingHours.dayOfWeek, dow)))
@@ -498,6 +500,7 @@ export async function getPublicAvailableStartsForType(
         openTime: workingHours.openTime,
         closeTime: workingHours.closeTime,
         isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
       })
       .from(workingHours)
       .where(and(eq(workingHours.branchId, branchId), eq(workingHours.dayOfWeek, dow)))

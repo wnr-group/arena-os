@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Eye,
   Loader2,
   Plus,
   RefreshCw,
@@ -21,11 +22,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { DepositButton } from './DepositButton'
+import { CancelBookingDialog } from './CancelBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-import { setBookingStatus, cancelBooking } from '@/lib/actions/bookings'
+import { setBookingStatus } from '@/lib/actions/bookings'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -55,6 +56,11 @@ type Slot = {
   total: string
   /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
   deposit: string
+  /** False once the booking is cancelled/no-show (trg_bookings_sync_slots,
+   *  0003) — the resource is free again. The Timeline only draws active
+   *  slots; the Bookings table shows every status regardless. */
+  active: boolean
+  cancellationReason: string | null
 }
 export type OrderItemLine = {
   itemId: string
@@ -206,9 +212,9 @@ export function BookingsView({
   canToggle86: boolean
 }) {
   const router = useRouter()
-  const confirm = useConfirm()
   const [view, setView] = useState<View>('timeline')
   const [selected, setSelected] = useState<Slot | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
@@ -339,32 +345,20 @@ export function BookingsView({
    * that type, now via a query param instead of local state, and forces the
    * Future tab open since picking a spot on the calendar only ever means a
    * future booking, never a walk-in.
+   *
+   * `resourceId` is set when the click landed on a specific device's row
+   * (rather than the generic "New booking" button) — the wizard then locks
+   * the flow to that exact unit instead of auto-assigning a free one of its
+   * type (FutureWizard's `lockedResource`).
    */
-  function newBookingHref(resourceTypeId?: string): string {
+  function newBookingHref(resourceTypeId?: string, resourceId?: string): string {
     const params = new URLSearchParams({ date })
     if (resourceTypeId) {
       params.set('resourceTypeId', resourceTypeId)
       params.set('tab', 'future')
     }
+    if (resourceId) params.set('resourceId', resourceId)
     return `/bookings/new?${params.toString()}`
-  }
-
-  async function handleCancel(slot: Slot) {
-    await confirm({
-      title: `Cancel booking ${slot.bookingNumber}?`,
-      description: `This will cancel ${slot.customerName || 'this walk-in'}'s booking. This cannot be undone.`,
-      confirmText: 'Cancel booking',
-      cancelText: 'Keep booking',
-      onConfirm: async () => {
-        const r = await cancelBooking(slot.bookingId)
-        if (r.error) toast.error(r.error)
-        else {
-          setSelected(null)
-          router.refresh()
-          toast.success(`Booking ${slot.bookingNumber} cancelled.`)
-        }
-      },
-    })
   }
 
   return (
@@ -469,7 +463,11 @@ export function BookingsView({
 
             {/* resource rows */}
             {resources.map((r) => {
-              const rowSlots = slots.filter((s) => s.resourceId === r.id)
+              // Cancelled/no-show slots are excluded here on purpose — the
+              // Timeline shows what is actually occupying each resource right
+              // now, and a cancelled booking has freed it. They still appear
+              // in the Bookings table below (bookingsList uses every slot).
+              const rowSlots = slots.filter((s) => s.resourceId === r.id && s.active)
               return (
                 <div key={r.id} className="flex items-stretch border-t">
                   <div className="flex w-36 shrink-0 items-center gap-2 py-3 pr-3">
@@ -485,9 +483,9 @@ export function BookingsView({
                     </div>
                   </div>
                   <Link
-                    href={newBookingHref(r.resourceTypeId)}
+                    href={newBookingHref(r.resourceTypeId, r.id)}
                     className="relative block h-16 flex-1 cursor-copy"
-                    title="Click to add a future booking of this resource type"
+                    title={`Click to book ${r.name}`}
                   >
                     {/* hour gridlines */}
                     {hourTicks.map((h) => (
@@ -518,6 +516,12 @@ export function BookingsView({
                             e.preventDefault()
                             e.stopPropagation()
                             setSelected(s)
+                            const until = isOngoing ? 'now' : timeInZone(s.endsAt!, timeZone)
+                            toast.warning(
+                              `${r.name} is already booked ${timeInZone(s.startsAt, timeZone)}–${until}${
+                                s.customerName ? ` for ${s.customerName}` : ''
+                              }.`,
+                            )
                           }}
                           className={`absolute inset-y-2 overflow-hidden rounded-md px-2 py-1 text-left text-xs shadow-sm ${
                             STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white'
@@ -641,6 +645,7 @@ export function BookingsView({
                       </td>
                       <td className="px-4 py-3">
                         <span
+                          title={b.status === 'cancelled' ? (b.representative.cancellationReason ?? undefined) : undefined}
                           className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${
                             STATUS_BADGE[b.status] ?? 'bg-muted text-muted-foreground'
                           }`}
@@ -677,15 +682,38 @@ export function BookingsView({
                           )
                         })()}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatMoney(b.total, currency)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {/* Once a bill exists, the INVOICE's total is the real
+                            figure — bookings.total stays '0.00' for a walk-in
+                            until checkout (startWalkinCore/checkoutWalkinCore,
+                            lib/booking/walkin.ts) prices the session, even
+                            though a food order against it may already be
+                            billed and owing. Showing 0 here next to "due" in
+                            the Payment column read as broken. */}
+                        {formatMoney(paymentStates[b.bookingId]?.total ?? Number(b.total), currency)}
+                      </td>
                       <td className="px-4 py-3">
-                        <div className="flex justify-end">
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => setSelected(b.representative)}
-                            className="rounded-lg px-3 py-1.5 text-sm font-medium text-primary hover:underline"
+                            aria-label={`View booking ${b.bookingNumber}`}
+                            title="View details"
+                            className="rounded-lg border border-blue-500/40 p-2 text-blue-600 transition hover:bg-blue-500/10 dark:text-blue-400"
                           >
-                            View
+                            <Eye size={16} />
                           </button>
+                          {/* Only the statuses lib/billing/invoice.ts will actually
+                              bill — same gate the detail drawer's Bill link uses. */}
+                          {(b.status === 'confirmed' || b.status === 'checked_in') && (
+                            <Link
+                              href={`/pos/${b.bookingId}`}
+                              aria-label={`Bill booking ${b.bookingNumber}`}
+                              title="Bill"
+                              className="rounded-lg border border-emerald-500/40 p-2 text-emerald-600 transition hover:bg-emerald-500/10 dark:text-emerald-400"
+                            >
+                              <ReceiptText size={16} />
+                            </Link>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -819,10 +847,17 @@ export function BookingsView({
                   loading={actingAction === 'no_show'}
                 />
               )}
-              {selected.status !== 'completed' && (
-                <ActBtn label="Cancel" variant="danger" onClick={() => handleCancel(selected)} pending={pending} />
+              {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
+                <ActBtn label="Cancel" variant="danger" onClick={() => setCancelTarget(selected)} pending={pending} />
               )}
             </div>
+
+            {selected.status === 'cancelled' && selected.cancellationReason && (
+              <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                <p className="font-medium text-destructive">Cancellation reason</p>
+                <p className="mt-0.5 text-muted-foreground">{selected.cancellationReason}</p>
+              </div>
+            )}
 
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
@@ -959,6 +994,21 @@ export function BookingsView({
               toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
             }
             router.refresh()
+          }}
+        />
+      )}
+
+      {cancelTarget && (
+        <CancelBookingDialog
+          bookingId={cancelTarget.bookingId}
+          title={`Cancel booking ${cancelTarget.bookingNumber}?`}
+          description={`This will cancel ${cancelTarget.customerName || 'this walk-in'}'s booking. This cannot be undone.`}
+          onClose={() => setCancelTarget(null)}
+          onDone={() => {
+            setCancelTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`Booking ${cancelTarget.bookingNumber} cancelled.`)
           }}
         />
       )}

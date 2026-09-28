@@ -20,9 +20,15 @@ export type AvailabilityResponse = {
   timeZone?: string
   /** ISO start times that fit. */
   starts?: string[]
+  /** Every candidate slot the working hours allow for this duration, ignoring
+   * existing bookings/buffers — lets a caller show taken times shown-but-
+   * disabled rather than silently dropping them, same as
+   * getAvailableStartsForType below and the public booking pages. */
+  allStarts?: string[]
+  isClosed?: boolean
 }
 
-const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false }
+const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
 export async function getAvailableStarts(
   raw: z.input<typeof input>,
@@ -47,6 +53,7 @@ export async function getAvailableStarts(
           openTime: workingHours.openTime,
           closeTime: workingHours.closeTime,
           isClosed: workingHours.isClosed,
+          open24h: workingHours.open24h,
         })
         .from(workingHours)
         .where(and(eq(workingHours.branchId, v.branchId), eq(workingHours.dayOfWeek, dow)))
@@ -81,13 +88,26 @@ export async function getAvailableStarts(
         )
         .then((rows) => rows.map((r) => ({ startsAt: r.startsAt, endsAt: r.endsAt ?? dayEnd })))
 
-      const starts = availableStartTimes(v.date, tz, hours ?? DEFAULT_HOURS, existing, {
+      const resolvedHours = hours ?? DEFAULT_HOURS
+      const starts = availableStartTimes(v.date, tz, resolvedHours, existing, {
         durationMinutes: v.durationMinutes,
         slotMinutes: 30,
         bufferMinutes: res.buffer,
       })
 
-      return { timeZone: tz, starts: starts.map((d) => d.toISOString()) }
+      // No buffer here on purpose: a buffer belongs to a booking, and this
+      // grid has none to sit beside — same as getAvailableStartsForType.
+      const allStarts = availableStartTimes(v.date, tz, resolvedHours, [], {
+        durationMinutes: v.durationMinutes,
+        slotMinutes: 30,
+      })
+
+      return {
+        timeZone: tz,
+        starts: starts.map((d) => d.toISOString()),
+        allStarts: allStarts.map((d) => d.toISOString()),
+        isClosed: resolvedHours.isClosed,
+      }
     })
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }
@@ -153,6 +173,7 @@ export async function getAvailableStartsForType(
           openTime: workingHours.openTime,
           closeTime: workingHours.closeTime,
           isClosed: workingHours.isClosed,
+          open24h: workingHours.open24h,
         })
         .from(workingHours)
         .where(and(eq(workingHours.branchId, v.branchId), eq(workingHours.dayOfWeek, dow)))

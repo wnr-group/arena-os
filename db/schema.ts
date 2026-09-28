@@ -265,6 +265,9 @@ export const workingHours = pgTable(
     openTime: text('open_time').notNull().default('10:00'),
     closeTime: text('close_time').notNull().default('22:00'),
     isClosed: boolean('is_closed').notNull().default(false),
+    /** Open a full 24 hours (00:00 → next midnight), ignoring open/close times
+     *  (migration 0098). Never combined with is_closed. */
+    open24h: boolean('open_24h').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -309,6 +312,9 @@ export const bookings = pgTable(
     checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /** Why it was cancelled (migration 0097). Null until a cancellation happens;
+     *  never cleared afterward, even if the booking is later reused. */
+    cancellationReason: text('cancellation_reason'),
     /**
      * Raised (migration 0047) when a CUSTOMER cancels a booking the venue is
      * holding a deposit against. Nothing is refunded automatically — this is

@@ -1,20 +1,20 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Gamepad2, Loader2, Timer, Users, Zap } from 'lucide-react'
+import { Check, Loader2, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isWeekendDay } from '@/lib/booking/rate'
+import { computeAvailabilityWindow } from '@/lib/booking/walkin-availability'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { StepProgress } from './StepProgress'
+import { WalkInAvailabilityCalendar } from './WalkInAvailabilityCalendar'
 import {
   WizardCard,
   WizardFooter,
   SelectableTile,
-  SelectableTileSkeleton,
   ChipRow,
   wizardInput,
   wizardLabel,
@@ -22,7 +22,7 @@ import {
   wizardError,
 } from './wizard-ui'
 
-const STEPS = ['Station', 'Customer', 'Start & billing']
+const STEPS = ['Availability', 'Customer', 'Billing']
 
 /** Mirrors lib/booking/walkin.ts's WALKIN_START_WINDOW_MINUTES (5-min steps within it). */
 const START_OFFSET_STEP_MIN = 5
@@ -47,25 +47,24 @@ type ResourceOption = {
    *  tracks the chosen start time the same way startWalkinCore prices it. */
   weekendRate: string | null
   capacity: number | null
+  /** The type's own photo, or null — see WalkinResourceOption's own doc
+   *  comment (lib/booking/walkin.ts). */
+  typeImageUrl: string | null
   isFree: boolean
   hasUpcomingBooking: boolean
+  /** M23: this resource's own next active booking, if any — what the "check
+   *  availability" calendar (WalkInAvailabilityCalendar) uses to compute how
+   *  long a walk-in could run here before it. */
+  nextBooking: {
+    startsAt: string
+    endsAt: string | null
+    bookingNumber: string
+    customerName: string | null
+  } | null
   /** M21 per-head #4: 'per_resource' (default) or 'per_head' — gates the
    *  Start & billing step's Players field. */
   pricingMode: string
   minPlayers: number
-}
-/** One tile per device type — same card (icon, price/hr subtitle, capacity
- *  badge) as the future-booking wizard's Devices step, and the same
- *  auto-assign-a-free-unit rule: staff pick "PS5 Station", not a specific
- *  numbered unit. */
-type ResourceTypeGroup = {
-  id: string
-  name: string
-  hourlyRate: string
-  weekendRate: string | null
-  capacity: number | null
-  pricingMode: string
-  resources: ResourceOption[]
 }
 
 /** M22 bugfix: the rate a station actually bills at `startAt` — weekday or
@@ -123,7 +122,6 @@ export function WalkinWizard({
   currency: string
 }) {
   const router = useRouter()
-  const confirm = useConfirm()
   const [step, setStep] = useState(0)
 
   // Fixed at mount so the stepper's "now" doesn't visibly creep while the
@@ -164,7 +162,14 @@ export function WalkinWizard({
   const [mode, setMode] = useState<'open_tab' | 'timed'>('open_tab')
   const [durationMin, setDurationMin] = useState(60)
   const [error, setError] = useState<string | null>(null)
-  const [pending, start] = useTransition()
+  // Plain state, not useTransition — router.push() called from inside a
+  // startTransition's async callback (after an await) was silently getting
+  // dropped: React ends OUR transition the moment this callback returns,
+  // and that re-render appears to abort the navigation transition
+  // router.push() had just started, so the URL never actually changed even
+  // though startWalkin had already succeeded. Keeping "is this submitting"
+  // as ordinary state sidesteps the interaction entirely.
+  const [pending, setPending] = useState(false)
 
   // M21 per-head #4: player count for a per_head station — defaults to the
   // type's min_players, reset whenever a different station is picked. No
@@ -217,51 +222,59 @@ export function WalkinWizard({
   const unbillable = selectedResource
     ? isUnbillable(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays)
     : false
+  // An open tab has no end time until checkout — unlike a timed session,
+  // which might genuinely fit before a later booking, an open tab's
+  // unbounded end WILL overlap any future booking on the resource, no
+  // matter the gap. 'unavailable' (the start is already past the next
+  // booking) is excluded here because that case already drops the
+  // selection entirely, in the effect below — this is specifically the
+  // "there's room right now, but not forever" case open_tab can't honor.
+  const openTabBlockedByFutureBooking = selectedResource
+    ? computeAvailabilityWindow(startAtIso, selectedResource.nextBooking?.startsAt ?? null).status === 'available'
+    : false
+
+  // Default mode is 'open_tab' (see useState below) and resource selection
+  // happens a step before billing mode does — so a pick that's fine at
+  // step 0 can still land on a resource open_tab can't honor by the time
+  // step 2 is reached, or the start time can nudge into that state after
+  // mode was already set to open_tab. Switch to 'timed' automatically
+  // rather than leaving the operator stuck on a disabled Start button with
+  // no obvious next step.
+  useEffect(() => {
+    if (mode === 'open_tab' && openTabBlockedByFutureBooking) setMode('timed')
+  }, [mode, openTabBlockedByFutureBooking])
 
   useEffect(() => {
     setHeadCount(selectedResource?.minPlayers ?? 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceId])
 
-  // Grouped by type, same as the future-booking wizard's Devices step — only
-  // types with at least one free unit right now show up at all.
-  const resourceTypeGroups = useMemo(() => {
-    const byType = new Map<string, ResourceTypeGroup>()
-    for (const r of freeResources) {
-      if (!byType.has(r.resourceTypeId))
-        byType.set(r.resourceTypeId, {
-          id: r.resourceTypeId,
-          name: r.typeName,
-          hourlyRate: r.typeHourlyRate,
-          weekendRate: r.weekendRate,
-          capacity: r.capacity,
-          pricingMode: r.pricingMode,
-          resources: [],
-        })
-      byType.get(r.resourceTypeId)!.resources.push(r)
-    }
-    return [...byType.values()]
-  }, [freeResources])
+  // Staff can pick a resource, then nudge the start time (the ±30-min
+  // offsetMin buttons) until its window closes against its own next
+  // booking — the calendar's row disable only guards the click itself, not
+  // a selection made before the start time moved. Drop the stale pick so
+  // Continue disables again instead of letting the wizard carry a selection
+  // the server would reject via the exclusion constraint.
+  useEffect(() => {
+    if (!selectedResource) return
+    const window = computeAvailabilityWindow(startAtIso, selectedResource.nextBooking?.startsAt ?? null)
+    if (window.status === 'unavailable') setResourceId(null)
+  }, [selectedResource, startAtIso])
 
-  async function pickResourceType(group: ResourceTypeGroup) {
-    const r = group.resources[0]
-    if (r) await pickResource(r)
-  }
-
-  async function pickResource(r: ResourceOption) {
-    if (r.hasUpcomingBooking) {
-      const ok = await confirm({
-        title: `${r.name} has a booking later today`,
-        description: 'An open-ended walk-in here may still be running when that booking is due to start. Continue anyway?',
-        confirmText: 'Start here anyway',
-        variant: 'default',
-      })
-      if (!ok) return
-    }
+  // M23: picking a device now happens inside WalkInAvailabilityCalendar,
+  // which shows the actual next-booking time (or "open-ended") before staff
+  // ever click — the old confirm-before-picking popup this replaced was the
+  // only way to surface that same fact when the picker was a plain tile
+  // grid with no time information on it at all. The calendar itself already
+  // refuses a click on an occupied-right-now resource or one whose window
+  // has closed at the currently-selected start time (see its own disabled
+  // logic); the effect above covers the case where the start time moves
+  // out from under an already-made selection.
+  function pickResource(r: { id: string }) {
     setResourceId(r.id)
   }
 
-  function submit() {
+  async function submit() {
     setError(null)
     if (!resourceId) {
       setError('Pick a station first.')
@@ -277,14 +290,24 @@ export function WalkinWizard({
       setError('Still checking that phone number — try again in a moment.')
       return
     }
-    start(async () => {
-      // Derived fresh here, NOT from baseNow (which only exists to keep the
-      // stepper's displayed "now" from visibly creeping while the form sits
-      // open) — a wizard left open for a while must still submit a start
-      // time close to the actual moment of submission, both so the booking's
-      // own duration/pricing is right and so startWalkinCore's ±30-min
-      // window (lib/booking/walkin.ts) doesn't reject a perfectly good
-      // zero-offset walk-in just because the form was open too long.
+    // Belt-and-suspenders: the mode tile disables itself and the effect
+    // above auto-switches away from open_tab as soon as this becomes true,
+    // but re-check here too — same reasoning as every other guard in this
+    // function, since state can change between render and click.
+    if (mode === 'open_tab' && openTabBlockedByFutureBooking) {
+      setError('This station has a later booking — an open tab has no end time, so it would overlap. Pick Timed instead.')
+      setStep(2)
+      return
+    }
+    setPending(true)
+    // Derived fresh here, NOT from baseNow (which only exists to keep the
+    // stepper's displayed "now" from visibly creeping while the form sits
+    // open) — a wizard left open for a while must still submit a start
+    // time close to the actual moment of submission, both so the booking's
+    // own duration/pricing is right and so startWalkinCore's ±30-min
+    // window (lib/booking/walkin.ts) doesn't reject a perfectly good
+    // zero-offset walk-in just because the form was open too long.
+    try {
       const r = await startWalkin({
         branchId,
         resourceId,
@@ -295,12 +318,21 @@ export function WalkinWizard({
         durationMin: mode === 'timed' ? durationMin : undefined,
         headCount: isPerHead ? headCount : undefined,
       })
-      if (r.error) setError(r.error)
-      else {
+      if (r.error) {
+        setError(r.error)
+        setPending(false)
+      } else {
         toast.success(`Walk-in ${r.bookingNumber} started.`)
         router.push('/bookings')
       }
-    })
+    } catch {
+      // The server action itself rejected (network drop, deploy mismatch) —
+      // distinct from r.error, which is a normal in-band failure. Without
+      // this the button stayed disabled forever since setPending(false)
+      // above never ran.
+      setError('Something went wrong — check your connection and try again.')
+      setPending(false)
+    }
   }
 
   return (
@@ -312,47 +344,68 @@ export function WalkinWizard({
       <WizardCard>
         {step === 0 && (
           <div>
-            <h2 className="text-lg font-semibold">Which device?</h2>
+            <h2 className="text-lg font-semibold">Check availability</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              A free unit of this type is assigned automatically — only types with a free unit right now are shown.
+              First, tell us when the customer is starting. Then pick a device that&rsquo;s free — we&rsquo;ll show how
+              long it&rsquo;s open for, just so you know if another booking is coming up. It&rsquo;s not a time limit;
+              the customer can stay until you check them out.
             </p>
 
-            <div className="mt-5">
+            <div className="mt-5 max-w-sm">
+              <label className={wizardLabel}>Start time</label>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOffsetMin((m) => Math.max(-START_OFFSET_MAX_MIN, m - START_OFFSET_STEP_MIN))}
+                  disabled={offsetMin <= -START_OFFSET_MAX_MIN}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                >
+                  − {START_OFFSET_STEP_MIN} min
+                </button>
+                <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
+                  {timeInZone(startAtIso, timeZone)}
+                  {offsetMin !== 0 && (
+                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                      ({offsetMin > 0 ? `+${offsetMin}` : offsetMin} min)
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOffsetMin((m) => Math.min(START_OFFSET_MAX_MIN, m + START_OFFSET_STEP_MIN))}
+                  disabled={offsetMin >= START_OFFSET_MAX_MIN}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
+                >
+                  + {START_OFFSET_STEP_MIN} min
+                </button>
+              </div>
+              <p className={wizardHint}>Up to {START_OFFSET_MAX_MIN} minutes either side of now.</p>
+            </div>
+
+            <div className="mt-6">
               {resources === null ? (
                 loadError ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">{loadError}</p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                    {Array.from({ length: 8 }).map((_, i) => (
-                      <SelectableTileSkeleton key={i} />
-                    ))}
+                  <div className="flex flex-col items-center justify-center gap-3 py-14">
+                    <span className="relative flex size-10 items-center justify-center">
+                      <span className="absolute inset-0 animate-ping rounded-full bg-primary/20" />
+                      <span className="relative flex size-10 items-center justify-center rounded-full bg-primary/10">
+                        <Loader2 size={20} className="animate-spin text-primary" />
+                      </span>
+                    </span>
+                    <p className="text-sm font-medium text-muted-foreground">Checking which devices are free…</p>
                   </div>
                 )
-              ) : resourceTypeGroups.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">No stations are free right now.</p>
               ) : (
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {resourceTypeGroups.map((g) => {
-                    const selected = g.resources.some((r) => r.id === resourceId)
-                    return (
-                      <SelectableTile
-                        key={g.id}
-                        selected={selected}
-                        onClick={() => pickResourceType(g)}
-                        icon={<Gamepad2 size={18} />}
-                        title={g.name}
-                        subtitle={`${formatMoney(effectiveRate(g.hourlyRate, g.weekendRate, startAt, timeZone, weekendDays), currency)} / ${g.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
-                        badge={
-                          g.capacity != null ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                              <Users size={12} /> Up to {g.capacity}
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    )
-                  })}
-                </div>
+                <WalkInAvailabilityCalendar
+                  resources={resources}
+                  timeZone={timeZone}
+                  currency={currency}
+                  startAtIso={startAtIso}
+                  selectedResourceId={resourceId}
+                  onSelect={pickResource}
+                />
               )}
             </div>
 
@@ -429,49 +482,27 @@ export function WalkinWizard({
 
         {step === 2 && (
           <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
-            <h2 className="text-lg font-semibold">Start time & billing</h2>
+            <h2 className="text-lg font-semibold">Billing</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Starting at <span className="font-medium text-foreground">{timeInZone(startAtIso, timeZone)}</span> on{' '}
+              <span className="font-medium text-foreground">{selectedResource?.name}</span>.
+            </p>
 
             <div className="mt-5 space-y-5">
-              <div>
-                <label className={wizardLabel}>Start time</label>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setOffsetMin((m) => Math.max(-START_OFFSET_MAX_MIN, m - START_OFFSET_STEP_MIN))}
-                    disabled={offsetMin <= -START_OFFSET_MAX_MIN}
-                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
-                  >
-                    − {START_OFFSET_STEP_MIN} min
-                  </button>
-                  <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
-                    {timeInZone(startAtIso, timeZone)}
-                    {offsetMin !== 0 && (
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                        ({offsetMin > 0 ? `+${offsetMin}` : offsetMin} min)
-                      </span>
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setOffsetMin((m) => Math.min(START_OFFSET_MAX_MIN, m + START_OFFSET_STEP_MIN))}
-                    disabled={offsetMin >= START_OFFSET_MAX_MIN}
-                    className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
-                  >
-                    + {START_OFFSET_STEP_MIN} min
-                  </button>
-                </div>
-                <p className={wizardHint}>Up to {START_OFFSET_MAX_MIN} minutes either side of now.</p>
-              </div>
-
               <div>
                 <label className={wizardLabel}>Billing</label>
                 <div className="mt-2 grid grid-cols-2 gap-3">
                   <SelectableTile
                     selected={mode === 'open_tab'}
                     onClick={() => setMode('open_tab')}
+                    disabled={openTabBlockedByFutureBooking}
                     icon={<Zap size={18} />}
                     title="Open tab"
-                    subtitle="Bill by elapsed time at checkout"
+                    subtitle={
+                      openTabBlockedByFutureBooking
+                        ? 'Unavailable — this station has a later booking'
+                        : 'Bill by elapsed time at checkout'
+                    }
                   />
                   <SelectableTile
                     selected={mode === 'timed'}

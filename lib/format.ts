@@ -42,6 +42,19 @@ export function timeInZone(iso: string | Date, timeZone: string): string {
   }).format(d)
 }
 
+/** An instant (unlike `prettyDate`, which takes a plain 'YYYY-MM-DD' with no
+ *  timezone of its own) rendered as 'Fri, 28 Aug' in the given zone — the
+ *  calendar date that instant falls on there, worded for a human. */
+export function dateInZone(iso: string | Date, timeZone: string): string {
+  const d = typeof iso === 'string' ? new Date(iso) : iso
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  }).format(d)
+}
+
 /** 'YYYY-MM' → 'August 2026'. UTC throughout — a calendar month has no timezone of its own. */
 export function formatPayrollPeriod(period: string): string {
   const [year, month] = period.split('-').map(Number)

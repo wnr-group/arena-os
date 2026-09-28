@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { saveWorkingHours } from '@/lib/actions/resources'
 
-type Day = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean }
+type Day = { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean; open24h: boolean }
 const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const input = 'rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring'
 
@@ -42,27 +42,40 @@ export function WorkingHoursForm({ branchId, initialDays }: { branchId: string; 
               <input
                 type="checkbox"
                 checked={d.isClosed}
-                onChange={(e) => update(d.dayOfWeek, { isClosed: e.target.checked })}
+                onChange={(e) => update(d.dayOfWeek, { isClosed: e.target.checked, open24h: false })}
               />
               Closed
             </label>
-            {!d.isClosed && (
-              <div className="ml-auto flex items-center gap-2">
-                <input
-                  type="time"
-                  className={input}
-                  value={d.openTime}
-                  onChange={(e) => update(d.dayOfWeek, { openTime: e.target.value })}
-                />
-                <span className="text-muted-foreground">–</span>
-                <input
-                  type="time"
-                  className={input}
-                  value={d.closeTime}
-                  onChange={(e) => update(d.dayOfWeek, { closeTime: e.target.value })}
-                />
-              </div>
-            )}
+            {/* 24h and Closed are mutually exclusive; checking one clears the other. */}
+            <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={d.open24h}
+                disabled={d.isClosed}
+                onChange={(e) => update(d.dayOfWeek, { open24h: e.target.checked, isClosed: false })}
+              />
+              Open 24 hours
+            </label>
+            {!d.isClosed &&
+              (d.open24h ? (
+                <span className="ml-auto text-sm font-medium text-muted-foreground">Open all day</span>
+              ) : (
+                <div className="ml-auto flex items-center gap-2">
+                  <input
+                    type="time"
+                    className={input}
+                    value={d.openTime}
+                    onChange={(e) => update(d.dayOfWeek, { openTime: e.target.value })}
+                  />
+                  <span className="text-muted-foreground">–</span>
+                  <input
+                    type="time"
+                    className={input}
+                    value={d.closeTime}
+                    onChange={(e) => update(d.dayOfWeek, { closeTime: e.target.value })}
+                  />
+                </div>
+              ))}
           </div>
         ))}
       </div>

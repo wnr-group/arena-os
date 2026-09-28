@@ -11,8 +11,8 @@ import { MergeTablesDialog } from './MergeTablesDialog'
 import { SplitTableDialog } from './SplitTableDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
-import { setBookingStatus, cancelBooking, requestBill } from '@/lib/actions/bookings'
+import { CancelBookingDialog } from '@/components/bookings/CancelBookingDialog'
+import { setBookingStatus, requestBill } from '@/lib/actions/bookings'
 import { formatMoney } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { OrderSummary } from '@/components/bookings/BookingsView'
@@ -123,10 +123,10 @@ export function FloorView({
   canToggle86: boolean
 }) {
   const router = useRouter()
-  const confirm = useConfirm()
   const [now, setNow] = useState(() => Date.now())
   const [seatTarget, setSeatTarget] = useState<TableRow | null>(null)
   const [selected, setSelected] = useState<TableRow | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<TableRow | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId: string; bookingLabel: string; coverCount: number | null } | null>(
     null,
   )
@@ -163,25 +163,6 @@ export function FloorView({
         router.refresh()
       }
       setActingAction(null)
-    })
-  }
-
-  async function handleCancel(table: TableRow) {
-    if (!table.bookingId || !table.bookingNumber) return
-    await confirm({
-      title: `Cancel table session ${table.bookingNumber}?`,
-      description: `This will free up ${table.name} without billing it. This cannot be undone.`,
-      confirmText: 'Cancel session',
-      cancelText: 'Keep session',
-      onConfirm: async () => {
-        const r = await cancelBooking(table.bookingId!)
-        if (r.error) toast.error(r.error)
-        else {
-          setSelected(null)
-          router.refresh()
-          toast.success(`${table.name} freed up.`)
-        }
-      },
     })
   }
 
@@ -416,7 +397,7 @@ export function FloorView({
                 </>
               )}
               <button
-                onClick={() => handleCancel(liveSelected)}
+                onClick={() => liveSelected.bookingId && setCancelTarget(liveSelected)}
                 disabled={pending}
                 className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
               >
@@ -581,6 +562,23 @@ export function FloorView({
             } else {
               toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
             }
+          }}
+        />
+      )}
+
+      {cancelTarget && cancelTarget.bookingId && (
+        <CancelBookingDialog
+          bookingId={cancelTarget.bookingId}
+          title={`Cancel table session ${cancelTarget.bookingNumber}?`}
+          description={`This will free up ${cancelTarget.name} without billing it. This cannot be undone.`}
+          confirmText="Cancel session"
+          onClose={() => setCancelTarget(null)}
+          onDone={() => {
+            const name = cancelTarget.name
+            setCancelTarget(null)
+            setSelected(null)
+            router.refresh()
+            toast.success(`${name} freed up.`)
           }}
         />
       )}

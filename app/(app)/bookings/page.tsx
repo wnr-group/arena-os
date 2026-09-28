@@ -176,6 +176,8 @@ export default async function BookingsPage({
         source: s.source,
         total: s.total,
         deposit: s.deposit,
+        active: s.active,
+        cancellationReason: s.cancellationReason,
       }))}
       categories={categories}
       menuItems={menuItems}

@@ -134,7 +134,7 @@ export function listTables(ctx: ActiveContext, branchId: string) {
 }
 
 /**
- * Active booking slots for a branch on a given local date, with booking info.
+ * Booking slots for a branch on a given local date, with booking info.
  *
  * OVERLAP, not "starts on this day". A booking running 22:00→02:00 occupies its
  * resource on BOTH days, so it belongs on both timelines; filtering on
@@ -156,6 +156,18 @@ export function listTables(ctx: ActiveContext, branchId: string) {
  * inheriting the fixed-interval layout every other slot gets. Every other
  * slot (a normal reserved booking, or a timed walk-in, both of which always
  * have a real endsAt) is completely unaffected.
+ *
+ * NOT filtered to `active` slots. trg_bookings_sync_slots (0003) flips a slot's
+ * `active` to false the moment its booking is cancelled or marked no-show — the
+ * flag exists so a freed resource can be rebooked (the exclusion constraint only
+ * blocks overlap among active slots), not to hide the booking's history. This
+ * used to filter on `active = true`, which meant the instant staff cancelled a
+ * booking it vanished from this query entirely — including from the Bookings
+ * page's own "Cancelled" status filter, the one screen whose whole job is to
+ * show it. `active` is returned instead so BookingsView's Timeline (which
+ * really does mean "what is occupying this resource right now") can filter
+ * cancelled/no-show slots out of the resource bars, while the Bookings table
+ * keeps every status.
  */
 export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
   const dayStart = zonedTimeToUtc(dateStr, '00:00', tz)
@@ -169,6 +181,7 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         startsAt: bookingSlots.startsAt,
         endsAt: bookingSlots.endsAt,
         slotTotal: bookingSlots.slotTotal,
+        active: bookingSlots.active,
         bookingId: bookings.id,
         bookingNumber: bookings.bookingNumber,
         customerName: bookings.customerName,
@@ -177,6 +190,7 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         source: bookings.source,
         total: bookings.total,
         deposit: bookings.deposit,
+        cancellationReason: bookings.cancellationReason,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
@@ -184,7 +198,6 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         and(
           eq(bookingSlots.tenantId, ctx.tenant.id),
           eq(bookings.branchId, branchId),
-          eq(bookingSlots.active, true),
           lt(bookingSlots.startsAt, dayEnd),
           // An open-tab walk-in (null ends_at) is still genuinely occupying
           // its resource — kept in this set rather than filtered out as if

@@ -34,7 +34,16 @@ import { formatMoney } from '@/lib/format'
 import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { HoneypotField } from './HoneypotField'
 
-export const DURATIONS = [30, 60, 90, 120, 150, 180, 210, 240]
+// 30-minute steps up to 4 hours, then hourly up to 24 hours. The list is long
+// but the Start-times column only ever offers a duration that actually fits
+// before the venue's configured closing time (availableStartTimes clamps every
+// candidate to dayClose), so a duration that can't fit that day simply shows
+// "nothing free" — i.e. the options follow the owner's working hours, capped at
+// a full 24-hour day. The server accepts up to 24*60 minutes (lib/actions/availability.ts).
+export const DURATIONS = [
+  ...Array.from({ length: 8 }, (_, i) => (i + 1) * 30), // 30m … 4h
+  ...Array.from({ length: 20 }, (_, i) => (i + 5) * 60), // 5h … 24h
+]
 export const DATE_WINDOW_DAYS = 7
 /** Grid step for candidate start times — matches the server's slotMinutes (see availableStartTimes). */
 export const SLOT_MINUTES = 30
