@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { CalendarDays, Check, Clock, Gamepad2, Loader2, Users } from 'lucide-react'
+import { CalendarDays, Check, Clock, Gamepad2, Layers, Loader2, Sparkles, Users } from 'lucide-react'
 import { toast } from 'sonner'
-import { getAvailableStarts, getAvailableStartsForType } from '@/lib/actions/availability'
+import { getAvailableStarts, getAvailableStartsForType, getDayRangeWindow } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone, quoteBooking } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { addDays } from '@/lib/booking/time'
+import { daysInRange } from '@/lib/booking/availability'
 import {
   dateCardParts,
   durationLabel,
@@ -19,7 +20,16 @@ import {
   SLOT_MINUTES,
 } from '@/components/public-booking/ResourceBookingPage'
 import { StepProgress } from './StepProgress'
-import { WizardCard, WizardFooter, SelectableTile, wizardInput, wizardLabel, wizardError } from './wizard-ui'
+import {
+  WizardCard,
+  WizardFooter,
+  WizardStepHeader,
+  WizardStepPanel,
+  SelectableTile,
+  wizardInput,
+  wizardLabel,
+  wizardError,
+} from './wizard-ui'
 import type { WizardResource } from './BookingWizard'
 
 const STEPS = ['Devices', 'Slot', 'Customer', 'Confirm']
@@ -120,7 +130,59 @@ export function FutureWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceTypeId])
 
-  const priceFor = (minutes: number) => (hourlyRate * minutes * (isPerHead ? headCount : 1)) / 60
+  // M24 #4: setups live on individual physical units (resources), not on the
+  // type itself — a type-level pick alone can't show them, since which unit
+  // ends up assigned is normally decided later (see getAvailableStartsForType
+  // below). If ANY unit of the selected type has setups, the wizard must
+  // pin down a SPECIFIC unit before it can offer them.
+  const unitsOfSelectedType = useMemo(
+    () => resources.filter((r) => r.resourceTypeId === resourceTypeId),
+    [resources, resourceTypeId],
+  )
+  const typeHasSetups = useMemo(() => unitsOfSelectedType.some((r) => r.setups.length > 0), [unitsOfSelectedType])
+
+  // The in-wizard unit choice (only ever shown/used when typeHasSetups and
+  // there's more than one candidate unit) — reset whenever the type changes,
+  // same reasoning as headCount above.
+  const [pickedUnitId, setPickedUnitId] = useState<string | null>(null)
+  useEffect(() => {
+    setPickedUnitId(null)
+  }, [resourceTypeId])
+
+  // A single unit of a setup-bearing type never needs its own picker tile —
+  // it's the only candidate there is.
+  const effectiveUnitId =
+    lockedResource?.id ??
+    (typeHasSetups && unitsOfSelectedType.length === 1 ? unitsOfSelectedType[0].id : pickedUnitId)
+  const activeUnit = resources.find((r) => r.id === effectiveUnitId) ?? lockedResource
+  // The physical resource this booking will actually reserve, once known —
+  // the Slot step's availability query and the final createBooking call both
+  // need to be scoped to this, rather than to the whole type.
+  const pinnedResourceId = lockedResource?.id ?? effectiveUnitId ?? null
+
+  // Chosen setup, if any — null means "no setup, base rate", the only option
+  // that existed before M24. Reset whenever the pinned unit changes, since a
+  // setup belongs to exactly one physical resource.
+  const [setupId, setSetupId] = useState<string | null>(null)
+  useEffect(() => {
+    setSetupId(null)
+  }, [pinnedResourceId])
+  const activeSetup = activeUnit?.setups.find((s) => s.id === setupId) ?? null
+  const isDayRateSetup = activeSetup?.rateUnit === 'day'
+
+  // Numbered sub-steps for the Devices step's picker stack (device type ->
+  // choose a set -> setup) — only the sections that actually render get a
+  // number, so a type with no setups still just shows "1".
+  const showChooseSet = !lockedResource && typeHasSetups && unitsOfSelectedType.length > 1
+  const showSetupPicker = Boolean(activeUnit) && (activeUnit?.setups.length ?? 0) > 0
+  const deviceStepNum = 1
+  const chooseSetStepNum = showChooseSet ? deviceStepNum + 1 : null
+  const setupStepNum = showSetupPicker ? (chooseSetStepNum ?? deviceStepNum) + 1 : null
+
+  const priceFor = (minutes: number) => {
+    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : hourlyRate * (isPerHead ? headCount : 1)
+    return (rate * minutes) / 60
+  }
 
   const dateOptions = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
   const [date, setDate] = useState(initialDate)
@@ -138,19 +200,20 @@ export function FutureWizard({
   // same auto-refetch the public booking page uses, no explicit "find times"
   // click. A fresh fetch invalidates any previously picked slot.
   useEffect(() => {
-    if (!resourceTypeId) return
+    if (!resourceTypeId || isDayRateSetup) return
     let cancelled = false
     setSelectedSlot(null)
     setSlotsError(null)
     setSlots(null)
     setIsClosed(false)
     setSlotsLoading(true)
-    // Locked to one device: read ITS OWN availability, not the type's —
+    // Pinned to one unit (via the Timeline's lockedResource, or the M24 #4
+    // "choose a set" picker): read ITS OWN availability, not the type's —
     // otherwise a start time free on some OTHER unit of the type would show
     // as free here too, and booking it would silently reassign the customer
-    // to a different device than the one they clicked on the Timeline.
-    if (lockedResource) {
-      const resourceId = lockedResource.id
+    // to a different device than the one they picked.
+    if (pinnedResourceId) {
+      const resourceId = pinnedResourceId
       getAvailableStarts({ branchId, resourceId, date, durationMinutes: duration }).then((r) => {
         if (cancelled) return
         setSlotsLoading(false)
@@ -198,9 +261,65 @@ export function FutureWizard({
     return () => {
       cancelled = true
     }
-    // lockedResource is set once (useState initializer) and never changes.
+  }, [branchId, resourceTypeId, date, duration, pinnedResourceId, isDayRateSetup])
+
+  // M24 #4: date range for a per-day setup — two plain dates; the exact
+  // "D1 open -> Dn close" instants (and a soft conflict check against this
+  // resource's existing bookings) are resolved server-side via
+  // getDayRangeWindow so all business-hours/timezone math (including
+  // open24h) stays in one place, same discipline the hourly picker above
+  // already follows.
+  const [rangeStart, setRangeStart] = useState(initialDate)
+  const [rangeEnd, setRangeEnd] = useState(initialDate)
+  const [rangeWindow, setRangeWindow] = useState<{ startsAt: string; endsAt: string } | null>(null)
+  const [rangeLoading, setRangeLoading] = useState(false)
+  const [rangeError, setRangeError] = useState<string | null>(null)
+  const [rangeConflict, setRangeConflict] = useState(false)
+
+  // Switching to a (possibly different) per-day setup shouldn't carry over a
+  // stale range from whatever was picked before.
+  useEffect(() => {
+    if (isDayRateSetup) {
+      setRangeStart(initialDate)
+      setRangeEnd(initialDate)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, resourceTypeId, date, duration])
+  }, [setupId])
+
+  useEffect(() => {
+    if (!isDayRateSetup || !pinnedResourceId) {
+      setRangeWindow(null)
+      setRangeError(null)
+      setRangeConflict(false)
+      setRangeLoading(false)
+      return
+    }
+    if (rangeEnd < rangeStart) {
+      setRangeWindow(null)
+      setRangeError('End date must be on or after the start date.')
+      setRangeConflict(false)
+      setRangeLoading(false)
+      return
+    }
+    let cancelled = false
+    setRangeLoading(true)
+    setRangeError(null)
+    getDayRangeWindow({ branchId, resourceId: pinnedResourceId, startDate: rangeStart, endDate: rangeEnd }).then((r) => {
+      if (cancelled) return
+      setRangeLoading(false)
+      if (r.error || !r.startsAt || !r.endsAt) {
+        setRangeError(r.error ?? 'Could not resolve this date range.')
+        setRangeWindow(null)
+        setRangeConflict(false)
+        return
+      }
+      setRangeWindow({ startsAt: r.startsAt, endsAt: r.endsAt })
+      setRangeConflict(Boolean(r.conflict))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isDayRateSetup, pinnedResourceId, branchId, rangeStart, rangeEnd])
 
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
@@ -262,20 +381,39 @@ export function FutureWizard({
 
   const endsAtIso = selectedSlot ? new Date(new Date(selectedSlot.startsAt).getTime() + duration * 60_000).toISOString() : null
 
-  // Happy hours #2: the live, server-computed quote for the SELECTED slot —
-  // the exact same priceBookingSlots call createBooking itself makes (day
-  // rate -> happy-hour discount per segment -> x players), so the amount
-  // shown here can never drift from what gets charged. priceFor() above
-  // (the pre-slot duration list) stays a flat client-side estimate — it has
-  // no specific start time yet, so it can never be happy-hour-accurate
-  // anyway; this quote only covers the two screens that show a REAL,
-  // about-to-be-booked total (the Slot-step summary and Confirm).
+  // M24 #4: the resource+window a quote/booking will actually price — either
+  // the picked hourly slot, or the resolved per-day range, whichever this
+  // setup's rate_unit calls for.
+  const quoteWindow = isDayRateSetup
+    ? rangeWindow && pinnedResourceId
+      ? { resourceId: pinnedResourceId, startsAt: rangeWindow.startsAt, endsAt: rangeWindow.endsAt }
+      : null
+    : selectedSlot && endsAtIso
+      ? { resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso }
+      : null
+  // Whether the Slot step has a complete, non-conflicting selection to move
+  // on from — replaces the old bare `!selectedSlot` check now that a per-day
+  // setup has its own, entirely different notion of "selected".
+  const hasSelection = isDayRateSetup
+    ? Boolean(rangeWindow) && !rangeConflict && Boolean(pinnedResourceId)
+    : Boolean(selectedSlot)
+
+  // Happy hours #2 / M24 #4: the live, server-computed quote for the current
+  // selection — the exact same priceBookingSlots call createBooking itself
+  // makes (day rate -> happy-hour discount per segment -> x players, OR a
+  // setup's flat hourly/day rate — see lib/booking/service.ts), so the
+  // amount shown here can never drift from what gets charged. priceFor()
+  // above (the pre-slot duration list) stays a flat client-side estimate —
+  // it has no specific start time yet (and knows nothing about a setup's own
+  // rate), so it can never be quote-accurate anyway; this quote only covers
+  // the two screens that show a REAL, about-to-be-booked total (the Slot-
+  // step summary and Confirm).
   const [quote, setQuote] = useState<{ total: number } | null>(null)
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!selectedSlot || !endsAtIso) {
+    if (!quoteWindow || (isDayRateSetup && rangeConflict)) {
       setQuote(null)
       setQuoteError(null)
       setQuoteLoading(false)
@@ -287,10 +425,11 @@ export function FutureWizard({
     setQuote(null)
     quoteBooking({
       branchId,
-      resourceId: selectedSlot.resourceId,
-      startsAt: selectedSlot.startsAt,
-      endsAt: endsAtIso,
+      resourceId: quoteWindow.resourceId,
+      startsAt: quoteWindow.startsAt,
+      endsAt: quoteWindow.endsAt,
       headCount: isPerHead ? headCount : undefined,
+      setupId: setupId ?? undefined,
     }).then((r) => {
       if (cancelled) return
       setQuoteLoading(false)
@@ -305,7 +444,17 @@ export function FutureWizard({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, selectedSlot?.startsAt, selectedSlot?.resourceId, endsAtIso, headCount, isPerHead])
+  }, [
+    branchId,
+    quoteWindow?.resourceId,
+    quoteWindow?.startsAt,
+    quoteWindow?.endsAt,
+    headCount,
+    isPerHead,
+    setupId,
+    isDayRateSetup,
+    rangeConflict,
+  ])
 
 /** Validates the customer fields and advances to the Confirm step, without
    *  creating anything yet — the actual createBooking call only happens from
@@ -331,8 +480,8 @@ export function FutureWizard({
 
   async function submit() {
     setError(null)
-    if (!selectedSlot) {
-      setError('Pick a start time first.')
+    if (!quoteWindow || (isDayRateSetup && rangeConflict)) {
+      setError(isDayRateSetup ? 'Pick a valid, available date range first.' : 'Pick a start time first.')
       setStep(1)
       return
     }
@@ -353,7 +502,14 @@ export function FutureWizard({
         source: 'walk_in',
         customerName,
         customerPhone,
-        slots: [{ resourceId: selectedSlot.resourceId, startsAt: selectedSlot.startsAt, endsAt: endsAtIso! }],
+        slots: [
+          {
+            resourceId: quoteWindow.resourceId,
+            startsAt: quoteWindow.startsAt,
+            endsAt: quoteWindow.endsAt,
+            setupId: setupId ?? undefined,
+          },
+        ],
         headCount: isPerHead ? headCount : undefined,
       })
       if (r.error) {
@@ -382,67 +538,140 @@ export function FutureWizard({
       <WizardCard>
         {step === 0 && (
           <div>
-            {lockedResource ? (
-              <>
-                <h2 className="text-lg font-semibold">Device</h2>
-                <p className="mt-1 text-sm text-muted-foreground">Picked from the Timeline — booking this exact unit.</p>
-                {/* Same tile shape/size as the type-picker grid below — just
-                    one card, permanently "selected", nothing to click. */}
-                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  <div className="relative flex flex-col items-start gap-2 rounded-xl border border-primary bg-accent/60 p-4 text-left shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30">
-                    <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                      <Gamepad2 size={18} />
-                    </span>
-                    <span className="text-sm font-semibold text-foreground">{lockedResource.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {lockedResource.typeName} · {formatMoney(Number(lockedResource.hourlyRate), currency)} /{' '}
-                      {lockedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
-                    </span>
-                    <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
-                        <path
-                          fillRule="evenodd"
-                          d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </span>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <h2 className="text-lg font-semibold">Which device?</h2>
-                <p className="mt-1 text-sm text-muted-foreground">A free unit of this type is assigned automatically.</p>
-
-                {resourceTypes.length === 0 ? (
-                  <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
-                ) : (
+          <div className="space-y-6">
+            <WizardStepPanel>
+              {lockedResource ? (
+                <>
+                  <WizardStepHeader
+                    step={deviceStepNum}
+                    icon={<Gamepad2 size={15} className="text-primary" />}
+                    title="Device"
+                    subtitle="Picked from the Timeline — booking this exact unit."
+                  />
+                  {/* Same tile shape/size as the type-picker grid below — just
+                      one card, permanently "selected", nothing to click. */}
                   <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                    {resourceTypes.map((t) => (
-                      <SelectableTile
-                        key={t.id}
-                        selected={resourceTypeId === t.id}
-                        onClick={() => setResourceTypeId(t.id)}
-                        icon={<Gamepad2 size={18} />}
-                        title={t.name}
-                        subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
-                        badge={
-                          t.capacity != null ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                              <Users size={12} /> Up to {t.capacity}
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    ))}
+                    <div className="relative flex flex-col items-start gap-2 rounded-xl border border-primary bg-accent/60 p-4 text-left shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30">
+                      <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                        <Gamepad2 size={18} />
+                      </span>
+                      <span className="text-sm font-semibold text-foreground">{lockedResource.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {lockedResource.typeName} · {formatMoney(Number(lockedResource.hourlyRate), currency)} /{' '}
+                        {lockedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                      </span>
+                      <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                        <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
+                          <path
+                            fillRule="evenodd"
+                            d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </span>
+                    </div>
                   </div>
-                )}
-              </>
+                </>
+              ) : (
+                <>
+                  <WizardStepHeader
+                    step={deviceStepNum}
+                    icon={<Gamepad2 size={15} className="text-primary" />}
+                    title="Which device?"
+                    subtitle="A free unit of this type is assigned automatically."
+                  />
+
+                  {resourceTypes.length === 0 ? (
+                    <p className="mt-5 py-8 text-center text-sm text-muted-foreground">No resource types configured yet.</p>
+                  ) : (
+                    <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                      {resourceTypes.map((t) => (
+                        <SelectableTile
+                          key={t.id}
+                          selected={resourceTypeId === t.id}
+                          onClick={() => setResourceTypeId(t.id)}
+                          icon={<Gamepad2 size={18} />}
+                          title={t.name}
+                          subtitle={`${formatMoney(Number(t.hourlyRate), currency)} / ${t.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
+                          badge={
+                            t.capacity != null ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                                <Users size={12} /> Up to {t.capacity}
+                              </span>
+                            ) : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </WizardStepPanel>
+
+            {showChooseSet && (
+              <WizardStepPanel>
+                <WizardStepHeader
+                  step={chooseSetStepNum!}
+                  icon={<Layers size={15} className="text-primary" />}
+                  title="Choose a set"
+                  subtitle="This type has more than one room available — pick the one you want to book."
+                />
+                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  {unitsOfSelectedType.map((u) => (
+                    <SelectableTile
+                      key={u.id}
+                      selected={pickedUnitId === u.id}
+                      onClick={() => setPickedUnitId(u.id)}
+                      icon={<Layers size={18} />}
+                      title={u.name}
+                      badge={
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                            u.setups.length > 0 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          {u.setups.length > 0 ? `${u.setups.length} setup${u.setups.length === 1 ? '' : 's'}` : 'Standard rate only'}
+                        </span>
+                      }
+                    />
+                  ))}
+                </div>
+              </WizardStepPanel>
+            )}
+
+            {showSetupPicker && (
+              <WizardStepPanel>
+                <WizardStepHeader
+                  step={setupStepNum!}
+                  icon={<Sparkles size={15} className="text-primary" />}
+                  title="Choose a setup"
+                  subtitle={`Optional — pick a ready-made setup for ${activeUnit!.name}, or continue with the standard rate.`}
+                />
+                <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  <SetupOptionTile
+                    selected={setupId === null}
+                    onClick={() => setSetupId(null)}
+                    title="Standard rate"
+                    price={formatMoney(Number(activeUnit!.hourlyRate), currency)}
+                    unit={activeUnit!.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                    isBaseRate
+                  />
+                  {activeUnit!.setups.map((s) => (
+                    <SetupOptionTile
+                      key={s.id}
+                      selected={setupId === s.id}
+                      onClick={() => setSetupId(s.id)}
+                      title={s.name}
+                      price={formatMoney(s.rate, currency)}
+                      unit={s.rateUnit === 'day' ? 'day' : 'hr'}
+                    />
+                  ))}
+                </div>
+              </WizardStepPanel>
             )}
 
             {isPerHead && selectedType && (
-              <div className="mt-6 max-w-xs">
+              <div className="max-w-xs">
                 <label className={wizardLabel}>Players</label>
                 <div className="mt-1 flex items-center gap-2">
                   <button
@@ -469,161 +698,228 @@ export function FutureWizard({
                 </p>
               </div>
             )}
+          </div>
 
-            <WizardFooter onNext={() => setStep(1)} nextLabel="Continue" nextDisabled={!resourceTypeId} />
+            <WizardFooter
+              onNext={() => setStep(1)}
+              nextLabel="Continue"
+              nextDisabled={!resourceTypeId || (typeHasSetups && unitsOfSelectedType.length > 1 && !lockedResource && !effectiveUnitId)}
+            />
           </div>
         )}
 
         {step === 1 && (
           <div>
-            <h2 className="text-lg font-semibold">Pick a date & time</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{selectedType?.name}</p>
+            <h2 className="text-lg font-semibold">{isDayRateSetup ? 'Pick a date range' : 'Pick a date & time'}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {activeSetup ? `${activeUnit?.name} · ${activeSetup.name}` : activeUnit?.name ?? selectedType?.name}
+            </p>
 
-            <section className="mt-5">
-              <SectionLabel icon={CalendarDays}>Date</SectionLabel>
-              <div className="mt-3 grid grid-cols-7 gap-1.5 sm:gap-2">
-                {dateOptions.map((d) => {
-                  const parts = dateCardParts(d)
-                  const isSelected = d === date
-                  return (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setDate(d)}
-                      className={`flex flex-col items-center gap-0.5 rounded-xl border px-1 py-2.5 transition-all duration-200 active:scale-95 ${
-                        isSelected
-                          ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                          : 'border-border bg-card text-foreground hover:border-primary/40'
-                      }`}
-                    >
-                      <span
-                        className={`text-[10px] font-semibold uppercase tracking-wide ${
-                          isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                        }`}
-                      >
-                        {parts.weekday}
-                      </span>
-                      <span className="text-base font-bold tabular-nums">{parts.day}</span>
-                      <span
-                        className={`text-[10px] font-semibold uppercase tracking-wide ${
-                          isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                        }`}
-                      >
-                        {parts.month}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            </section>
+            {isDayRateSetup ? (
+              <section className="mt-5">
+                <SectionLabel icon={CalendarDays}>Dates</SectionLabel>
+                <div className="mt-3 grid grid-cols-1 gap-4 sm:max-w-md sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="future-range-start" className={wizardLabel}>
+                      From
+                    </label>
+                    <input
+                      id="future-range-start"
+                      type="date"
+                      className={`${wizardInput} mt-1`}
+                      value={rangeStart}
+                      min={today}
+                      max={rangeEnd}
+                      onChange={(e) => setRangeStart(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="future-range-end" className={wizardLabel}>
+                      To
+                    </label>
+                    <input
+                      id="future-range-end"
+                      type="date"
+                      className={`${wizardInput} mt-1`}
+                      value={rangeEnd}
+                      min={rangeStart}
+                      onChange={(e) => setRangeEnd(e.target.value)}
+                    />
+                  </div>
+                </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2">
-              <section>
-                <SectionLabel icon={Clock}>Duration</SectionLabel>
-                <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
-                  {DURATIONS.map((m) => {
-                    const isSelected = duration === m
-                    return (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setDuration(m)}
-                        className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all duration-200 active:scale-[0.99] ${
-                          isSelected ? 'border-primary bg-primary/10 shadow-sm' : 'border-border bg-card hover:border-primary/30'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2.5">
+                {rangeLoading ? (
+                  <p className="mt-3 text-sm text-muted-foreground">Checking availability…</p>
+                ) : rangeError ? (
+                  <EmptyNotice>{rangeError}</EmptyNotice>
+                ) : rangeConflict ? (
+                  <p className="mt-3 text-sm text-destructive">
+                    This set already has a booking in part of this range. Choose different dates.
+                  </p>
+                ) : rangeWindow && activeSetup ? (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    {daysInRange(new Date(rangeWindow.startsAt), new Date(rangeWindow.endsAt), timeZone)} day
+                    {daysInRange(new Date(rangeWindow.startsAt), new Date(rangeWindow.endsAt), timeZone) === 1 ? '' : 's'} ×{' '}
+                    {formatMoney(Number(activeSetup.rate), currency)}/day
+                  </p>
+                ) : null}
+              </section>
+            ) : (
+              <>
+                <section className="mt-5">
+                  <SectionLabel icon={CalendarDays}>Date</SectionLabel>
+                  <div className="mt-3 grid grid-cols-7 gap-1.5 sm:gap-2">
+                    {dateOptions.map((d) => {
+                      const parts = dateCardParts(d)
+                      const isSelected = d === date
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setDate(d)}
+                          className={`flex flex-col items-center gap-0.5 rounded-xl border px-1 py-2.5 transition-all duration-200 active:scale-95 ${
+                            isSelected
+                              ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                              : 'border-border bg-card text-foreground hover:border-primary/40'
+                          }`}
+                        >
                           <span
-                            className={`flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition ${
-                              isSelected ? 'border-primary bg-primary' : 'border-border'
+                            className={`text-[10px] font-semibold uppercase tracking-wide ${
+                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
                             }`}
                           >
-                            {isSelected && <span className="size-2 rounded-full bg-primary-foreground" />}
+                            {parts.weekday}
                           </span>
-                          <span className={`text-sm font-semibold ${isSelected ? 'text-primary' : 'text-foreground'}`}>
-                            {durationLabel(m)}
+                          <span className="text-base font-bold tabular-nums">{parts.day}</span>
+                          <span
+                            className={`text-[10px] font-semibold uppercase tracking-wide ${
+                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
+                            }`}
+                          >
+                            {parts.month}
                           </span>
-                        </span>
-                        <span className="text-sm font-bold tabular-nums text-foreground">
-                          {formatMoney(priceFor(m), currency)}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </section>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
 
-              <section>
-                <SectionLabel icon={Clock}>Start times</SectionLabel>
-                <div className="mt-3">
-                  {isClosed ? (
-                    <EmptyNotice>This venue is closed on the selected date. Try another day.</EmptyNotice>
-                  ) : slotsLoading ? (
-                    <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <div key={i} className="h-12 animate-pulse rounded-xl bg-muted" />
-                      ))}
+                <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2">
+                  <section>
+                    <SectionLabel icon={Clock}>Duration</SectionLabel>
+                    <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+                      {DURATIONS.map((m) => {
+                        const isSelected = duration === m
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setDuration(m)}
+                            className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all duration-200 active:scale-[0.99] ${
+                              isSelected ? 'border-primary bg-primary/10 shadow-sm' : 'border-border bg-card hover:border-primary/30'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2.5">
+                              <span
+                                className={`flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition ${
+                                  isSelected ? 'border-primary bg-primary' : 'border-border'
+                                }`}
+                              >
+                                {isSelected && <span className="size-2 rounded-full bg-primary-foreground" />}
+                              </span>
+                              <span className={`text-sm font-semibold ${isSelected ? 'text-primary' : 'text-foreground'}`}>
+                                {durationLabel(m)}
+                              </span>
+                            </span>
+                            <span className="text-sm font-bold tabular-nums text-foreground">
+                              {formatMoney(priceFor(m), currency)}
+                            </span>
+                          </button>
+                        )
+                      })}
                     </div>
-                  ) : slotsError ? (
-                    <EmptyNotice>{slotsError}</EmptyNotice>
-                  ) : !visibleSlots || visibleSlots.length === 0 ? (
-                    <EmptyNotice>Nothing free for this duration on this day. Try a shorter duration or another date.</EmptyNotice>
-                  ) : (
-                    <>
-                      <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                        {visibleSlots.map((s) => {
-                          const isSelected = selectedSlot?.startsAt === s.startsAt
-                          const inRange =
-                            !isSelected &&
-                            s.available &&
-                            selectedSlot &&
-                            endsAtIso &&
-                            s.startsAt >= selectedSlot.startsAt &&
-                            s.startsAt < endsAtIso
-                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
-                          return (
-                            <button
-                              key={s.startsAt}
-                              type="button"
-                              disabled={!s.available}
-                              onClick={() => s.available && s.resourceId && setSelectedSlot({ startsAt: s.startsAt, resourceId: s.resourceId })}
-                              className={`flex w-full items-center justify-center rounded-xl border px-4 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
-                                isSelected
-                                  ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                                  : !s.available
-                                    ? 'cursor-not-allowed border-border/40 bg-muted/40 text-muted-foreground/40 line-through'
-                                    : inRange
-                                      ? 'border-primary/50 bg-primary/10 text-primary'
-                                      : 'border-border bg-card text-foreground hover:border-primary/40'
-                              }`}
-                            >
-                              {time12(s.startsAt, timeZone)} – {time12(rangeEnd, timeZone)}
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {visibleSlots.every((s) => !s.available) && (
-                        <p className="mt-3 text-sm text-muted-foreground">
-                          Every slot on this date is taken for this duration — try another date.
-                        </p>
-                      )}
-                    </>
-                  )}
-                </div>
-              </section>
-            </div>
+                  </section>
 
-            {selectedSlot && (
+                  <section>
+                    <SectionLabel icon={Clock}>Start times</SectionLabel>
+                    <div className="mt-3">
+                      {isClosed ? (
+                        <EmptyNotice>This venue is closed on the selected date. Try another day.</EmptyNotice>
+                      ) : slotsLoading ? (
+                        <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                          {Array.from({ length: 6 }).map((_, i) => (
+                            <div key={i} className="h-12 animate-pulse rounded-xl bg-muted" />
+                          ))}
+                        </div>
+                      ) : slotsError ? (
+                        <EmptyNotice>{slotsError}</EmptyNotice>
+                      ) : !visibleSlots || visibleSlots.length === 0 ? (
+                        <EmptyNotice>Nothing free for this duration on this day. Try a shorter duration or another date.</EmptyNotice>
+                      ) : (
+                        <>
+                          <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                            {visibleSlots.map((s) => {
+                              const isSelected = selectedSlot?.startsAt === s.startsAt
+                              const inRange =
+                                !isSelected &&
+                                s.available &&
+                                selectedSlot &&
+                                endsAtIso &&
+                                s.startsAt >= selectedSlot.startsAt &&
+                                s.startsAt < endsAtIso
+                              const rangeEndLabel = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
+                              return (
+                                <button
+                                  key={s.startsAt}
+                                  type="button"
+                                  disabled={!s.available}
+                                  onClick={() => s.available && s.resourceId && setSelectedSlot({ startsAt: s.startsAt, resourceId: s.resourceId })}
+                                  className={`flex w-full items-center justify-center rounded-xl border px-4 py-3 text-sm font-semibold tabular-nums transition-all duration-200 active:scale-[0.99] ${
+                                    isSelected
+                                      ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
+                                      : !s.available
+                                        ? 'cursor-not-allowed border-border/40 bg-muted/40 text-muted-foreground/40 line-through'
+                                        : inRange
+                                          ? 'border-primary/50 bg-primary/10 text-primary'
+                                          : 'border-border bg-card text-foreground hover:border-primary/40'
+                                  }`}
+                                >
+                                  {time12(s.startsAt, timeZone)} – {time12(rangeEndLabel, timeZone)}
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {visibleSlots.every((s) => !s.available) && (
+                            <p className="mt-3 text-sm text-muted-foreground">
+                              Every slot on this date is taken for this duration — try another date.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </>
+            )}
+
+            {hasSelection && (
               <div className="mt-6 rounded-xl border border-primary/20 bg-accent/40 p-4 text-sm">
                 <dl className="space-y-1.5">
-                  <SummaryRow k="Device" v={lockedResource?.name ?? selectedType?.name ?? '—'} />
-                  <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
-                  <SummaryRow k="Duration" v={durationLabel(duration)} />
-                  <SummaryRow
-                    k="Time"
-                    v={endsAtIso ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}` : '—'}
-                  />
-                  {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
+                  <SummaryRow k="Device" v={activeUnit?.name ?? selectedType?.name ?? '—'} />
+                  <SummaryRow k="Setup" v={activeSetup?.name ?? 'Standard rate'} />
+                  {isDayRateSetup ? (
+                    <SummaryRow k="Dates" v={`${prettyDate(rangeStart, timeZone)} – ${prettyDate(rangeEnd, timeZone)}`} />
+                  ) : (
+                    <>
+                      <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
+                      <SummaryRow k="Duration" v={durationLabel(duration)} />
+                      <SummaryRow
+                        k="Time"
+                        v={endsAtIso ? `${time12(selectedSlot!.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}` : '—'}
+                      />
+                    </>
+                  )}
+                  {isPerHead && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
                   <div className="flex items-center justify-between gap-3">
                     <dt className="text-muted-foreground">Price</dt>
                     <dd className="flex items-center gap-1.5 font-medium text-foreground">
@@ -631,7 +927,7 @@ export function FutureWizard({
                       {quoteError ? (
                         <span className="text-destructive">{quoteError}</span>
                       ) : (
-                        formatMoney(quote?.total ?? priceFor(duration), currency)
+                        formatMoney(quote?.total ?? (isDayRateSetup ? 0 : priceFor(duration)), currency)
                       )}
                     </dd>
                   </div>
@@ -639,7 +935,7 @@ export function FutureWizard({
               </div>
             )}
 
-            <WizardFooter onBack={() => setStep(0)} onNext={() => setStep(2)} nextLabel="Continue" nextDisabled={!selectedSlot} />
+            <WizardFooter onBack={() => setStep(0)} onNext={() => setStep(2)} nextLabel="Continue" nextDisabled={!hasSelection} />
           </div>
         )}
 
@@ -714,19 +1010,26 @@ export function FutureWizard({
 
             <div className="mt-5 rounded-lg border border-border bg-muted/40 p-4 text-sm">
               <dl className="space-y-1.5">
-                <SummaryRow k="Device" v={lockedResource?.name ?? selectedType?.name ?? '—'} />
-                <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
-                <SummaryRow
-                  k="Time"
-                  v={
-                    selectedSlot && endsAtIso
-                      ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}`
-                      : '—'
-                  }
-                />
+                <SummaryRow k="Device" v={activeUnit?.name ?? selectedType?.name ?? '—'} />
+                <SummaryRow k="Setup" v={activeSetup?.name ?? 'Base rate'} />
+                {isDayRateSetup ? (
+                  <SummaryRow k="Dates" v={`${prettyDate(rangeStart, timeZone)} – ${prettyDate(rangeEnd, timeZone)}`} />
+                ) : (
+                  <>
+                    <SummaryRow k="Date" v={prettyDate(date, timeZone)} />
+                    <SummaryRow
+                      k="Time"
+                      v={
+                        selectedSlot && endsAtIso
+                          ? `${time12(selectedSlot.startsAt, timeZone)}–${time12(endsAtIso, timeZone)}`
+                          : '—'
+                      }
+                    />
+                  </>
+                )}
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
-                {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
+                {isPerHead && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
                   <span>Total</span>
                   <span className="flex items-center gap-1.5 tabular-nums">
@@ -734,7 +1037,7 @@ export function FutureWizard({
                     {quoteError ? (
                       <span className="text-sm font-medium text-destructive">{quoteError}</span>
                     ) : (
-                      formatMoney(quote?.total ?? priceFor(duration), currency)
+                      formatMoney(quote?.total ?? (isDayRateSetup ? 0 : priceFor(duration)), currency)
                     )}
                   </span>
                 </div>
@@ -753,6 +1056,80 @@ export function FutureWizard({
         )}
       </WizardCard>
     </div>
+  )
+}
+
+/**
+ * M24 #4 UI polish — a setup option gets its own richer treatment instead of
+ * reusing the plain device/set SelectableTile: the price is the headline
+ * (this is the whole point of a setup), a "Setup" tag marks it as a named
+ * upgrade, and "No setup" reads as the deliberately plainer default rather
+ * than just another tile in the row.
+ */
+function SetupOptionTile({
+  selected,
+  onClick,
+  title,
+  price,
+  unit,
+  isBaseRate,
+}: {
+  selected: boolean
+  onClick: () => void
+  title: string
+  price: string
+  unit: string
+  isBaseRate?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative flex flex-col gap-3 rounded-xl border p-4 text-left transition-all duration-150 motion-safe:hover:-translate-y-0.5 ${
+        selected
+          ? 'border-primary bg-gradient-to-br from-primary/10 via-accent/50 to-transparent shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30'
+          : isBaseRate
+            ? 'border-dashed border-border bg-muted/10 hover:border-primary/40'
+            : 'border-border bg-card hover:border-primary/40 hover:shadow-sm'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className={`flex size-8 items-center justify-center rounded-lg transition-colors ${
+            selected
+              ? 'bg-primary text-primary-foreground'
+              : isBaseRate
+                ? 'bg-muted text-muted-foreground'
+                : 'bg-accent text-accent-foreground'
+          }`}
+        >
+          {isBaseRate ? <Gamepad2 size={15} /> : <Sparkles size={15} />}
+        </span>
+        {!isBaseRate && (
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
+            Setup
+          </span>
+        )}
+      </div>
+      <div>
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="mt-1 flex items-baseline gap-1">
+          <span className="text-lg font-bold tabular-nums text-primary">{price}</span>
+          <span className="text-xs font-medium text-muted-foreground">/ {unit}</span>
+        </p>
+      </div>
+      {selected && (
+        <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
+            <path
+              fillRule="evenodd"
+              d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </span>
+      )}
+    </button>
   )
 }
 

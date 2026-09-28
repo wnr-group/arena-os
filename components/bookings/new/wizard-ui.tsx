@@ -126,6 +126,46 @@ export function SelectableTileSkeleton() {
   )
 }
 
+/** Numbered sub-step header — breaks a stack of pickers (device type, set,
+ *  setup, …) into a clearly sequential set of decisions instead of one
+ *  undifferentiated wall of tiles. */
+export function WizardStepHeader({
+  step,
+  icon,
+  title,
+  subtitle,
+}: {
+  step: number
+  icon: React.ReactNode
+  title: string
+  subtitle?: string
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground shadow-sm">
+        {step}
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+          {icon}
+          {title}
+        </span>
+        {subtitle && <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{subtitle}</p>}
+      </div>
+    </div>
+  )
+}
+
+/** Panel wrapper for one sub-step's picker — a faint tinted card so each
+ *  decision reads as its own block rather than blending into the next. */
+export function WizardStepPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-border/70 bg-gradient-to-br from-card to-muted/10 p-5 shadow-sm">
+      {children}
+    </div>
+  )
+}
+
 /** A row of pill chips — used for duration and time-offset pickers instead
  *  of a native <select>. */
 export function ChipRow({

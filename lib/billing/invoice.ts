@@ -16,7 +16,7 @@ import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { auditLog, bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
-import { durationHours } from '@/lib/booking/availability'
+import { durationHours, daysInRange } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
 import {
@@ -179,6 +179,13 @@ export function formatInvoiceNumber(prefix: string, period: string, value: numbe
  * slot (the overwhelming majority) keeps the hours × rate_applied
  * decomposition below, unchanged.
  *
+ * A per-day SETUP slot (M24 #2, `booking_slots.rate_unit = 'day'`) is a third
+ * shape: `rate_applied` is the flat day rate, not an hourly figure, so it
+ * bills qty=daysInRange(...) x unitPrice=rate_applied instead of hours x
+ * rate. An hourly setup needs no such exception — headCount is always null
+ * for a setup slot, so the per_head branch below is a no-op and it bills as
+ * plain hours x rate, same as any other hourly slot.
+ *
  * Only ACTIVE slots are billed: the 0003 trigger clears `active` when a booking
  * is cancelled or marked no-show, so a released slot never reaches the till.
  */
@@ -219,6 +226,8 @@ export async function loadBookingLines(
       pricingMode: bookingSlots.pricingMode,
       // M23 #1 — see this function's doc comment.
       happyHourApplied: bookingSlots.happyHourApplied,
+      // M24 #2: 'hour' (default) or 'day' — see this function's doc comment.
+      rateUnit: bookingSlots.rateUnit,
     })
     .from(bookingSlots)
     .where(
@@ -248,23 +257,32 @@ export async function loadBookingLines(
       description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
-      ...(isWalkin || s.happyHourApplied
-        ? // qty=1, unitPrice=the whole priced total — same "one computed
-          // charge" shape priceElapsedTime itself returns, rather than a
-          // qty/rate pair that would need to multiply back to that figure.
-          // M23 #1: a happy-hour-blended RESERVED slot takes this same
-          // shape, for the same reason — see this function's doc comment.
-          { qty: 1, unitPrice: Number(s.slotTotal) }
-        : {
-            // M21 per-head #2: rateApplied is per PLAYER for a per_head slot
-            // (snapshotted pricingMode/headCount, priceBookingSlots), so the
-            // multiplier folds into qty rather than unitPrice — reproduces
-            // slot_total exactly (headCount × rate × hours) while leaving a
-            // per_resource slot's qty/unit-price decomposition (hours × rate)
-            // byte-identical to before this ticket.
-            qty: durationHours(s.startsAt, s.endsAt) * (s.pricingMode === 'per_head' ? (s.headCount ?? 1) : 1),
-            unitPrice: Number(s.rateApplied),
-          }),
+      ...(s.rateUnit === 'day'
+        ? // M24 #2: a per-day setup bills qty=days, unitPrice=the day rate —
+          // reconstructs slot_total exactly (days × rate), the same way an
+          // hourly slot reconstructs as hours × rate below. Never a setup +
+          // happy-hour/walk-in shape: v1 setups don't compose with either
+          // (see lib/booking/service.ts:priceBookingSlots' doc comment).
+          { qty: daysInRange(s.startsAt, s.endsAt, timeZone), unitPrice: Number(s.rateApplied) }
+        : isWalkin || s.happyHourApplied
+          ? // qty=1, unitPrice=the whole priced total — same "one computed
+            // charge" shape priceElapsedTime itself returns, rather than a
+            // qty/rate pair that would need to multiply back to that figure.
+            // M23 #1: a happy-hour-blended RESERVED slot takes this same
+            // shape, for the same reason — see this function's doc comment.
+            { qty: 1, unitPrice: Number(s.slotTotal) }
+          : {
+              // M21 per-head #2: rateApplied is per PLAYER for a per_head slot
+              // (snapshotted pricingMode/headCount, priceBookingSlots), so the
+              // multiplier folds into qty rather than unitPrice — reproduces
+              // slot_total exactly (headCount × rate × hours) while leaving a
+              // per_resource slot's qty/unit-price decomposition (hours × rate)
+              // byte-identical to before this ticket. An hourly SETUP slot
+              // (M24 #2) takes this same shape too: headCount is always null
+              // there, so the multiplier is a no-op and qty is plain hours.
+              qty: durationHours(s.startsAt, s.endsAt) * (s.pricingMode === 'per_head' ? (s.headCount ?? 1) : 1),
+              unitPrice: Number(s.rateApplied),
+            }),
       // Snapshotted at booking time (migration 0092, lib/booking/service.ts's
       // priceBookingSlots) from the resource type's own tax rate — same
       // discipline rate_applied already uses. 0 means no 'resources'/'both'

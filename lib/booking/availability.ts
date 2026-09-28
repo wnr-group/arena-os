@@ -1,4 +1,4 @@
-import { zonedTimeToUtc } from './time'
+import { zonedTimeToUtc, todayInZone } from './time'
 
 export type Interval = { startsAt: Date; endsAt: Date }
 
@@ -55,6 +55,28 @@ export function isRangeAvailable(
 }
 
 /**
+ * A local date's open/close instants for a given DayHours (M24 #4: pulled out
+ * of availableStartTimes so getDayRangeWindow — which needs D1's open and a
+ * DIFFERENT day Dn's close, not one day's own pair — can share the exact same
+ * open24h handling instead of re-deriving it).
+ *
+ * "Open 24 hours" (migration 0098): the day runs 00:00 → the NEXT midnight,
+ * so the final 11:30 PM–12:00 AM slot fits (a same-day close time can never
+ * reach midnight). open/close are ignored for such a day.
+ */
+export function dayWindow(dateStr: string, timeZone: string, hours: DayHours): { open: Date; close: Date } {
+  const open = zonedTimeToUtc(dateStr, hours.open24h ? '00:00' : hours.openTime, timeZone)
+  let close: Date
+  if (hours.open24h) {
+    close = zonedTimeToUtc(dateStr, '00:00', timeZone)
+    close.setUTCDate(close.getUTCDate() + 1)
+  } else {
+    close = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
+  }
+  return { open, close }
+}
+
+/**
  * Candidate start times (as instants) at which a booking of `durationMinutes`
  * can be placed on a single resource for a given local date.
  */
@@ -69,17 +91,7 @@ export function availableStartTimes(
 
   const slotMinutes = opts.slotMinutes ?? 30
   const buffer = opts.bufferMinutes ?? 0
-  // "Open 24 hours" (migration 0098): the day runs 00:00 → the NEXT midnight,
-  // so the final 11:30 PM–12:00 AM slot fits (a same-day close time can never
-  // reach midnight). open/close are ignored for such a day.
-  const dayOpen = zonedTimeToUtc(dateStr, hours.open24h ? '00:00' : hours.openTime, timeZone)
-  let dayClose: Date
-  if (hours.open24h) {
-    dayClose = zonedTimeToUtc(dateStr, '00:00', timeZone)
-    dayClose.setUTCDate(dayClose.getUTCDate() + 1)
-  } else {
-    dayClose = zonedTimeToUtc(dateStr, hours.closeTime, timeZone)
-  }
+  const { open: dayOpen, close: dayClose } = dayWindow(dateStr, timeZone, hours)
 
   const out: Date[] = []
   const step = slotMinutes * MIN
@@ -96,4 +108,30 @@ export function availableStartTimes(
 /** Hours (decimal) between two instants — for pricing a slot. */
 export function durationHours(startsAt: Date, endsAt: Date): number {
   return (endsAt.getTime() - startsAt.getTime()) / (60 * MIN)
+}
+
+/**
+ * Whole calendar days a per-day setup's window spans, in `timeZone` (M24 #2)
+ * — for a slot booked "D1 open -> Dn close", this is (Dn - D1) + 1, i.e. the
+ * inclusive day count a day-rate setup prices against
+ * (lib/booking/service.ts:priceBookingSlots). Computed off each instant's OWN
+ * calendar date (todayInZone), not a raw ms/86400000 division, so it can't be
+ * thrown off by a DST shift or by the two instants sitting at different
+ * times of day (open vs. close).
+ *
+ * `endsAt` is an EXCLUSIVE upper bound, same convention dayWindow()'s own
+ * "close" uses — for an ordinary close time (e.g. 22:00) that's never
+ * ambiguous, but for an Open 24 Hours day dayWindow() correctly returns the
+ * NEXT calendar day's midnight (0098_working_hours_24h.sql), which would
+ * otherwise read as that next day's own date here and over-count the range
+ * by one whole day. Back off a millisecond before reading the date, so the
+ * boundary is read as the last instant the range actually covers rather
+ * than the first instant it doesn't — matches what every non-midnight close
+ * time already does correctly, without needing to special-case open24h here.
+ */
+export function daysInRange(startsAt: Date, endsAt: Date, timeZone: string): number {
+  const [sy, sm, sd] = todayInZone(timeZone, startsAt).split('-').map(Number)
+  const [ey, em, ed] = todayInZone(timeZone, new Date(endsAt.getTime() - 1)).split('-').map(Number)
+  const days = Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / (24 * 60 * MIN)) + 1
+  return Math.max(1, days)
 }

@@ -16,12 +16,14 @@ import {
   mergeTablesCore,
   splitTableCore,
   assertBookingFullyPaid,
+  undoCheckInCore,
   BookingError,
 } from '@/lib/booking/service'
 import {
   startWalkinCore,
   checkoutWalkinCore,
   extendWalkinCore,
+  reopenWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
   listActiveWalkins,
@@ -77,6 +79,10 @@ const createInput = z.object({
         resourceId: z.string().uuid(),
         startsAt: z.string().datetime(),
         endsAt: z.string().datetime(),
+        // M24 #4: an optional named setup for this slot — priceBookingSlots
+        // re-validates it belongs to this resource/tenant and is active, same
+        // as quoteBookingInput's setupId above.
+        setupId: z.string().uuid().optional(),
       }),
     )
     .min(1, 'Add at least one resource slot'),
@@ -112,6 +118,10 @@ const quoteBookingInput = z.object({
   // M21 per-head #4: required only when the resource turns out to be
   // per_head — priceBookingSlots itself validates that, same as createBooking.
   headCount: z.coerce.number().int().min(1).optional(),
+  // M24 #2: an optional named setup for this resource — priceBookingSlots
+  // re-validates it belongs to this resource/tenant and is active, same as
+  // headCount above.
+  setupId: z.string().uuid().optional(),
 })
 
 /**
@@ -124,6 +134,11 @@ const quoteBookingInput = z.object({
  *
  * No extra role/industry gate beyond requireContext() — same as createBooking
  * itself, which this merely previews.
+ *
+ * M24 #2: also accepts an optional setupId, so a studio wizard can quote a
+ * named setup's flat rate (hourly or per-day) the same way it already quotes
+ * a per_head resource's headCount — priceBookingSlots resolves and validates
+ * it identically for both create and quote.
  */
 export async function quoteBooking(
   input: z.input<typeof quoteBookingInput>,
@@ -135,7 +150,7 @@ export async function quoteBooking(
     const result = await withUser(ctx.user.id, (tx) =>
       priceBookingSlots(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, {
         branchId: v.branchId,
-        slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }],
+        slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }],
         headCount: v.headCount,
       }),
     )
@@ -394,6 +409,33 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
     if (pg?.code === '23P01') {
       return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
     }
+    return fail(e)
+  }
+}
+
+/**
+ * M25 #2 — undo an accidental walk-in checkout. Same gate as
+ * starting/checking out/extending a walk-in; reopenWalkinCore's own guards
+ * (must actually be checked out, no live invoice, and — open-tab only — no
+ * later booking on the resource) are what actually keeps this safe,
+ * enforced regardless of role.
+ */
+export async function reopenWalkin(bookingId: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to reopen a walk-in.')
+    }
+    await withUser(ctx.user.id, (tx) =>
+      reopenWalkinCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, bookingId),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/sessions')
+    return {}
+  } catch (e) {
     return fail(e)
   }
 }
@@ -685,6 +727,25 @@ export async function setBookingStatus<S extends BookingStatus>(
 /** Server action: cancel a booking (thin wrapper over setBookingStatus). */
 export async function cancelBooking(id: string, reason: string): Promise<Result> {
   return setBookingStatus(id, 'cancelled', reason)
+}
+
+/**
+ * M25 #1 — revert an accidental check-in. Same access as check-in itself
+ * (requireContext only, no manager gate) — undoCheckInCore's own guards
+ * (must currently be checked_in, no live invoice) are the actual safety
+ * net, enforced regardless of role.
+ */
+export async function undoCheckIn(id: string): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    await withUser(ctx.user.id, (tx) =>
+      undoCheckInCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, id),
+    )
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
 }
 
 const CONFIRMATION_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i

@@ -1,8 +1,8 @@
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { branches, resourceTypes, resources, workingHours, bookingSlots } from '@/db/schema'
-import { availableStartTimes, type Interval } from './availability'
+import { branches, resourceTypes, resources, resourceSetups, workingHours, bookingSlots } from '@/db/schema'
+import { availableStartTimes, dayWindow, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
 import { resolveDayRate } from './rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
@@ -569,5 +569,115 @@ export async function getPublicAvailableStartsForType(
     })
 
     return { starts, allStarts, rate: rate.toFixed(2) }
+  })
+}
+
+export type PublicResourceSetup = { id: string; name: string; rate: string; rateUnit: 'hour' | 'day' }
+
+/**
+ * M24 #5: a resource's active named setups, for the public booking page's
+ * optional setup picker — mirrors the staff-only listResourceSetups
+ * (lib/booking/data.ts), except scoped to ONE resource (this page already
+ * pins one) and filtered to isActive only, same as the staff New Booking
+ * wizard already does client-side (a stranger has no reason to be offered a
+ * retired setup, unlike the owner's own settings editor, which manages
+ * both). Callers gate this behind industryHasStudioSetups(tenant.industry)
+ * (lib/booking/studio-setups.ts) before calling it at all — see
+ * app/(public)/book/[resourceId]/page.tsx.
+ */
+export async function getPublicResourceSetups(tenantId: string, resourceId: string): Promise<PublicResourceSetup[]> {
+  const rows = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        id: resourceSetups.id,
+        name: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+      })
+      .from(resourceSetups)
+      // getPublicResource/getPublicAvailableStarts (this file) both filter
+      // resources.status = 'available' — a stranger has no reason to see (or
+      // quote/book against) setups on a resource that's in maintenance, same
+      // reasoning resource_setups_public_select (0100) already applies to
+      // is_active. Missing here in the original PR (adversarial review).
+      .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
+      .where(
+        and(
+          eq(resourceSetups.tenantId, tenantId),
+          eq(resourceSetups.resourceId, resourceId),
+          eq(resourceSetups.isActive, true),
+          eq(resources.status, 'available'),
+        ),
+      )
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
+  )
+  return rows.map((r) => ({ ...r, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) }))
+}
+
+export type PublicDayRangeWindow = { startsAt: string; endsAt: string; conflict: boolean } | { error: string }
+
+/**
+ * M24 #5: the public mirror of the staff getDayRangeWindow
+ * (lib/actions/availability.ts, M24 #4) — resolves a customer-picked
+ * calendar-date range into the exact "D1 open -> Dn close" instants
+ * priceBookingSlots/daysInRange already price a per-day setup against, via
+ * the same dayWindow() helper, plus a soft pre-check against this
+ * resource's existing active bookings so the page can warn before the
+ * customer even tries to submit. Purely advisory — the DB's exclusion
+ * constraint (booking_slots_no_overlap, migration 0003) is still the real
+ * guard createPublicBooking relies on (see its existing 23P01 handling).
+ */
+export async function getPublicDayRangeWindow(
+  tenantId: string,
+  branchId: string,
+  resourceId: string,
+  timeZone: string,
+  startDate: string,
+  endDate: string,
+): Promise<PublicDayRangeWindow> {
+  if (endDate < startDate) return { error: 'End date must be on or after the start date.' }
+
+  return withPublicTenant(tenantId, async (tx) => {
+    const [res] = await tx
+      .select({ id: resources.id })
+      .from(resources)
+      .where(and(eq(resources.id, resourceId), eq(resources.tenantId, tenantId)))
+    if (!res) return { error: 'Resource not found.' }
+
+    const startDow = weekdayInZone(startDate, timeZone)
+    const endDow = weekdayInZone(endDate, timeZone)
+    const hoursRows = await tx
+      .select({
+        dayOfWeek: workingHours.dayOfWeek,
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.branchId, branchId), inArray(workingHours.dayOfWeek, [...new Set([startDow, endDow])])))
+    const hoursByDow = new Map(hoursRows.map((h) => [h.dayOfWeek, h]))
+    const startHours = hoursByDow.get(startDow) ?? DEFAULT_HOURS
+    const endHours = hoursByDow.get(endDow) ?? DEFAULT_HOURS
+    if (startHours.isClosed) return { error: `The business is closed on ${startDate}. Choose a different start date.` }
+    if (endHours.isClosed) return { error: `The business is closed on ${endDate}. Choose a different end date.` }
+
+    const startsAt = dayWindow(startDate, timeZone, startHours).open
+    const endsAt = dayWindow(endDate, timeZone, endHours).close
+
+    const conflictRows = await tx
+      .select({ id: bookingSlots.id })
+      .from(bookingSlots)
+      .where(
+        and(
+          eq(bookingSlots.resourceId, resourceId),
+          eq(bookingSlots.active, true),
+          lt(bookingSlots.startsAt, endsAt),
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, startsAt)),
+        ),
+      )
+      .limit(1)
+
+    return { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(), conflict: conflictRows.length > 0 }
   })
 }

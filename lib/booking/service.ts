@@ -9,11 +9,11 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, orders, auditLog, taxRates, tenants } from '@/db/schema'
-import { durationHours } from './availability'
+import { resources, resourceTypes, resourceSetups, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
+import { durationHours, daysInRange, dayWindow } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
-import { todayInZone } from './time'
+import { todayInZone, weekdayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
@@ -26,6 +26,12 @@ type Db = NodePgDatabase<typeof schema>
 
 /** Booking rule violations the caller is allowed to show verbatim. */
 export class BookingError extends Error {}
+
+// Same fallback getDayRangeWindow/getPublicDayRangeWindow already use for a
+// branch with no working_hours row for a given day (lib/actions/availability.ts,
+// lib/booking/public-availability.ts) — duplicated locally rather than shared,
+// matching this codebase's existing convention for this constant.
+const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
 /**
  * A booking's own `channel` ('walkin' | 'staff' | 'online'), read fresh
@@ -45,7 +51,14 @@ export async function loadBookingChannel(tx: Db, tenantId: string, bookingId: st
   return row?.channel ?? null
 }
 
-export type CreateBookingSlotInput = { resourceId: string; startsAt: string; endsAt: string }
+export type CreateBookingSlotInput = {
+  resourceId: string
+  startsAt: string
+  endsAt: string
+  /** M24 #2: an optional resource_setups row this slot books at, instead of
+   *  the resource's own base rate — see priceBookingSlots' doc comment. */
+  setupId?: string
+}
 
 export type CreateBookingInput = {
   branchId: string
@@ -82,8 +95,18 @@ export type PricedBookingSlot = {
   pricingMode: string
   /** M23 #1: true when at least one segment of this slot's window billed at
    *  a happy-hour-discounted rate — see db/schema.ts's column comment and
-   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. */
+   *  loadBookingLines (lib/billing/invoice.ts) for how this is used. Always
+   *  false for a setup slot (M24 #2) — happy hours don't apply to setups. */
   happyHourApplied: boolean
+  /** M24 #2: the resource_setups row this slot booked at, if any — null for
+   *  a base-rate slot. */
+  setupId: string | null
+  /** M24 #2: snapshot of the setup's name at booking time. Null for a
+   *  base-rate slot. */
+  setupName: string | null
+  /** M24 #2: 'hour' (default — every base-rate slot, and an hourly setup) or
+   *  'day' (a per-day setup: date-range x day rate). */
+  rateUnit: string
 }
 
 /**
@@ -134,6 +157,21 @@ export type PricedBookingSlot = {
  * PER-PLAYER rate, not some pre-multiplied total. When no rule ever fires
  * for a slot, this reproduces flat rate × hours exactly, so an untouched
  * booking is byte-identical to before this ticket.
+ *
+ * M24 #2: a slot may instead carry a `setupId` (a resource_setups row —
+ * 0099_studio_setups.sql), naming a fixed price for the resource dressed as
+ * that setup. A setup PRICES INSTEAD OF, not on top of, everything above: no
+ * weekend rate, no happy-hour discount, no per-head multiplier — "flat as
+ * named" per the design doc. Its rate_unit decides the shape:
+ *   'hour' -> rate × hours, same arithmetic as the base-rate path.
+ *   'day'  -> rate × daysInRange(startsAt, endsAt, timezone) — the slot is
+ *             expected to span whole calendar days (D1 open -> Dn close);
+ *             this is the one place per-day pricing exists.
+ * setupId is re-resolved against THIS resource + tenant and re-checked
+ * active on every call — never trusted at face value — so a stale, foreign,
+ * or deactivated setup id fails closed with a BookingError rather than
+ * silently falling back to the base rate. A slot with no setupId prices
+ * exactly as before this ticket.
  */
 export async function priceBookingSlots(
   tx: Db,
@@ -204,6 +242,79 @@ export async function priceBookingSlots(
     if (r.branchId !== input.branchId) throw new BookingError('A resource belongs to a different branch.')
   }
 
+  // M24 #2: the resource_setups rows referenced by setupId, loaded once and
+  // re-validated per slot below (resource match + active) — see this
+  // function's doc comment on why a setupId is never trusted at face value.
+  const setupIds = [...new Set(input.slots.map((s) => s.setupId).filter((id): id is string => Boolean(id)))]
+  const setupRows =
+    setupIds.length > 0
+      ? await tx
+          .select({
+            id: resourceSetups.id,
+            resourceId: resourceSetups.resourceId,
+            name: resourceSetups.name,
+            rate: resourceSetups.rate,
+            rateUnit: resourceSetups.rateUnit,
+            isActive: resourceSetups.isActive,
+          })
+          .from(resourceSetups)
+          .where(and(eq(resourceSetups.tenantId, ctx.tenantId), inArray(resourceSetups.id, setupIds)))
+      : []
+  const setupById = new Map(setupRows.map((r) => [r.id, r]))
+
+  // M24 #2 follow-up (adversarial review, PR #34): a day-rate setup's whole
+  // point is that it blocks the physical set for the WHOLE day(s) booked —
+  // but that's only true if the stored window actually IS the day boundary.
+  // Nothing else re-derives this from the client's raw startsAt/endsAt
+  // (createBooking/createPublicBooking only shape-validate them as ISO
+  // datetimes), so without this a day-rate setup could be booked for a
+  // five-minute sliver of a day, charged the full day rate (daysInRange's own
+  // max(1,…) clamp), while only reserving that sliver in booking_slots —
+  // leaving the rest of the day double-bookable on the exact feature whose
+  // exclusivity is the point. Recomputes the SAME D1-open -> Dn-close window
+  // getDayRangeWindow/getPublicDayRangeWindow already hand the client and
+  // refuses if the submitted slot doesn't match it exactly — the legitimate
+  // UI always submits that server-computed window verbatim, so this can
+  // never reject a real booking.
+  const dayRateSlots = input.slots.filter((s) => s.setupId && setupById.get(s.setupId)?.rateUnit === 'day')
+  if (dayRateSlots.length > 0) {
+    const dows = new Set<number>()
+    for (const s of dayRateSlots) {
+      dows.add(weekdayInZone(todayInZone(ctx.timezone, new Date(s.startsAt)), ctx.timezone))
+      dows.add(weekdayInZone(todayInZone(ctx.timezone, new Date(new Date(s.endsAt).getTime() - 1)), ctx.timezone))
+    }
+    const hoursRows = await tx
+      .select({
+        dayOfWeek: workingHours.dayOfWeek,
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.branchId, input.branchId), inArray(workingHours.dayOfWeek, [...dows])))
+    const hoursByDow = new Map(hoursRows.map((h) => [h.dayOfWeek, h]))
+
+    for (const s of dayRateSlots) {
+      const startsAt = new Date(s.startsAt)
+      const endsAt = new Date(s.endsAt)
+      const startDateStr = todayInZone(ctx.timezone, startsAt)
+      const endDateStr = todayInZone(ctx.timezone, new Date(endsAt.getTime() - 1))
+      const startHours = hoursByDow.get(weekdayInZone(startDateStr, ctx.timezone)) ?? DEFAULT_HOURS
+      const endHours = hoursByDow.get(weekdayInZone(endDateStr, ctx.timezone)) ?? DEFAULT_HOURS
+      if (startHours.isClosed || endHours.isClosed) {
+        throw new BookingError('The business is closed on one of the selected dates — choose a different range.')
+      }
+      const expectedStart = dayWindow(startDateStr, ctx.timezone, startHours).open
+      const expectedEnd = dayWindow(endDateStr, ctx.timezone, endHours).close
+      if (startsAt.getTime() !== expectedStart.getTime() || endsAt.getTime() !== expectedEnd.getTime()) {
+        throw new BookingError(
+          "A day-rate setup must be booked for whole calendar days, aligned to the business's working hours — use the date-range picker.",
+        )
+      }
+    }
+  }
+
   // Resource types with no tax_rate_id of their own fall back to the
   // tenant's sole active 'resources'/'both' rate, if unambiguous — see
   // resolveScopeDefaultTaxPercent. Skipped when every resource already has
@@ -228,6 +339,42 @@ export async function priceBookingSlots(
     const r = byId.get(s.resourceId)!
     const startsAt = new Date(s.startsAt)
     const endsAt = new Date(s.endsAt)
+    const taxRatePercent = Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2)
+
+    // M24 #2: a setup prices INSTEAD OF the base-rate path below — flat rate
+    // as named, no weekend/happy-hour/per-head composition. Re-validated
+    // here (resource match + active), never trusted at face value — see this
+    // function's doc comment.
+    if (s.setupId) {
+      const setup = setupById.get(s.setupId)
+      if (!setup || setup.resourceId !== s.resourceId || !setup.isActive) {
+        throw new BookingError('This setup is no longer available for the selected resource.')
+      }
+      const rate = Number(setup.rate)
+      const total =
+        setup.rateUnit === 'day'
+          ? round2(daysInRange(startsAt, endsAt, ctx.timezone) * rate)
+          : round2(rate * durationHours(startsAt, endsAt))
+      subtotal += total
+
+      return {
+        resourceId: s.resourceId,
+        startsAt,
+        endsAt,
+        rateApplied: rate.toFixed(2),
+        slotTotal: total.toFixed(2),
+        resourceName: r.name,
+        resourceTypeName: r.typeName,
+        taxRatePercent,
+        headCount: null,
+        pricingMode: r.pricingMode,
+        happyHourApplied: false,
+        setupId: setup.id,
+        setupName: setup.name,
+        rateUnit: setup.rateUnit,
+      }
+    }
+
     const weekdayRate = Number(r.rateOverride ?? r.typeRate)
     const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
     const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
@@ -280,10 +427,13 @@ export async function priceBookingSlots(
       slotTotal: total.toFixed(2),
       resourceName: r.name,
       resourceTypeName: r.typeName,
-      taxRatePercent: Number(r.taxPercent ?? defaultResourcesTaxPercent ?? 0).toFixed(2),
+      taxRatePercent,
       headCount,
       pricingMode: r.pricingMode,
       happyHourApplied: discounted,
+      setupId: null,
+      setupName: null,
+      rateUnit: 'hour',
     }
   })
 
@@ -829,6 +979,64 @@ export async function completeBookingIfFullySettled(
     )
     .returning({ id: bookings.id })
   return done.length > 0
+}
+
+/**
+ * M25 #1 — revert an accidental check-in (checked_in -> confirmed) and clear
+ * checked_in_at back to null, so a later re-check-in stamps a fresh
+ * timestamp rather than leaving a stale one from the reverted attempt.
+ * setBookingStatus (lib/actions/bookings.ts) never clears this column on any
+ * transition — a naive "just set status back" would leave it stale.
+ *
+ * Guarded to only fire from 'checked_in' (not confirmed/completed/etc, so
+ * this can never resurrect a cancelled/no-show/completed booking), and
+ * refuses once a live (non-void) invoice exists — findLiveBilling, same
+ * "money movement is its own decision, void first" discipline
+ * lib/billing/refunds.ts documents for void/refund. A VOIDED invoice does
+ * not block this (findLiveBilling excludes it), since voiding already made
+ * the booking billable again.
+ *
+ * No manager gate here or in the calling action — access matches check-in
+ * itself (requireContext only); these two guards are the actual safety net,
+ * enforced regardless of role.
+ *
+ * The slot is untouched either way: the booking_slots sync trigger (0003)
+ * only frees a slot on cancelled/no_show, so reverting to confirmed has no
+ * exclusion-constraint implication.
+ */
+export async function undoCheckInCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  bookingId: string,
+): Promise<void> {
+  const [booking] = await tx
+    .select({ id: bookings.id, status: bookings.status, checkedInAt: bookings.checkedInAt })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+    .for('update')
+    .limit(1)
+  if (!booking) throw new BookingError('Booking not found.')
+  if (booking.status !== 'checked_in') {
+    throw new BookingError('This booking is not checked in.')
+  }
+
+  const live = await findLiveBilling(tx, ctx.tenantId, bookingId)
+  if (live) {
+    throw new BookingError('This booking has already been billed — void the bill first.')
+  }
+
+  await tx
+    .update(bookings)
+    .set({ status: 'confirmed', checkedInAt: null })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
+    action: 'booking.uncheckin',
+    entityType: 'booking',
+    entityId: bookingId,
+    before: { status: 'checked_in', checkedInAt: booking.checkedInAt?.toISOString() ?? null },
+    after: { status: 'confirmed', checkedInAt: null },
+  })
 }
 
 export type TransferTableInput = { bookingId: string; targetResourceId: string }

@@ -11,6 +11,7 @@ import {
   Clock,
   CreditCard,
   ImageOff,
+  Layers,
   Loader2,
   Mail,
   Minus,
@@ -22,10 +23,12 @@ import {
   Wallet,
 } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
-import type { PublicResource } from '@/lib/booking/public-availability'
+import type { PublicResource, PublicResourceSetup } from '@/lib/booking/public-availability'
+import { daysInRange } from '@/lib/booking/availability'
 import {
   getPublicResourceAvailability,
   getPublicBookingQuote,
+  getPublicBookingDayRange,
   createPublicBooking,
   createBookingPaymentIntent,
   lookupPublicCustomerByPhone,
@@ -104,11 +107,17 @@ export function time12(iso: string, timeZone: string): string {
 export function ResourceBookingPage({
   tenant,
   resource,
+  setups,
   today,
   razorpayConfigured,
 }: {
   tenant: PublicTenant
   resource: PublicResource
+  /** M24 #5: this resource's active named setups, if any — empty for every
+   *  non-studio-industry tenant (gated server-side in
+   *  app/(public)/book/[resourceId]/page.tsx), which keeps this whole
+   *  component's new behaviour completely inert for them. */
+  setups: PublicResourceSetup[]
   today: string
   /** Gates the "pay online now" choice — read server-side from the same
    *  credential loader createBookingPaymentIntent uses, so the choice is
@@ -140,6 +149,70 @@ export function ResourceBookingPage({
   const [payOnline, setPayOnline] = useState(false)
   const [pending, startTransition] = useTransition()
 
+  // M24 #5: chosen setup, if any — null means "no setup, base rate", the
+  // only option that existed before M24. Mirrors the staff FutureWizard's
+  // own setupId/activeSetup/isDayRateSetup shape (M24 #4).
+  const [setupId, setSetupId] = useState<string | null>(null)
+  const activeSetup = setups.find((s) => s.id === setupId) ?? null
+  const isDayRateSetup = activeSetup?.rateUnit === 'day'
+
+  // M24 #5: date range for a per-day setup — two plain dates; the exact
+  // "D1 open -> Dn close" instants (and a soft conflict check against this
+  // resource's existing bookings) are resolved server-side via
+  // getPublicBookingDayRange so all business-hours/timezone math stays in
+  // one place, same discipline the hourly picker below already follows.
+  const [rangeStart, setRangeStart] = useState(today)
+  const [rangeEnd, setRangeEnd] = useState(today)
+  const [rangeWindow, setRangeWindow] = useState<{ startsAt: string; endsAt: string } | null>(null)
+  const [rangeLoading, setRangeLoading] = useState(false)
+  const [rangeError, setRangeError] = useState<string | null>(null)
+  const [rangeConflict, setRangeConflict] = useState(false)
+
+  // Switching to a (possibly different) per-day setup shouldn't carry over a
+  // stale range from whatever was picked before.
+  useEffect(() => {
+    if (isDayRateSetup) {
+      setRangeStart(today)
+      setRangeEnd(today)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupId])
+
+  useEffect(() => {
+    if (!isDayRateSetup) {
+      setRangeWindow(null)
+      setRangeError(null)
+      setRangeConflict(false)
+      setRangeLoading(false)
+      return
+    }
+    if (rangeEnd < rangeStart) {
+      setRangeWindow(null)
+      setRangeError('End date must be on or after the start date.')
+      setRangeConflict(false)
+      setRangeLoading(false)
+      return
+    }
+    let cancelled = false
+    setRangeLoading(true)
+    setRangeError(null)
+    getPublicBookingDayRange({ resourceId: resource.id, startDate: rangeStart, endDate: rangeEnd }).then((r) => {
+      if (cancelled) return
+      setRangeLoading(false)
+      if (r.error || !r.startsAt || !r.endsAt) {
+        setRangeError(r.error ?? 'Could not resolve this date range.')
+        setRangeWindow(null)
+        setRangeConflict(false)
+        return
+      }
+      setRangeWindow({ startsAt: r.startsAt, endsAt: r.endsAt })
+      setRangeConflict(Boolean(r.conflict))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isDayRateSetup, resource.id, rangeStart, rangeEnd])
+
   // M22 #4: starts at the resource's flat rate (weekday rate / override —
   // the same figure the header quotes before any date is picked), then
   // follows whatever getPublicResourceAvailability resolves for the
@@ -154,7 +227,10 @@ export function ResourceBookingPage({
   // shown here always matches what createPublicBooking actually charges.
   const isPerHead = resource.pricingMode === 'per_head'
   const headCount = isPerHead ? Math.max(1, resource.minPlayers) : 1
-  const priceFor = (minutes: number) => (hourlyRate * minutes * headCount) / 60
+  const priceFor = (minutes: number) => {
+    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : hourlyRate * headCount
+    return (rate * minutes) / 60
+  }
   const endsAt = startsAt ? new Date(new Date(startsAt).getTime() + duration * 60_000).toISOString() : null
 
   // Happy hours #3: once a specific start time is picked, the flat
@@ -171,30 +247,57 @@ export function ResourceBookingPage({
   // slot's total no longer bleeds through while a new quote loads).
   const [quote, setQuote] = useState<{ key: string; total: number } | null>(null)
   const [quoteLoadingKey, setQuoteLoadingKey] = useState<string | null>(null)
-  const quoteKey = startsAt && endsAt ? `${resource.id}|${startsAt}|${endsAt}` : null
+
+  // M24 #5: the resource+window a quote/booking will actually price — either
+  // the picked hourly slot, or the resolved per-day range, whichever this
+  // setup's rate_unit calls for. Mirrors FutureWizard's own quoteWindow
+  // (M24 #4).
+  const quoteWindow = isDayRateSetup
+    ? rangeWindow
+      ? { startsAt: rangeWindow.startsAt, endsAt: rangeWindow.endsAt }
+      : null
+    : startsAt && endsAt
+      ? { startsAt, endsAt }
+      : null
+  const quoteKey = quoteWindow ? `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}` : null
   const quoteLoading = quoteKey !== null && quoteLoadingKey === quoteKey
-  // M22 follow-up (cosmetic, no money impact): once a slot is picked, ONLY
-  // the real per-slot quote may stand in for the total — never the flat,
+  // M22 follow-up (cosmetic, no money impact): once a slot/range is picked,
+  // ONLY the real quote may stand in for the total — never the flat,
   // date-level estimate above (see public-availability.ts's doc comment on
   // why that figure can disagree with the real charge for a tenant whose
   // working hours cross midnight). null means "not yet known" (still
-  // loading, or the request failed, or stale for the current slot) —
+  // loading, or the request failed, or stale for the current pick) —
   // Continue/Confirm are gated on this being non-null (see canContinue/the
   // Confirm button below), so nothing can ever be confirmed against a stale
   // or wrong figure; the UI shows a loading/error state in its place instead
-  // of guessing.
-  const total = startsAt ? (quote && quote.key === quoteKey ? quote.total : null) : priceFor(duration)
-  const quoteErrored = startsAt !== null && !quoteLoading && total === null
+  // of guessing. A per-day setup has no pre-range flat fallback (there's
+  // nothing to estimate off before a valid range resolves), so total stays
+  // null until then.
+  const total = isDayRateSetup
+    ? quote && quote.key === quoteKey
+      ? quote.total
+      : null
+    : startsAt
+      ? quote && quote.key === quoteKey
+        ? quote.total
+        : null
+      : priceFor(duration)
+  const quoteErrored = quoteWindow !== null && !quoteLoading && total === null && !(isDayRateSetup && rangeConflict)
 
   useEffect(() => {
-    if (!startsAt || !endsAt) {
+    if (!quoteWindow || (isDayRateSetup && rangeConflict)) {
       setQuoteLoadingKey(null)
       return
     }
-    const key = `${resource.id}|${startsAt}|${endsAt}`
+    const key = `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}`
     let cancelled = false
     setQuoteLoadingKey(key)
-    getPublicBookingQuote({ resourceId: resource.id, startsAt, endsAt }).then((r) => {
+    getPublicBookingQuote({
+      resourceId: resource.id,
+      startsAt: quoteWindow.startsAt,
+      endsAt: quoteWindow.endsAt,
+      setupId: setupId ?? undefined,
+    }).then((r) => {
       if (cancelled) return
       setQuoteLoadingKey((k) => (k === key ? null : k))
       if (r.error || r.total === undefined) {
@@ -205,7 +308,8 @@ export function ResourceBookingPage({
     return () => {
       cancelled = true
     }
-  }, [resource.id, startsAt, endsAt])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resource.id, quoteWindow?.startsAt, quoteWindow?.endsAt, setupId, isDayRateSetup, rangeConflict])
 
   // Slots already in the past (only relevant for today) are dropped rather
   // than shown disabled — there's nothing useful for the customer to do with
@@ -215,6 +319,7 @@ export function ResourceBookingPage({
   // Times reload for whichever date/duration is current; a fresh fetch
   // invalidates any previously picked start time.
   useEffect(() => {
+    if (isDayRateSetup) return
     let cancelled = false
     setStartsAt(null)
     setSlotsError(null)
@@ -237,7 +342,7 @@ export function ResourceBookingPage({
     return () => {
       cancelled = true
     }
-  }, [resource.id, date, duration])
+  }, [resource.id, date, duration, isDayRateSetup])
 
   // Look the phone up (debounced) once a full 10-digit number is entered —
   // phone is already digits-only (see the input's onChange below), so the
@@ -324,13 +429,13 @@ export function ResourceBookingPage({
   }
 
   function confirm() {
-    if (!startsAt || !endsAt || total === null) return
+    if (!quoteWindow || total === null || (isDayRateSetup && rangeConflict)) return
     setConfirmError(null)
     startTransition(async () => {
       const r = await createPublicBooking({
         resourceId: resource.id,
-        startsAt,
-        endsAt,
+        startsAt: quoteWindow.startsAt,
+        endsAt: quoteWindow.endsAt,
         customerName: name,
         customerPhone: phone,
         customerEmail: email,
@@ -341,6 +446,7 @@ export function ResourceBookingPage({
         // online and only ever adjusted by staff at check-in (Per-head #4).
         players: resource.capacity != null && !isPerHead ? players : undefined,
         payNow: razorpayConfigured && payOnline && total > 0,
+        setupId: setupId ?? undefined,
         website,
       })
       if (r.error || !r.confirmationToken) {
@@ -381,6 +487,46 @@ export function ResourceBookingPage({
               <div className="min-w-0 space-y-6">
                 <ResourceCard resource={resource} currency={tenant.currency} />
 
+                {setups.length > 0 && (
+                  <section>
+                    <SectionLabel icon={Layers}>Setup</SectionLabel>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Optional — leave it at base rate, or pick a named setup for {resource.name}.
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <button
+                        onClick={() => setSetupId(null)}
+                        className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold transition-all duration-200 active:scale-[0.99] ${
+                          setupId === null
+                            ? 'border-primary bg-primary/10 shadow-sm text-primary'
+                            : 'border-border bg-card text-foreground hover:border-primary/30'
+                        }`}
+                      >
+                        <span>No setup</span>
+                        <span className="text-xs font-bold tabular-nums text-muted-foreground">
+                          {formatMoney(resource.hourlyRate, tenant.currency)} / {isPerHead ? 'player / hr' : 'hr'}
+                        </span>
+                      </button>
+                      {setups.map((s) => (
+                        <button
+                          key={s.id}
+                          onClick={() => setSetupId(s.id)}
+                          className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left text-sm font-semibold transition-all duration-200 active:scale-[0.99] ${
+                            setupId === s.id
+                              ? 'border-primary bg-primary/10 shadow-sm text-primary'
+                              : 'border-border bg-card text-foreground hover:border-primary/30'
+                          }`}
+                        >
+                          <span>{s.name}</span>
+                          <span className="text-xs font-bold tabular-nums text-muted-foreground">
+                            {formatMoney(s.rate, tenant.currency)} / {s.rateUnit === 'day' ? 'day' : 'hr'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
                 <div className="flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 p-4">
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
                     <Sparkles size={18} />
@@ -388,12 +534,30 @@ export function ResourceBookingPage({
                   <div>
                     <p className="text-sm font-bold text-foreground">Flexible Booking</p>
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                      Pick any duration and your preferred start time — we&apos;ll hold {resource.name} for exactly
-                      that slot.
+                      {isDayRateSetup
+                        ? `Pick your date range — we'll hold ${resource.name} for the whole stay.`
+                        : `Pick any duration and your preferred start time — we'll hold ${resource.name} for exactly that slot.`}
                     </p>
                   </div>
                 </div>
 
+                {isDayRateSetup ? (
+                  <DateRangeSection
+                    today={today}
+                    rangeStart={rangeStart}
+                    setRangeStart={setRangeStart}
+                    rangeEnd={rangeEnd}
+                    setRangeEnd={setRangeEnd}
+                    rangeLoading={rangeLoading}
+                    rangeError={rangeError}
+                    rangeConflict={rangeConflict}
+                    rangeWindow={rangeWindow}
+                    timeZone={tenant.timezone}
+                    rate={activeSetup ? Number(activeSetup.rate) : 0}
+                    currency={tenant.currency}
+                  />
+                ) : (
+                <>
                 <section>
                   <SectionLabel icon={CalendarDays}>Date</SectionLabel>
                   <div className="mt-3 grid grid-cols-7 gap-2">
@@ -521,6 +685,8 @@ export function ResourceBookingPage({
                     </div>
                   </section>
                 </div>
+                </>
+                )}
               </div>
 
               <SummaryPanel
@@ -531,6 +697,13 @@ export function ResourceBookingPage({
                 duration={duration}
                 startsAt={startsAt}
                 endsAt={endsAt}
+                setups={setups}
+                activeSetup={activeSetup}
+                isDayRateSetup={isDayRateSetup}
+                rangeStart={rangeStart}
+                rangeEnd={rangeEnd}
+                hasSelection={isDayRateSetup ? Boolean(rangeWindow) && !rangeConflict : Boolean(startsAt)}
+                rangeConflict={rangeConflict}
                 players={players}
                 setPlayers={setPlayers}
                 total={total}
@@ -541,7 +714,7 @@ export function ResourceBookingPage({
             </div>
           )}
 
-          {step === 'details' && startsAt && (
+          {step === 'details' && quoteWindow && (
             <div className="mx-auto max-w-lg">
               <div className="rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
                 <div className="flex items-center gap-3">
@@ -551,7 +724,10 @@ export function ResourceBookingPage({
                   <div className="min-w-0">
                     <h1 className="text-lg font-bold leading-tight text-foreground">Your details</h1>
                     <p className="truncate text-sm text-muted-foreground">
-                      {resource.name} · {prettyDateLong(date)} · {time12(startsAt, tenant.timezone)}
+                      {resource.name} ·{' '}
+                      {isDayRateSetup
+                        ? `${prettyDateLong(rangeStart)} – ${prettyDateLong(rangeEnd)}`
+                        : `${prettyDateLong(date)} · ${time12(quoteWindow.startsAt, tenant.timezone)}`}
                     </p>
                   </div>
                 </div>
@@ -637,9 +813,16 @@ export function ResourceBookingPage({
 
                 <div className="mt-6 space-y-2 rounded-xl border border-border bg-background p-4">
                   <SummaryRow icon={Boxes} label="Resource" value={resource.name} />
-                  <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
-                  <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
-                  {isPerHead && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
+                  {setups.length > 0 && <SummaryRow icon={Layers} label="Setup" value={activeSetup?.name ?? 'Base rate'} />}
+                  {isDayRateSetup ? (
+                    <SummaryRow icon={CalendarDays} label="Dates" value={`${prettyDateLong(rangeStart)} – ${prettyDateLong(rangeEnd)}`} />
+                  ) : (
+                    <>
+                      <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
+                      <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
+                    </>
+                  )}
+                  {isPerHead && !activeSetup && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
                   <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
                     <span>Total</span>
                     <span className="flex items-center gap-1.5 tabular-nums text-primary">
@@ -772,6 +955,13 @@ function SummaryPanel({
   duration,
   startsAt,
   endsAt,
+  setups,
+  activeSetup,
+  isDayRateSetup,
+  rangeStart,
+  rangeEnd,
+  hasSelection,
+  rangeConflict,
   players,
   setPlayers,
   total,
@@ -786,6 +976,15 @@ function SummaryPanel({
   duration: number
   startsAt: string | null
   endsAt: string | null
+  setups: PublicResourceSetup[]
+  activeSetup: PublicResourceSetup | null
+  isDayRateSetup: boolean
+  rangeStart: string
+  rangeEnd: string
+  /** Whether the Slot step has a complete pick — a time slot for the hourly
+   *  path, a valid non-conflicting range for a per-day setup. */
+  hasSelection: boolean
+  rangeConflict: boolean
   players: number
   setPlayers: (n: number) => void
   total: number | null
@@ -793,12 +992,12 @@ function SummaryPanel({
   hourlyRate: number
   onContinue: () => void
 }) {
-  // M22 follow-up: a slot alone isn't enough — the real per-slot quote must
-  // have landed too, so "Continue" can never carry a stale/wrong total
-  // through to the details step. See the `total` computation's own comment
-  // in ResourceBookingPage above for why this is `null` while loading or on
-  // a failed quote.
-  const canContinue = Boolean(startsAt) && total !== null
+  // M22 follow-up: a pick alone isn't enough — the real quote must have
+  // landed too, so "Continue" can never carry a stale/wrong total through to
+  // the details step. See the `total` computation's own comment in
+  // ResourceBookingPage above for why this is `null` while loading or on a
+  // failed quote.
+  const canContinue = hasSelection && total !== null
 
   return (
     <aside className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:sticky lg:top-20">
@@ -806,10 +1005,17 @@ function SummaryPanel({
 
       <div className="mt-4 space-y-3">
         <SummaryRow icon={Boxes} label="Resource" value={resource.name} />
-        <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
-        <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
-        <SummaryRow icon={Clock} label="Start" value={startsAt ? time12(startsAt, timeZone) : '—'} />
-        <SummaryRow icon={Clock} label="End" value={endsAt ? time12(endsAt, timeZone) : '—'} />
+        {setups.length > 0 && <SummaryRow icon={Layers} label="Setup" value={activeSetup?.name ?? 'Base rate'} />}
+        {isDayRateSetup ? (
+          <SummaryRow icon={CalendarDays} label="Dates" value={`${prettyDateLong(rangeStart)} – ${prettyDateLong(rangeEnd)}`} />
+        ) : (
+          <>
+            <SummaryRow icon={CalendarDays} label="Date" value={prettyDateLong(date)} />
+            <SummaryRow icon={Clock} label="Duration" value={durationLabel(duration)} />
+            <SummaryRow icon={Clock} label="Start" value={startsAt ? time12(startsAt, timeZone) : '—'} />
+            <SummaryRow icon={Clock} label="End" value={endsAt ? time12(endsAt, timeZone) : '—'} />
+          </>
+        )}
       </div>
 
       {/* The capacity note-stepper is a headcount-for-notes convenience — for
@@ -848,7 +1054,7 @@ function SummaryPanel({
         </div>
       )}
 
-      {resource.pricingMode === 'per_head' && (
+      {resource.pricingMode === 'per_head' && !activeSetup && (
         <div className="mt-5 flex items-center gap-1.5 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
           <Users size={14} className="text-primary" />
           Priced for {Math.max(1, resource.minPlayers)} player{Math.max(1, resource.minPlayers) === 1 ? '' : 's'}
@@ -858,9 +1064,11 @@ function SummaryPanel({
 
       <div className="mt-5 space-y-2 border-t border-border pt-4">
         <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>Base rate</span>
+          <span>{activeSetup ? activeSetup.name : 'Base rate'}</span>
           <span className="tabular-nums">
-            {formatMoney(hourlyRate, currency)} / {resource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+            {activeSetup
+              ? `${formatMoney(activeSetup.rate, currency)} / ${activeSetup.rateUnit === 'day' ? 'day' : 'hr'}`
+              : `${formatMoney(hourlyRate, currency)} / ${resource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
           </span>
         </div>
         <div className="flex items-center justify-between text-base font-extrabold text-foreground">
@@ -874,9 +1082,13 @@ function SummaryPanel({
 
       {!canContinue && (
         <p className="mt-4 rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-          {startsAt && total === null && !totalLoading
-            ? 'Could not price this booking — check your connection and try again.'
-            : 'Select a date, duration and start time to continue.'}
+          {rangeConflict
+            ? 'This set already has a booking in part of this range. Choose different dates.'
+            : hasSelection && total === null && !totalLoading
+              ? 'Could not price this booking — check your connection and try again.'
+              : isDayRateSetup
+                ? 'Select a date range to continue.'
+                : 'Select a date, duration and start time to continue.'}
         </p>
       )}
 
@@ -888,5 +1100,84 @@ function SummaryPanel({
         Continue to your details
       </button>
     </aside>
+  )
+}
+
+/**
+ * M24 #5: the date-range picker shown instead of the Date/Duration/Start-
+ * times block when a per-day setup is selected — same "two plain dates +
+ * warning text" pattern the staff FutureWizard uses (M24 #4), no calendar-
+ * with-blocked-days component.
+ */
+function DateRangeSection({
+  today,
+  rangeStart,
+  setRangeStart,
+  rangeEnd,
+  setRangeEnd,
+  rangeLoading,
+  rangeError,
+  rangeConflict,
+  rangeWindow,
+  timeZone,
+  rate,
+  currency,
+}: {
+  today: string
+  rangeStart: string
+  setRangeStart: (d: string) => void
+  rangeEnd: string
+  setRangeEnd: (d: string) => void
+  rangeLoading: boolean
+  rangeError: string | null
+  rangeConflict: boolean
+  rangeWindow: { startsAt: string; endsAt: string } | null
+  timeZone: string
+  rate: number
+  currency: string
+}) {
+  return (
+    <section>
+      <SectionLabel icon={CalendarDays}>Dates</SectionLabel>
+      <div className="mt-3 grid grid-cols-1 gap-4 sm:max-w-sm sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold text-muted-foreground">From</span>
+          <input
+            type="date"
+            value={rangeStart}
+            min={today}
+            max={rangeEnd}
+            onChange={(e) => setRangeStart(e.target.value)}
+            className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold text-muted-foreground">To</span>
+          <input
+            type="date"
+            value={rangeEnd}
+            min={rangeStart}
+            onChange={(e) => setRangeEnd(e.target.value)}
+            className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
+          />
+        </label>
+      </div>
+
+      {rangeLoading ? (
+        <p className="mt-3 text-sm text-muted-foreground">Checking availability…</p>
+      ) : rangeError ? (
+        <EmptyNotice>{rangeError}</EmptyNotice>
+      ) : rangeConflict ? (
+        <p className="mt-3 text-sm text-destructive">
+          This set already has a booking in part of this range. Choose different dates.
+        </p>
+      ) : rangeWindow ? (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {daysInRange(new Date(rangeWindow.startsAt), new Date(rangeWindow.endsAt), timeZone)} day
+          {daysInRange(new Date(rangeWindow.startsAt), new Date(rangeWindow.endsAt), timeZone) === 1 ? '' : 's'} ×{' '}
+          {formatMoney(rate, currency)}/day
+        </p>
+      ) : null}
+    </section>
   )
 }

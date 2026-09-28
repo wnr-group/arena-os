@@ -40,6 +40,7 @@ export function InvoiceActions({
   payments,
   outstandingCaptured,
   currency,
+  bookingId,
 }: {
   invoiceId: string
   invoiceStatus: string
@@ -47,6 +48,10 @@ export function InvoiceActions({
   /** Captured money not yet refunded — non-zero blocks the void. */
   outstandingCaptured: string
   currency: string
+  /** M25 #4: where to send staff after a successful void, so a corrected
+   *  bill can be raised immediately — null for an invoice with no booking
+   *  (a standalone counter sale), which just refreshes in place. */
+  bookingId?: string | null
 }) {
   const [dialog, setDialog] = useState<'refund' | 'void' | null>(null)
   const money = (v: string | number) => formatMoney(v, currency)
@@ -57,6 +62,19 @@ export function InvoiceActions({
 
   return (
     <>
+      {/* M25 #4: this is the "correct a wrong bill" path — the fix already
+       *  works (refund -> void -> re-raise), this just says so out loud
+       *  right where the two buttons live, instead of staff having to
+       *  already know the sequence. */}
+      {!alreadyVoid && (
+        <p className="mb-2 max-w-md text-xs text-muted-foreground">
+          Made a mistake on this bill? Refund any payment first, then void the
+          invoice —{' '}
+          {bookingId
+            ? 'you can then raise a corrected bill for the same booking.'
+            : 'you can then create a corrected sale.'}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setDialog('refund')}
@@ -86,6 +104,7 @@ export function InvoiceActions({
       {dialog === 'void' && (
         <VoidDialog
           invoiceId={invoiceId}
+          bookingId={bookingId ?? null}
           blockedBy={voidBlocked ? outstandingCaptured : null}
           money={money}
           onClose={() => setDialog(null)}
@@ -239,11 +258,15 @@ function RefundDialog({
 
 function VoidDialog({
   invoiceId,
+  bookingId,
   blockedBy,
   money,
   onClose,
 }: {
   invoiceId: string
+  /** M25 #4: present -> nudge straight to the POS bill screen after voiding,
+   *  so the corrected bill can be raised immediately. Null -> just refresh. */
+  bookingId: string | null
   blockedBy: string | null
   money: (v: string | number) => string
   onClose: () => void
@@ -269,10 +292,18 @@ function VoidDialog({
       // so it should say so rather than just closing.
       toast.success(
         r.invoiceNumber ? `Invoice ${r.invoiceNumber} voided` : 'Invoice voided',
-        { description: 'Struck off — it no longer counts towards revenue.' },
+        {
+          description: bookingId
+            ? 'Struck off — taking you to the bill screen to raise a corrected one.'
+            : 'Struck off — it no longer counts towards revenue.',
+        },
       )
       onClose()
-      router.refresh()
+      // M25 #4: the whole point of voiding here is usually to fix a mistake
+      // and re-bill — send staff straight to where that happens instead of
+      // leaving them on the now-voided invoice to find their own way back.
+      if (bookingId) router.push(`/pos/${bookingId}`)
+      else router.refresh()
     })
   }
 

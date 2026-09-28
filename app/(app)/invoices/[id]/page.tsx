@@ -95,6 +95,7 @@ export default async function InvoiceReceiptPage({
               }))}
               outstandingCaptured={outstandingCaptured}
               currency={ctx.tenant.currency}
+              bookingId={invoice.bookingId}
             />
           )}
           <PrintButton />

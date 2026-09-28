@@ -12,10 +12,12 @@ import {
   Clock,
   Eye,
   Loader2,
+  Minus,
   Plus,
   RefreshCw,
   Search,
   ShoppingBag,
+  Trash2,
   UserCheck,
   ReceiptText,
   X,
@@ -25,8 +27,10 @@ import { DepositButton } from './DepositButton'
 import { CancelBookingDialog } from './CancelBookingDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-import { setBookingStatus } from '@/lib/actions/bookings'
+import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
+import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -161,6 +165,7 @@ export function BookingsView({
   paymentStates,
   canRequestVoidComp,
   canToggle86,
+  showFoodOrdering,
 }: {
   branchId: string
   branchName: string
@@ -210,6 +215,12 @@ export function BookingsView({
    *  setMenuItemAvailability re-checks canManageKitchen() server-side
    *  regardless (M17 #7). */
   canToggle86: boolean
+  /** Studio tenants (recording_studio/podcast_studio/dance_studio/vr_centre,
+   *  see lib/booking/studio-setups.ts) don't sell food — hides the header
+   *  "Take order" button and the per-booking "Food orders" panel/"Add
+   *  order" link entirely, rather than just disabling them. Every other
+   *  industry (gaming_cafe, restaurant) is unaffected. */
+  showFoodOrdering: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -224,6 +235,39 @@ export function BookingsView({
   // Separate from `pending` above (which tracks status-change/cancel actions)
   // so refreshing the list never shows a spinner on an unrelated row button.
   const [refreshing, startRefresh] = useTransition()
+  // M25 #3: separate again from both of the above — editing/removing an
+  // order line must not disable (or spinner) the booking's own action bar,
+  // and must NOT close the drawer the way act() does on success.
+  const [lineActionId, setLineActionId] = useState<string | null>(null)
+  const [linePending, startLine] = useTransition()
+  const confirm = useConfirm()
+
+  function editQty(itemId: string, newQty: number) {
+    setLineActionId(itemId)
+    startLine(async () => {
+      const r = await editOrderItemQuantity({ orderItemId: itemId, newQty })
+      setLineActionId(null)
+      if (r.error) toast.error(r.error)
+      else router.refresh()
+    })
+  }
+
+  async function removeLine(itemId: string, itemName: string) {
+    await confirm({
+      title: `Remove ${itemName}?`,
+      description: 'This line was never served or billed — it will be removed outright, not voided.',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        setLineActionId(itemId)
+        startLine(async () => {
+          const r = await removeOrderItem(itemId)
+          setLineActionId(null)
+          if (r.error) toast.error(r.error)
+          else router.refresh()
+        })
+      },
+    })
+  }
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -411,13 +455,15 @@ export function BookingsView({
               <Plus size={16} /> New booking
             </Link>
           )}
-          <button
-            onClick={() => setOrderDialog({})}
-            disabled={menuItems.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
-          >
-            <ShoppingBag size={16} /> Take order
-          </button>
+          {showFoodOrdering && (
+            <button
+              onClick={() => setOrderDialog({})}
+              disabled={menuItems.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70 disabled:opacity-50"
+            >
+              <ShoppingBag size={16} /> Take order
+            </button>
+          )}
         </div>
       </div>
 
@@ -814,6 +860,18 @@ export function BookingsView({
                   {paymentStates[selected.bookingId].invoiceNumber}
                 </Link>
               )}
+              {/* M25 #4: discoverability for the existing refund -> void ->
+                  re-raise correction, right from the booking a wrong bill
+                  was raised against — not a new capability, and the invoice
+                  page itself still hides Refund/Void for a non-manager. */}
+              {paymentStates[selected.bookingId] && (
+                <Link
+                  href={`/invoices/${paymentStates[selected.bookingId].invoiceId}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive"
+                >
+                  Wrong bill? Correct it
+                </Link>
+              )}
               {/* Only the statuses lib/billing/invoice.ts will actually bill.
                   The action re-checks — hiding a link is not authorization. */}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
@@ -830,6 +888,20 @@ export function BookingsView({
                   onClick={() => act('check_in', () => setBookingStatus(selected.bookingId, 'checked_in'))}
                   pending={pending}
                   loading={actingAction === 'check_in'}
+                />
+              )}
+              {/* M25 #1: reverts an accidental check-in. Hidden once a bill
+                  exists (paymentStates absence means no live invoice, same
+                  signal the receipt link above already uses) — the action
+                  re-checks server-side regardless, this just keeps staff
+                  from hitting that error needlessly. */}
+              {selected.status === 'checked_in' && !paymentStates[selected.bookingId] && (
+                <ActBtn
+                  label="Undo check-in"
+                  variant="muted"
+                  onClick={() => act('undo_check_in', () => undoCheckIn(selected.bookingId))}
+                  pending={pending}
+                  loading={actingAction === 'undo_check_in'}
                 />
               )}
               {/* No standalone "Complete" here: a booking now completes only as
@@ -859,6 +931,7 @@ export function BookingsView({
               </div>
             )}
 
+            {showFoodOrdering && (
             <div className="mt-4 border-t pt-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-muted-foreground">Food orders</h3>
@@ -937,6 +1010,48 @@ export function BookingsView({
                               <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
                                 {formatMoney(Number(it.unitPrice) * it.qty, currency)}
                               </span>
+                              {/* M25 #3: in-place quantity correction — every
+                                  industry, no manager gate (unlike the
+                                  void/comp button below, which stays
+                                  restaurant-only). editOrderItemQuantity/
+                                  removeOrderItem re-check server-side that
+                                  the order is still 'open' regardless of
+                                  this UI gate. */}
+                              {it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
+                                <span className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => editQty(it.itemId, it.qty - 1)}
+                                    title={it.qty <= 1 ? 'Remove (quantity would drop to 0)' : 'Decrease quantity'}
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Minus size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => editQty(it.itemId, it.qty + 1)}
+                                    title="Increase quantity"
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Plus size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={linePending && lineActionId === it.itemId}
+                                    onClick={() => removeLine(it.itemId, it.itemName)}
+                                    title="Remove this line"
+                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {linePending && lineActionId === it.itemId ? (
+                                      <Loader2 size={12} className="animate-spin" />
+                                    ) : (
+                                      <Trash2 size={12} />
+                                    )}
+                                  </button>
+                                </span>
+                              )}
                               {canRequestVoidComp && it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
                                 <button
                                   type="button"
@@ -956,6 +1071,7 @@ export function BookingsView({
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       )}

@@ -219,6 +219,38 @@ export const resources = pgTable(
   ],
 )
 
+// M24 #1 (0099): a per-SET named priced configuration (Kitchen, Royal, …),
+// child of the physical resource. Optional — a resource with no setups keeps
+// its base resourceTypes.hourlyRate. A booking still reserves the physical
+// resourceId, so bookingSlots' existing GiST exclusion (0003) blocks every
+// other setup on the same set for free — no new locking needed.
+export const resourceSetups = pgTable(
+  'resource_setups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    resourceId: uuid('resource_id')
+      .notNull()
+      .references(() => resources.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    rate: numeric('rate', { precision: 10, scale: 2 }).notNull(),
+    // 'hour' (default) or 'day' — day is the new M24 pricing axis: date-range
+    // x day rate, rather than duration x hourly rate.
+    rateUnit: text('rate_unit').notNull().default('hour'),
+    isActive: boolean('is_active').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('resource_setups_resource_name_key').on(t.resourceId, t.name),
+    index('idx_resource_setups_tenant').on(t.tenantId),
+    index('idx_resource_setups_resource').on(t.resourceId),
+  ],
+)
+
 export const workingHours = pgTable(
   'working_hours',
   {
@@ -368,6 +400,16 @@ export const bookingSlots = pgTable(
     // already-computed slot_total instead, same shape a walk-in's happy-hour
     // blend already uses.
     happyHourApplied: boolean('happy_hour_applied').notNull().default(false),
+    // M24 #1 (0099): the resource_setups row selected for this booking, if
+    // any — snapshot discipline, same as resourceName/resourceTypeName.
+    // Null for every base-rate (no-setup) booking. ON DELETE SET NULL:
+    // deleting a setup definition must not delete booking history.
+    setupId: uuid('setup_id').references(() => resourceSetups.id, { onDelete: 'set null' }),
+    setupName: text('setup_name'),
+    // 'hour' (default, every pre-existing row) or 'day' — frozen at booking
+    // time so a later edit to the setup can't reprice a booking already
+    // taken.
+    rateUnit: text('rate_unit').notNull().default('hour'),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),

@@ -21,6 +21,11 @@ export type WizardResource = {
    *  future-booking wizard's Players field. */
   pricingMode: string
   minPlayers: number
+  /** M24 #4: this unit's own active named setups, if any — empty for every
+   *  resource that hasn't had one defined (see components/settings/
+   *  ResourceSetupsModal.tsx), which keeps every existing tenant's wizard
+   *  behaviour unchanged. */
+  setups: { id: string; name: string; rate: string; rateUnit: 'hour' | 'day' }[]
 }
 
 /**

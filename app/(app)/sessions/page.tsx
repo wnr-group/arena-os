@@ -5,6 +5,7 @@ import { canManageWalkins } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listActiveWalkins } from '@/lib/booking/walkin'
+import { listBookingPaymentStates } from '@/lib/billing/data'
 import { SessionsBoard } from '@/components/sessions/SessionsBoard'
 
 /**
@@ -40,6 +41,10 @@ export default async function SessionsPage() {
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
   const activeWalkins = await listActiveWalkins(ctx, branch.id)
+  // M25 #2: same "absence means no live invoice" signal BookingsView's own
+  // paymentStates already uses — gates the Sessions board's "Reopen tab"
+  // action, which reopenWalkinCore refuses once a live bill exists anyway.
+  const paymentStates = await listBookingPaymentStates(ctx, activeWalkins.map((w) => w.bookingId))
 
   return (
     <SessionsBoard
@@ -62,6 +67,7 @@ export default async function SessionsPage() {
         headCount: w.headCount,
         minPlayers: w.minPlayers,
         warningMinutes: w.warningMinutes,
+        hasLiveBill: Boolean(paymentStates[w.bookingId]),
       }))}
     />
   )

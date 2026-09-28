@@ -4,12 +4,13 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resourceTypes, resources, workingHours, taxRates, businessProfiles } from '@/db/schema'
+import { resourceTypes, resources, resourceSetups, workingHours, taxRates, businessProfiles } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 
 type Result = { error?: string }
 
@@ -276,6 +277,104 @@ export async function deleteResource(id: string): Promise<Result> {
       return existing
     })
     if (row) void deleteImage(row.imageUrl)
+    revalidatePath('/settings/resources')
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── resource setups (M24 #3) ─────────────────────────────────────────────────
+const resourceSetupInput = z.object({
+  id: z.string().uuid().optional(),
+  resourceId: z.string().uuid(),
+  name: z.string().trim().min(1, 'Name is required'),
+  // Required and >= 0 — unlike hourlyRateOverride/weekendRate above (optional,
+  // blank means "no override" -> null), a setup's rate IS the setup, so a
+  // blank value must be REJECTED outright, not silently coerced to 0 the way
+  // z.coerce.number('') would (Number('') === 0). Same blank-vs-zero trap
+  // those optional fields guard against, opposite conclusion because this
+  // one isn't optional: preprocess blank to null (their exact discipline),
+  // then refine the null case away instead of accepting it.
+  rate: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.null(), z.coerce.number().min(0, 'Enter a rate of 0 or more.')]),
+    )
+    .refine((v): v is number => v !== null, { message: 'Rate is required.' }),
+  rateUnit: z.enum(['hour', 'day']).default('hour'),
+  isActive: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().default(0),
+})
+
+/**
+ * Add/edit a named setup on a physical resource (M24 #3) — Kitchen,
+ * Advertisement, Royal, etc. Setups are optional and share the resource's own
+ * calendar: booking ANY setup blocks the whole physical set for that window,
+ * for free, via the existing GiST exclusion on booking_slots (0003) keyed on
+ * resource_id — nothing here needs to know that, it's just why a setup has
+ * no time-window fields of its own.
+ */
+export async function upsertResourceSetup(input: z.input<typeof resourceSetupInput>): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    // M24: Setups is scoped to a handful of studio-type industries — gated
+    // here, not just by hiding the button in ResourcesManager, same
+    // "hiding a button is convenience, never a guard" discipline
+    // upsertResourceType's own per_head/restaurant gate above already
+    // follows. gaming_cafe (and every other non-studio industry) keeps its
+    // existing independent-unit resource model untouched.
+    if (!industryHasStudioSetups(ctx.tenant.industry)) {
+      throw new AuthError('Setups are not available for this type of business.')
+    }
+    const v = resourceSetupInput.parse(input)
+    await withUser(ctx.user.id, async (tx) => {
+      // The resource this setup attaches to must belong to THIS tenant —
+      // re-checked here, never trusted from the client, same discipline
+      // upsertResourceType's taxRateId re-check uses for its own foreign id.
+      const [resource] = await tx
+        .select({ id: resources.id })
+        .from(resources)
+        .where(and(eq(resources.id, v.resourceId), eq(resources.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!resource) throw new AuthError('Resource not found.')
+
+      const values = {
+        tenantId: ctx.tenant.id,
+        resourceId: v.resourceId,
+        name: v.name,
+        rate: v.rate.toFixed(2),
+        rateUnit: v.rateUnit,
+        isActive: v.isActive,
+        sortOrder: v.sortOrder,
+      }
+      if (v.id) {
+        await tx
+          .update(resourceSetups)
+          .set(values)
+          .where(and(eq(resourceSetups.id, v.id), eq(resourceSetups.tenantId, ctx.tenant.id)))
+      } else {
+        await tx.insert(resourceSetups).values(values)
+      }
+    })
+    revalidatePath('/settings/resources')
+    // A setup feeds straight into the New Booking wizard's setup picker
+    // (M24 #4) — same reasoning upsertResource/upsertResourceType already
+    // apply to their own rate/status changes.
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function deleteResourceSetup(id: string): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await withUser(ctx.user.id, (tx) =>
+      tx.delete(resourceSetups).where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id))),
+    )
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
