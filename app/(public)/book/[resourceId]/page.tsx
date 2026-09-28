@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation'
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
-import { getPublicBranch, getPublicResource } from '@/lib/booking/public-availability'
+import { getPublicBranch, getPublicResource, getPublicResourceSetups } from '@/lib/booking/public-availability'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { todayInZone } from '@/lib/booking/time'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
@@ -51,6 +52,15 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
   const resource = await getPublicResource(tenant.id, resourceId)
   if (!resource) notFound()
 
+  // M24 #5: Setups only exists for a handful of studio-type industries (see
+  // lib/booking/studio-setups.ts) — gaming_cafe/restaurant/other keep their
+  // existing booking page byte-identical, so skip the query entirely rather
+  // than fetch data no resource of theirs could ever have
+  // (upsertResourceSetup gates creation the same way, lib/actions/resources.ts).
+  const setups = industryHasStudioSetups(tenant.industry)
+    ? await getPublicResourceSetups(tenant.id, resource.id)
+    : []
+
   const branch = await getPublicBranch(tenant.id)
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
@@ -78,6 +88,7 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
           <ResourceBookingPage
             tenant={tenant}
             resource={resource}
+            setups={setups}
             today={todayInZone(tenant.timezone)}
             razorpayConfigured={razorpayCredentials !== null}
           />

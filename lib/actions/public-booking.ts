@@ -5,11 +5,17 @@ import { headers } from 'next/headers'
 import { z } from 'zod'
 import { withPublicTenant } from '@/db'
 import { resolvePublicTenant } from '@/lib/tenant/public'
-import { getPublicBranch, getPublicAvailableStartsForType, getPublicAvailableStarts } from '@/lib/booking/public-availability'
+import {
+  getPublicBranch,
+  getPublicAvailableStartsForType,
+  getPublicAvailableStarts,
+  getPublicDayRangeWindow,
+} from '@/lib/booking/public-availability'
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
 import { round2 } from '@/lib/billing/pricing'
+import { pgError } from '@/lib/utils/errors'
 import {
   createBookingPaymentIntent as createBookingPaymentIntentCore,
   createBookingPaymentIntentInputSchema,
@@ -133,10 +139,55 @@ export async function getPublicResourceAvailability(
   }
 }
 
+const dayRangeInput = z.object({
+  resourceId: z.string().uuid(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+})
+
+export type PublicDayRangeResult = { error?: string; startsAt?: string; endsAt?: string; conflict?: boolean }
+
+/**
+ * M24 #5: the public mirror of the staff getDayRangeWindow
+ * (lib/actions/availability.ts, M24 #4) — resolves a customer-picked
+ * calendar-date range for a per-day setup into the exact "D1 open -> Dn
+ * close" instants priceBookingSlots already prices against, plus a soft
+ * conflict pre-check. Shares the same `avail:` rate-limit budget as
+ * getPublicAvailability/getPublicResourceAvailability above — same kind of
+ * read, and the page only ever needs one family per session.
+ */
+export async function getPublicBookingDayRange(raw: z.input<typeof dayRangeInput>): Promise<PublicDayRangeResult> {
+  if (!rateLimit(`avail:${await callerIp()}`, 40, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return tenant
+
+  const v = dayRangeInput.safeParse(raw)
+  if (!v.success) return { error: 'Invalid request.' }
+
+  const branch = await getPublicBranch(tenant.id)
+  if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
+
+  const result = await getPublicDayRangeWindow(
+    tenant.id,
+    branch.id,
+    v.data.resourceId,
+    tenant.timezone,
+    v.data.startDate,
+    v.data.endDate,
+  )
+  if ('error' in result) return result
+  return result
+}
+
 const quoteInput = z.object({
   resourceId: z.string().uuid(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
+  // M24 #5: an optional named setup for this resource — priceBookingSlots
+  // re-validates it belongs to this resource/tenant and is active, same as
+  // the staff quoteBooking (lib/actions/bookings.ts, M24 #2/#4).
+  setupId: z.string().uuid().optional(),
 })
 
 export type PublicBookingQuoteResult = { error?: string; total?: number }
@@ -179,7 +230,7 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
       const headCount = await resolvePublicHeadCount(tx, tenant.id, [v.data.resourceId])
       return priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
         branchId: branch.id,
-        slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt }],
+        slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt, setupId: v.data.setupId }],
         headCount,
       })
     })
@@ -238,6 +289,10 @@ const bookingInput = z.object({
    *  Only ever charges the booking's OWN total, re-priced server-side below —
    *  never a figure trusted from the client. */
   payNow: z.boolean().optional(),
+  // M24 #5: an optional named setup for this resource, re-validated
+  // server-side (resource/tenant/active) by priceBookingSlots below, same
+  // as quoteInput's setupId above — never trusted further than that.
+  setupId: z.string().uuid().optional(),
   /** Honeypot: a real visitor never sees or fills this field (it's rendered
    * off-screen and excluded from the tab order — see HoneypotField). A
    * non-empty value means whatever submitted the form filled in every input
@@ -316,7 +371,7 @@ export async function createPublicBooking(
       return { error: 'Enter your name.' }
     }
 
-    const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt }]
+    const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }]
 
     // M21 per-head #5: honor the player count the customer entered online for a
     // per_head resource, so the price AND the deposit reflect the real party
@@ -383,7 +438,14 @@ export async function createPublicBooking(
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
     // 23P01 = exclusion_violation: someone else took this slot first.
-    if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === '23P01') {
+    // Drizzle wraps the real driver error (and its SQLSTATE) several levels
+    // deep in `.cause` — a shallow `'code' in e` check never actually
+    // matches a genuine constraint violation, silently falling through to
+    // the raw "Failed query: insert into ..." message below instead. Use
+    // the same pgError() unwrapping the staff bookings action already
+    // relies on (lib/actions/bookings.ts's fail()) rather than duplicating
+    // (and under-testing) a second, shallower copy of this check.
+    if (pgError(e).code === '23P01') {
       return { error: 'That time was just taken. Please pick another slot.' }
     }
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }
