@@ -1,10 +1,11 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   resourceTypes,
   resources,
   resourceSetups,
+  holidayRates,
   workingHours,
   bookings,
   bookingSlots,
@@ -103,6 +104,27 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
   )
 }
 
+/**
+ * A tenant's holiday_rates (M27 #1/#3) — every configured (resourceTypeId,
+ * date, rate) entry, tenant-wide (resource types aren't branch-scoped, same
+ * as listResourceTypes above). For the resource-types settings page's
+ * per-type "Holiday rates" editor, grouped by resourceTypeId on the client.
+ */
+export function listHolidayRates(ctx: ActiveContext) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: holidayRates.id,
+        resourceTypeId: holidayRates.resourceTypeId,
+        date: holidayRates.date,
+        rate: holidayRates.rate,
+      })
+      .from(holidayRates)
+      .where(eq(holidayRates.tenantId, ctx.tenant.id))
+      .orderBy(asc(holidayRates.date)),
+  )
+}
+
 export function getWorkingHours(ctx: ActiveContext, branchId: string) {
   return withUser(ctx.user.id, (tx) =>
     tx
@@ -195,12 +217,12 @@ export function listTables(ctx: ActiveContext, branchId: string) {
  * cancelled/no-show slots out of the resource bars, while the Bookings table
  * keeps every status.
  */
-export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
+export async function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: string, tz: string) {
   const dayStart = zonedTimeToUtc(dateStr, '00:00', tz)
   const dayEnd = zonedTimeToUtc(addDays(dateStr, 1), '00:00', tz)
 
-  return withUser(ctx.user.id, (tx) =>
-    tx
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
       .select({
         slotId: bookingSlots.id,
         resourceId: bookingSlots.resourceId,
@@ -217,6 +239,12 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         total: bookings.total,
         deposit: bookings.deposit,
         cancellationReason: bookings.cancellationReason,
+        // M26 #5: cash collected before this booking existed (M26 #1/#4) —
+        // '0.00' for every non-gaming_cafe tenant (server-refused at
+        // creation) and every booking with nothing collected upfront. Lets
+        // BookingsView show a live "Part paid" indicator, before any bill
+        // exists, once sum(active slot_total) outgrows it.
+        advancePaid: bookings.advancePaid,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
@@ -232,6 +260,41 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
           or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, dayStart)),
         ),
       )
-      .orderBy(asc(bookingSlots.startsAt)),
-  )
+      .orderBy(asc(bookingSlots.startsAt))
+
+    // M26 #5 follow-up (CodeRabbit review): a booking's slots aren't
+    // necessarily confined to one calendar day — createBookingCore only
+    // rejects overlaps on the SAME resource, so a multi-resource booking can
+    // legitimately have active slots on different days. Summing slotTotal
+    // off the day-scoped rows above (what BookingsView used to do) would
+    // then under-count a booking's true known total for any day that isn't
+    // the "biggest" one, disagreeing with unbilledAdvanceCheck's own
+    // booking-wide sum (lib/booking/service.ts) and showing a live "Part
+    // paid" gap that's wrong. Batch-loaded here — one extra query for the
+    // whole call, not one per booking, same transaction — and merged onto
+    // every row of that booking, same "true total repeated on every row"
+    // shape advancePaid/total/deposit above already use.
+    const bookingIds = [...new Set(rows.map((r) => r.bookingId))]
+    const totalRows =
+      bookingIds.length > 0
+        ? await tx
+            .select({
+              bookingId: bookingSlots.bookingId,
+              total: sql<string>`coalesce(sum(${bookingSlots.slotTotal}) filter (where ${bookingSlots.active}), 0)::text`,
+            })
+            .from(bookingSlots)
+            .where(and(eq(bookingSlots.tenantId, ctx.tenant.id), inArray(bookingSlots.bookingId, bookingIds)))
+            .groupBy(bookingSlots.bookingId)
+        : []
+    const totalByBooking = new Map(totalRows.map((t) => [t.bookingId, t.total]))
+
+    return rows.map((r) => ({
+      ...r,
+      // M26 #5: the booking's TRUE known total — sum of slot_total across
+      // EVERY active slot of this booking, tenant-wide, not just the ones
+      // overlapping the viewed day. This is what BookingsView's advance-gap
+      // check must use instead of summing slotTotal itself.
+      bookingActiveSlotTotal: totalByBooking.get(r.bookingId) ?? '0.00',
+    }))
+  })
 }

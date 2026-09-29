@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { branches, resourceTypes, resources, resourceSetups, workingHours, bookingSlots } from '@/db/schema'
+import { branches, resourceTypes, resources, resourceSetups, holidayRates, workingHours, bookingSlots } from '@/db/schema'
 import { availableStartTimes, dayWindow, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
 import { resolveDayRate } from './rate'
@@ -193,6 +193,7 @@ export async function getPublicAvailableStarts(
         weekdayRate: resources.hourlyRateOverride,
         typeRate: resourceTypes.hourlyRate,
         typeWeekendRate: resourceTypes.weekendRate,
+        resourceTypeId: resources.resourceTypeId,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -231,11 +232,24 @@ export async function getPublicAvailableStarts(
     // pre-selection duration list, and never once a slot is chosen (they show
     // a loading/error state instead of this figure rather than risk it being
     // stale for the midnight-crossing edge case).
+    // M27 #2: a holiday rate wins over this whole weekend/weekday estimate —
+    // looked up directly against `date` (already the plain calendar date
+    // this estimate is FOR, no anchor-instant needed here unlike weekendDays
+    // below). Same precedence priceBookingSlots gives it at booking time, so
+    // this pre-selection estimate can't disagree with what createPublicBooking
+    // (via getPublicBookingQuote → priceBookingSlots) actually charges once a
+    // holiday date is picked.
+    const [holiday] = await tx
+      .select({ rate: holidayRates.rate })
+      .from(holidayRates)
+      .where(and(eq(holidayRates.tenantId, tenantId), eq(holidayRates.resourceTypeId, res.resourceTypeId), eq(holidayRates.date, date)))
+      .limit(1)
+
     const weekendDays = await loadWeekendDays(tx, tenantId)
     const anchor = zonedTimeToUtc(date, '12:00', timeZone)
     const weekdayRate = Number(res.weekdayRate ?? res.typeRate)
     const weekendRate = res.typeWeekendRate === null ? null : Number(res.typeWeekendRate)
-    const rate = resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
+    const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
 
     const dow = weekdayInZone(date, timeZone)
     const [hours] = await tx
@@ -488,11 +502,21 @@ export async function getPublicAvailableStartsForType(
     // and why callers must never treat this as the final price once a slot
     // is chosen (getPublicBookingQuote resolves that by the slot's own
     // actual start).
+    // M27 #2: a holiday rate wins over this whole weekend/weekday estimate —
+    // same precedence/reasoning as getPublicAvailableStarts' own holiday
+    // lookup above. resourceTypeId is this function's own input here, no
+    // extra column needed on resourceRows.
+    const [holiday] = await tx
+      .select({ rate: holidayRates.rate })
+      .from(holidayRates)
+      .where(and(eq(holidayRates.tenantId, tenantId), eq(holidayRates.resourceTypeId, resourceTypeId), eq(holidayRates.date, date)))
+      .limit(1)
+
     const weekendDays = await loadWeekendDays(tx, tenantId)
     const anchor = zonedTimeToUtc(date, '12:00', timeZone)
     const weekdayRate = Number(resourceRows[0].typeRate)
     const weekendRate = resourceRows[0].typeWeekendRate === null ? null : Number(resourceRows[0].typeWeekendRate)
-    const rate = resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
+    const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, timeZone, weekendDays)
 
     const dow = weekdayInZone(date, timeZone)
     const [hours] = await tx

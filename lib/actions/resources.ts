@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resourceTypes, resources, resourceSetups, workingHours, taxRates, businessProfiles } from '@/db/schema'
+import { resourceTypes, resources, resourceSetups, holidayRates, workingHours, taxRates, businessProfiles } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
@@ -20,7 +20,12 @@ function fail(e: unknown): Result {
   if (e instanceof EntitlementError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const { code, constraint } = pgError(e)
-  if (code === '23505') return { error: 'That name is already in use.' }
+  if (code === '23505') {
+    if (constraint === 'holiday_rates_resource_type_id_date_key') {
+      return { error: 'This resource type already has a holiday rate set for that date.' }
+    }
+    return { error: 'That name is already in use.' }
+  }
   // 23503 = foreign_key_violation (default NO ACTION); 23001 = restrict_violation
   // (explicit ON DELETE RESTRICT, which is what these FKs use) — both mean
   // "still referenced elsewhere."
@@ -374,6 +379,99 @@ export async function deleteResourceSetup(id: string): Promise<Result> {
     const ctx = await requireManager()
     await withUser(ctx.user.id, (tx) =>
       tx.delete(resourceSetups).where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id))),
+    )
+    revalidatePath('/settings/resources')
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── holiday rates (M27 #3) ────────────────────────────────────────────────────
+const holidayRateInput = z.object({
+  id: z.string().uuid().optional(),
+  resourceTypeId: z.string().uuid(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Pick a date.'),
+  // Required and >= 0 — same blank-must-reject discipline resourceSetupInput's
+  // rate uses above: a holiday rate IS the whole point of the entry, so a
+  // blank value must be REJECTED outright, not silently coerced to 0.
+  rate: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.null(), z.coerce.number().min(0, 'Enter a rate of 0 or more.')]),
+    )
+    .refine((v): v is number => v !== null, { message: 'Rate is required.' }),
+})
+
+/**
+ * Add/edit a resource type's fixed rate for one calendar date (M27 #3) — a
+ * public holiday, a festival, a one-off event. Not industry-gated, same as
+ * weekend pricing: this is a sibling pricing axis on resourceTypes, visible
+ * for every tenant.
+ */
+export async function upsertHolidayRate(input: z.input<typeof holidayRateInput>): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    const v = holidayRateInput.parse(input)
+    await withUser(ctx.user.id, async (tx) => {
+      // The resource type must belong to THIS tenant — re-checked here,
+      // never trusted from the client, same discipline upsertResourceSetup
+      // above uses for its own resourceId.
+      const [type] = await tx
+        .select({ id: resourceTypes.id })
+        .from(resourceTypes)
+        .where(and(eq(resourceTypes.id, v.resourceTypeId), eq(resourceTypes.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!type) throw new AuthError('Resource type not found.')
+
+      if (v.id) {
+        // Editing a specific existing row. If the (possibly re-picked) date
+        // now collides with a DIFFERENT row for this type, that is a genuine
+        // ambiguity — surfaced as the friendly 23505 message in fail() above,
+        // not silently merged into the other row.
+        //
+        // CodeRabbit review: the tenant-scoped WHERE can legitimately match
+        // ZERO rows — the id belongs to another tenant, or the row was
+        // deleted between the owner opening the edit form and saving it.
+        // Without checking, this silently no-ops while the modal still
+        // shows "Holiday rate updated." — a false success. .returning()
+        // makes the zero-row case observable so it can fail loudly instead.
+        const updated = await tx
+          .update(holidayRates)
+          .set({ resourceTypeId: v.resourceTypeId, date: v.date, rate: v.rate.toFixed(2) })
+          .where(and(eq(holidayRates.id, v.id), eq(holidayRates.tenantId, ctx.tenant.id)))
+          .returning({ id: holidayRates.id })
+        if (updated.length === 0) throw new AuthError('Holiday rate not found.')
+      } else {
+        // Adding — the calendar-picker flow: the owner picks a type + date
+        // and the UI pre-fills the existing rate if one is already set for
+        // it (HolidayRatesModal), so re-saving an already-configured date is
+        // the ordinary "update it" case, not an error — a clean upsert in
+        // place, never a raw unique-constraint violation surfaced to the
+        // owner for what is, from their side, just editing a value.
+        await tx
+          .insert(holidayRates)
+          .values({ tenantId: ctx.tenant.id, resourceTypeId: v.resourceTypeId, date: v.date, rate: v.rate.toFixed(2) })
+          .onConflictDoUpdate({
+            target: [holidayRates.resourceTypeId, holidayRates.date],
+            set: { rate: v.rate.toFixed(2) },
+          })
+      }
+    })
+    revalidatePath('/settings/resources')
+    revalidatePath('/bookings')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function deleteHolidayRate(id: string): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await withUser(ctx.user.id, (tx) =>
+      tx.delete(holidayRates).where(and(eq(holidayRates.id, id), eq(holidayRates.tenantId, ctx.tenant.id))),
     )
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')

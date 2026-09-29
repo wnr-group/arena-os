@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Loader2, ReceiptText, Split } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ExternalLink, Loader2, ReceiptText, Split } from 'lucide-react'
 import { createInvoiceForBooking, previewPromoCodeForBooking, updateBookingHeadCount } from '@/lib/actions/billing'
 import {
   computeServiceCharge,
@@ -52,6 +52,18 @@ export type SplitCheckView = {
 
 const input =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring'
+/** Same three-state colour language as BookingsView's PAYMENT_BADGE, so
+ *  "paid / part paid / unpaid" reads identically everywhere in the app. */
+const INVOICE_STATE_BADGE: Record<string, string> = {
+  paid: 'bg-emerald-600 text-white',
+  partially_paid: 'bg-amber-500 text-white',
+  issued: 'bg-rose-600 text-white',
+}
+const INVOICE_STATE_LABEL: Record<string, string> = {
+  paid: 'Paid',
+  partially_paid: 'Part paid',
+  issued: 'Unpaid',
+}
 const KIND_LABEL: Record<string, string> = {
   booking: 'Booking',
   food: 'Food',
@@ -313,6 +325,21 @@ export function BillScreen({
   /** Format a rupee amount for display in the tenant's own currency. */
   const money = (n: number) => formatMoney(n, currency)
 
+  // Same "settled" definition PaymentPanel's own badge uses (balance <= 0 OR
+  // a comped ₹0 bill's status already says 'paid') — so the invoice banner
+  // below and the payment panel beneath it can never disagree about whether
+  // this bill is done. Same three-state colour language as the Payment
+  // column on the Bookings table (BookingsView's PAYMENT_BADGE), so staff
+  // read the same "paid / part paid / unpaid" vocabulary everywhere.
+  const invoiceSettled = existingInvoice
+    ? (settlement?.balance ?? 0) <= 0 || settlement?.status === 'paid' || existingInvoice.status === 'paid'
+    : false
+  const invoiceState: 'paid' | 'partially_paid' | 'issued' = invoiceSettled
+    ? 'paid'
+    : (settlement?.paid ?? 0) > 0
+      ? 'partially_paid'
+      : 'issued'
+
   // The by-item split picker's source list — same gross per-item value the
   // split math itself reads (priceBill's items are priced BEFORE any
   // discount, so this is identical regardless of what's typed above).
@@ -467,30 +494,20 @@ export function BillScreen({
       )}
 
       {/* ── blocking states ── */}
+      {/* M25 #4: this is exactly where staff land after clicking "Bill" on a
+       *  booking that turns out to already be billed — the most likely
+       *  moment someone realises the bill was wrong, so the fix is named
+       *  right here instead of only living on the invoice page itself.
+       *  Void/refund stay manager-only regardless — this is wording, not a
+       *  new capability. */}
       {existingInvoice && (
-        <Notice tone="info">
-          Billed as <span className="font-medium">{existingInvoice.invoiceNumber}</span>. The
-          pricing is frozen — settle the balance in the payment panel.{' '}
-          <Link href={`/invoices/${existingInvoice.id}`} className="font-medium underline">
-            View GST invoice
-          </Link>
-          {/* M25 #4: this is exactly where staff land after clicking "Bill"
-           *  on a booking that turns out to already be billed — the most
-           *  likely moment someone realises the bill was wrong, so the fix
-           *  is named right here instead of only living on the invoice page
-           *  itself. Void/refund stay manager-only regardless — this is
-           *  wording, not a new capability. */}
-          {isManager && (
-            <>
-              {' '}
-              Wrong bill?{' '}
-              <Link href={`/invoices/${existingInvoice.id}`} className="font-medium underline">
-                Refund any payment, then void it
-              </Link>{' '}
-              to raise a corrected one.
-            </>
-          )}
-        </Notice>
+        <InvoiceBanner
+          invoice={existingInvoice}
+          state={invoiceState}
+          balance={settlement?.balance ?? 0}
+          money={money}
+          isManager={isManager}
+        />
       )}
       {splitChecks && (
         <Notice tone="info">
@@ -984,4 +1001,77 @@ function Notice({ tone, children }: { tone: 'warn' | 'error' | 'info'; children:
         ? 'border-border bg-muted/50 text-muted-foreground'
         : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
   return <p className={`mt-4 rounded-md border px-3 py-2 text-sm ${cls}`}>{children}</p>
+}
+
+/**
+ * The "this booking is already billed" banner — replaces the discount/promo
+ * form the moment an invoice exists, same gate as the payment panel below it
+ * (`existingInvoice` truthy). Was a single wall-of-text paragraph; split into
+ * a clear primary read (invoice number, live paid/part-paid/unpaid state,
+ * balance still due) and a visually separate, manager-only correction path,
+ * so "raise a corrected bill" doesn't compete for attention with the normal
+ * settle-the-balance flow that's true for every cashier on every ordinary
+ * bill.
+ */
+function InvoiceBanner({
+  invoice,
+  state,
+  balance,
+  money,
+  isManager,
+}: {
+  invoice: { id: string; invoiceNumber: string }
+  state: 'paid' | 'partially_paid' | 'issued'
+  balance: number
+  money: (n: number) => string
+  isManager: boolean
+}) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-border/70 bg-gradient-to-br from-accent/50 via-accent/10 to-transparent shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <ReceiptText size={18} />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-sm font-semibold tracking-tight">
+                {invoice.invoiceNumber}
+              </span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${INVOICE_STATE_BADGE[state]}`}
+              >
+                {INVOICE_STATE_LABEL[state]}
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Pricing is frozen at issue.{' '}
+              {state === 'paid' ? 'Nothing left to collect.' : `${money(balance)} due — settle below.`}
+            </p>
+          </div>
+        </div>
+        <Link
+          href={`/invoices/${invoice.id}`}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium shadow-sm transition hover:border-primary/40 hover:bg-accent hover:text-accent-foreground"
+        >
+          View GST invoice <ExternalLink size={12} />
+        </Link>
+      </div>
+      {isManager && (
+        <div className="flex items-start gap-2 border-t border-border/60 bg-background/50 px-4 py-2.5">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <p className="text-xs text-muted-foreground">
+            Wrong bill?{' '}
+            <Link
+              href={`/invoices/${invoice.id}`}
+              className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            >
+              Refund any payment, then void it
+            </Link>{' '}
+            to raise a corrected one.
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }

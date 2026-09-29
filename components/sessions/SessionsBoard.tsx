@@ -37,6 +37,11 @@ export type SessionRow = {
    *  "Reopen tab" action, which reopenWalkinCore refuses server-side
    *  anyway; this just keeps staff from hitting that error needlessly. */
   hasLiveBill: boolean
+  /** M26 #5: cash collected before this walk-in started (M26 #1/#4) —
+   *  '0.00' for every non-gaming_cafe tenant and every walk-in with nothing
+   *  collected upfront, which keeps the live "Partially paid" indicator
+   *  below a no-op for both. */
+  advancePaid: string
 }
 
 /** Heads-up fires once per session `warningMinutes` out from its committed
@@ -385,6 +390,26 @@ function SessionCard({
           {runningTotal === null ? '—' : formatMoney(runningTotal, currency)}
         </span>
       </div>
+
+      {/* M26 #5: live, pre-bill "Partially paid" signal — a gaming-cafe
+          walk-in whose running estimate (the same previewWalkinCheckout call
+          above, never a client-side approximation) has outgrown the cash
+          collected upfront. Only while still active and unbilled: hasLiveBill
+          means the real ledger-driven badge exists elsewhere (BookingsView)
+          and this must defer to it rather than show a second, possibly
+          disagreeing signal. advancePaid is 0 for every non-gaming_cafe
+          tenant (server-refused at walk-in start), so this is already a
+          no-op there. */}
+      {!checkedOut && !s.hasLiveBill && Number(s.advancePaid) > 0 && runningTotal !== null && runningTotal > Number(s.advancePaid) && (
+        <div className="mt-2 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-1.5">
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500 px-2 py-0.5 text-[11px] font-semibold text-white">
+            Partially paid
+          </span>
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            {formatMoney(runningTotal - Number(s.advancePaid), currency)} more than collected
+          </span>
+        </div>
+      )}
 
       {checkedOut ? (
         <div className="mt-3 flex items-center gap-2">

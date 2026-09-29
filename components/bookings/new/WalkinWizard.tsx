@@ -116,10 +116,14 @@ export function WalkinWizard({
   branchId,
   timeZone,
   currency,
+  advancePaymentEnabled,
 }: {
   branchId: string
   timeZone: string
   currency: string
+  /** M26 #4: "amount collected now" — gaming_cafe only. startWalkinCore
+   *  re-checks the tenant's industry itself regardless of this prop. */
+  advancePaymentEnabled: boolean
 }) {
   const router = useRouter()
   const [step, setStep] = useState(0)
@@ -175,6 +179,12 @@ export function WalkinWizard({
   // type's min_players, reset whenever a different station is picked. No
   // max cap, per the design doc.
   const [headCount, setHeadCount] = useState(1)
+
+  // M26 #4: "amount collected now" — gaming_cafe only (see
+  // advancePaymentEnabled above). Plain string state so the field can sit
+  // empty rather than default to a misleading "0"; blank means "nothing
+  // collected upfront," same as never having typed anything.
+  const [advancePaid, setAdvancePaid] = useState('')
 
   // Same phone-first lookup as the old dialog — name stays optional either
   // way, so this only ever pre-fills it, never gates the form.
@@ -317,6 +327,7 @@ export function WalkinWizard({
         mode,
         durationMin: mode === 'timed' ? durationMin : undefined,
         headCount: isPerHead ? headCount : undefined,
+        advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
       })
       if (r.error) {
         setError(r.error)
@@ -552,12 +563,38 @@ export function WalkinWizard({
                 </div>
               )}
 
+              {advancePaymentEnabled && (
+                <div>
+                  <label htmlFor="walkin-advance-paid" className={wizardLabel}>
+                    Amount collected now (optional)
+                  </label>
+                  <input
+                    id="walkin-advance-paid"
+                    className={`${wizardInput} mt-1`}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={advancePaid}
+                    onChange={(e) => setAdvancePaid(e.target.value)}
+                  />
+                  <p className={wizardHint}>
+                    Cash already taken at the counter before this session started. Leave blank if nothing was
+                    collected upfront.
+                  </p>
+                </div>
+              )}
+
               <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm">
                 <dl className="space-y-1.5">
                   <SummaryRow k="Station" v={selectedResource?.name ?? '—'} />
                   <SummaryRow k="Customer" v={name.trim() || phone} />
                   <SummaryRow k="Billing" v={mode === 'open_tab' ? 'Open tab' : `Timed · ${durationMin} min`} />
                   {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
+                  {advancePaymentEnabled && Number(advancePaid) > 0 && (
+                    <SummaryRow k="Collected now" v={formatMoney(Number(advancePaid), currency)} />
+                  )}
                   <SummaryRow
                     k={mode === 'timed' ? 'Estimated total' : 'Rate'}
                     v={

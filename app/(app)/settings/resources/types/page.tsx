@@ -1,24 +1,34 @@
 import { redirect } from 'next/navigation'
 import { getActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
-import { listResourceTypes } from '@/lib/booking/data'
+import { listResourceTypes, listHolidayRates } from '@/lib/booking/data'
 import { listTaxRates } from '@/lib/tax-rates/data'
 import { findScopeDefaultTaxRate } from '@/lib/tax-rates/resolve'
 import { getBusinessProfile } from '@/lib/settings/business'
 import { DEFAULT_WEEKEND_DAYS } from '@/lib/settings/business-profile'
 import { ResourceTypesManager } from '@/components/settings/ResourceTypesManager'
 import { WeekendDaysForm } from '@/components/settings/WeekendDaysForm'
+import type { HolidayRateRow } from '@/components/settings/HolidayRatesModal'
 
 export default async function ResourceTypesPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
   if (!isManager(ctx.role)) redirect('/dashboard')
 
-  const [types, taxRates, businessProfile] = await Promise.all([
+  const [types, taxRates, businessProfile, holidayRates] = await Promise.all([
     listResourceTypes(ctx),
     listTaxRates(ctx),
     getBusinessProfile(ctx),
+    listHolidayRates(ctx),
   ])
+
+  // M27 #3: group by resourceTypeId for ResourceTypesManager's per-type
+  // Holiday rates editor — same "group server-side, one editor per type"
+  // shape listResourceSetups' own caller (units/page.tsx) already uses.
+  const ratesByType: Record<string, HolidayRateRow[]> = {}
+  for (const r of holidayRates) {
+    ;(ratesByType[r.resourceTypeId] ??= []).push({ id: r.id, resourceTypeId: r.resourceTypeId, date: r.date, rate: r.rate })
+  }
   // The rate a type with no tax_rate_id of its own actually gets charged at
   // (lib/tax-rates/resolve.ts) — shown so "—" never means "not taxed" when
   // it's really "taxed via the tenant's one resources rate."
@@ -66,6 +76,7 @@ export default async function ResourceTypesPage() {
           minPlayers: t.minPlayers,
           isActive: t.isActive,
         }))}
+        ratesByType={ratesByType}
       />
     </div>
   )

@@ -24,6 +24,7 @@ import {
   backfillDepositOrderIds,
   type DepositCarryResult,
 } from '@/lib/payments/deposit-settlement'
+import { applyAdvancePaymentToInvoice, type AppliedAdvance } from '@/lib/payments/advance-settlement'
 import { cancelPendingOrdersForBilledBooking } from '@/lib/orders/service'
 import { loadInvoicePrefix, loadServiceChargeConfig } from '@/lib/settings/business-profile'
 import { resolveMembershipBenefit, type AppliedMembershipBenefit } from './membership-benefit'
@@ -685,6 +686,13 @@ export type IssuedInvoice = {
    * silently dropped.
    */
   deposits: DepositCarryResult
+  /**
+   * A gaming-cafe cash advance carried onto this invoice as a captured
+   * payment when it was raised (M26 #2). Null when the tenant isn't
+   * gaming_cafe, the booking had nothing collected upfront, or its advance
+   * was already applied on an earlier bill for this booking.
+   */
+  advance: AppliedAdvance | null
 }
 
 /** What prepareBookingBill hands both issueInvoiceForBooking and
@@ -1164,7 +1172,13 @@ export async function issueInvoiceForBooking(
     await backfillDepositOrderIds(tx, tenant.id, invoice.id)
   }
 
-  return { invoiceId: invoice.id, invoiceNumber, pricing, membership, loyalty, deposits }
+  // ── 9. fold in any cash advance collected before this booking existed ────
+  // M26 #2 — gaming_cafe only (re-checked inside, not trusted from here).
+  // Same transaction as the invoice above: a bill can never be raised
+  // showing an advance that was not actually recorded, or the reverse.
+  const advance = await applyAdvancePaymentToInvoice(tx, tenant.id, booking.id, invoice.id)
+
+  return { invoiceId: invoice.id, invoiceNumber, pricing, membership, loyalty, deposits, advance }
 }
 
 /**
@@ -1275,6 +1289,7 @@ export async function issueMembershipInvoice(
     membership: null,
     loyalty: null,
     deposits: { applied: [], unapplied: [] },
+    advance: null,
   }
 }
 
@@ -1365,6 +1380,7 @@ export async function issueWalletTopUpInvoice(
     membership: null,
     loyalty: null,
     deposits: { applied: [], unapplied: [] },
+    advance: null,
   }
 }
 

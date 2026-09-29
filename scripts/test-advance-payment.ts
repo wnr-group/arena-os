@@ -1,0 +1,277 @@
+/**
+ * M26 #2 — folding a gaming-cafe cash advance into the invoice ledger at
+ * billing time (applyAdvancePaymentToInvoice, called from
+ * issueInvoiceForBooking).
+ *
+ * Drives issueInvoiceForBooking exactly as the cashier's "raise bill" action
+ * does, on bookings with bookings.advance_paid set directly (M26 #1 — no
+ * staff UI writes this column yet), and reads the result back through
+ * listBookingPaymentStates() with ZERO changes to that function, proving the
+ * ticket's own claim: once the advance is a real payments row, the existing
+ * badge logic just works.
+ *
+ * Covers:
+ *   - an advance smaller than the total → "Part paid", capped correctly
+ *   - an advance that exactly covers the total → "Paid", booking auto-completes
+ *   - an advance LARGER than the total → capped at the total, no excess tracked
+ *   - advance_applied guards against ever applying the same cash twice
+ *   - advance_paid = 0 is a true no-op — no payment row, advance_applied stays false
+ *   - a non-gaming_cafe tenant (e.g. restaurant) is a no-op even with advance_paid > 0
+ *   - a ₹0 (fully comped) bill flips advance_applied without inserting a ₹0 payment
+ *   - the audit_log row lands in the SAME transaction as the invoice
+ *
+ *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-payment.ts
+ *
+ * (Both hooks: issueInvoiceForBooking's completeBookingIfFullySettled call
+ * reaches revalidatePath()/cookies() indirectly through lib/booking/service.ts
+ * in some paths — same rule as every other M16/M21 both-hooks suite.)
+ */
+import type { ActiveContext } from '../lib/tenant/context'
+import { loadEnv } from './env'
+
+let pass = 0,
+  fail = 0
+const check = (l: string, c: boolean) => {
+  console.log(`${c ? '✓' : '✗ FAIL'}  ${l}`)
+  if (c) pass++
+  else fail++
+}
+
+const TZ = 'Asia/Kolkata'
+
+async function main() {
+  loadEnv()
+  const { Pool } = await import('pg')
+  const { listBookingPaymentStates } = await import('../lib/billing/data')
+  const { issueInvoiceForBooking } = await import('../lib/billing/invoice')
+  const { withUser } = await import('../db')
+
+  const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
+
+  async function makeTenant(slug: string, industry: 'gaming_cafe' | 'restaurant' = 'gaming_cafe') {
+    const t = await owner.query<{ id: string }>(
+      `insert into tenants (slug,name,status,timezone,industry) values ($1,$2,'active',$3,$4)
+       on conflict (slug) do update set name=excluded.name, industry=excluded.industry returning id`,
+      [slug, `${slug} co`, TZ, industry],
+    )
+    const tenantId = t.rows[0].id
+    const b = await owner.query<{ id: string }>(
+      `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
+       on conflict (tenant_id,name) do update set is_primary=true returning id`,
+      [tenantId],
+    )
+    const u = await owner.query<{ id: string }>(
+      `insert into users (email,password_hash) values ($1,'x')
+       on conflict (email) do update set email=excluded.email returning id`,
+      [`owner@${slug}.test`],
+    )
+    const m = await owner.query<{ id: string }>(
+      `insert into memberships (tenant_id,user_id,role,status) values ($1,$2,'owner','active')
+       on conflict (tenant_id,user_id) do update set role='owner', status='active' returning id`,
+      [tenantId, u.rows[0].id],
+    )
+    const rt = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'PS5','400.00')
+       on conflict (tenant_id,name) do update set hourly_rate='400.00' returning id`,
+      [tenantId],
+    )
+    const res = await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name) values ($1,$2,$3,'S1')
+       on conflict (tenant_id,name) do update set name='S1' returning id`,
+      [tenantId, b.rows[0].id, rt.rows[0].id],
+    )
+    const ctx: ActiveContext = {
+      user: { id: u.rows[0].id, email: `owner@${slug}.test`, fullName: null, isPlatformAdmin: false },
+      tenant: { id: tenantId, slug, name: `${slug} co`, industry, status: 'active', currency: 'INR', timezone: TZ },
+      role: 'owner',
+      membershipId: m.rows[0].id,
+      branchId: b.rows[0].id,
+    }
+    return {
+      ctx,
+      tenantId,
+      branchId: b.rows[0].id,
+      userId: u.rows[0].id,
+      membershipId: m.rows[0].id,
+      resourceId: res.rows[0].id,
+    }
+  }
+
+  const A = await makeTenant('testadva', 'gaming_cafe')
+  const R = await makeTenant('testadvr', 'restaurant')
+  for (const t of [A, R]) {
+    await owner.query('delete from invoices where tenant_id=$1', [t.tenantId])
+    await owner.query('delete from bookings where tenant_id=$1', [t.tenantId])
+    await owner.query('delete from sequences where tenant_id=$1', [t.tenantId])
+  }
+
+  let seq = 0
+  /** A confirmed booking worth `total` rupees (2h at total/2 an hour), with an optional advance already recorded on it. */
+  async function makeBooking(t: typeof A, total = 1000, advancePaid = 0) {
+    const n = ++seq
+    const bk = await owner.query<{ id: string }>(
+      `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,created_by)
+       values ($1,$2,$3,'confirmed','0','0',$4,$5) returning id`,
+      [t.tenantId, t.branchId, `AV-${n}`, advancePaid.toFixed(2), t.membershipId],
+    )
+    const s = new Date(Date.UTC(2041, 0, 1 + (n % 27), 4, 0, 0))
+    await owner.query(
+      `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,
+         rate_applied,slot_total,resource_name,resource_type_name,active)
+       values ($1,$2,$3,$4,$5,$6,$7,'S1','PS5',true)`,
+      [t.tenantId, bk.rows[0].id, t.resourceId, s, new Date(s.getTime() + 2 * 3600_000), (total / 2).toFixed(2), total.toFixed(2)],
+    )
+    return bk.rows[0].id
+  }
+
+  const bill = (t: typeof A, bookingId: string, discount?: number) =>
+    withUser(t.userId, (tx) => issueInvoiceForBooking(tx, { id: t.tenantId, timezone: TZ }, { bookingId, discount }))
+
+  const stateOf = async (t: typeof A, bookingId: string) => (await listBookingPaymentStates(t.ctx, [bookingId]))[bookingId]
+
+  const paymentsFor = async (invoiceId: string) =>
+    (await owner.query(`select method, amount, status, collected_by from payments where invoice_id=$1`, [invoiceId])).rows
+
+  const bookingRow = async (bookingId: string) =>
+    (await owner.query(`select advance_paid, advance_applied, status from bookings where id=$1`, [bookingId])).rows[0]
+
+  // ══ 1. an advance smaller than the total ═══════════════════════════════════
+  console.log('\n── advance smaller than the total ──')
+  {
+    const bookingId = await makeBooking(A, 1000, 400)
+    const inv = await bill(A, bookingId)
+    check('billing succeeded', typeof inv.invoiceId === 'string')
+    check("the ticket's own result shape reports what was applied", inv.advance?.amount === 400)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('exactly one payments row was inserted for the advance', rows.length === 1)
+    check("…method 'cash', status 'captured'", rows[0].method === 'cash' && rows[0].status === 'captured')
+    check('…for exactly ₹400 — the advance, not the total', rows[0].amount === '400.00')
+    check('…no cashier is attributed — it was collected earlier, not at this till', rows[0].collected_by === null)
+
+    const s = await stateOf(A, bookingId)
+    check('listBookingPaymentStates reports "partially_paid" — ZERO changes to that function', s?.status === 'partially_paid')
+    check('…₹400 paid, ₹600 still due', s?.paid === 400 && s?.balance === 600)
+
+    const b = await bookingRow(bookingId)
+    check('advance_applied flipped to true', b.advance_applied === true)
+    check('the booking is still active (not auto-completed — a balance remains)', b.status === 'confirmed')
+
+    const audit = await owner.query(
+      `select action, entity_type, entity_id, actor_membership_id from audit_log where tenant_id=$1 and action='booking.advance_applied' and entity_id=$2`,
+      [A.tenantId, inv.invoiceId],
+    )
+    check('an audit_log row was written in the same transaction', audit.rows.length === 1)
+    check("…entity_type is 'invoice', attributed to whoever created the booking", audit.rows[0].entity_type === 'invoice' && audit.rows[0].actor_membership_id === A.membershipId)
+  }
+
+  // ══ 2. an advance that exactly covers the total ════════════════════════════
+  console.log('\n── advance exactly covers the total ──')
+  {
+    const bookingId = await makeBooking(A, 1000, 1000)
+    const inv = await bill(A, bookingId)
+    check('the invoice settles to "paid" the moment it is raised', inv.advance?.amount === 1000)
+
+    const s = await stateOf(A, bookingId)
+    check('listBookingPaymentStates reports "paid"', s?.status === 'paid')
+    check('…nothing due', s?.balance === 0)
+
+    const b = await bookingRow(bookingId)
+    check('a fully-settled advance auto-completes the booking, same as a cashier\'s final tender', b.status === 'completed')
+  }
+
+  // ══ 3. an advance LARGER than the total — capped, no excess tracked ════════
+  console.log('\n── advance larger than the total ──')
+  {
+    const bookingId = await makeBooking(A, 800, 1000)
+    const inv = await bill(A, bookingId)
+    check('the applied amount is capped at the invoice total, not the raw advance', inv.advance?.amount === 800)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('only ₹800 was captured — the ₹200 difference is not recorded anywhere', rows.length === 1 && rows[0].amount === '800.00')
+
+    const s = await stateOf(A, bookingId)
+    check('the booking reads fully "paid", never overpaid or negative', s?.status === 'paid' && s?.balance === 0)
+  }
+
+  // ══ 4. advance_applied guards against ever applying the same cash twice ════
+  console.log('\n── never applied twice ──')
+  {
+    const { applyAdvancePaymentToInvoice } = await import('../lib/payments/advance-settlement')
+    const bookingId = await makeBooking(A, 1000, 400)
+    const inv = await bill(A, bookingId)
+    check('the first bill applied the advance once', inv.advance?.amount === 400)
+
+    // Call the settlement core again directly, against the SAME invoice, the
+    // way a retried/duplicated billing attempt would — this is the exact
+    // regression the ticket asks for.
+    const second = await withUser(A.userId, (tx) => applyAdvancePaymentToInvoice(tx, A.tenantId, bookingId, inv.invoiceId))
+    check('a second attempt is a no-op — advance_applied already true', second === null)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('still exactly ONE payments row — the cash was never applied twice', rows.length === 1)
+    const s = await stateOf(A, bookingId)
+    check('…and the booking still reads "partially_paid" at ₹400, not ₹800', s?.status === 'partially_paid' && s?.paid === 400)
+  }
+
+  // ══ 5. advance_paid = 0 is a true no-op ═════════════════════════════════════
+  console.log('\n── advance_paid = 0 ──')
+  {
+    const bookingId = await makeBooking(A, 1000, 0)
+    const inv = await bill(A, bookingId)
+    check('billing behaves exactly as it did before this ticket', inv.advance === null)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('no payments row was inserted', rows.length === 0)
+
+    const b = await bookingRow(bookingId)
+    check('advance_applied stays false — nothing was ever reckoned with', b.advance_applied === false)
+
+    const s = await stateOf(A, bookingId)
+    check('the booking reads "issued" (Unpaid), same as any other unpaid bill', s?.status === 'issued')
+  }
+
+  // ══ 6. a non-gaming_cafe tenant is byte-identical, even with advance_paid > 0 ══
+  console.log('\n── restaurant tenant: byte-identical no-op ──')
+  {
+    const bookingId = await makeBooking(R, 1000, 400)
+    const inv = await bill(R, bookingId)
+    check('advance folding never runs for a non-gaming_cafe tenant', inv.advance === null)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('no payments row was inserted, despite advance_paid = 400 sitting on the booking', rows.length === 0)
+
+    const b = await bookingRow(bookingId)
+    check('advance_applied stays false — the column is never even looked at for this industry', b.advance_applied === false)
+    check('advance_paid itself is untouched (still 400.00, not silently cleared)', b.advance_paid === '400.00')
+
+    const s = await stateOf(R, bookingId)
+    check('the booking reads "issued" (Unpaid) — same as if advance_paid did not exist', s?.status === 'issued')
+  }
+
+  // ══ 7. a ₹0 (fully comped) bill: advance_applied flips, no ₹0 payment row ═══
+  console.log('\n── a free bill with an advance already collected ──')
+  {
+    const bookingId = await makeBooking(A, 1000, 400)
+    const inv = await bill(A, bookingId, 1000) // discounted to zero
+    check('nothing was left to apply — reported as a no-op, same shape as advance_paid=0', inv.advance === null)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('no ₹0 payments row was inserted', rows.length === 0)
+
+    const b = await bookingRow(bookingId)
+    check('advance_applied still flips true — this booking\'s advance was reckoned with once', b.advance_applied === true)
+
+    const s = await stateOf(A, bookingId)
+    check('the booking still reads "paid" — a ₹0 bill, not a phantom balance', s?.status === 'paid' && s?.total === 0)
+  }
+
+  await owner.end()
+  console.log(`\n${pass} passed, ${fail} failed`)
+  process.exit(fail === 0 ? 0 : 1)
+}
+
+main().catch((e) => {
+  console.error(e)
+  process.exit(1)
+})

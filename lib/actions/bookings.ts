@@ -73,6 +73,11 @@ const createInput = z.object({
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
   discount: z.coerce.number().min(0).default(0),
   deposit: z.coerce.number().min(0).default(0),
+  // M26 #4: cash collected from the customer before this booking existed —
+  // gaming_cafe only. Threaded through the same way `deposit` above is;
+  // createBookingCore re-checks the tenant's industry itself and refuses a
+  // non-zero value for any other industry, never trusting this schema alone.
+  advancePaid: z.coerce.number().min(0).default(0),
   slots: z
     .array(
       z.object({
@@ -179,6 +184,10 @@ const startWalkinInput = z
     // validated against min_players) by startWalkinCore itself when the
     // resource turns out to be per_head; ignored otherwise.
     headCount: z.coerce.number().int().min(1).optional(),
+    // M26 #4: cash collected from the customer before this walk-in started —
+    // gaming_cafe only. startWalkinCore re-checks the tenant's industry
+    // itself and refuses a non-zero value for any other industry.
+    advancePaid: z.coerce.number().min(0).default(0),
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return
@@ -653,7 +662,9 @@ type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'n
 /**
  * Server action: transition a booking's status, gating 'completed' on a
  * fully-paid bill, refusing 'no_show' for a walk-in (M21 #8 QA pass — see
- * below), and cancelling its open orders on 'cancelled'.
+ * below), cancelling its open orders on 'cancelled', and (M26 #6, gaming_cafe
+ * only) raising depositReviewRequired on 'cancelled' if the booking is
+ * holding an unconsumed cash advance — see below.
  *
  * `reason` is required for 'cancelled' — re-checked at runtime below (not
  * just in the UI), since this action is the only path (staff or otherwise)
@@ -702,6 +713,28 @@ export async function setBookingStatus<S extends BookingStatus>(
           .limit(1)
         if (row?.channel === 'walkin') {
           throw new BookingError('A walk-in cannot be marked no-show — it is already checked in.')
+        }
+      }
+
+      // M26 #6: mirror the online-deposit safety net (lib/portal/cancel.ts's
+      // `depositReviewRequired: eligibility.hasDeposit`) for a gaming-cafe
+      // cash advance. An advance already folded into an invoice
+      // (advance_applied, M26 #2) is accounted for on a real payment record,
+      // not orphaned by this cancellation, so it does not raise the flag —
+      // same reasoning unbilledAdvanceCheck (lib/booking/service.ts, M26 #3)
+      // uses for the completion gate. Reuses the same column the customer
+      // portal already reads rather than inventing a parallel one: the staff
+      // action in both cases is identical ("go refund this customer
+      // manually"). No effect on any other industry or an advance_paid = 0
+      // booking.
+      if (status === 'cancelled' && ctx.tenant.industry === 'gaming_cafe') {
+        const [row] = await tx
+          .select({ advancePaid: bookings.advancePaid, advanceApplied: bookings.advanceApplied })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (row && Number(row.advancePaid) > 0 && !row.advanceApplied) {
+          set.depositReviewRequired = true
         }
       }
 

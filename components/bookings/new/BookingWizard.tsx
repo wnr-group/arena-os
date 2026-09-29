@@ -45,6 +45,7 @@ export function BookingWizard({
   initialResourceId,
   resources,
   walkinEnabled,
+  advancePaymentEnabled,
 }: {
   branchId: string
   timeZone: string
@@ -56,6 +57,8 @@ export function BookingWizard({
   initialResourceId?: string
   resources: WizardResource[]
   walkinEnabled: boolean
+  /** M26 #4: "amount collected now" — gaming_cafe only. */
+  advancePaymentEnabled: boolean
 }) {
   const [tab, setTab] = useState<'walkin' | 'future'>(initialTab)
 
@@ -93,7 +96,12 @@ export function BookingWizard({
 
       <div className="mt-6">
         {tab === 'walkin' && walkinEnabled ? (
-          <WalkinWizard branchId={branchId} timeZone={timeZone} currency={currency} />
+          <WalkinWizard
+            branchId={branchId}
+            timeZone={timeZone}
+            currency={currency}
+            advancePaymentEnabled={advancePaymentEnabled}
+          />
         ) : (
           <FutureWizard
             branchId={branchId}
@@ -104,6 +112,7 @@ export function BookingWizard({
             initialResourceTypeId={initialResourceTypeId}
             initialResourceId={initialResourceId}
             resources={resources}
+            advancePaymentEnabled={advancePaymentEnabled}
           />
         )}
       </div>

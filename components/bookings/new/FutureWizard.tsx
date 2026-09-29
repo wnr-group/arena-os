@@ -70,6 +70,7 @@ export function FutureWizard({
   initialResourceTypeId,
   initialResourceId,
   resources,
+  advancePaymentEnabled,
 }: {
   branchId: string
   timeZone: string
@@ -84,6 +85,9 @@ export function FutureWizard({
    *  ITS OWN availability rather than the type's. */
   initialResourceId?: string
   resources: WizardResource[]
+  /** M26 #4: "amount collected now" — gaming_cafe only. createBookingCore
+   *  re-checks the tenant's industry itself regardless of this prop. */
+  advancePaymentEnabled: boolean
 }) {
   const router = useRouter()
   const [step, setStep] = useState(0)
@@ -117,8 +121,24 @@ export function FutureWizard({
         : (resourceTypes[0]?.id ?? ''),
   )
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
-  const hourlyRate = Number(selectedType?.hourlyRate ?? 0)
   const isPerHead = selectedType?.pricingMode === 'per_head'
+
+  // M27 #4: starts at the type's flat weekday rate (the same figure the
+  // device picker quotes before any date is picked), then follows whatever
+  // getAvailableStarts/getAvailableStartsForType resolves for the SELECTED
+  // date (weekday, weekend, or a holiday rate) once that fetch lands below —
+  // same pattern the public booking pages already use for this exact reason
+  // (M22 #4, components/public-booking/ResourceBookingPage.tsx/
+  // ResourceTypeBookingPage.tsx), so priceFor's duration-list estimate can
+  // never drift from what quoteBooking/createBooking actually charge once a
+  // date is picked. Reset on type change so switching devices doesn't carry
+  // a stale rate over — same "reset on resourceTypeId change" discipline
+  // headCount below already follows.
+  const [hourlyRate, setHourlyRate] = useState(Number(selectedType?.hourlyRate ?? 0))
+  useEffect(() => {
+    setHourlyRate(Number(selectedType?.hourlyRate ?? 0))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceTypeId])
 
   // M21 per-head #4: player count for a per_head device — defaults to the
   // type's min_players, and resets to it whenever the selected type changes
@@ -129,6 +149,11 @@ export function FutureWizard({
     setHeadCount(selectedType?.minPlayers ?? 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceTypeId])
+
+  // M26 #4: "amount collected now" — gaming_cafe only (advancePaymentEnabled
+  // above). Plain string state so the field can sit empty rather than
+  // default to a misleading "0"; blank means "nothing collected upfront."
+  const [advancePaid, setAdvancePaid] = useState('')
 
   // M24 #4: setups live on individual physical units (resources), not on the
   // type itself — a type-level pick alone can't show them, since which unit
@@ -233,6 +258,7 @@ export function FutureWizard({
         }))
         setSlots(grid)
         setIsClosed(Boolean(r.isClosed))
+        if (r.rate !== undefined) setHourlyRate(Number(r.rate))
       })
       return () => {
         cancelled = true
@@ -257,6 +283,7 @@ export function FutureWizard({
       }))
       setSlots(grid)
       setIsClosed(Boolean(r.isClosed))
+      if (r.rate !== undefined) setHourlyRate(Number(r.rate))
     })
     return () => {
       cancelled = true
@@ -511,6 +538,7 @@ export function FutureWizard({
           },
         ],
         headCount: isPerHead ? headCount : undefined,
+        advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
       })
       if (r.error) {
         setError(r.error)
@@ -1008,6 +1036,29 @@ export function FutureWizard({
             <h2 className="text-lg font-semibold">Confirm booking</h2>
             <p className="mt-1 text-sm text-muted-foreground">Check the details before booking.</p>
 
+            {advancePaymentEnabled && (
+              <div className="mt-5">
+                <label htmlFor="future-advance-paid" className={wizardLabel}>
+                  Amount collected now (optional)
+                </label>
+                <input
+                  id="future-advance-paid"
+                  className={`${wizardInput} mt-1`}
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={advancePaid}
+                  onChange={(e) => setAdvancePaid(e.target.value)}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Cash already taken from the customer before this booking. Leave blank if nothing was collected
+                  upfront.
+                </p>
+              </div>
+            )}
+
             <div className="mt-5 rounded-lg border border-border bg-muted/40 p-4 text-sm">
               <dl className="space-y-1.5">
                 <SummaryRow k="Device" v={activeUnit?.name ?? selectedType?.name ?? '—'} />
@@ -1030,6 +1081,9 @@ export function FutureWizard({
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
                 {isPerHead && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
+                {advancePaymentEnabled && Number(advancePaid) > 0 && (
+                  <SummaryRow k="Collected now" v={formatMoney(Number(advancePaid), currency)} />
+                )}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
                   <span>Total</span>
                   <span className="flex items-center gap-1.5 tabular-nums">

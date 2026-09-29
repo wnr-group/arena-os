@@ -3,12 +3,13 @@
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage, CalendarDays } from 'lucide-react'
 import { upsertResourceType, deleteResourceType, uploadResourceTypeImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
+import { HolidayRatesModal, type HolidayRateRow } from './HolidayRatesModal'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -55,6 +56,7 @@ type TypeRow = {
 type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food' | 'resources' | 'both' }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TypeRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
+type HolidayTarget = { resourceTypeId: string; resourceTypeName: string }
 
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
@@ -100,6 +102,7 @@ export function ResourceTypesManager({
   taxRates,
   autoTaxRate = null,
   industry,
+  ratesByType,
 }: {
   currency: string
   types: TypeRow[]
@@ -111,12 +114,17 @@ export function ResourceTypesManager({
   /** Gates the simplified name/capacity-only form in TypeModal — restaurant
    *  tenants only, every other industry's dialog is unaffected. */
   industry: string
+  /** M27 #3 — every type's holiday_rates entries, keyed by resourceTypeId. A
+   *  type with none simply gets an empty editor ("no holiday rates yet"),
+   *  not an error. */
+  ratesByType: Record<string, HolidayRateRow[]>
 }) {
   const router = useRouter()
   const confirm = useConfirm()
   const [pending, start] = useTransition()
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [holidayTarget, setHolidayTarget] = useState<HolidayTarget | null>(null)
   // A table isn't priced by the hour (see TypeModal), so there's nothing
   // meaningful to show in a Rate/Tax column for a restaurant tenant.
   const isRestaurant = industry === 'restaurant'
@@ -243,6 +251,18 @@ export function ResourceTypesManager({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
+                      {/* M27 #3: meaningless for a restaurant tenant, same
+                       *  reason the Rate/Tax columns above are hidden for
+                       *  one — its table types aren't priced by the hour. */}
+                      {!isRestaurant && (
+                        <button
+                          className={btn}
+                          onClick={() => setHolidayTarget({ resourceTypeId: row.id, resourceTypeName: row.name })}
+                          aria-label={`Holiday rates for ${row.name}`}
+                        >
+                          <CalendarDays size={16} />
+                        </button>
+                      )}
                       <button className={btn} onClick={() => setModal({ mode: 'edit', row })} aria-label="Edit">
                         <Pencil size={16} />
                       </button>
@@ -277,6 +297,16 @@ export function ResourceTypesManager({
           pending={pending}
           run={run}
           onClose={() => setModal(null)}
+        />
+      )}
+
+      {holidayTarget && (
+        <HolidayRatesModal
+          resourceTypeId={holidayTarget.resourceTypeId}
+          resourceTypeName={holidayTarget.resourceTypeName}
+          currency={currency}
+          rates={ratesByType[holidayTarget.resourceTypeId] ?? []}
+          onClose={() => setHolidayTarget(null)}
         />
       )}
     </div>

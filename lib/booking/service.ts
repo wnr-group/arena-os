@@ -9,7 +9,7 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, resourceSetups, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
+import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
 import { durationHours, daysInRange, dayWindow } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
@@ -17,7 +17,7 @@ import { todayInZone, weekdayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
-import { getInvoiceSettlement } from '@/lib/billing/payments'
+import { getInvoiceSettlement, paise } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
@@ -75,6 +75,12 @@ export type CreateBookingInput = {
    *  every per_head slot in this booking (bookings.head_count is one value
    *  per booking, not per slot — see 0094_per_head_pricing.sql). */
   headCount?: number
+  /** M26 #4: cash collected from the customer before this booking existed —
+   *  gaming_cafe only (createBookingCore re-checks the tenant's industry
+   *  itself, never trusting this from the caller). Absent or 0 is a no-op
+   *  for every booking and every other industry — see bookings.advance_paid
+   *  (M26 #1). */
+  advancePaid?: number
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -107,6 +113,11 @@ export type PricedBookingSlot = {
   /** M24 #2: 'hour' (default — every base-rate slot, and an hourly setup) or
    *  'day' (a per-day setup: date-range x day rate). */
   rateUnit: string
+  /** M27 #2: true when this slot's rateApplied came from a holiday_rates row
+   *  (a fixed, undiscountable rate — see db/schema.ts's column comment).
+   *  Always false for a setup slot: a setup prices instead of a holiday rate,
+   *  same as it prices instead of weekend/happy-hour. */
+  holidayRateApplied: boolean
 }
 
 /**
@@ -219,6 +230,7 @@ export async function priceBookingSlots(
       id: resources.id,
       name: resources.name,
       branchId: resources.branchId,
+      resourceTypeId: resources.resourceTypeId,
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       typeWeekendRate: resourceTypes.weekendRate,
@@ -333,6 +345,35 @@ export async function priceBookingSlots(
   // once, apply per slot" discipline as weekendDays above.
   const happyHourRules = await loadActiveHappyHourRules(tx, ctx.tenantId)
 
+  // M27 #2: every distinct (resourceTypeId, date) pair a NON-setup slot in
+  // this call could need, batch-loaded in one query — same "load once per
+  // call, not per slot" discipline as weekendDays/happyHourRules above. A
+  // setup slot never consults this (see the setupId branch below), so it's
+  // excluded from the lookup set entirely, not just from the result.
+  const holidayTypeIds = new Set<string>()
+  const holidayDates = new Set<string>()
+  for (const s of input.slots) {
+    if (s.setupId) continue
+    const r = byId.get(s.resourceId)
+    if (!r) continue
+    holidayTypeIds.add(r.resourceTypeId)
+    holidayDates.add(todayInZone(ctx.timezone, new Date(s.startsAt)))
+  }
+  const holidayRows =
+    holidayTypeIds.size > 0
+      ? await tx
+          .select({ resourceTypeId: holidayRates.resourceTypeId, date: holidayRates.date, rate: holidayRates.rate })
+          .from(holidayRates)
+          .where(
+            and(
+              eq(holidayRates.tenantId, ctx.tenantId),
+              inArray(holidayRates.resourceTypeId, [...holidayTypeIds]),
+              inArray(holidayRates.date, [...holidayDates]),
+            ),
+          )
+      : []
+  const holidayRateByKey = new Map(holidayRows.map((r) => [`${r.resourceTypeId}|${r.date}`, Number(r.rate)]))
+
   // Price each slot from a snapshot of the effective rate.
   let subtotal = 0
   const slots = input.slots.map((s) => {
@@ -372,26 +413,54 @@ export async function priceBookingSlots(
         setupId: setup.id,
         setupName: setup.name,
         rateUnit: setup.rateUnit,
+        // M27 #2: a setup prices instead of everything below, holiday rates
+        // included — see this function's doc comment. Never even consulted
+        // for a setup slot (excluded from the holidayTypeIds/holidayDates
+        // lookup-set above), so this is always false, not just "usually."
+        holidayRateApplied: false,
       }
     }
 
-    const weekdayRate = Number(r.rateOverride ?? r.typeRate)
-    const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
-    const rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
     const hours = durationHours(startsAt, endsAt)
 
-    // M23 #1: split the slot at every happy-hour rule boundary inside it and
-    // discount each segment — see this function's doc comment for the
-    // composition order. `rawTotal` is unrounded and, for a per_head slot,
-    // is still the PER-PLAYER figure — headCount multiplies below.
-    const { total: rawTotal, discounted } = priceTimeRangeSegments(
-      startsAt,
-      endsAt,
-      rate,
-      happyHourRules,
-      ctx.timezone,
-    )
+    // M27 #2: a holiday rate PRICES INSTEAD OF weekend/happy-hour — same
+    // "instead of, not on top of" precedence M24's setup branch above already
+    // set, just one level down (a setup still wins over a holiday rate, since
+    // it returns before this point entirely). Looked up once per slot against
+    // the batch-loaded map above; `undefined` (the overwhelming majority of
+    // slots, and every date/resource-type with no holiday_rates row) falls
+    // through to today's exact weekend/happy-hour composition, byte-identical
+    // to before this ticket.
+    const holidayRate = holidayRateByKey.get(`${r.resourceTypeId}|${todayInZone(ctx.timezone, startsAt)}`)
 
+    let rate: number
+    let rawTotal: number
+    let discounted = false
+    if (holidayRate !== undefined) {
+      rate = holidayRate
+      // Fixed/undiscountable (design doc) — no priceTimeRangeSegments call at
+      // all, so an active happy-hour rule cannot touch it. Same
+      // round2(rate × hours) shape as the M24 setup branch's flat total.
+      rawTotal = round2(rate * hours)
+    } else {
+      const weekdayRate = Number(r.rateOverride ?? r.typeRate)
+      const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
+      rate = resolveDayRate(weekdayRate, weekendRate, startsAt, ctx.timezone, weekendDays)
+
+      // M23 #1: split the slot at every happy-hour rule boundary inside it and
+      // discount each segment — see this function's doc comment for the
+      // composition order. `rawTotal` is unrounded and, for a per_head slot,
+      // is still the PER-PLAYER figure — headCount multiplies below.
+      const seg = priceTimeRangeSegments(startsAt, endsAt, rate, happyHourRules, ctx.timezone)
+      rawTotal = seg.total
+      discounted = seg.discounted
+    }
+
+    // Same per-head composition either way (M27 #2's own "per-head still
+    // applies exactly as it does for the weekend-rate path" requirement is
+    // satisfied by literally sharing this code, not a second copy of it):
+    // rawTotal is the PER-PLAYER figure regardless of which branch above
+    // produced it, headCount multiplies once, after.
     let headCount: number | null = null
     let total: number
     if (r.pricingMode === 'per_head') {
@@ -416,8 +485,11 @@ export async function priceBookingSlots(
     // fired (discounted === false), so an untouched booking's rate_applied
     // is byte-identical to before this ticket. Display-only when discounted:
     // loadBookingLines (lib/billing/invoice.ts) bills a flagged slot off
-    // slot_total directly, never by reconstructing hours × this rate.
-    const blendedRate = rawTotal / hours
+    // slot_total directly, never by reconstructing hours × this rate. A
+    // holiday-priced slot was never segmented at all, so `rate` itself (not
+    // a rawTotal/hours reconstruction, which could round differently) is the
+    // exact figure that was billed.
+    const blendedRate = holidayRate !== undefined ? rate : rawTotal / hours
 
     return {
       resourceId: s.resourceId,
@@ -434,6 +506,7 @@ export async function priceBookingSlots(
       setupId: null,
       setupName: null,
       rateUnit: 'hour',
+      holidayRateApplied: holidayRate !== undefined,
     }
   })
 
@@ -508,6 +581,22 @@ export async function createBookingCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateBookingInput,
 ): Promise<CreatedBooking> {
+  const advancePaid = round2(input.advancePaid ?? 0)
+  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
+    throw new BookingError('Amount collected must be zero or more.')
+  }
+  if (paise(advancePaid) > 0) {
+    // M26 #4: gaming_cafe only — re-checked here against the tenant row
+    // itself, never trusted from the caller. Same "hiding a button is
+    // convenience, never a guard" discipline upsertResourceSetup's industry
+    // gate follows (lib/actions/resources.ts): a non-zero advance sent for
+    // any other industry is refused outright, not silently zeroed.
+    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    if (t?.industry !== 'gaming_cafe') {
+      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
+    }
+  }
+
   const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
     slots: input.slots,
@@ -551,6 +640,7 @@ export async function createBookingCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
+      advancePaid: advancePaid.toFixed(2),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -885,16 +975,98 @@ async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string)
 }
 
 /**
+ * M26 #3 — closing the "complete a NEVER-billed booking" loophole (adversarial
+ * review, PR #35: the first cut of this only covered 'reserved' bookings,
+ * leaving a checked-out walk-in — arguably the primary real-world case for a
+ * cash advance — with zero enforcement, reachable via a direct setBookingStatus
+ * call since no UI exposes a manual "Complete" for any booking).
+ *
+ * Before a cash advance existed, an unbilled booking could not owe anything
+ * (nothing was ever collected on it), so assertBookingFullyPaid/
+ * completeBookingIfFullySettled below both skip their check entirely when
+ * findLiveBilling returns null. Once a gaming-cafe booking can carry
+ * bookings.advance_paid, that stops being true: staff could collect part of
+ * the money up front, never raise a bill, and the shortfall would vanish.
+ *
+ * Returns null — "this gate does not apply, existing behaviour stands
+ * unchanged" — for every non-gaming_cafe tenant, a booking with nothing
+ * collected upfront (advance_paid = 0), any channel other than 'reserved'/
+ * 'walkin', and — for a walk-in specifically — one that has not been checked
+ * out yet.
+ *
+ * That last exclusion is a walk-in guard, not an oversight: a walk-in's
+ * booking_slots.slot_total is NOT frozen until checkoutWalkinCore runs
+ * (lib/booking/walkin.ts) — it reads 0 until then — so treating 0 as "known
+ * total" would read a still-running, never-checked-out walk-in as trivially
+ * "covered" by any positive advance and wave it through. Checked-out-ness is
+ * resolved with the exact same primitive reopenWalkinCore already uses: an
+ * open tab is checked out once its slot's endsAt is stamped; a timed session
+ * is checked out once its slot_total is actually priced. Once checked out, a
+ * walk-in's slot_total is frozen exactly like a reserved booking's (same
+ * snapshot-freeze discipline M24 applies to setups), so the same sum-of-
+ * active-slots total below is meaningful for either channel.
+ */
+async function unbilledAdvanceCheck(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+  industry: string | undefined,
+): Promise<{ covered: boolean; gap: number } | null> {
+  if (industry !== 'gaming_cafe') return null
+
+  const [booking] = await tx
+    .select({ advancePaid: bookings.advancePaid, channel: bookings.channel, billingMode: bookings.billingMode })
+    .from(bookings)
+    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+    .limit(1)
+  if (!booking || (booking.channel !== 'reserved' && booking.channel !== 'walkin')) return null
+
+  const advancePaid = round2(Number(booking.advancePaid))
+  if (paise(advancePaid) <= 0) return null
+
+  if (booking.channel === 'walkin') {
+    const [slot] = await tx
+      .select({ endsAt: bookingSlots.endsAt, slotTotal: bookingSlots.slotTotal })
+      .from(bookingSlots)
+      .where(and(eq(bookingSlots.tenantId, tenantId), eq(bookingSlots.bookingId, bookingId), eq(bookingSlots.active, true)))
+      .limit(1)
+    if (!slot) return null
+    const isCheckedOut =
+      (booking.billingMode ?? 'open_tab') === 'open_tab' ? slot.endsAt !== null : Number(slot.slotTotal) > 0
+    if (!isCheckedOut) return null
+  }
+
+  const [row] = await tx
+    .select({ total: sql<string>`coalesce(sum(${bookingSlots.slotTotal}), 0)::text` })
+    .from(bookingSlots)
+    .where(and(eq(bookingSlots.tenantId, tenantId), eq(bookingSlots.bookingId, bookingId), eq(bookingSlots.active, true)))
+  const knownTotal = round2(Number(row?.total ?? 0))
+
+  const gap = round2(knownTotal - advancePaid)
+  return paise(gap) > 0 ? { covered: false, gap } : { covered: true, gap: 0 }
+}
+
+/**
  * Refuse to complete a booking with money still owing (M18 #2). Covers both
  * a normal single invoice and every check of a split bill — findLiveBilling
  * already generalises the two, same as requireNoLiveInvoice above. A booking
- * with no invoice at all (nothing was ever billed) is unaffected: this only
- * blocks completion against a KNOWN, outstanding balance, never a booking
- * that was simply never billed (e.g. a no-charge walk-through).
+ * with no invoice at all (nothing was ever billed) is otherwise unaffected:
+ * this only blocks completion against a KNOWN, outstanding balance, never a
+ * booking that was simply never billed (e.g. a no-charge walk-through) —
+ * EXCEPT a gaming-cafe reserved booking, or a checked-out gaming-cafe
+ * walk-in, whose cash advance (M26) does not yet cover its own known total,
+ * per unbilledAdvanceCheck above.
  */
 export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId: string): Promise<void> {
   const billing = await findLiveBilling(tx, tenantId, bookingId)
-  if (!billing) return
+  if (!billing) {
+    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, tenantId)).limit(1)
+    const check = await unbilledAdvanceCheck(tx, tenantId, bookingId, t?.industry)
+    if (check && !check.covered) {
+      throw new BookingError(`₹${check.gap.toFixed(2)} is still due — raise the bill before completing.`)
+    }
+    return
+  }
 
   const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
   for (const invoiceId of invoiceIds) {
@@ -941,6 +1113,17 @@ export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId
  * So a restaurant keeps its existing manual close-out (that button, which is
  * itself gated on a settled bill); auto-complete is for verticals with no such
  * post-payment step.
+ *
+ * M26 #3 — "the booking was never billed" above is no longer an unconditional
+ * false: a gaming-cafe RESERVED booking, or a CHECKED-OUT gaming-cafe
+ * walk-in, whose cash advance already covers its own known total
+ * (unbilledAdvanceCheck, same helper assertBookingFullyPaid uses) now
+ * completes here too, still with no invoice ever raised — the same
+ * permissive "unbilled but happens to be covered" outcome that path has
+ * always allowed. A SHORT advance returns false, same as every other refusal
+ * case here. Every other tenant, a gaming-cafe booking with nothing collected
+ * upfront, and a walk-in that has not been checked out yet, is unchanged:
+ * still an unconditional false, exactly as before this ticket.
  */
 export async function completeBookingIfFullySettled(
   tx: Db,
@@ -955,15 +1138,19 @@ export async function completeBookingIfFullySettled(
   if (t?.industry === 'restaurant') return false
 
   const billing = await findLiveBilling(tx, tenantId, bookingId)
-  if (!billing) return false
-  const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
-  for (const invoiceId of invoiceIds) {
-    const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
-    // Same fail-closed reasoning as assertBookingFullyPaid above: findLiveBilling
-    // just proved this invoice exists in this transaction, so a null settlement
-    // is an unexpected state, not a settled one.
-    if (!settlement) throw new Error(`Settlement missing for invoice ${invoiceId}.`)
-    if (settlement.payable) return false
+  if (billing) {
+    const invoiceIds = billing.kind === 'single' ? [billing.invoice.id] : billing.checks.map((c) => c.id)
+    for (const invoiceId of invoiceIds) {
+      const settlement = await getInvoiceSettlement(tx, tenantId, invoiceId)
+      // Same fail-closed reasoning as assertBookingFullyPaid above: findLiveBilling
+      // just proved this invoice exists in this transaction, so a null settlement
+      // is an unexpected state, not a settled one.
+      if (!settlement) throw new Error(`Settlement missing for invoice ${invoiceId}.`)
+      if (settlement.payable) return false
+    }
+  } else {
+    const check = await unbilledAdvanceCheck(tx, tenantId, bookingId, t?.industry)
+    if (!check || !check.covered) return false
   }
   const done = await tx
     .update(bookings)
