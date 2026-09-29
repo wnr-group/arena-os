@@ -35,11 +35,12 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, taxRates, auditLog } from '@/db/schema'
+import { resources, resourceTypes, holidayRates, bookings, bookingSlots, taxRates, auditLog } from '@/db/schema'
 import { BookingError, nextBookingNumber } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
 import { resolveDayRate } from './rate'
+import { todayInZone } from './time'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
@@ -397,6 +398,7 @@ export async function startWalkinCore(
       name: resources.name,
       branchId: resources.branchId,
       status: resources.status,
+      resourceTypeId: resources.resourceTypeId,
       typeName: resourceTypes.name,
       typeRate: resourceTypes.hourlyRate,
       typeWeekendRate: resourceTypes.weekendRate,
@@ -458,20 +460,41 @@ export async function startWalkinCore(
   if (weekdayRate <= 0) {
     throw new BookingError('This resource isn’t set up as an hourly station.')
   }
+  // M27 #2: a holiday rate wins over weekend config entirely — looked up
+  // BEFORE resolveDayRate, same precedence priceBookingSlots gives it.
+  // Snapshotted onto holiday_rate_applied below so checkout (which only ever
+  // reads this snapshot back, never re-resolves it) knows to skip
+  // happy-hour splitting too — see loadWalkinForCheckout/checkoutWalkinCore.
+  const [holiday] = await tx
+    .select({ rate: holidayRates.rate })
+    .from(holidayRates)
+    .where(
+      and(
+        eq(holidayRates.tenantId, ctx.tenantId),
+        eq(holidayRates.resourceTypeId, resource.resourceTypeId),
+        eq(holidayRates.date, todayInZone(ctx.timezone, startAt)),
+      ),
+    )
+    .limit(1)
+  const holidayRateApplied = holiday !== undefined
+
   // M22 #2: resolved by the session's START day and snapshotted onto
   // rate_applied below — checkout/extend read the snapshot back
   // (loadWalkinForCheckout), never re-resolve it, so a walk-in that runs
   // past midnight still bills the day it started on.
   const weekendRate = resource.typeWeekendRate === null ? null : Number(resource.typeWeekendRate)
   const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
-  const rate = resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
+  const rate = holidayRateApplied
+    ? Number(holiday.rate)
+    : resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
   // Re-check the RESOLVED rate, not just weekdayRate above: a type can set
   // weekend_rate to exactly 0 (a free-on-weekends config) independently of
-  // a positive weekday rate. That would slip past the weekdayRate guard yet
-  // still produce the same zero-rate hazard it exists to prevent — a timed
-  // walk-in's checkout ends up with slotTotal = '0.00', indistinguishable
-  // from loadWalkinForCheckout's "not yet checked out" sentinel, so it can
-  // be checked out again (or skipped from billing) instead of being blocked.
+  // a positive weekday rate, or a holiday rate itself to 0. That would slip
+  // past the weekdayRate guard yet still produce the same zero-rate hazard
+  // it exists to prevent — a timed walk-in's checkout ends up with
+  // slotTotal = '0.00', indistinguishable from loadWalkinForCheckout's "not
+  // yet checked out" sentinel, so it can be checked out again (or skipped
+  // from billing) instead of being blocked.
   if (rate <= 0) {
     throw new BookingError('This resource isn’t set up as an hourly station on weekends.')
   }
@@ -537,6 +560,7 @@ export async function startWalkinCore(
     taxRatePercent: Number(taxPercent).toFixed(2),
     pricingMode: resource.pricingMode,
     headCount,
+    holidayRateApplied,
   })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
@@ -570,6 +594,11 @@ type WalkinForCheckout = {
   resourceId: string
   startsAt: Date
   rate: number
+  /** M27 #2: true when `rate` above was snapshotted from a holiday_rates row
+   *  at start — checkout skips happy-hour splitting entirely when true (see
+   *  previewWalkinCheckout/checkoutWalkinCore), same "instead of" precedence
+   *  priceBookingSlots gives a holiday rate. */
+  holidayRateApplied: boolean
   billingMode: WalkinMode
   /** Open-tab: null until checkout finalizes it. Timed: the committed end
    *  (mirrors `bookings.committed_end_at`, kept in sync by extendWalkinCore),
@@ -645,6 +674,7 @@ export async function loadWalkinForCheckout(
     slotTotal: bookingSlots.slotTotal,
     pricingMode: bookingSlots.pricingMode,
     headCount: bookingSlots.headCount,
+    holidayRateApplied: bookingSlots.holidayRateApplied,
   }
   const slotWhere = and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true))
   const slotRows = lock
@@ -673,6 +703,7 @@ export async function loadWalkinForCheckout(
     resourceId: slot.resourceId,
     startsAt: slot.startsAt,
     rate: Number(slot.rateApplied),
+    holidayRateApplied: slot.holidayRateApplied,
     billingMode: (booking.billingMode as WalkinMode) ?? 'open_tab',
     slotEndsAt: slot.endsAt,
     slotTotal: slot.slotTotal,
@@ -771,7 +802,9 @@ export async function previewWalkinCheckout(
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, false)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
   const headCount = resolveHeadCount(walkin, input.headCount)
-  const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+  // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
+  // even load, same "instead of" precedence priceBookingSlots gives it.
+  const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
   return {
     total: priced.unitPrice,
@@ -819,7 +852,9 @@ export async function checkoutWalkinCore(
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
   const headCount = resolveHeadCount(walkin, input.headCount)
-  const rules = await loadActiveHappyHourRules(tx, ctx.tenantId)
+  // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
+  // even load, same "instead of" precedence priceBookingSlots gives it.
+  const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
 
   // M21 per-head #4: the (possibly just-edited) head count is written here,
