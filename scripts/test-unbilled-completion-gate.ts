@@ -17,8 +17,12 @@
  *     behaviour — must not regress)
  *   - a non-gaming_cafe tenant is untouched even with an advance recorded
  *   - a gaming_cafe booking with advance_paid = 0 is untouched
- *   - a walk-in is untouched by this new gate (deliberately out of scope —
- *     see lib/booking/service.ts:unbilledAdvanceCheck's own doc comment)
+ *   - a STILL-RUNNING walk-in is untouched (its slot_total isn't frozen yet,
+ *     so it must never be read as "trivially covered")
+ *   - a CHECKED-OUT walk-in is gated exactly like a reserved booking (fixed
+ *     post-review, PR #35 — the original cut of this ticket only covered
+ *     channel='reserved', leaving a checked-out walk-in — the primary
+ *     real-world case for a cash advance — with zero enforcement)
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-unbilled-completion-gate.ts
  */
@@ -84,7 +88,15 @@ async function main() {
       membershipId: m.rows[0].id,
       branchId: b.rows[0].id,
     }
-    return { ctx, tenantId, branchId: b.rows[0].id, userId: u.rows[0].id, membershipId: m.rows[0].id, resourceId: res.rows[0].id }
+    return {
+      ctx,
+      tenantId,
+      branchId: b.rows[0].id,
+      userId: u.rows[0].id,
+      membershipId: m.rows[0].id,
+      resourceId: res.rows[0].id,
+      resourceTypeId: rt.rows[0].id,
+    }
   }
 
   const A = await makeTenant('testgatea', 'gaming_cafe')
@@ -116,6 +128,40 @@ async function main() {
          rate_applied,slot_total,resource_name,resource_type_name,active)
        values ($1,$2,$3,$4,$5,$6,$7,'S1','PS5',true)`,
       [t.tenantId, bookingId, t.resourceId, s, new Date(s.getTime() + 2 * 3600_000), (total / 2).toFixed(2), total.toFixed(2)],
+    )
+    return bookingId
+  }
+
+  /** A walk-in booking, either still running (slot_total unfrozen, as
+   *  startWalkinCore leaves it) or checked out (frozen, as checkoutWalkinCore
+   *  leaves it) — mirrors reopenWalkinCore's own isCheckedOut shape: an
+   *  open-tab is checked out once its slot's ends_at is stamped; a timed
+   *  session is checked out once its slot_total is actually priced. Own
+   *  dedicated resource per call — an open (not-checked-out) tab's ends_at is
+   *  null, i.e. an UNBOUNDED range under the GiST exclusion constraint, which
+   *  would otherwise collide with every later fixture on a shared resource. */
+  async function makeWalkinBooking(t: typeof A, total: number, advancePaid: number, checkedOut: boolean) {
+    const n = ++seq
+    const res = await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name) values ($1,$2,$3,$4)
+       on conflict (tenant_id,name) do update set name=excluded.name returning id`,
+      [t.tenantId, t.branchId, t.resourceTypeId, `WI-${n}`],
+    )
+    const resourceId = res.rows[0].id
+    const bk = await owner.query<{ id: string }>(
+      `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,channel,billing_mode,created_by)
+       values ($1,$2,$3,'checked_in','0','0',$4,'walkin','open_tab',$5) returning id`,
+      [t.tenantId, t.branchId, `GT-${n}`, advancePaid.toFixed(2), t.membershipId],
+    )
+    const bookingId = bk.rows[0].id
+    const s = new Date(Date.UTC(2042, 0, 1 + (n % 27), 4, 0, 0))
+    const ends = checkedOut ? new Date(s.getTime() + 2 * 3600_000) : null
+    const slotTotal = checkedOut ? total : 0
+    await owner.query(
+      `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,
+         rate_applied,slot_total,resource_name,resource_type_name,active)
+       values ($1,$2,$3,$4,$5,$6,$7,'S1','PS5',true)`,
+      [t.tenantId, bookingId, resourceId, s, ends, (total / 2).toFixed(2), slotTotal.toFixed(2)],
     )
     return bookingId
   }
@@ -217,16 +263,45 @@ async function main() {
     check('…and completeBookingIfFullySettled still refuses to auto-complete an unbilled booking', done === false)
   }
 
-  // ══ 6. a walk-in is untouched by this new gate ═══════════════════════════
-  console.log('\n── a walk-in (deliberately out of scope) ──')
+  // ══ 6. a walk-in: gated once checked out, not before (adversarial review) ═
+  console.log('\n── a walk-in, still running: untouched ──')
   {
-    // Even a SHORT advance on a walk-in must not newly block it — the new
-    // check only ever applies to channel='reserved' (see the doc comment on
-    // unbilledAdvanceCheck for why: a walk-in's slot_total isn't frozen
-    // until checkout).
-    const bookingId = await makeBooking(A, 1000, 400, 'walkin')
+    // Still running (never checked out) — slot_total reads 0 either way, so
+    // this must NOT be read as "trivially covered" by any advance, however
+    // small. The gate simply does not apply yet.
+    const bookingId = await makeWalkinBooking(A, 1000, 1, false)
     const r = await withUser(A.userId, (tx) => assertThrows(() => assertBookingFullyPaid(tx, A.tenantId, bookingId)))
-    check('a walk-in with a short advance is NOT newly blocked — out of this ticket\'s scope', !r.threw)
+    check('a still-running walk-in is not newly blocked — nothing is known yet', !r.threw)
+    const done = await withUser(A.userId, (tx) => completeBookingIfFullySettled(tx, A.tenantId, bookingId))
+    check('…and completeBookingIfFullySettled still refuses it (unbilled, not via the new gate)', done === false)
+  }
+
+  console.log('\n── a walk-in, checked out: gated exactly like a reserved booking ──')
+  {
+    // Checked out (slot_total frozen) with a SHORT advance — this is the gap
+    // the adversarial review on PR #35 found: a checked-out walk-in used to
+    // sail through setBookingStatus(..., 'completed') with an uncounted
+    // shortfall, since the original cut of this ticket only covered
+    // channel='reserved'.
+    const bookingId = await makeWalkinBooking(A, 1000, 400, true)
+    const r = await withUser(A.userId, (tx) => assertThrows(() => assertBookingFullyPaid(tx, A.tenantId, bookingId)))
+    check('a checked-out walk-in with a short advance is now blocked', r.threw)
+    check('…as a BookingError', r.isBookingError)
+    check('…naming the exact shortfall', r.message.includes('600.00'))
+    const done = await withUser(A.userId, (tx) => completeBookingIfFullySettled(tx, A.tenantId, bookingId))
+    check('completeBookingIfFullySettled returns false too', done === false)
+    check('…and writes nothing', (await bookingStatus(bookingId)) === 'checked_in')
+  }
+  {
+    // Checked out with an advance that COVERS the frozen total — completes
+    // via the unbilled path, same permissive outcome a covered reserved
+    // booking already gets.
+    const bookingId = await makeWalkinBooking(A, 1000, 1000, true)
+    const r = await withUser(A.userId, (tx) => assertThrows(() => assertBookingFullyPaid(tx, A.tenantId, bookingId)))
+    check('a checked-out walk-in fully covered by its advance is not blocked', !r.threw)
+    const done = await withUser(A.userId, (tx) => completeBookingIfFullySettled(tx, A.tenantId, bookingId))
+    check('…and completeBookingIfFullySettled completes it, still with no invoice ever raised', done === true)
+    check('…the booking row reflects it', (await bookingStatus(bookingId)) === 'completed')
   }
 
   await owner.end()

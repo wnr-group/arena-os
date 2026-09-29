@@ -975,7 +975,11 @@ async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string)
 }
 
 /**
- * M26 #3 — closing the "complete a NEVER-billed booking" loophole.
+ * M26 #3 — closing the "complete a NEVER-billed booking" loophole (adversarial
+ * review, PR #35: the first cut of this only covered 'reserved' bookings,
+ * leaving a checked-out walk-in — arguably the primary real-world case for a
+ * cash advance — with zero enforcement, reachable via a direct setBookingStatus
+ * call since no UI exposes a manual "Complete" for any booking).
  *
  * Before a cash advance existed, an unbilled booking could not owe anything
  * (nothing was ever collected on it), so assertBookingFullyPaid/
@@ -986,21 +990,21 @@ async function requireNoLiveInvoice(tx: Db, tenantId: string, bookingId: string)
  *
  * Returns null — "this gate does not apply, existing behaviour stands
  * unchanged" — for every non-gaming_cafe tenant, a booking with nothing
- * collected upfront (advance_paid = 0), and (deliberately) any booking whose
- * channel is not 'reserved'.
+ * collected upfront (advance_paid = 0), any channel other than 'reserved'/
+ * 'walkin', and — for a walk-in specifically — one that has not been checked
+ * out yet.
  *
  * That last exclusion is a walk-in guard, not an oversight: a walk-in's
  * booking_slots.slot_total is NOT frozen until checkoutWalkinCore runs
  * (lib/booking/walkin.ts) — it reads 0 until then — so treating 0 as "known
  * total" would read a still-running, never-checked-out walk-in as trivially
- * "covered" by any positive advance and wave it through. setBookingStatus
- * (lib/actions/bookings.ts) has no channel guard on the 'completed'
- * transition today, so that scenario is reachable at the action layer even
- * though no current UI exposes it — a separate, pre-existing gap, outside
- * this ticket's scope. Restricting to 'reserved' here means this new check
- * can only ever apply to a booking whose slot_total was frozen at BOOKING
- * time by priceBookingSlots (same snapshot-freeze discipline M24 applies to
- * setups), never one still being priced live.
+ * "covered" by any positive advance and wave it through. Checked-out-ness is
+ * resolved with the exact same primitive reopenWalkinCore already uses: an
+ * open tab is checked out once its slot's endsAt is stamped; a timed session
+ * is checked out once its slot_total is actually priced. Once checked out, a
+ * walk-in's slot_total is frozen exactly like a reserved booking's (same
+ * snapshot-freeze discipline M24 applies to setups), so the same sum-of-
+ * active-slots total below is meaningful for either channel.
  */
 async function unbilledAdvanceCheck(
   tx: Db,
@@ -1011,14 +1015,26 @@ async function unbilledAdvanceCheck(
   if (industry !== 'gaming_cafe') return null
 
   const [booking] = await tx
-    .select({ advancePaid: bookings.advancePaid, channel: bookings.channel })
+    .select({ advancePaid: bookings.advancePaid, channel: bookings.channel, billingMode: bookings.billingMode })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
     .limit(1)
-  if (booking?.channel !== 'reserved') return null
+  if (!booking || (booking.channel !== 'reserved' && booking.channel !== 'walkin')) return null
 
   const advancePaid = round2(Number(booking.advancePaid))
   if (paise(advancePaid) <= 0) return null
+
+  if (booking.channel === 'walkin') {
+    const [slot] = await tx
+      .select({ endsAt: bookingSlots.endsAt, slotTotal: bookingSlots.slotTotal })
+      .from(bookingSlots)
+      .where(and(eq(bookingSlots.tenantId, tenantId), eq(bookingSlots.bookingId, bookingId), eq(bookingSlots.active, true)))
+      .limit(1)
+    if (!slot) return null
+    const isCheckedOut =
+      (booking.billingMode ?? 'open_tab') === 'open_tab' ? slot.endsAt !== null : Number(slot.slotTotal) > 0
+    if (!isCheckedOut) return null
+  }
 
   const [row] = await tx
     .select({ total: sql<string>`coalesce(sum(${bookingSlots.slotTotal}), 0)::text` })
@@ -1037,8 +1053,9 @@ async function unbilledAdvanceCheck(
  * with no invoice at all (nothing was ever billed) is otherwise unaffected:
  * this only blocks completion against a KNOWN, outstanding balance, never a
  * booking that was simply never billed (e.g. a no-charge walk-through) —
- * EXCEPT a gaming-cafe reserved booking whose cash advance (M26) does not
- * yet cover its own known total, per unbilledAdvanceCheck above.
+ * EXCEPT a gaming-cafe reserved booking, or a checked-out gaming-cafe
+ * walk-in, whose cash advance (M26) does not yet cover its own known total,
+ * per unbilledAdvanceCheck above.
  */
 export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId: string): Promise<void> {
   const billing = await findLiveBilling(tx, tenantId, bookingId)
@@ -1098,14 +1115,15 @@ export async function assertBookingFullyPaid(tx: Db, tenantId: string, bookingId
  * post-payment step.
  *
  * M26 #3 — "the booking was never billed" above is no longer an unconditional
- * false: a gaming-cafe RESERVED booking whose cash advance already covers its
- * own known total (unbilledAdvanceCheck, same helper assertBookingFullyPaid
- * uses) now completes here too, still with no invoice ever raised — the same
+ * false: a gaming-cafe RESERVED booking, or a CHECKED-OUT gaming-cafe
+ * walk-in, whose cash advance already covers its own known total
+ * (unbilledAdvanceCheck, same helper assertBookingFullyPaid uses) now
+ * completes here too, still with no invoice ever raised — the same
  * permissive "unbilled but happens to be covered" outcome that path has
  * always allowed. A SHORT advance returns false, same as every other refusal
- * case here. Every other tenant, and a gaming-cafe booking with nothing (or a
- * non-reserved channel) collected upfront, is unchanged: still an
- * unconditional false, exactly as before this ticket.
+ * case here. Every other tenant, a gaming-cafe booking with nothing collected
+ * upfront, and a walk-in that has not been checked out yet, is unchanged:
+ * still an unconditional false, exactly as before this ticket.
  */
 export async function completeBookingIfFullySettled(
   tx: Db,
