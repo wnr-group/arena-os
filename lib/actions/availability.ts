@@ -3,10 +3,12 @@
 import { and, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resources, resourceTypes, workingHours, bookingSlots } from '@/db/schema'
+import { resources, resourceTypes, holidayRates, workingHours, bookingSlots } from '@/db/schema'
 import { requireContext } from '@/lib/auth/guard'
 import { availableStartTimes, dayWindow, type Interval } from '@/lib/booking/availability'
 import { weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
+import { resolveDayRate } from '@/lib/booking/rate'
+import { loadWeekendDays } from '@/lib/settings/business-profile'
 
 const input = z.object({
   branchId: z.string().uuid(),
@@ -26,6 +28,15 @@ export type AvailabilityResponse = {
    * getAvailableStartsForType below and the public booking pages. */
   allStarts?: string[]
   isClosed?: boolean
+  /** M27 #4: the effective hourly rate for the SELECTED date — a holiday
+   *  rate if one is configured for this resource's type on this date,
+   *  otherwise the weekday/weekend rate (lib/booking/rate.ts:resolveDayRate)
+   *  — same field, same precedence, same reasoning as
+   *  getPublicAvailableStarts' own `rate` (lib/booking/public-availability.ts,
+   *  M22 #4): the staff wizard's live estimate (FutureWizard.tsx) prices off
+   *  this instead of a static, date-blind rate, so it can never drift from
+   *  what createBooking/quoteBooking actually charge once a date is picked. */
+  rate?: string
 }
 
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
@@ -42,11 +53,39 @@ export async function getAvailableStarts(
     return await withUser(ctx.user.id, async (tx) => {
       // buffer for this resource comes from its type
       const [res] = await tx
-        .select({ buffer: resourceTypes.bufferMinutes })
+        .select({
+          buffer: resourceTypes.bufferMinutes,
+          resourceTypeId: resources.resourceTypeId,
+          weekdayRate: resources.hourlyRateOverride,
+          typeRate: resourceTypes.hourlyRate,
+          typeWeekendRate: resourceTypes.weekendRate,
+        })
         .from(resources)
         .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
         .where(and(eq(resources.id, v.resourceId), eq(resources.tenantId, ctx.tenant.id)))
       if (!res) return { error: 'Resource not found.' }
+
+      // M27 #4: same precedence/reasoning as getPublicAvailableStarts' own
+      // holiday lookup (lib/booking/public-availability.ts) — a holiday rate
+      // wins over this whole weekend/weekday estimate, looked up directly
+      // against v.date (already the plain calendar date this estimate is
+      // FOR, no anchor-instant needed here).
+      const [holiday] = await tx
+        .select({ rate: holidayRates.rate })
+        .from(holidayRates)
+        .where(
+          and(
+            eq(holidayRates.tenantId, ctx.tenant.id),
+            eq(holidayRates.resourceTypeId, res.resourceTypeId),
+            eq(holidayRates.date, v.date),
+          ),
+        )
+        .limit(1)
+      const weekendDays = await loadWeekendDays(tx, ctx.tenant.id)
+      const anchor = zonedTimeToUtc(v.date, '12:00', tz)
+      const weekdayRate = Number(res.weekdayRate ?? res.typeRate)
+      const weekendRate = res.typeWeekendRate === null ? null : Number(res.typeWeekendRate)
+      const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, tz, weekendDays)
 
       const [hours] = await tx
         .select({
@@ -107,6 +146,7 @@ export async function getAvailableStarts(
         starts: starts.map((d) => d.toISOString()),
         allStarts: allStarts.map((d) => d.toISOString()),
         isClosed: resolvedHours.isClosed,
+        rate: rate.toFixed(2),
       }
     })
   } catch (e) {
@@ -134,6 +174,9 @@ export type TypeAvailabilityResponse = {
    * than silently dropping them (matches the public resource booking page). */
   allStarts?: string[]
   isClosed?: boolean
+  /** M27 #4: same field, same precedence, as AvailabilityResponse.rate above
+   *  — see its own doc comment. */
+  rate?: string
 }
 
 /**
@@ -154,7 +197,12 @@ export async function getAvailableStartsForType(
 
     return await withUser(ctx.user.id, async (tx) => {
       const resourceRows = await tx
-        .select({ id: resources.id, buffer: resourceTypes.bufferMinutes })
+        .select({
+          id: resources.id,
+          buffer: resourceTypes.bufferMinutes,
+          typeRate: resourceTypes.hourlyRate,
+          typeWeekendRate: resourceTypes.weekendRate,
+        })
         .from(resources)
         .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
         .where(
@@ -167,6 +215,28 @@ export async function getAvailableStartsForType(
         )
         .orderBy(resources.sortOrder)
       if (resourceRows.length === 0) return { error: 'No available resources of this type.' }
+
+      // M27 #4: type-level booking auto-assigns the first free UNIT of the
+      // type, but the price it quotes has always been the TYPE's own rate
+      // (same reasoning getPublicAvailableStartsForType's own doc comment
+      // gives) — resolving weekday/weekend/holiday the same way, at the type
+      // level, keeps that unchanged.
+      const [holiday] = await tx
+        .select({ rate: holidayRates.rate })
+        .from(holidayRates)
+        .where(
+          and(
+            eq(holidayRates.tenantId, ctx.tenant.id),
+            eq(holidayRates.resourceTypeId, v.resourceTypeId),
+            eq(holidayRates.date, v.date),
+          ),
+        )
+        .limit(1)
+      const weekendDays = await loadWeekendDays(tx, ctx.tenant.id)
+      const anchor = zonedTimeToUtc(v.date, '12:00', tz)
+      const weekdayRate = Number(resourceRows[0].typeRate)
+      const weekendRate = resourceRows[0].typeWeekendRate === null ? null : Number(resourceRows[0].typeWeekendRate)
+      const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, tz, weekendDays)
 
       const [hours] = await tx
         .select({
@@ -240,7 +310,13 @@ export async function getAvailableStartsForType(
         slotMinutes: 30,
       })
 
-      return { timeZone: tz, starts, allStarts: allStarts.map((d) => d.toISOString()), isClosed: resolvedHours.isClosed }
+      return {
+        timeZone: tz,
+        starts,
+        allStarts: allStarts.map((d) => d.toISOString()),
+        isClosed: resolvedHours.isClosed,
+        rate: rate.toFixed(2),
+      }
     })
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Something went wrong.' }

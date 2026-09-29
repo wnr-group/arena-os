@@ -121,8 +121,24 @@ export function FutureWizard({
         : (resourceTypes[0]?.id ?? ''),
   )
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
-  const hourlyRate = Number(selectedType?.hourlyRate ?? 0)
   const isPerHead = selectedType?.pricingMode === 'per_head'
+
+  // M27 #4: starts at the type's flat weekday rate (the same figure the
+  // device picker quotes before any date is picked), then follows whatever
+  // getAvailableStarts/getAvailableStartsForType resolves for the SELECTED
+  // date (weekday, weekend, or a holiday rate) once that fetch lands below —
+  // same pattern the public booking pages already use for this exact reason
+  // (M22 #4, components/public-booking/ResourceBookingPage.tsx/
+  // ResourceTypeBookingPage.tsx), so priceFor's duration-list estimate can
+  // never drift from what quoteBooking/createBooking actually charge once a
+  // date is picked. Reset on type change so switching devices doesn't carry
+  // a stale rate over — same "reset on resourceTypeId change" discipline
+  // headCount below already follows.
+  const [hourlyRate, setHourlyRate] = useState(Number(selectedType?.hourlyRate ?? 0))
+  useEffect(() => {
+    setHourlyRate(Number(selectedType?.hourlyRate ?? 0))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceTypeId])
 
   // M21 per-head #4: player count for a per_head device — defaults to the
   // type's min_players, and resets to it whenever the selected type changes
@@ -242,6 +258,7 @@ export function FutureWizard({
         }))
         setSlots(grid)
         setIsClosed(Boolean(r.isClosed))
+        if (r.rate !== undefined) setHourlyRate(Number(r.rate))
       })
       return () => {
         cancelled = true
@@ -266,6 +283,7 @@ export function FutureWizard({
       }))
       setSlots(grid)
       setIsClosed(Boolean(r.isClosed))
+      if (r.rate !== undefined) setHourlyRate(Number(r.rate))
     })
     return () => {
       cancelled = true
