@@ -399,8 +399,12 @@ export function BookingsView({
   // The moving right edge for an open-tab walk-in's bar (null endsAt) — it
   // has no committed end yet, so it's drawn from its start to "now" instead
   // of a fixed time. A snapshot at render time, not a ticking clock; the
-  // page's own Refresh button is what advances it, same as everything else here.
-  const nowMinutes = useMemo(() => minutesIntoDay(new Date().toISOString()), [dayStartMs])
+  // page's own Refresh button is what advances it, same as everything else
+  // here. Computed inline (not via minutesIntoDay above) so the memo's only
+  // real dependency is dayStartMs itself — minutesIntoDay is a plain closure
+  // recreated every render, so depending on it would recompute this on every
+  // render too, silently turning the snapshot into a ticking clock.
+  const nowMinutes = useMemo(() => (Date.now() - dayStartMs) / 60_000, [dayStartMs])
 
   const firstHour = Math.floor(openMin / 60)
   const lastHour = Math.ceil(closeMin / 60)

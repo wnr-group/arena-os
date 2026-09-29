@@ -202,6 +202,7 @@ export function BookingWizard({
               >
                 <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-primary/15 to-primary/5">
                   {t.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={t.imageUrl}
                       alt=""
