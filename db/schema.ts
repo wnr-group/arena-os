@@ -345,6 +345,15 @@ export const bookings = pgTable(
     // M21 per-head #1 (0094): player count for a per_head booking. Null for
     // every per_resource booking.
     headCount: smallint('head_count'),
+    // M26 #1 (0101): cash collected from the customer before this
+    // booking/walk-in existed, recorded by staff. Distinct from `deposit`
+    // (money still owed via the online Razorpay "Pay Deposit" flow). 0 for
+    // every booking with nothing collected upfront.
+    advancePaid: numeric('advance_paid', { precision: 10, scale: 2 }).notNull().default('0'),
+    // M26 #1 (0101): idempotency flag — true once advancePaid has been
+    // folded into a real payments row against an issued invoice, so the
+    // same cash can never be applied twice.
+    advanceApplied: boolean('advance_applied').notNull().default(false),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
