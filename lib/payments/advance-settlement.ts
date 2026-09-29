@@ -154,8 +154,23 @@ export async function applyAdvancePaymentToInvoice(
     // Wrapped so an auto-complete hiccup never rolls back an advance that was
     // already carried onto the invoice (fail-open, mirroring
     // applyPaidDepositsToInvoice's own carry-over).
+    //
+    // CodeRabbit review: a plain try/catch around a SQL error here isn't
+    // enough — Postgres marks the WHOLE surrounding transaction aborted the
+    // moment one statement fails, so every later statement in it (including
+    // ones already run, like the invoice/payment/audit rows above) fails
+    // too once the outer caller tries to commit, rolling back exactly the
+    // advance carry-over this try/catch exists to protect. Running it in a
+    // nested transaction instead — Drizzle 0.45's tx.transaction() is a
+    // real Postgres SAVEPOINT — so a SQL error here only rolls back to the
+    // savepoint, not the whole outer transaction; the catch below still
+    // contains it exactly as before. (deposit-settlement.ts's own carry-over
+    // has this identical pre-existing gap — out of scope to touch here, but
+    // worth a follow-up.)
     try {
-      await completeBookingIfFullySettled(tx, tenantId, bookingId)
+      await tx.transaction(async (sp) => {
+        await completeBookingIfFullySettled(sp, tenantId, bookingId)
+      })
     } catch (e) {
       console.error(`advance carry-over: auto-complete failed for booking ${bookingId}`, e)
     }

@@ -184,6 +184,7 @@ export default async function BookingsPage({
         deposit: s.deposit,
         slotTotal: s.slotTotal,
         advancePaid: s.advancePaid,
+        bookingActiveSlotTotal: s.bookingActiveSlotTotal,
         active: s.active,
         cancellationReason: s.cancellationReason,
       }))}

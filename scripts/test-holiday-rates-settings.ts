@@ -169,15 +169,19 @@ async function main() {
   // Editing the OTHER tenant's holiday-rate id — but paired with a
   // resourceTypeId that DOES belong to this tenant, so the type-ownership
   // pre-check passes — must still not touch it: the UPDATE's own WHERE
-  // clause is tenant-scoped on top of that, so it matches zero rows and
-  // silently no-ops rather than hijacking someone else's row.
-  await upsertHolidayRate({ id: otherHolidayId, resourceTypeId, date: '2046-01-26', rate: 999 })
+  // clause is tenant-scoped on top of that, so it matches zero rows.
+  // CodeRabbit review: a silent no-op here would return {} while the modal
+  // shows "Holiday rate updated." for a write that never happened — the
+  // action now checks the UPDATE's own .returning() and fails loudly
+  // instead (not a hijack of someone else's row either way).
+  const crossTenantEdit = await upsertHolidayRate({ id: otherHolidayId, resourceTypeId, date: '2046-01-26', rate: 999 })
+  check("editing another tenant's holiday-rate id fails loudly, not a silent no-op", /not found/i.test(crossTenantEdit.error ?? ''), crossTenantEdit)
   const { rows: otherAfterEdit } = await owner.query<{ rate: string; date: string }>(
     "select rate, date::text as date from holiday_rates where id=$1",
     [otherHolidayId],
   )
   check(
-    "editing another tenant's holiday-rate id is a no-op, not a hijack",
+    "…and it is not a hijack either — the other tenant's row is untouched",
     otherAfterEdit[0].rate === '1.00' && otherAfterEdit[0].date === '2046-01-26',
   )
 

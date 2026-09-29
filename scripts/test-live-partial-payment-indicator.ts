@@ -30,6 +30,7 @@ async function main() {
   loadEnv()
   const { listActiveWalkins } = await import('../lib/booking/walkin')
   const { listDayBookings } = await import('../lib/booking/data')
+  const { todayInZone } = await import('../lib/booking/time')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
@@ -116,9 +117,19 @@ async function main() {
   // ══ 2. listDayBookings carries advance_paid AND slot_total through ══════
   console.log('\n── listDayBookings ──')
   {
-    const today = new Date().toISOString().slice(0, 10)
     const start = new Date()
     const end = new Date(start.getTime() + 3600_000)
+    // CodeRabbit review: was new Date().toISOString().slice(0, 10) — the UTC
+    // calendar date, which disagrees with TZ (Asia/Kolkata, UTC+5:30) for
+    // roughly a third of the day (from 18:30 UTC to 23:59 UTC, IST has
+    // already rolled to the next date). listDayBookings computes its day
+    // window from `today` + TZ, so a UTC-derived date could put `start`
+    // (the slot's real starts_at, "now") outside the window this test then
+    // queries — the booking wouldn't be found, and the test would fail,
+    // depending only on what time of day it happened to run. Deriving from
+    // `start` itself in the same TZ the query uses makes the two agree
+    // regardless of wall-clock time.
+    const today = todayInZone(TZ, start)
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,channel,subtotal,total,advance_paid)
        values ($1,$2,'LI-2','confirmed','reserved','500','500','200.00') returning id`,

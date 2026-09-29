@@ -523,8 +523,18 @@ export async function startWalkinCore(
   // slotTotal = '0.00', indistinguishable from loadWalkinForCheckout's "not
   // yet checked out" sentinel, so it can be checked out again (or skipped
   // from billing) instead of being blocked.
+  //
+  // CodeRabbit review: the weekend-configuration message is wrong for a
+  // holiday-rate cause — staff would go check the weekend settings and find
+  // nothing wrong there, since the actual zero came from a holiday_rates
+  // row. Branch the message on holidayRateApplied so it points at the
+  // right place.
   if (rate <= 0) {
-    throw new BookingError('This resource isn’t set up as an hourly station on weekends.')
+    throw new BookingError(
+      holidayRateApplied
+        ? 'This resource has a zero holiday rate for today — set a positive holiday rate.'
+        : 'This resource isn’t set up as an hourly station on weekends.',
+    )
   }
   const taxPercent =
     resource.taxPercent ?? (await resolveScopeDefaultTaxPercent(tx, ctx.tenantId, 'resources')) ?? '0'

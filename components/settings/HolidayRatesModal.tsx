@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Plus, Pencil, Trash2, X, Loader2, Info } from 'lucide-react'
@@ -56,6 +56,50 @@ export function HolidayRatesModal({
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   useBodyScrollLock()
+
+  // CodeRabbit review: ResourceSetupsModal (the M24 template this mirrors)
+  // and even the app-wide ConfirmDialog stop at role/aria-modal/Escape —
+  // neither traps Tab/Shift+Tab or restores focus on close. Adding the full
+  // set here rather than the partial precedent: focus moves into the modal
+  // on open, Tab/Shift+Tab cycle within it (never reaching the settings
+  // page behind it), Escape closes it, and focus returns to whatever
+  // triggered it (the type row's "Holiday rates" button) on close.
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = 'holiday-rates-modal-title'
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const first = panelRef.current?.querySelector<HTMLElement>(focusableSelector)
+    first?.focus()
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key !== 'Tab' || !panelRef.current) return
+      // Re-queried on every Tab press, not just on mount — the modal's own
+      // content changes (add/edit forms open and close, rows are added),
+      // so a snapshot taken once would trap focus against stale elements.
+      const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(focusableSelector)]
+      if (focusable.length === 0) return
+      const firstEl = focusable[0]
+      const lastEl = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === firstEl) {
+        e.preventDefault()
+        lastEl.focus()
+      } else if (!e.shiftKey && document.activeElement === lastEl) {
+        e.preventDefault()
+        firstEl.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previouslyFocused?.focus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const rows = [...rates].sort((a, b) => a.date.localeCompare(b.date))
 
@@ -140,6 +184,10 @@ export function HolidayRatesModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="relative max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-card p-6 pt-8 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -151,7 +199,9 @@ export function HolidayRatesModal({
           <X size={16} />
         </button>
 
-        <h2 className="text-xl font-semibold">Holiday rates</h2>
+        <h2 id={titleId} className="text-xl font-semibold">
+          Holiday rates
+        </h2>
         <p className="mt-0.5 text-sm text-muted-foreground">{resourceTypeName}</p>
 
         <div className="mt-3 flex gap-2 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground">

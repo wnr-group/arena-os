@@ -430,10 +430,19 @@ export async function upsertHolidayRate(input: z.input<typeof holidayRateInput>)
         // now collides with a DIFFERENT row for this type, that is a genuine
         // ambiguity — surfaced as the friendly 23505 message in fail() above,
         // not silently merged into the other row.
-        await tx
+        //
+        // CodeRabbit review: the tenant-scoped WHERE can legitimately match
+        // ZERO rows — the id belongs to another tenant, or the row was
+        // deleted between the owner opening the edit form and saving it.
+        // Without checking, this silently no-ops while the modal still
+        // shows "Holiday rate updated." — a false success. .returning()
+        // makes the zero-row case observable so it can fail loudly instead.
+        const updated = await tx
           .update(holidayRates)
           .set({ resourceTypeId: v.resourceTypeId, date: v.date, rate: v.rate.toFixed(2) })
           .where(and(eq(holidayRates.id, v.id), eq(holidayRates.tenantId, ctx.tenant.id)))
+          .returning({ id: holidayRates.id })
+        if (updated.length === 0) throw new AuthError('Holiday rate not found.')
       } else {
         // Adding — the calendar-picker flow: the owner picks a type + date
         // and the UI pre-fills the existing rate if one is already set for

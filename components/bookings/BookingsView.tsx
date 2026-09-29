@@ -70,6 +70,16 @@ type Slot = {
    *  upfront. Repeated identically on every slot of the same booking, same
    *  as `deposit`/`total` above. */
   advancePaid: string
+  /** M26 #5 (CodeRabbit follow-up): the booking's TRUE known total — sum of
+   *  slot_total across EVERY active slot of the booking, tenant-wide, not
+   *  just the ones overlapping the currently-viewed day (a booking can span
+   *  multiple resources/days; createBookingCore only rejects overlaps on
+   *  the SAME resource). Repeated identically on every slot of the booking,
+   *  same as advancePaid/total/deposit above. Same figure
+   *  unbilledAdvanceCheck (lib/booking/service.ts) uses for the completion
+   *  gate — using anything else here risks the live badge disagreeing with
+   *  what actually blocks completion. */
+  bookingActiveSlotTotal: string
   /** False once the booking is cancelled/no-show (trg_bookings_sync_slots,
    *  0003) — the resource is free again. The Timeline only draws active
    *  slots; the Bookings table shows every status regardless. */
@@ -326,21 +336,26 @@ export function BookingsView({
   }, [slots, resources])
 
   // M26 #5: a live, pre-bill "Part paid" signal for a reserved booking whose
-  // cash advance (M26 #1/#4) already falls short of its own known total —
-  // sum(slot_total) across ACTIVE slots only, same definition
-  // unbilledAdvanceCheck (lib/booking/service.ts) uses for the completion
-  // gate, so the two can never disagree about what "short" means. advance_paid
-  // is repeated identically on every slot of a booking (same as deposit/total
-  // above) — '0.00' for every non-gaming_cafe tenant, so this is already a
-  // no-op there without a separate industry check. Only ever consulted for a
-  // booking with NO live invoice (paymentStates absent) — see its one call
-  // site below, which defers entirely to the real ledger-driven badge
-  // otherwise.
+  // cash advance (M26 #1/#4) already falls short of its own known total.
+  // Reads bookingActiveSlotTotal directly (the server's own booking-wide
+  // sum of active slot_total — lib/booking/data.ts's listDayBookings) rather
+  // than summing slotTotal off whatever slots happen to overlap the
+  // currently-viewed day: a booking can span multiple resources/days
+  // (createBookingCore only rejects overlaps on the SAME resource), so
+  // summing here would under-count it on every day but the "biggest" one.
+  // Same figure unbilledAdvanceCheck (lib/booking/service.ts) uses for the
+  // completion gate, so the two can never disagree about what "short"
+  // means. advance_paid/bookingActiveSlotTotal are both repeated identically
+  // on every slot of a booking (same as deposit/total above) — '0.00' for
+  // every non-gaming_cafe tenant, so this is already a no-op there without a
+  // separate industry check. Only ever consulted for a booking with NO live
+  // invoice (paymentStates absent) — see its one call site below, which
+  // defers entirely to the real ledger-driven badge otherwise.
   const advanceGapByBooking = useMemo(() => {
     const knownTotal = new Map<string, number>()
     const advancePaid = new Map<string, number>()
     for (const s of slots) {
-      if (s.active) knownTotal.set(s.bookingId, (knownTotal.get(s.bookingId) ?? 0) + Number(s.slotTotal))
+      knownTotal.set(s.bookingId, Number(s.bookingActiveSlotTotal))
       advancePaid.set(s.bookingId, Number(s.advancePaid))
     }
     const gaps: Record<string, number> = {}
@@ -398,13 +413,15 @@ export function BookingsView({
 
   // The moving right edge for an open-tab walk-in's bar (null endsAt) — it
   // has no committed end yet, so it's drawn from its start to "now" instead
-  // of a fixed time. A snapshot at render time, not a ticking clock; the
-  // page's own Refresh button is what advances it, same as everything else
-  // here. Computed inline (not via minutesIntoDay above) so the memo's only
-  // real dependency is dayStartMs itself — minutesIntoDay is a plain closure
-  // recreated every render, so depending on it would recompute this on every
-  // render too, silently turning the snapshot into a ticking clock.
-  const nowMinutes = useMemo(() => (Date.now() - dayStartMs) / 60_000, [dayStartMs])
+  // of a fixed time. A snapshot at render time, not a ticking clock — no
+  // setInterval, nothing re-renders this component just to advance it. But
+  // it must NOT be memoized against dayStartMs (CodeRabbit review): hitting
+  // Refresh on the SAME date re-renders this component without changing
+  // dayStartMs, and a memo keyed only on that would keep returning the
+  // instant from whenever dayStartMs last changed — the open-tab edge would
+  // silently stop advancing even though the page just refreshed. This is
+  // cheap enough (one subtraction) that memoizing it buys nothing anyway.
+  const nowMinutes = (Date.now() - dayStartMs) / 60_000
 
   const firstHour = Math.floor(openMin / 60)
   const lastHour = Math.ceil(closeMin / 60)
