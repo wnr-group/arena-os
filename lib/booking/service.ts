@@ -75,6 +75,12 @@ export type CreateBookingInput = {
    *  every per_head slot in this booking (bookings.head_count is one value
    *  per booking, not per slot — see 0094_per_head_pricing.sql). */
   headCount?: number
+  /** M26 #4: cash collected from the customer before this booking existed —
+   *  gaming_cafe only (createBookingCore re-checks the tenant's industry
+   *  itself, never trusting this from the caller). Absent or 0 is a no-op
+   *  for every booking and every other industry — see bookings.advance_paid
+   *  (M26 #1). */
+  advancePaid?: number
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -508,6 +514,22 @@ export async function createBookingCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateBookingInput,
 ): Promise<CreatedBooking> {
+  const advancePaid = round2(input.advancePaid ?? 0)
+  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
+    throw new BookingError('Amount collected must be zero or more.')
+  }
+  if (paise(advancePaid) > 0) {
+    // M26 #4: gaming_cafe only — re-checked here against the tenant row
+    // itself, never trusted from the caller. Same "hiding a button is
+    // convenience, never a guard" discipline upsertResourceSetup's industry
+    // gate follows (lib/actions/resources.ts): a non-zero advance sent for
+    // any other industry is refused outright, not silently zeroed.
+    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    if (t?.industry !== 'gaming_cafe') {
+      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
+    }
+  }
+
   const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
     slots: input.slots,
@@ -551,6 +573,7 @@ export async function createBookingCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
+      advancePaid: advancePaid.toFixed(2),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 

@@ -39,6 +39,11 @@ export default async function NewBookingPage({
   const isRestaurant = ctx.tenant.industry === 'restaurant'
   const walkinEnabled = !isRestaurant && canManageWalkins(ctx.role)
 
+  // M26 #4: "amount collected now" is gaming_cafe only — gated here the same
+  // way setupsEnabled below gates the studio setup picker (createBookingCore/
+  // startWalkinCore both re-check this server-side regardless).
+  const advancePaymentEnabled = ctx.tenant.industry === 'gaming_cafe'
+
   // M24 #4: Setups only exists for a handful of studio-type industries (see
   // lib/booking/studio-setups.ts) — gaming_cafe keeps its existing
   // independent-unit model (PS5-1, PS5-2, Snooker-1, …) untouched, so skip
@@ -97,6 +102,7 @@ export default async function NewBookingPage({
       initialResourceId={sp.resourceId}
       resources={resources}
       walkinEnabled={walkinEnabled}
+      advancePaymentEnabled={advancePaymentEnabled}
     />
   )
 }

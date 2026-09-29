@@ -73,6 +73,11 @@ const createInput = z.object({
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
   discount: z.coerce.number().min(0).default(0),
   deposit: z.coerce.number().min(0).default(0),
+  // M26 #4: cash collected from the customer before this booking existed —
+  // gaming_cafe only. Threaded through the same way `deposit` above is;
+  // createBookingCore re-checks the tenant's industry itself and refuses a
+  // non-zero value for any other industry, never trusting this schema alone.
+  advancePaid: z.coerce.number().min(0).default(0),
   slots: z
     .array(
       z.object({
@@ -179,6 +184,10 @@ const startWalkinInput = z
     // validated against min_players) by startWalkinCore itself when the
     // resource turns out to be per_head; ignored otherwise.
     headCount: z.coerce.number().int().min(1).optional(),
+    // M26 #4: cash collected from the customer before this walk-in started —
+    // gaming_cafe only. startWalkinCore re-checks the tenant's industry
+    // itself and refuses a non-zero value for any other industry.
+    advancePaid: z.coerce.number().min(0).default(0),
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return

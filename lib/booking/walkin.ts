@@ -35,8 +35,10 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, bookings, bookingSlots, taxRates, auditLog } from '@/db/schema'
+import { resources, resourceTypes, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
 import { BookingError, nextBookingNumber } from './service'
+import { paise } from '@/lib/billing/payments'
+import { round2 } from '@/lib/billing/pricing'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
 import { resolveDayRate } from './rate'
@@ -348,6 +350,11 @@ export type StartWalkinInput = {
    *  otherwise. Captured now so a checkout-time edit (see checkoutWalkinCore)
    *  has something to default from. */
   headCount?: number
+  /** M26 #4: cash collected from the customer before this walk-in started —
+   *  gaming_cafe only (startWalkinCore re-checks the tenant's industry
+   *  itself, never trusting this from the caller). Absent or 0 is a no-op —
+   *  see bookings.advance_paid (M26 #1). */
+  advancePaid?: number
 }
 
 /**
@@ -363,6 +370,20 @@ export async function startWalkinCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: StartWalkinInput,
 ): Promise<{ id: string; bookingNumber: string; confirmationToken: string }> {
+  const advancePaid = round2(input.advancePaid ?? 0)
+  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
+    throw new BookingError('Amount collected must be zero or more.')
+  }
+  if (paise(advancePaid) > 0) {
+    // M26 #4: gaming_cafe only — re-checked here against the tenant row
+    // itself, never trusted from the caller. Same discipline
+    // createBookingCore's own advance gate follows (lib/booking/service.ts).
+    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    if (t?.industry !== 'gaming_cafe') {
+      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
+    }
+  }
+
   const startAt = new Date(input.startAt)
   if (Number.isNaN(startAt.getTime())) throw new BookingError('Invalid start time.')
 
@@ -517,6 +538,7 @@ export async function startWalkinCore(
       createdBy: ctx.membershipId,
       checkedInAt: now,
       headCount,
+      advancePaid: advancePaid.toFixed(2),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
