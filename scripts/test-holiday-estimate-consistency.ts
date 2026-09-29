@@ -102,8 +102,11 @@ async function main() {
      values ($1,'Snooker','50.00','80.00','per_head',2) returning id`,
     [tenantId],
   )
-  const snookerA = await owner.query<{ id: string }>(
-    `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Snooker-A','available') returning id`,
+  // Not referenced by id below — only its existence matters, so
+  // getAvailableStartsForType (snooker's type-level auto-assign test) has a
+  // unit to assign.
+  await owner.query(
+    `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Snooker-A','available')`,
     [tenantId, branchId, snookerType.rows[0].id],
   )
 

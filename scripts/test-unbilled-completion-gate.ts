@@ -123,9 +123,9 @@ async function main() {
   const assertThrows = async (fn: () => Promise<void>) => {
     try {
       await fn()
-      return { threw: false, message: '' }
+      return { threw: false, message: '', isBookingError: false }
     } catch (e) {
-      return { threw: true, message: e instanceof Error ? e.message : String(e) }
+      return { threw: true, message: e instanceof Error ? e.message : String(e), isBookingError: e instanceof BookingError }
     }
   }
 
@@ -138,7 +138,7 @@ async function main() {
 
     const r = await withUser(A.userId, (tx) => assertThrows(() => assertBookingFullyPaid(tx, A.tenantId, bookingId)))
     check('assertBookingFullyPaid throws — this booking was never billed at all', r.threw)
-    check('…as a BookingError the caller may show verbatim', r.threw)
+    check('…as a BookingError the caller may show verbatim', r.isBookingError)
     check('…naming the exact shortfall', r.message.includes('600.00'))
 
     const done = await withUser(A.userId, (tx) => completeBookingIfFullySettled(tx, A.tenantId, bookingId))
