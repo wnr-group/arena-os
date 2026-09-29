@@ -412,6 +412,110 @@ async function main() {
     check('control: no holiday row for this date — quotes the plain weekday rate 100.00', !('error' in r3) && r3.rate === '100.00', r3)
   }
 
+  // ══ 10. snapshot freeze: editing/deleting the holiday_rates row never
+  //        restates an already-taken booking's rate_applied/slot_total ═════
+  console.log('\n── snapshot freeze: a later edit/delete never restates a taken booking ──')
+  {
+    const r = await bookAndLoad(ps5A.rows[0].id, tue('20:00'), tue('21:00'))
+    check('booked at the holiday rate: rate_applied = 999.00', r.rateApplied === '999.00')
+    check('slot_total = 999.00', r.slotTotal === '999.00')
+
+    // Edit the holiday_rates row's rate — same discipline every other
+    // snapshot column in this codebase is held to (rate_applied, setup_name,
+    // happy_hour_applied, …): a later config change must never reach back
+    // into a booking already taken.
+    await owner.query(`update holiday_rates set rate = '111.00' where tenant_id=$1 and resource_type_id=$2 and date=$3`, [
+      tenantId,
+      ps5Type.rows[0].id,
+      HOL_TUE,
+    ])
+    const afterEdit = await owner.query(`select rate_applied, slot_total from booking_slots where booking_id=$1`, [r.bookingId])
+    check(
+      "editing the holiday_rates row does NOT restate the booking: still 999.00/999.00",
+      afterEdit.rows[0].rate_applied === '999.00' && afterEdit.rows[0].slot_total === '999.00',
+      afterEdit.rows[0],
+    )
+
+    // Delete it outright — the booking must still keep its frozen figures.
+    await owner.query(`delete from holiday_rates where tenant_id=$1 and resource_type_id=$2 and date=$3`, [
+      tenantId,
+      ps5Type.rows[0].id,
+      HOL_TUE,
+    ])
+    const afterDelete = await owner.query(`select rate_applied, slot_total, holiday_rate_applied from booking_slots where booking_id=$1`, [
+      r.bookingId,
+    ])
+    check(
+      'deleting the holiday_rates row does NOT restate the booking either: still 999.00/999.00',
+      afterDelete.rows[0].rate_applied === '999.00' && afterDelete.rows[0].slot_total === '999.00',
+      afterDelete.rows[0],
+    )
+    check('…and holiday_rate_applied stays true — it is a frozen fact about how THIS booking was priced, not a live pointer', afterDelete.rows[0].holiday_rate_applied === true)
+
+    // Contrast: a NEW booking on the SAME date/type, now that the row is
+    // gone, falls back to ordinary weekday + happy-hour composition (the
+    // all-day 50%-off rule from section 3 above is still active) — proving
+    // the deletion genuinely took effect for pricing going forward, and the
+    // frozen booking above wasn't just coincidentally unaffected because
+    // nothing really changed.
+    const after = await bookAndLoad(ps5A.rows[0].id, tue('21:30'), tue('22:00'))
+    check(
+      'a booking taken AFTER the delete is no longer holiday-priced — back to weekday × the still-active happy hour: 50.00',
+      after.rateApplied === '50.00' && after.happyHourApplied === true,
+      after,
+    )
+    check('…and holiday_rate_applied = false for it', after.holidayRateApplied === false)
+  }
+
+  // ══ 11. loadBookingLines -> priceBill reconciles to the paise WITH a real
+  //        tax rate configured, discount + tax both composing correctly ═══
+  console.log('\n── reconciliation with a real tax rate + discount ──')
+  {
+    const gst = await owner.query<{ id: string }>(
+      `insert into tax_rates (tenant_id,name,percent,applies_to) values ($1,'GST 18%',18.00,'resources')
+       on conflict (tenant_id,name) do update set percent=excluded.percent, applies_to=excluded.applies_to returning id`,
+      [tenantId],
+    )
+    const taxedType = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate,tax_rate_id) values ($1,'PS5 Taxed','100.00',$2)
+       on conflict (tenant_id,name) do update set hourly_rate=excluded.hourly_rate, tax_rate_id=excluded.tax_rate_id returning id`,
+      [tenantId, gst.rows[0].id],
+    )
+    const taxedRes = await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'PS5-Taxed-A','available')
+       on conflict (tenant_id,name) do update set status='available' returning id`,
+      [tenantId, branchId, taxedType.rows[0].id],
+    )
+    await owner.query(`insert into holiday_rates (tenant_id,resource_type_id,date,rate) values ($1,$2,$3,'200.00')`, [
+      tenantId,
+      taxedType.rows[0].id,
+      HOL_TUE,
+    ])
+    // 2h × ₹200 holiday rate = ₹400 subtotal, ₹50 discount, 18% GST on the
+    // remaining ₹350 taxable value = ₹63, total ₹413 — the same
+    // discount-before-tax composition every other pricing axis already goes
+    // through (lib/billing/pricing.ts's priceBill), unmodified for a holiday
+    // rate: it only ever changes what rate_applied/slot_total ARE, never how
+    // billing composes on top of them.
+    const r = await bookAndLoad(taxedRes.rows[0].id, tue('11:00'), tue('13:00'))
+    check('rate_applied = 200.00 (the holiday rate)', r.rateApplied === '200.00')
+    check('slot_total = 400.00 (2h × ₹200)', r.slotTotal === '400.00')
+
+    const lines = await withUser(userId, (tx) => loadBookingLines(tx, tenantId, r.bookingId, TZ))
+    check('exactly one line', lines.length === 1)
+    check('taxPercent snapshotted onto the line: 18', lines[0].taxPercent === 18)
+
+    const bill = priceBill({ lines, discount: 50 })
+    check('subtotal = 400.00', bill.subtotal === 400)
+    check('taxable value = 350.00 (400 − 50 discount, applied BEFORE tax)', bill.taxableValue === 350)
+    check('tax total = 63.00 (18% of the taxable value, not the raw subtotal)', bill.taxTotal === 63)
+    check('grand total = 413.00', bill.total === 413)
+    check(
+      'reconciles to the paise end to end: taxableValue + taxTotal = total',
+      round2(bill.taxableValue + bill.taxTotal) === bill.total,
+    )
+  }
+
   await owner.end()
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)
