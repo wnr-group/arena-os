@@ -251,6 +251,37 @@ export const resourceSetups = pgTable(
   ],
 )
 
+// M27 #1 (0102): a resource type's fixed hourly rate on one literal calendar
+// date, overriding both weekendRate and the weekday base hourlyRate. Not
+// industry-gated, same as weekendRate — a sibling pricing axis on
+// resourceTypes. A one-off date, not a recurring rule (v1 boundary).
+export const holidayRates = pgTable(
+  'holiday_rates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    resourceTypeId: uuid('resource_type_id')
+      .notNull()
+      .references(() => resourceTypes.id, { onDelete: 'cascade' }),
+    // Plain calendar date, no time/timezone component — compared against the
+    // tenant's own local wall-clock date at slot-start time (todayInZone),
+    // same concept business_profiles.weekendDays uses. Not a timestamptz.
+    date: date('date').notNull(),
+    // Fixed/undiscountable — an active happy-hour rule does NOT apply on top
+    // of this, unlike weekendRate.
+    rate: numeric('rate', { precision: 10, scale: 2 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('holiday_rates_type_date_key').on(t.resourceTypeId, t.date),
+    index('idx_holiday_rates_tenant').on(t.tenantId),
+    index('idx_holiday_rates_type').on(t.resourceTypeId),
+  ],
+)
+
 export const workingHours = pgTable(
   'working_hours',
   {
@@ -419,6 +450,13 @@ export const bookingSlots = pgTable(
     // time so a later edit to the setup can't reprice a booking already
     // taken.
     rateUnit: text('rate_unit').notNull().default('hour'),
+    // M27 #1 (0102): true when this slot's rateApplied came from a
+    // holiday_rates row at booking time — snapshot discipline, same as
+    // happyHourApplied above. Reporting signal only: rateApplied already
+    // captures the actual charge regardless. False for every pre-existing
+    // row and every slot with no holiday rate configured for its resource
+    // type/date.
+    holidayRateApplied: boolean('holiday_rate_applied').notNull().default(false),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),

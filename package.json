@@ -39,6 +39,8 @@
     "test:m22": "npm run test:weekend-pricing",
     "test:m23": "npm run test:happy-hours-reserved-bookings && npm run test:happy-hours-regression",
     "test:m24": "npm run test:studio-setups-pricing && npm run test:resource-setups-settings && npm run test:studio-setups-multi-set && npm run test:studio-setups-public",
+    "test:holiday-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-holiday-pricing.ts",
+    "test:m27": "npm run test:holiday-pricing",
     "test:undo-checkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-undo-checkin.ts",
     "test:reopen-walkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-reopen-walkin.ts",
     "test:order-line-correction": "tsx --import ./scripts/server-only-hook.mjs scripts/test-order-line-correction.ts",
