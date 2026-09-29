@@ -5,6 +5,7 @@ import {
   resourceTypes,
   resources,
   resourceSetups,
+  holidayRates,
   workingHours,
   bookings,
   bookingSlots,
@@ -100,6 +101,27 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
       .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
+  )
+}
+
+/**
+ * A tenant's holiday_rates (M27 #1/#3) — every configured (resourceTypeId,
+ * date, rate) entry, tenant-wide (resource types aren't branch-scoped, same
+ * as listResourceTypes above). For the resource-types settings page's
+ * per-type "Holiday rates" editor, grouped by resourceTypeId on the client.
+ */
+export function listHolidayRates(ctx: ActiveContext) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: holidayRates.id,
+        resourceTypeId: holidayRates.resourceTypeId,
+        date: holidayRates.date,
+        rate: holidayRates.rate,
+      })
+      .from(holidayRates)
+      .where(eq(holidayRates.tenantId, ctx.tenant.id))
+      .orderBy(asc(holidayRates.date)),
   )
 }
 

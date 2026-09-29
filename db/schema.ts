@@ -276,7 +276,10 @@ export const holidayRates = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    unique('holiday_rates_type_date_key').on(t.resourceTypeId, t.date),
+    // Matches the actual DB constraint name — the migration's inline
+    // `unique (resource_type_id, date)` let Postgres auto-name it
+    // holiday_rates_resource_type_id_date_key, not a Drizzle-chosen one.
+    unique('holiday_rates_resource_type_id_date_key').on(t.resourceTypeId, t.date),
     index('idx_holiday_rates_tenant').on(t.tenantId),
     index('idx_holiday_rates_type').on(t.resourceTypeId),
   ],
