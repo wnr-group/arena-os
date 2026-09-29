@@ -60,6 +60,16 @@ type Slot = {
   total: string
   /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
   deposit: string
+  /** M26 #5: this SLOT's own frozen total (booking_slots.slot_total) —
+   *  summed across a booking's active slots to get its "known total" for
+   *  the live, pre-bill "Part paid" indicator. Not the same figure as
+   *  `total` above (bookings.total), which is post-discount. */
+  slotTotal: string
+  /** M26 #5: cash collected before this booking existed — '0.00' for every
+   *  non-gaming_cafe tenant and every booking with nothing collected
+   *  upfront. Repeated identically on every slot of the same booking, same
+   *  as `deposit`/`total` above. */
+  advancePaid: string
   /** False once the booking is cancelled/no-show (trg_bookings_sync_slots,
    *  0003) — the resource is free again. The Timeline only draws active
    *  slots; the Bookings table shows every status regardless. */
@@ -314,6 +324,33 @@ export function BookingsView({
     }
     return [...byId.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt))
   }, [slots, resources])
+
+  // M26 #5: a live, pre-bill "Part paid" signal for a reserved booking whose
+  // cash advance (M26 #1/#4) already falls short of its own known total —
+  // sum(slot_total) across ACTIVE slots only, same definition
+  // unbilledAdvanceCheck (lib/booking/service.ts) uses for the completion
+  // gate, so the two can never disagree about what "short" means. advance_paid
+  // is repeated identically on every slot of a booking (same as deposit/total
+  // above) — '0.00' for every non-gaming_cafe tenant, so this is already a
+  // no-op there without a separate industry check. Only ever consulted for a
+  // booking with NO live invoice (paymentStates absent) — see its one call
+  // site below, which defers entirely to the real ledger-driven badge
+  // otherwise.
+  const advanceGapByBooking = useMemo(() => {
+    const knownTotal = new Map<string, number>()
+    const advancePaid = new Map<string, number>()
+    for (const s of slots) {
+      if (s.active) knownTotal.set(s.bookingId, (knownTotal.get(s.bookingId) ?? 0) + Number(s.slotTotal))
+      advancePaid.set(s.bookingId, Number(s.advancePaid))
+    }
+    const gaps: Record<string, number> = {}
+    for (const [bookingId, advance] of advancePaid) {
+      if (advance <= 0) continue
+      const gap = (knownTotal.get(bookingId) ?? 0) - advance
+      if (gap > 0.004) gaps[bookingId] = gap
+    }
+    return gaps
+  }, [slots])
 
   const bookingStats = useMemo(() => {
     const total = bookingsList.length
@@ -702,7 +739,12 @@ export function BookingsView({
                       <td className="px-4 py-3">
                         {(() => {
                           const p = paymentStates[b.bookingId]
-                          const key = p?.status ?? 'unbilled'
+                          // M26 #5: only ever consulted when there is NO live
+                          // invoice — the moment one exists, `p` is truthy and
+                          // this live estimate is never even read, so the two
+                          // signals can't compete on the same booking.
+                          const advanceGap = !p ? advanceGapByBooking[b.bookingId] : undefined
+                          const key = p?.status ?? (advanceGap ? 'partially_paid' : 'unbilled')
                           return (
                             <div className="flex flex-col gap-0.5">
                               <span
@@ -722,6 +764,10 @@ export function BookingsView({
                               ) : p && p.status !== 'paid' ? (
                                 <span className="text-xs text-muted-foreground">
                                   {formatMoney(p.balance, currency)} due
+                                </span>
+                              ) : advanceGap ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(advanceGap, currency)} due (est.)
                                 </span>
                               ) : null}
                             </div>
@@ -797,15 +843,23 @@ export function BookingsView({
               {Number(selected.deposit) > 0 && (
                 <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
               )}
+              {/* M26 #5: cash collected upfront (M26 #1/#4) — 0 for every
+                  non-gaming_cafe tenant, so this row is already a no-op there. */}
+              {Number(selected.advancePaid) > 0 && (
+                <Row k="Collected upfront" v={formatMoney(selected.advancePaid, currency)} />
+              )}
               {/* Billed figures come off the invoice, not from the booking:
                   the bill is what was actually charged, discounts and all. */}
               <Row
                 k="Payment"
                 v={
-                  PAYMENT_LABELS[paymentStates[selected.bookingId]?.status ?? 'unbilled']
+                  PAYMENT_LABELS[
+                    paymentStates[selected.bookingId]?.status ??
+                      (advanceGapByBooking[selected.bookingId] ? 'partially_paid' : 'unbilled')
+                  ]
                 }
               />
-              {paymentStates[selected.bookingId] && (
+              {paymentStates[selected.bookingId] ? (
                 <>
                   <Row
                     k="Billed"
@@ -828,6 +882,10 @@ export function BookingsView({
                     />
                   )}
                 </>
+              ) : (
+                advanceGapByBooking[selected.bookingId] && (
+                  <Row k="Estimated balance due" v={formatMoney(advanceGapByBooking[selected.bookingId], currency)} />
+                )
               )}
             </dl>
 

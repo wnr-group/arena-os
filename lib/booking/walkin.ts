@@ -286,6 +286,12 @@ export type ActiveWalkin = {
   pricingMode: string | null
   headCount: number | null
   minPlayers: number
+  /** M26 #5: cash collected before this walk-in started (M26 #1/#4) — '0.00'
+   *  for every walk-in with nothing collected upfront, and for every
+   *  non-gaming_cafe tenant (server-refused at creation, see
+   *  startWalkinCore). Lets the Sessions board show a live "Partially paid"
+   *  indicator once the running total outgrows it, before any bill exists. */
+  advancePaid: string
 }
 
 /**
@@ -316,6 +322,7 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
         warningMinutes: bookings.warningMinutes,
+        advancePaid: bookings.advancePaid,
       })
       .from(bookings)
       .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))

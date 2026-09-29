@@ -217,6 +217,12 @@ export function listDayBookings(ctx: ActiveContext, branchId: string, dateStr: s
         total: bookings.total,
         deposit: bookings.deposit,
         cancellationReason: bookings.cancellationReason,
+        // M26 #5: cash collected before this booking existed (M26 #1/#4) —
+        // '0.00' for every non-gaming_cafe tenant (server-refused at
+        // creation) and every booking with nothing collected upfront. Lets
+        // BookingsView show a live "Part paid" indicator, before any bill
+        // exists, once sum(active slot_total) outgrows it.
+        advancePaid: bookings.advancePaid,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))

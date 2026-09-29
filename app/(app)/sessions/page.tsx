@@ -68,6 +68,11 @@ export default async function SessionsPage() {
         minPlayers: w.minPlayers,
         warningMinutes: w.warningMinutes,
         hasLiveBill: Boolean(paymentStates[w.bookingId]),
+        // M26 #5: '0.00' for every non-gaming_cafe tenant (advance_paid can
+        // never be non-zero there — see startWalkinCore's own industry
+        // gate), so the live "Partially paid" indicator is already a no-op
+        // for them without needing a separate industry flag here.
+        advancePaid: w.advancePaid,
       }))}
     />
   )
