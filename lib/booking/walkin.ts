@@ -287,6 +287,11 @@ export type ActiveWalkin = {
   pricingMode: string | null
   headCount: number | null
   minPlayers: number
+  /** M29 #6: board surcharge — the per-extra-player rate frozen at start (null
+   *  = no surcharge, every pre-M29 walk-in) and the type's LIVE included
+   *  players. The checkout/timed dialogs show a Players control when set. */
+  extraPlayerRateApplied: string | null
+  includedPlayers: number
   /** M26 #5: cash collected before this walk-in started (M26 #1/#4) — '0.00'
    *  for every walk-in with nothing collected upfront, and for every
    *  non-gaming_cafe tenant (server-refused at creation, see
@@ -322,6 +327,8 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         pricingMode: bookingSlots.pricingMode,
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
+        extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+        includedPlayers: resourceTypes.includedPlayers,
         warningMinutes: bookings.warningMinutes,
         advancePaid: bookings.advancePaid,
       })
@@ -434,6 +441,10 @@ export async function startWalkinCore(
       taxPercent: taxRates.percent,
       pricingMode: resourceTypes.pricingMode,
       minPlayers: resourceTypes.minPlayers,
+      // M29 #6: board extra-player surcharge (0105).
+      includedPlayers: resourceTypes.includedPlayers,
+      extraPlayerRate: resourceTypes.extraPlayerRate,
+      extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
     })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -556,6 +567,28 @@ export async function startWalkinCore(
     }
     headCount = requested
   }
+  // M29 #6: a per_resource board with an extra-player rate also carries a
+  // player count — defaulting to the included players (no surcharge) when the
+  // caller doesn't send one, since a walk-in is priced at checkout where the
+  // real count is confirmed (same idea as the public flow's default). Mode is
+  // re-checked here so a per_head type never reads as a board. The extra rate
+  // is day-resolved by the session's START day and snapshotted, exactly like
+  // the base rate — checkout reads it back, never re-resolves.
+  let extraPlayerRateApplied: string | null = null
+  if (resource.pricingMode === 'per_resource' && resource.extraPlayerRate !== null) {
+    const requested = input.headCount
+    if (requested !== undefined && (!Number.isInteger(requested) || requested < 1)) {
+      throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
+    }
+    headCount = requested ?? resource.includedPlayers
+    extraPlayerRateApplied = resolveDayRate(
+      Number(resource.extraPlayerRate),
+      resource.extraPlayerWeekendRate === null ? null : Number(resource.extraPlayerWeekendRate),
+      startAt,
+      ctx.timezone,
+      weekendDays,
+    ).toFixed(2)
+  }
 
   const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
 
@@ -600,6 +633,7 @@ export async function startWalkinCore(
     pricingMode: resource.pricingMode,
     headCount,
     holidayRateApplied,
+    extraPlayerRateApplied,
   })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
@@ -662,6 +696,12 @@ type WalkinForCheckout = {
    *  editable right up until checkout. Only meaningful when pricingMode is
    *  'per_head'; 1 otherwise. */
   minPlayers: number
+  /** M29 #6: the per-extra-player hourly rate frozen at start — null for every
+   *  walk-in without a board surcharge. Never re-resolved at checkout. */
+  extraPlayerRate: number | null
+  /** The type's CURRENT included players (live, like minPlayers — a walk-in's
+   *  player count stays editable until checkout). 1 when there's no surcharge. */
+  includedPlayers: number
 }
 
 /**
@@ -714,6 +754,7 @@ export async function loadWalkinForCheckout(
     pricingMode: bookingSlots.pricingMode,
     headCount: bookingSlots.headCount,
     holidayRateApplied: bookingSlots.holidayRateApplied,
+    extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
   }
   const slotWhere = and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true))
   const slotRows = lock
@@ -735,6 +776,20 @@ export async function loadWalkinForCheckout(
       .limit(1)
     minPlayers = typeRow?.minPlayers ?? 1
   }
+  // M29 #6: eligibility is the slot's own extra_player_rate_applied snapshot;
+  // included players is read live, same as minPlayers above.
+  const extraPlayerRate =
+    pricingMode !== 'per_head' && slot.extraPlayerRateApplied !== null ? Number(slot.extraPlayerRateApplied) : null
+  let includedPlayers = 1
+  if (extraPlayerRate !== null) {
+    const [typeRow] = await tx
+      .select({ includedPlayers: resourceTypes.includedPlayers })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(eq(resources.id, slot.resourceId))
+      .limit(1)
+    includedPlayers = typeRow?.includedPlayers ?? 1
+  }
 
   return {
     bookingId: booking.id,
@@ -750,6 +805,8 @@ export async function loadWalkinForCheckout(
     pricingMode,
     headCount: slot.headCount,
     minPlayers,
+    extraPlayerRate,
+    includedPlayers,
   }
 }
 
@@ -761,6 +818,16 @@ export async function loadWalkinForCheckout(
  * validate. Pure (no DB) — safe after either a locking or a read-only load.
  */
 function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefined): number {
+  // M29 #6: a board-with-surcharge walk-in has an editable player count too,
+  // but no floor — fewer players than included just means no surcharge — so
+  // it only needs to be a positive whole number.
+  if (walkin.extraPlayerRate !== null) {
+    const players = requested ?? walkin.headCount ?? walkin.includedPlayers
+    if (!Number.isInteger(players) || players < 1) {
+      throw new BookingError('Enter a whole number of players, at least 1.')
+    }
+    return players
+  }
   if (walkin.pricingMode !== 'per_head') return 1
   const headCount = requested ?? walkin.headCount ?? walkin.minPlayers
   if (!Number.isInteger(headCount) || headCount < 1) {
@@ -777,6 +844,21 @@ function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefin
     )
   }
   return headCount
+}
+
+/**
+ * The hourly rate and multiplier priceElapsedTime should price at. A plain or
+ * per_head walk-in is unchanged: the snapshotted rate, with headCount as the
+ * per-player multiplier (1 for per_resource). A board-with-surcharge walk-in
+ * prices the COMBINED rate — base + max(0, players − included) × extra rate —
+ * with no further multiplication, the same composition order as
+ * priceBookingSlots (M29 #3): happy hour (skipped on a holiday date) then
+ * segments that one figure.
+ */
+function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): { rate: number; multiplier: number } {
+  if (walkin.extraPlayerRate === null) return { rate: walkin.rate, multiplier: headCount }
+  const extraPlayers = Math.max(0, headCount - walkin.includedPlayers)
+  return { rate: walkin.rate + extraPlayers * walkin.extraPlayerRate, multiplier: 1 }
 }
 
 /**
@@ -844,7 +926,8 @@ export async function previewWalkinCheckout(
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
   const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+  const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
   return {
     total: priced.unitPrice,
     billableEnd: billableEndTime(walkin.startsAt, priceEnd).toISOString(),
@@ -894,13 +977,16 @@ export async function checkoutWalkinCore(
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
   const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+  const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
 
   // M21 per-head #4: the (possibly just-edited) head count is written here,
   // at the moment checkout actually commits — same "preview travels loose,
   // only checkout persists" discipline endAt already has. A per_resource
   // slot's head_count stays null; nothing to write.
-  const headCountUpdate = walkin.pricingMode === 'per_head' ? { headCount } : {}
+  // M29 #6: a surcharge walk-in persists its (possibly edited) count too.
+  const persistsHeadCount = walkin.pricingMode === 'per_head' || walkin.extraPlayerRate !== null
+  const headCountUpdate = persistsHeadCount ? { headCount } : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx
@@ -913,7 +999,7 @@ export async function checkoutWalkinCore(
       .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
-  if (walkin.pricingMode === 'per_head') {
+  if (persistsHeadCount) {
     await tx.update(bookings).set({ headCount }).where(eq(bookings.id, walkin.bookingId))
   }
 

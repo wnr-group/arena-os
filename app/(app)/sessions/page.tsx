@@ -66,6 +66,8 @@ export default async function SessionsPage() {
         pricingMode: w.pricingMode,
         headCount: w.headCount,
         minPlayers: w.minPlayers,
+        extraPlayerRateApplied: w.extraPlayerRateApplied,
+        includedPlayers: w.includedPlayers,
         warningMinutes: w.warningMinutes,
         hasLiveBill: Boolean(paymentStates[w.bookingId]),
         // M26 #5: '0.00' for every non-gaming_cafe tenant (advance_paid can

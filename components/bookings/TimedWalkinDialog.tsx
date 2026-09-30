@@ -47,6 +47,10 @@ export function TimedWalkinDialog({
     pricingMode?: string | null
     headCount?: number | null
     minPlayers?: number
+    /** M29 #6: a board-with-surcharge walk-in (extra rate frozen at start)
+     *  also gets the Players control — no floor, unlike per_head. */
+    extraPlayerRateApplied?: string | null
+    includedPlayers?: number
   }
   timeZone: string
   currency: string
@@ -68,11 +72,17 @@ export function TimedWalkinDialog({
   const [extending, startExtend] = useTransition()
 
   const isPerHead = booking.pricingMode === 'per_head'
+  const isBoard = !isPerHead && booking.extraPlayerRateApplied != null
+  const takesPlayers = isPerHead || isBoard
   // M21 per-head #4: an in-progress edit — travels with the preview, only
   // ever WRITTEN by checkoutWalkin itself at confirm, same discipline
   // committedEndAt/extend already has.
-  const [headCount, setHeadCount] = useState(booking.headCount ?? booking.minPlayers ?? 1)
-  const minPlayers = booking.minPlayers ?? 1
+  const [headCount, setHeadCount] = useState(
+    booking.headCount ?? (isBoard ? (booking.includedPlayers ?? 1) : (booking.minPlayers ?? 1)),
+  )
+  // A surcharge board has no real floor: fewer players than included just
+  // means no surcharge.
+  const minPlayers = isBoard ? 1 : (booking.minPlayers ?? 1)
 
   const [preview, setPreview] = useState<{ total: number } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
@@ -90,7 +100,7 @@ export function TimedWalkinDialog({
     setPreviewError(null)
     previewWalkinCheckout({
       bookingId: booking.bookingId,
-      headCount: isPerHead ? headCount : undefined,
+      headCount: takesPlayers ? headCount : undefined,
     }).then((r) => {
       if (cancelled) return
       setPreviewLoading(false)
@@ -129,7 +139,7 @@ export function TimedWalkinDialog({
     startCheckout(async () => {
       const r = await checkoutWalkin({
         bookingId: booking.bookingId,
-        headCount: isPerHead ? headCount : undefined,
+        headCount: takesPlayers ? headCount : undefined,
       })
       if (r.error || !r.bookingId) {
         setCheckoutError(r.error ?? 'Could not check out this session.')
@@ -201,7 +211,7 @@ export function TimedWalkinDialog({
         </div>
         {extendError && <p className="mt-1.5 text-sm text-destructive">{extendError}</p>}
 
-        {isPerHead && (
+        {takesPlayers && (
           <>
             <label className="mt-4 block text-sm font-medium text-foreground">Players</label>
             <div className="mt-2 flex items-center gap-2">
@@ -226,7 +236,9 @@ export function TimedWalkinDialog({
               </button>
             </div>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              Editing re-prices the whole session — minimum {minPlayers}.
+              {isBoard
+                ? `Editing re-prices the whole session — ${booking.includedPlayers ?? 1} included, extra players are charged.`
+                : `Editing re-prices the whole session — minimum ${minPlayers}.`}
             </p>
           </>
         )}
