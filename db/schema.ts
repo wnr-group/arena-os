@@ -388,6 +388,10 @@ export const bookings = pgTable(
     // folded into a real payments row against an issued invoice, so the
     // same cash can never be applied twice.
     advanceApplied: boolean('advance_applied').notNull().default(false),
+    // M28 #1 (0104): true when an owner/manager entered this booking after the
+    // session already happened (backdated entry). Explicit flag, never inferred
+    // from timestamps. False for every booking created any other way.
+    backdated: boolean('backdated').notNull().default(false),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
