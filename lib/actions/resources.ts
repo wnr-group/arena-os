@@ -74,6 +74,42 @@ const resourceTypeInput = z.object({
   // and lib/booking/service.ts's priceBookingSlots).
   pricingMode: z.enum(['per_resource', 'per_head']).default('per_resource'),
   minPlayers: z.coerce.number().int().min(1).default(1),
+  // M29 #2: board pricing — the base rate covers includedPlayers players and
+  // each player beyond that adds extraPlayerRate per hour (blank/null = the
+  // surcharge is off). Same null-before-coerce union as weekendRate above.
+  includedPlayers: z.coerce.number().int().positive('Included players must be a whole number of at least 1.').default(1),
+  extraPlayerRate: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.null(), z.coerce.number().min(0, 'Extra player rate can’t be negative.')]),
+    )
+    .optional(),
+  extraPlayerWeekendRate: z
+    .preprocess(
+      (v) => (v === '' || v === null || v === undefined ? null : v),
+      z.union([z.null(), z.coerce.number().min(0, 'Extra player weekend rate can’t be negative.')]),
+    )
+    .optional(),
+}).superRefine((v, ctx) => {
+  const hasBase = v.extraPlayerRate !== null && v.extraPlayerRate !== undefined
+  const hasWeekend = v.extraPlayerWeekendRate !== null && v.extraPlayerWeekendRate !== undefined
+  // Hiding the fields in the form is a convenience; this is the guard.
+  if (v.pricingMode === 'per_head' && (hasBase || hasWeekend)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['extraPlayerRate'],
+      message: 'Extra-player pricing only applies to per-station types, not per-head types.',
+    })
+  }
+  // A weekend extra rate falls back to the base extra rate — with no base rate
+  // the surcharge is off and there is nothing to fall back from.
+  if (hasWeekend && !hasBase) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['extraPlayerWeekendRate'],
+      message: 'Set an extra player rate before setting a weekend extra player rate.',
+    })
+  }
 })
 
 export async function upsertResourceType(input: z.input<typeof resourceTypeInput>): Promise<Result> {
@@ -108,6 +144,13 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         throw new AuthError('Per-head pricing isn’t available for restaurant table types.')
       }
 
+      // Board extra-player pricing is a gaming_cafe feature (0105). Gated here,
+      // not just by hiding the fields, same as the per-head gate above.
+      const hasSurcharge = v.extraPlayerRate !== null && v.extraPlayerRate !== undefined
+      if (hasSurcharge && ctx.tenant.industry !== 'gaming_cafe') {
+        throw new AuthError('Extra-player pricing isn’t available for this business type.')
+      }
+
       const values = {
         tenantId: ctx.tenant.id,
         name: v.name,
@@ -122,6 +165,13 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         isActive: v.isActive,
         pricingMode: v.pricingMode,
         minPlayers: v.minPlayers,
+        // includedPlayers is meaningless for per_head (every player is billed).
+        includedPlayers: v.pricingMode === 'per_head' ? 1 : v.includedPlayers,
+        extraPlayerRate: hasSurcharge ? v.extraPlayerRate!.toFixed(2) : null,
+        extraPlayerWeekendRate:
+          hasSurcharge && v.extraPlayerWeekendRate !== null && v.extraPlayerWeekendRate !== undefined
+            ? v.extraPlayerWeekendRate.toFixed(2)
+            : null,
       }
       if (v.id) {
         const [existing] = await tx

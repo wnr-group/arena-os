@@ -51,6 +51,10 @@ type TypeRow = {
   // match the column's type across the app (lib/booking/service.ts).
   pricingMode: string
   minPlayers: number
+  /** M29 #2: board pricing (per_resource only). extraPlayerRate null = off. */
+  includedPlayers: number
+  extraPlayerRate: string | null
+  extraPlayerWeekendRate: string | null
   isActive: boolean
 }
 type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food' | 'resources' | 'both' }
@@ -443,6 +447,12 @@ function TypeModal({
     row?.pricingMode === 'per_head' ? 'per_head' : 'per_resource',
   )
   const [minPlayers, setMinPlayers] = useState(String(row?.minPlayers ?? 1))
+  const [includedPlayers, setIncludedPlayers] = useState(String(row?.includedPlayers ?? 1))
+  const [extraPlayerRate, setExtraPlayerRate] = useState(row?.extraPlayerRate ?? '')
+  const [extraPlayerWeekendRate, setExtraPlayerWeekendRate] = useState(row?.extraPlayerWeekendRate ?? '')
+  // Board extra-player pricing: gaming_cafe + per-station types only. Hiding
+  // is a convenience — upsertResourceType re-validates both.
+  const showSurcharge = industry === 'gaming_cafe' && pricingMode === 'per_resource'
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
   const [imageUrl, setImageUrl] = useState(row?.imageUrl ?? '')
   const [fileName, setFileName] = useState<string | null>(row?.imageUrl ? fileNameFromUrl(row.imageUrl) : null)
@@ -459,6 +469,9 @@ function TypeModal({
       buffer?: string
       capacity?: string
       minPlayers?: string
+      includedPlayers?: string
+      extraPlayerRate?: string
+      extraPlayerWeekendRate?: string
     } = {}
     if (!name.trim()) e.name = 'Name is required.'
     else if (name.trim().length < 2) e.name = 'Name must be at least 2 characters.'
@@ -475,8 +488,20 @@ function TypeModal({
       e.capacity = 'Capacity must be a positive number.'
     if (pricingMode === 'per_head' && (Number.isNaN(Number(minPlayers)) || !Number.isInteger(Number(minPlayers)) || Number(minPlayers) < 1))
       e.minPlayers = 'Minimum players must be a whole number of at least 1.'
+    if (showSurcharge) {
+      const n = Number(includedPlayers)
+      if (includedPlayers === '' || !Number.isInteger(n) || n < 1)
+        e.includedPlayers = 'Included players must be a whole number of at least 1.'
+      if (extraPlayerRate !== '' && (Number.isNaN(Number(extraPlayerRate)) || Number(extraPlayerRate) < 0))
+        e.extraPlayerRate = 'Enter a valid rate, or leave it blank.'
+      if (extraPlayerWeekendRate !== '') {
+        if (Number.isNaN(Number(extraPlayerWeekendRate)) || Number(extraPlayerWeekendRate) < 0)
+          e.extraPlayerWeekendRate = 'Enter a valid rate, or leave it blank.'
+        else if (extraPlayerRate === '') e.extraPlayerWeekendRate = 'Set an extra player rate first.'
+      }
+    }
     return e
-  }, [name, description, rate, weekendRate, buffer, capacity, pricingMode, minPlayers])
+  }, [name, description, rate, weekendRate, buffer, capacity, pricingMode, minPlayers, showSurcharge, includedPlayers, extraPlayerRate, extraPlayerWeekendRate])
   const isValid = Object.keys(errors).length === 0
   // A rate scoped to 'food' only isn't valid on a resource type — the server
   // rejects it too (lib/actions/resources.ts) — but keep the current
@@ -521,6 +546,10 @@ function TypeModal({
           taxRateId: taxRateId || null,
           pricingMode,
           minPlayers: minPlayers === '' ? 1 : Number(minPlayers),
+          includedPlayers: showSurcharge ? Number(includedPlayers) : 1,
+          extraPlayerRate: showSurcharge && extraPlayerRate !== '' ? Number(extraPlayerRate) : null,
+          extraPlayerWeekendRate:
+            showSurcharge && extraPlayerRate !== '' && extraPlayerWeekendRate !== '' ? Number(extraPlayerWeekendRate) : null,
           isActive,
         }),
       () => {
@@ -689,6 +718,58 @@ function TypeModal({
                   per-station weekend override. A station&apos;s own rate override (on the Resources page) only ever
                   changes the weekday rate.
                 </p>
+                {showSurcharge && (
+                  <div className="space-y-3 rounded-lg border border-border p-3">
+                    <p className="text-sm font-medium">Extra-player pricing (optional)</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className={label}>Included players</label>
+                        <input
+                          className={`${input} ${submitted && errors.includedPlayers ? inputInvalid : ''}`}
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={includedPlayers}
+                          onChange={(e) => setIncludedPlayers(e.target.value)}
+                        />
+                        {submitted && errors.includedPlayers && <p className={errorText}>{errors.includedPlayers}</p>}
+                      </div>
+                      <div>
+                        <label className={label}>Extra player rate ({currencySymbol(currency)}/hr)</label>
+                        <input
+                          className={`${input} ${submitted && errors.extraPlayerRate ? inputInvalid : ''}`}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="Off"
+                          value={extraPlayerRate}
+                          onChange={(e) => setExtraPlayerRate(e.target.value)}
+                        />
+                        {submitted && errors.extraPlayerRate && <p className={errorText}>{errors.extraPlayerRate}</p>}
+                      </div>
+                      <div>
+                        <label className={label}>Extra player rate (weekend)</label>
+                        <input
+                          className={`${input} ${submitted && errors.extraPlayerWeekendRate ? inputInvalid : ''}`}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="Same as weekday"
+                          value={extraPlayerWeekendRate}
+                          onChange={(e) => setExtraPlayerWeekendRate(e.target.value)}
+                        />
+                        {submitted && errors.extraPlayerWeekendRate && (
+                          <p className={errorText}>{errors.extraPlayerWeekendRate}</p>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      The station rate covers the included players; each player beyond that adds the extra player rate
+                      per hour. Leave the rate blank to turn this off. Only affects new bookings — bookings already
+                      made keep what they were charged.
+                    </p>
+                  </div>
+                )}
                 <div>
                   <label className={label}>Buffer (minutes)</label>
                   <input
