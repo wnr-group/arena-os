@@ -489,8 +489,8 @@ function TypeModal({
       e.minPlayers = 'Minimum players must be a whole number of at least 1.'
     if (showSurcharge) {
       const n = Number(includedPlayers)
-      if (includedPlayers === '' || !Number.isInteger(n) || n < 1)
-        e.includedPlayers = 'Included players must be a whole number of at least 1.'
+      if (includedPlayers === '' || !Number.isInteger(n) || n < 1 || n > 1000)
+        e.includedPlayers = 'Included players must be a whole number from 1 to 1000.'
       if (extraPlayerRate !== '' && (Number.isNaN(Number(extraPlayerRate)) || Number(extraPlayerRate) < 0))
         e.extraPlayerRate = 'Enter a valid rate, or leave it blank.'
       if (extraPlayerWeekendRate !== '') {
@@ -817,6 +817,7 @@ function TypeModal({
                             className={`${input} ${submitted && errors.includedPlayers ? inputInvalid : ''}`}
                             type="number"
                             min="1"
+                            max="1000"
                             step="1"
                             value={includedPlayers}
                             onChange={(e) => setIncludedPlayers(e.target.value)}
