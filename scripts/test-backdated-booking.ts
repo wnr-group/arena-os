@@ -128,7 +128,7 @@ async function main() {
   console.log('\n── idempotency key ──')
   {
     const key = 'idem-test-key-0001'
-    const inp = base(ps5.resourceId, localAt(yesterday, '08:00'), localAt(yesterday, '09:00'), { idempotencyKey: key })
+    const inp = base(ps5.resourceId, localAt(yesterday, '08:00'), localAt(yesterday, '09:00'), { idempotencyKey: key, amountCollected: 100 })
     const first = await record(inp)
     const again = await record(inp)
     check('retry returns the SAME booking instead of a slot collision', again.bookingId === first.bookingId && again.invoiceNumber === first.invoiceNumber, { first, again })
