@@ -2,12 +2,14 @@ import { notFound } from 'next/navigation'
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
-import { getPublicBranch, getPublicResourceType } from '@/lib/booking/public-availability'
+import { getPublicBranch, getPublicResourceType, getPublicTypeUnitsWithSetups } from '@/lib/booking/public-availability'
 import { todayInZone } from '@/lib/booking/time'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
+import { ResourceUnitPicker } from '@/components/public-booking/ResourceUnitPicker'
 import { ResourceTypeBookingPage } from '@/components/public-booking/ResourceTypeBookingPage'
 import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
@@ -87,6 +89,15 @@ export default async function ResourceTypeBookPage({
     console.error('[book-type] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
     return null
   })
+  // Studio industries: units are distinct sets with their own named setups, so
+  // when any unit has setups the customer picks the set first (each links to
+  // /book/[unitId], which offers the setup picker) instead of being
+  // auto-assigned one. Types with no setups keep the auto-assign flow.
+  const studioUnits =
+    branch && industryHasStudioSetups(tenant.industry)
+      ? await getPublicTypeUnitsWithSetups(tenant.id, branch.id, resourceType.id)
+      : []
+  const pickUnit = studioUnits.some((u) => u.setups.length > 0)
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
 
@@ -99,6 +110,9 @@ export default async function ResourceTypeBookPage({
         hasMenu={hasMenu}
       >
         <main className="flex-1 bg-gradient-to-b from-accent/60 via-background to-background">
+          {pickUnit ? (
+            <ResourceUnitPicker tenant={tenant} resourceType={resourceType} units={studioUnits} />
+          ) : (
           <ResourceTypeBookingPage
             tenant={tenant}
             resourceType={resourceType}
@@ -107,6 +121,7 @@ export default async function ResourceTypeBookPage({
             initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
             initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}
           />
+          )}
         </main>
 
         <PublicFooter
