@@ -33,6 +33,7 @@ import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
 import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
+import { lateEntryLabel } from '@/lib/booking/late-entry'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
@@ -86,6 +87,10 @@ type Slot = {
    *  slots; the Bookings table shows every status regardless. */
   active: boolean
   cancellationReason: string | null
+  /** M28: true when the booking was entered after the session happened. */
+  backdated: boolean
+  /** When the booking row was actually created (ISO) — the "recorded" half of a late entry. */
+  bookingCreatedAt: string
 }
 export type OrderItemLine = {
   itemId: string
@@ -752,6 +757,14 @@ export function BookingsView({
                           >
                             {SOURCE_LABELS[b.source] ?? b.source}
                           </span>
+                          {b.representative.backdated && (
+                            <span
+                              title={lateEntryLabel(b.representative.bookingCreatedAt, b.startsAt, timeZone)}
+                              className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white"
+                            >
+                              Entered late
+                            </span>
+                          )}
                         </div>
                         {b.customerPhone && <p className="text-sm text-muted-foreground">{b.customerPhone}</p>}
                       </td>
@@ -867,6 +880,16 @@ export function BookingsView({
               <Row k="Customer" v={selected.customerName || 'Walk-in'} />
               {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
               <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
+              {selected.backdated && (
+                <div>
+                  <span className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white">
+                    Entered late
+                  </span>
+                  <p className="mt-1 text-muted-foreground">
+                    {lateEntryLabel(selected.bookingCreatedAt, selected.startsAt, timeZone)}
+                  </p>
+                </div>
+              )}
               <Row
                 k="Time"
                 v={`${timeInZone(selected.startsAt, timeZone)}–${selected.endsAt ? timeInZone(selected.endsAt, timeZone) : 'Ongoing'}`}

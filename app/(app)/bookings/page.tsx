@@ -187,6 +187,8 @@ export default async function BookingsPage({
         bookingActiveSlotTotal: s.bookingActiveSlotTotal,
         active: s.active,
         cancellationReason: s.cancellationReason,
+        backdated: s.backdated,
+        bookingCreatedAt: s.bookingCreatedAt.toISOString(),
       }))}
       categories={categories}
       menuItems={menuItems}

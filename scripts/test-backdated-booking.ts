@@ -43,6 +43,7 @@ async function main() {
   const { todayInZone, addDays } = await import('../lib/booking/time')
   const { isManager } = await import('../lib/auth/roles')
   const { withUser } = await import('../db')
+  const { loadInvoiceReceipt } = await import('../lib/billing/receipt')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
 
@@ -143,6 +144,15 @@ async function main() {
     check('one booking.backdated_entry audit row', audit.length === 1)
     check('audit actor = the manager', audit[0]?.actor_membership_id === A.membershipId)
     check('audit records the claimed slot times', audit[0]?.after?.slots?.[0]?.startsAt === localAt(yesterday, '10:00').toISOString())
+  }
+
+  // ══ 1b. late-entry surfacing (M28 #4) ═══════════════════════════════════
+  console.log('\n── late-entry flag on the receipt ──')
+  {
+    const rc = await withUser(A.userId, (tx) => loadInvoiceReceipt(tx, A.tenantId, r1.invoiceId))
+    check('receipt of a backdated booking carries lateEntry', rc?.lateEntry != null)
+    check('sessionStart is the claimed start', rc?.lateEntry?.sessionStart.toISOString() === localAt(yesterday, '10:00').toISOString(), rc?.lateEntry)
+    check('recordedAt is (about) now, not the session', !!rc?.lateEntry && Math.abs(rc.lateEntry.recordedAt.getTime() - Date.now()) < 5 * 60_000)
   }
 
   // ══ 2. holiday pricing on the claimed date, no new pricing code ═════════
@@ -320,6 +330,9 @@ async function main() {
       return completeBookingIfFullySettled(tx, R.tenantId, live.id)
     })
     const lb = (await owner.query(`select status from bookings where id=$1`, [live.id])).rows[0]
+    const liveInv = (await owner.query(`select id from invoices where booking_id=$1`, [live.id])).rows[0]
+    const lrc = await withUser(R.userId, (tx) => loadInvoiceReceipt(tx, R.tenantId, liveInv.id))
+    check('a normal booking receipt has lateEntry = null', lrc?.lateEntry === null)
     check('real-time restaurant settlement still returns false', flipped === false)
     check('real-time restaurant booking stays confirmed (needs-cleaning step preserved)', lb.status === 'confirmed', lb)
   }

@@ -245,6 +245,9 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         // BookingsView show a live "Part paid" indicator, before any bill
         // exists, once sum(active slot_total) outgrows it.
         advancePaid: bookings.advancePaid,
+        // M28 #4: entered after the fact (backdated entry) + when it was entered.
+        backdated: bookings.backdated,
+        bookingCreatedAt: bookings.createdAt,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
