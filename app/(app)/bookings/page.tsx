@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
+import { canManageIncomingOrders, canManageKitchen, isManager } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
@@ -198,6 +198,7 @@ export default async function BookingsPage({
       canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
       showFoodOrdering={showFoodOrdering}
+      canRecordBackdated={isManager(ctx.role)}
     />
   )
 }

@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { BookingError } from '@/lib/booking/service'
-import { recordBackdatedBookingCore } from '@/lib/booking/backdated'
+import { recordBackdatedBookingCore, previewBackdatedBooking, type BackdatedPreview } from '@/lib/booking/backdated'
 import { BillingError } from '@/lib/billing/invoice'
 import { PaymentError, POS_PAYMENT_METHODS, MAX_PAYMENT_AMOUNT } from '@/lib/billing/payments'
 import { isValidPhone } from '@/lib/customers/phone'
@@ -82,6 +82,34 @@ export async function recordBackdatedBooking(input: z.input<typeof recordBackdat
 
     revalidatePath('/bookings')
     return result
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// The customer is optional for a preview (the form previews before it is
+// filled in); a valid phone is still passed so any membership benefit prices in.
+const previewBackdatedInput = recordBackdatedInput
+  .pick({ branchId: true, slots: true, headCount: true })
+  .extend({ customerPhone: z.string().trim().optional() })
+
+/**
+ * Live price preview for the "Record a past booking" form. Manager-gated like
+ * the action itself; writes nothing (the real create + invoice path runs in a
+ * transaction that is rolled back — see previewBackdatedBooking).
+ */
+export async function quoteBackdatedBooking(
+  input: z.input<typeof previewBackdatedInput>,
+): Promise<{ error?: string; preview?: BackdatedPreview }> {
+  try {
+    const ctx = await requireManager()
+    const v = previewBackdatedInput.parse(input)
+    const preview = await previewBackdatedBooking(
+      (fn) => withUser(ctx.user.id, fn),
+      { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+      { ...v, customerPhone: v.customerPhone && isValidPhone(v.customerPhone) ? v.customerPhone : undefined },
+    )
+    return { preview }
   } catch (e) {
     return fail(e)
   }

@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock,
   Eye,
+  History,
   Loader2,
   Minus,
   Plus,
@@ -186,6 +187,7 @@ export function BookingsView({
   canRequestVoidComp,
   canToggle86,
   showFoodOrdering,
+  canRecordBackdated = false,
 }: {
   branchId: string
   branchName: string
@@ -241,6 +243,8 @@ export function BookingsView({
    *  order" link entirely, rather than just disabling them. Every other
    *  industry (gaming_cafe, restaurant) is unaffected. */
   showFoodOrdering: boolean
+  /** Owner/manager only (M28) — shows the "Record past booking" entry point. The action itself re-checks the role. */
+  canRecordBackdated?: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -511,6 +515,14 @@ export function BookingsView({
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-base font-medium text-primary-foreground transition hover:opacity-90"
             >
               <Plus size={16} /> New booking
+            </Link>
+          )}
+          {canRecordBackdated && (
+            <Link
+              href="/bookings/backdated"
+              className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70"
+            >
+              <History size={16} /> Record past booking
             </Link>
           )}
           {showFoodOrdering && (

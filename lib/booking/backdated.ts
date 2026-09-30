@@ -69,16 +69,15 @@ export function assertBackdatedWindow(slots: { startsAt: string; endsAt: string 
   }
 }
 
-export async function recordBackdatedBookingCore(
+/** Steps 1-2 of the flow (window check, booking, invoice) — shared by the real
+ *  entry and the rolled-back preview so the two can never disagree. */
+async function createAndBill(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId: string },
-  input: RecordBackdatedInput,
-): Promise<RecordedBackdatedBooking> {
-  const now = new Date()
+  input: Omit<RecordBackdatedInput, 'amountCollected' | 'paymentMethod' | 'idempotencyKey'>,
+  now: Date,
+) {
   assertBackdatedWindow(input.slots, now)
-
-  const amount = input.amountCollected
-  if (!Number.isFinite(amount) || amount < 0) throw new BookingError('Amount collected must be zero or more.')
 
   const created = await createBookingCore(tx, ctx, {
     branchId: input.branchId,
@@ -95,6 +94,19 @@ export async function recordBackdatedBookingCore(
   })
 
   const invoice = await issueInvoiceForBooking(tx, { id: ctx.tenantId, timezone: ctx.timezone }, { bookingId: created.id })
+  return { created, invoice }
+}
+
+export async function recordBackdatedBookingCore(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string; membershipId: string },
+  input: RecordBackdatedInput,
+): Promise<RecordedBackdatedBooking> {
+  const now = new Date()
+  const amount = input.amountCollected
+  if (!Number.isFinite(amount) || amount < 0) throw new BookingError('Amount collected must be zero or more.')
+
+  const { created, invoice } = await createAndBill(tx, ctx, input, now)
 
   if (paise(amount) > 0) {
     await recordPaymentForInvoice(
@@ -156,4 +168,39 @@ export async function recordBackdatedBookingCore(
     invoiceNumber: invoice.invoiceNumber,
     completed,
   }
+}
+
+export type BackdatedPreview = { subtotal: number; discount: number; tax: number; total: number }
+
+/** Thrown to abort the preview's transaction — nothing it wrote survives. */
+class PreviewRollback extends Error {
+  constructor(readonly preview: BackdatedPreview) {
+    super('backdated preview rollback')
+  }
+}
+
+/**
+ * What recording this entry would bill, computed by running the REAL
+ * create + invoice path and rolling the transaction back. Going through the
+ * same code (weekend/holiday/happy-hour/per-head rates, GST, any membership
+ * benefit) is what keeps the estimate from ever disagreeing with the charge.
+ * Pass a `run` that opens the transaction (withUser) — this rethrows any real
+ * error (window, overlap, validation) so the caller can show it inline.
+ */
+export async function previewBackdatedBooking(
+  run: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>,
+  ctx: { tenantId: string; timezone: string; membershipId: string },
+  input: Omit<RecordBackdatedInput, 'amountCollected' | 'paymentMethod' | 'idempotencyKey'>,
+): Promise<BackdatedPreview> {
+  try {
+    await run(async (tx) => {
+      const { invoice } = await createAndBill(tx, ctx, input, new Date())
+      const p = invoice.pricing
+      throw new PreviewRollback({ subtotal: p.subtotal, discount: p.discount, tax: p.taxTotal, total: p.total })
+    })
+  } catch (e) {
+    if (e instanceof PreviewRollback) return e.preview
+    throw e
+  }
+  throw new Error('unreachable')
 }

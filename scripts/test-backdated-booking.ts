@@ -38,7 +38,7 @@ const DAY = 24 * 3600_000
 
 async function main() {
   loadEnv()
-  const { recordBackdatedBookingCore, assertBackdatedWindow } = await import('../lib/booking/backdated')
+  const { recordBackdatedBookingCore, assertBackdatedWindow, previewBackdatedBooking } = await import('../lib/booking/backdated')
   const { createBookingCore, completeBookingIfFullySettled, BookingError } = await import('../lib/booking/service')
   const { todayInZone, addDays } = await import('../lib/booking/time')
   const { isManager } = await import('../lib/auth/roles')
@@ -156,6 +156,34 @@ async function main() {
     const slot = (await owner.query(`select rate_applied, holiday_rate_applied from booking_slots where booking_id=$1`, [r.bookingId])).rows[0]
     check('holiday rate applied (300.00 not 100.00)', Number(slot.rate_applied) === 300 && slot.holiday_rate_applied === true, slot)
     check('and it settled + completed at that price', r.completed === true)
+  }
+
+  // ══ 2b. preview == charge, and leaves nothing behind ════════════════════
+  console.log('\n── preview ──')
+  {
+    const d = addDays(today, -5)
+    const counts = async () =>
+      [
+        Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [A.tenantId])).rows[0].count),
+        Number((await owner.query(`select count(*) from invoices where tenant_id=$1`, [A.tenantId])).rows[0].count),
+        Number((await owner.query(`select value from sequences where tenant_id=$1 and kind='booking' order by period desc limit 1`, [A.tenantId])).rows[0]?.value ?? 0),
+      ].join('/')
+    const before = await counts()
+    const input = base(ps5.resourceId, localAt(d, '14:00'), localAt(d, '16:30'))
+    const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
+    check('preview leaves no booking/invoice and does not burn a number', (await counts()) === before, [before, await counts()])
+    const real = await record({ ...input, amountCollected: pv.total })
+    const inv = (await owner.query(`select total from invoices where id=$1`, [real.invoiceId])).rows[0]
+    check('preview total equals the invoice actually raised', Number(inv.total) === pv.total, [pv, inv])
+    check('...and paying the previewed total completes it', real.completed === true)
+
+    let refused = ''
+    try {
+      await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, base(ps5.resourceId, new Date(now.getTime() - 9 * DAY), new Date(now.getTime() - 9 * DAY + 3600_000)))
+    } catch (e) {
+      refused = e instanceof BookingError ? e.message : 'other'
+    }
+    check('preview surfaces the window refusal', refused.includes('7 days'), refused)
   }
 
   // ══ 3. per-head ══════════════════════════════════════════════════════════
