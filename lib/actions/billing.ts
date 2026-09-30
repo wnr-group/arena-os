@@ -210,7 +210,7 @@ export async function updateBookingHeadCount(
     }
     const v = updateHeadCountInput.parse(input)
     const result = await withUser(ctx.user.id, (tx) =>
-      updateBookingHeadCountCore(tx, { tenantId: ctx.tenant.id }, v),
+      updateBookingHeadCountCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
     )
     revalidatePath(`/pos/${v.bookingId}`)
     return { headCount: result.headCount }

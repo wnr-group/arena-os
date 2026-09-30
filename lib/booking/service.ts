@@ -747,7 +747,7 @@ export type UpdateBookingHeadCountInput = { bookingId: string; headCount: number
  */
 export async function updateBookingHeadCountCore(
   tx: Db,
-  ctx: { tenantId: string },
+  ctx: { tenantId: string; timezone?: string },
   input: UpdateBookingHeadCountInput,
 ): Promise<{ bookingId: string; headCount: number }> {
   if (!Number.isInteger(input.headCount) || input.headCount < 1) {
@@ -755,7 +755,7 @@ export async function updateBookingHeadCountCore(
   }
 
   const [booking] = await tx
-    .select({ id: bookings.id, discount: bookings.discount })
+    .select({ id: bookings.id, discount: bookings.discount, branchId: bookings.branchId })
     .from(bookings)
     .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
     .for('update')
@@ -779,6 +779,8 @@ export async function updateBookingHeadCountCore(
       headCount: bookingSlots.headCount,
       // M23 follow-up — see the re-price loop below.
       happyHourApplied: bookingSlots.happyHourApplied,
+      // M29 #5: non-null only for a board-with-surcharge slot.
+      extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
     })
     .from(bookingSlots)
     .where(
@@ -786,22 +788,32 @@ export async function updateBookingHeadCountCore(
     )
     .for('update')
   const perHeadSlots = slots.filter((s) => s.pricingMode === 'per_head')
-  if (perHeadSlots.length === 0) {
+  // M29 #5: a board-with-surcharge slot has an editable player count too —
+  // eligibility is the slot's own extra_player_rate_applied snapshot (what was
+  // charged at booking time), not the type's current config.
+  const isSurchargeSlot = (s: (typeof slots)[number]) =>
+    s.pricingMode !== 'per_head' && s.extraPlayerRateApplied !== null
+  const surchargeSlots = slots.filter(isSurchargeSlot)
+  if (perHeadSlots.length === 0 && surchargeSlots.length === 0) {
     throw new BookingError('This booking has no per-head resource to adjust.')
   }
 
   // min_players is checked against the resource type's CURRENT setting, not
-  // a snapshot — see the doc comment above.
-  const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
-  const typeRows = await tx
-    .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
-    .from(resources)
-    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
-    .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
-  const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
-  if (input.headCount < minPlayers) {
-    const name = typeRows[0]?.typeName ?? 'This resource'
-    throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+  // a snapshot — see the doc comment above. per_head slots only: a surcharge
+  // board has no real floor (fewer players than included just means no
+  // surcharge), so it only needs the positive-integer check at the top.
+  if (perHeadSlots.length > 0) {
+    const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
+    const typeRows = await tx
+      .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
+    const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+    if (input.headCount < minPlayers) {
+      const name = typeRows[0]?.typeName ?? 'This resource'
+      throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+    }
   }
 
   // Re-price every per_head slot AND refresh the booking's stored subtotal/
@@ -811,9 +823,60 @@ export async function updateBookingHeadCountCore(
   // denormalized columns are read straight out and would otherwise go stale.
   // A per_head slot with no ends_at yet (an open-tab walk-in) is priced at
   // checkout, not here, so its slot_total is left to checkoutWalkinCore.
+  // M29 #5: only a surcharge re-price needs the tenant's timezone (day-rate
+  // resolution); resolved lazily so every existing caller keeps passing just
+  // { tenantId }.
+  let timezone = ctx.timezone
+  if (surchargeSlots.length > 0 && !timezone) {
+    const [t] = await tx.select({ tz: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    timezone = t?.tz
+  }
   let newSubtotal = 0
   for (const s of slots) {
-    if (s.pricingMode === 'per_head' && s.endsAt !== null) {
+    if (isSurchargeSlot(s) && s.endsAt !== null) {
+      // M29 #5: a board-with-surcharge slot re-prices by running the SAME
+      // priceBookingSlots a fresh booking goes through, for this slot's own
+      // frozen window and the new player count — so the composition
+      // (day rate resolved against the slot's OWN startsAt, not today, then
+      // base + max(0, players − included) × extra rate, then happy hour /
+      // holiday) can never drift from #3. Parallel to the per_head branch
+      // below, which is untouched.
+      const [repriced] = (
+        await priceBookingSlots(
+          tx,
+          { tenantId: ctx.tenantId, timezone: timezone ?? 'UTC' },
+          {
+            branchId: booking.branchId,
+            slots: [
+              {
+                resourceId: s.resourceId,
+                startsAt: new Date(s.startsAt).toISOString(),
+                endsAt: new Date(s.endsAt).toISOString(),
+              },
+            ],
+            headCount: input.headCount,
+          },
+        )
+      ).slots
+      if (repriced.extraPlayerRateApplied === null) {
+        // The surcharge was switched off since this was booked — re-pricing
+        // would silently turn it into a plain booking.
+        throw new BookingError('Extra-player pricing is no longer set up for this resource, so the player count can’t be corrected here.')
+      }
+      const slotTotal = round2(Number(repriced.slotTotal))
+      newSubtotal += slotTotal
+      await tx
+        .update(bookingSlots)
+        .set({
+          headCount: input.headCount,
+          rateApplied: repriced.rateApplied,
+          extraPlayerRateApplied: repriced.extraPlayerRateApplied,
+          slotTotal: slotTotal.toFixed(2),
+          happyHourApplied: repriced.happyHourApplied,
+          holidayRateApplied: repriced.holidayRateApplied,
+        })
+        .where(and(eq(bookingSlots.id, s.id), eq(bookingSlots.tenantId, ctx.tenantId)))
+    } else if (s.pricingMode === 'per_head' && s.endsAt !== null) {
       // M23 follow-up: rate_applied is a per-hour BLEND rounded to cents
       // (priceBookingSlots) — for a happy-hour slot, flat headCount × rate ×
       // hours can't reproduce the exact per-segment total

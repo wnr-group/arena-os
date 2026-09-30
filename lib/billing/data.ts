@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, inArray, max, min, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, max, min, ne, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
 import {
   bookings,
@@ -151,6 +151,14 @@ export type BillableBookingHeader = {
    *  reasoning as updateBookingHeadCountCore's own re-check. Meaningless
    *  when pricingMode is null. */
   minPlayers: number | null
+  /** M29 #5: true when the bill screen's Players control applies — at least
+   *  one active slot is per_head OR carries a board extra-player snapshot
+   *  (booking_slots.extra_player_rate_applied). Decided from what was
+   *  charged at booking time, not the type's current live config. */
+  hasEditablePlayerCount: boolean
+  /** M29 #5: the surcharge type's players covered by the base rate — live,
+   *  display-only. Null unless a surcharge slot exists. */
+  includedPlayers: number | null
 }
 
 /** One check of a split bill (M18 #2) — the same shape a normal invoice's
@@ -353,6 +361,25 @@ export async function getBillableForBooking(
       )
       .limit(1)
 
+    // M29 #5: a board-with-surcharge slot is editable too. Eligibility comes
+    // from the slot's OWN extra_player_rate_applied snapshot (non-null only
+    // when a surcharge was configured at booking time), never the type's
+    // current config — same snapshot-vs-live discipline as M25's corrections.
+    const [surchargeSlot] = await tx
+      .select({ includedPlayers: resourceTypes.includedPlayers })
+      .from(bookingSlots)
+      .innerJoin(resources, eq(resources.id, bookingSlots.resourceId))
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(bookingSlots.tenantId, ctx.tenant.id),
+          eq(bookingSlots.bookingId, row.id),
+          eq(bookingSlots.active, true),
+          isNotNull(bookingSlots.extraPlayerRateApplied),
+        ),
+      )
+      .limit(1)
+
     // The membership benefit, for DISPLAY on the bill screen. Priced against the
     // undiscounted subtotal, exactly as issueInvoiceForBooking() does, through
     // the same helper — so the figure the cashier sees is the figure that gets
@@ -400,6 +427,8 @@ export async function getBillableForBooking(
         headCount: row.headCount,
         pricingMode: perHeadSlot ? 'per_head' : null,
         minPlayers: perHeadSlot?.minPlayers ?? null,
+        hasEditablePlayerCount: Boolean(perHeadSlot || surchargeSlot),
+        includedPlayers: surchargeSlot?.includedPlayers ?? null,
         branchId: row.branchId,
         branchName: row.branchName,
         customerId: row.customerId,

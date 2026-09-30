@@ -36,6 +36,10 @@ type BookingHeader = {
   headCount: number | null
   /** The resource type's live min_players; meaningless when pricingMode is null. */
   minPlayers: number | null
+  /** M29 #5: per_head OR a board-with-surcharge slot — the Players control applies. */
+  hasEditablePlayerCount: boolean
+  /** A surcharge type's included players (display only); null when none. */
+  includedPlayers: number | null
 }
 type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
 
@@ -460,7 +464,7 @@ export function BillScreen({
       </div>
 
       {/* ── players (M21 per-head #4) ── */}
-      {booking.pricingMode === 'per_head' && (
+      {booking.hasEditablePlayerCount && (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
           <span className="font-medium text-foreground">Players</span>
           {canEditHeadCount ? (
@@ -483,7 +487,9 @@ export function BillScreen({
                 {headCountPending && <Loader2 size={12} className="animate-spin" />} Update
               </button>
               <span className="text-xs text-muted-foreground">
-                Re-prices the whole session · min {booking.minPlayers ?? 1}
+                {booking.minPlayers !== null
+                  ? `Re-prices the whole session · min ${booking.minPlayers}`
+                  : `Re-prices the whole session · ${booking.includedPlayers ?? 1} included, extra players are charged`}
               </span>
               {headCountError && <span className="text-xs text-destructive">{headCountError}</span>}
             </>
