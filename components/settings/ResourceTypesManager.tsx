@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage, CalendarDays } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage, CalendarDays, FileText, Wallet, Users, SlidersHorizontal, Palette } from 'lucide-react'
 import { upsertResourceType, deleteResourceType, uploadResourceTypeImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
@@ -65,7 +65,6 @@ type HolidayTarget = { resourceTypeId: string; resourceTypeName: string }
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
 const inputInvalid = 'border-destructive focus:border-destructive focus:ring-destructive/30'
-const label = 'text-sm font-medium text-muted-foreground'
 const errorText = 'mt-1 text-sm text-destructive'
 const btn =
   'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
@@ -559,360 +558,532 @@ function TypeModal({
     )
   }
 
-  // Restaurant only: no live preview panel (see below), so the dialog is a
-  // single narrow column instead of the two-column form+preview layout.
-  const actions = (
-    <div className="mt-5 flex items-center justify-between gap-2">
-      <button
-        className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={pending}
-        onClick={onClose}
-      >
-        Cancel
-      </button>
-      <button
-        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={pending || uploading}
-        onClick={submit}
-      >
-        {pending && <Loader2 size={15} className="animate-spin" />}
-        {pending ? 'Saving…' : row ? 'Save Changes' : isRestaurant ? 'Add Table Type' : 'Add Resource Type'}
-      </button>
-    </div>
-  )
+
+  const fieldLabel = 'mb-1.5 block text-xs font-medium text-muted-foreground'
+  const hasExtra = showSurcharge && extraPlayerRate !== ''
+  const swatches = ['#3b82f6', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#10b981', '#06b6d4', '#64748b']
+  const validColor = /^#[0-9a-fA-F]{6}$/.test(color)
+
+  const title = isRestaurant
+    ? row
+      ? 'Edit table type'
+      : 'Add table type'
+    : row
+      ? 'Edit resource type'
+      : 'Add resource type'
+  const subtitle = isRestaurant
+    ? 'Just a name and how many guests it seats.'
+    : 'Set up pricing and booking rules — the preview updates as you type.'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm sm:p-4"
+      onClick={onClose}
+    >
       <div
-        className={`relative grid max-h-[92vh] w-full overflow-y-auto rounded-xl border border-border bg-card shadow-2xl ${
-          isRestaurant ? 'max-w-sm grid-cols-1' : 'max-w-4xl grid-cols-1 md:grid-cols-[1.3fr_1fr]'
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl ${
+          isRestaurant ? 'max-w-md' : 'max-w-5xl'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-3 z-10 rounded-full border border-border/60 bg-background/90 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition hover:text-foreground"
+        {/* Header */}
+        <div className="flex items-start gap-3 border-b border-border bg-gradient-to-b from-muted/40 to-transparent px-6 py-5">
+          <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+            <Boxes size={20} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-semibold leading-tight">{title}</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-full p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div
+          className={`grid min-h-0 flex-1 overflow-y-auto ${isRestaurant ? 'grid-cols-1' : 'md:grid-cols-[minmax(0,1fr)_300px]'}`}
         >
-          <X size={16} />
-        </button>
-
-        {/* Form */}
-        <div className="order-2 p-6 pt-8 md:order-1">
-          <h2 className="text-xl font-semibold">
-            {isRestaurant ? (row ? 'Edit table type' : 'Add table type') : row ? 'Edit resource type' : 'Add resource type'}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {isRestaurant
-              ? 'Just a name and how many guests it seats.'
-              : 'Fill in the details — the preview updates as you type.'}
-          </p>
-
-          <div className="mt-4 space-y-3">
-            {uploadError && <p className="text-sm text-destructive">{uploadError}</p>}
-
-            <div>
-              <label className={label}>
-                Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
-                placeholder={isRestaurant ? 'e.g. 4-Seater' : 'e.g. PS5 Station'}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={100}
-                autoFocus
-              />
-              {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
-            </div>
+          <div className="space-y-4 px-6 py-5">
+            {uploadError && (
+              <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {uploadError}
+              </p>
+            )}
 
             {isRestaurant ? (
-              <div>
-                <label className={label}>Capacity (optional)</label>
-                <input
-                  className={`${input} ${submitted && errors.capacity ? inputInvalid : ''}`}
-                  type="number"
-                  min="1"
-                  value={capacity}
-                  onChange={(e) => setCapacity(e.target.value)}
-                />
-                {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
-              </div>
-            ) : (
               <>
                 <div>
-                  <label className={label}>Description (optional)</label>
-                  <textarea
-                    className={`${input} ${submitted && errors.description ? inputInvalid : ''}`}
-                    rows={2}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
+                  <label className={fieldLabel}>
+                    Name <span className="text-destructive">*</span>
+                  </label>
+                  <input
+                    className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
+                    placeholder="e.g. 4-Seater"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    maxLength={100}
+                    autoFocus
                   />
-                  {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
+                  {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
                 </div>
                 <div>
-                  <label className={label}>Pricing mode</label>
-                  <div className="mt-1 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPricingMode('per_resource')}
-                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                        pricingMode === 'per_resource'
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-muted-foreground hover:bg-muted/40'
+                  <label className={fieldLabel}>Capacity (optional)</label>
+                  <input
+                    className={`${input} ${submitted && errors.capacity ? inputInvalid : ''}`}
+                    type="number"
+                    min="1"
+                    value={capacity}
+                    onChange={(e) => setCapacity(e.target.value)}
+                  />
+                  {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
+                </div>
+              </>
+            ) : (
+              <>
+                {/* 1 · Basics */}
+                <ModalSection icon={<FileText size={15} />} title="Basics" hint="What customers will see.">
+                  <div>
+                    <label className={fieldLabel}>
+                      Name <span className="text-destructive">*</span>
+                    </label>
+                    <input
+                      className={`${input} ${submitted && errors.name ? inputInvalid : ''}`}
+                      placeholder="e.g. PS5 Station"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      maxLength={100}
+                      autoFocus
+                    />
+                    {submitted && errors.name && <p className={errorText}>{errors.name}</p>}
+                  </div>
+                  <div>
+                    <label className={fieldLabel}>Description (optional)</label>
+                    <textarea
+                      className={`${input} resize-none ${submitted && errors.description ? inputInvalid : ''}`}
+                      rows={2}
+                      placeholder="A short line about this type"
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                    />
+                    {submitted && errors.description && <p className={errorText}>{errors.description}</p>}
+                  </div>
+                  <div>
+                    <label className={fieldLabel}>Photo (optional)</label>
+                    <label
+                      className={`flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed px-4 py-3 transition ${
+                        uploading
+                          ? 'cursor-not-allowed border-border opacity-60'
+                          : 'border-border hover:border-primary/50 hover:bg-muted/30'
                       }`}
                     >
-                      Per station
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPricingMode('per_head')}
-                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                        pricingMode === 'per_head'
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-muted-foreground hover:bg-muted/40'
-                      }`}
-                    >
-                      Per head
-                    </button>
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        {uploading ? (
+                          <Loader2 size={18} className="animate-spin" />
+                        ) : fileName ? (
+                          <FileImage size={18} className="text-primary" />
+                        ) : (
+                          <UploadCloud size={18} />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
+                          {uploading ? 'Uploading…' : fileName ?? 'Click to upload a photo'}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {fileName && !uploading ? 'Click to replace' : 'JPEG, PNG, WEBP or GIF · up to 5MB'}
+                        </span>
+                      </span>
+                      {fileName && !uploading && (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            setImageUrl('')
+                            setFileName(null)
+                          }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        className="hidden"
+                        disabled={uploading}
+                        onChange={handleFile}
+                      />
+                    </label>
+                  </div>
+                </ModalSection>
+
+                {/* 2 · Pricing */}
+                <ModalSection icon={<Wallet size={15} />} title="Pricing" hint="How this type is billed.">
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        { id: 'per_resource', title: 'Per station', desc: 'One rate per booking', Icon: Boxes },
+                        { id: 'per_head', title: 'Per head', desc: 'Rate × number of players', Icon: Users },
+                      ] as const
+                    ).map(({ id, title: t, desc, Icon }) => {
+                      const active = pricingMode === id
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setPricingMode(id)}
+                          className={`flex items-center gap-3 rounded-xl border p-3 text-left transition ${
+                            active
+                              ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                              : 'border-border hover:bg-muted/40'
+                          }`}
+                        >
+                          <span
+                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                              active ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            <Icon size={16} />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold">{t}</span>
+                            <span className="block truncate text-xs text-muted-foreground">{desc}</span>
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                   {pricingMode === 'per_head' && (
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground">
                       Billed per player instead of per booking. Switching an existing type is explicit and only
                       affects new bookings — bills already made keep their original rate.
                     </p>
                   )}
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={label}>
-                      Weekday rate ({pricingMode === 'per_head' ? `${currencySymbol(currency)}/player/hr` : `${currencySymbol(currency)}/hr`})
-                    </label>
-                    <input
-                      className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={rate}
-                      onChange={(e) => setRate(e.target.value)}
-                    />
-                    {submitted && errors.rate && <p className={errorText}>{errors.rate}</p>}
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className={fieldLabel}>
+                        Weekday rate ({pricingMode === 'per_head' ? 'per player / hr' : 'per hr'})
+                      </label>
+                      <MoneyInput
+                        symbol={currencySymbol(currency)}
+                        invalid={submitted && !!errors.rate}
+                        value={rate}
+                        onChange={setRate}
+                        placeholder="0"
+                      />
+                      {submitted && errors.rate && <p className={errorText}>{errors.rate}</p>}
+                    </div>
+                    <div>
+                      <label className={fieldLabel}>Weekend rate (optional)</label>
+                      <MoneyInput
+                        symbol={currencySymbol(currency)}
+                        invalid={submitted && !!errors.weekendRate}
+                        value={weekendRate}
+                        onChange={setWeekendRate}
+                        placeholder="Same as weekday"
+                      />
+                      {submitted && errors.weekendRate && <p className={errorText}>{errors.weekendRate}</p>}
+                    </div>
                   </div>
-                  <div>
-                    <label className={label}>Weekend rate (optional)</label>
-                    <input
-                      className={`${input} ${submitted && errors.weekendRate ? inputInvalid : ''}`}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder="Same as weekday"
-                      value={weekendRate}
-                      onChange={(e) => setWeekendRate(e.target.value)}
-                    />
-                    {submitted && errors.weekendRate && <p className={errorText}>{errors.weekendRate}</p>}
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Weekend rate applies on the days set under{' '}
-                  <span className="font-medium text-foreground">Weekend days</span> above, tenant-wide — there is no
-                  per-station weekend override. A station&apos;s own rate override (on the Resources page) only ever
-                  changes the weekday rate.
-                </p>
-                {showSurcharge && (
-                  <div className="space-y-3 rounded-lg border border-border p-3">
-                    <p className="text-sm font-medium">Extra-player pricing (optional)</p>
-                    <div className="grid grid-cols-3 gap-3">
+                  <p className="text-xs text-muted-foreground">
+                    Weekend rate applies on the days set under{' '}
+                    <span className="font-medium text-foreground">Weekend days</span> above, tenant-wide. A
+                    station&apos;s own rate override (Resources page) only changes the weekday rate.
+                  </p>
+
+                  {showSurcharge && (
+                    <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/[0.03] p-3.5">
                       <div>
-                        <label className={label}>Included players</label>
+                        <p className="text-sm font-semibold">Extra-player pricing</p>
+                        <p className="text-xs text-muted-foreground">
+                          The station rate covers the included players; each extra player adds a per-hour charge.
+                          Leave the rate blank to turn it off.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <label className={fieldLabel}>Included players</label>
+                          <input
+                            className={`${input} ${submitted && errors.includedPlayers ? inputInvalid : ''}`}
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={includedPlayers}
+                            onChange={(e) => setIncludedPlayers(e.target.value)}
+                          />
+                          {submitted && errors.includedPlayers && <p className={errorText}>{errors.includedPlayers}</p>}
+                        </div>
+                        <div>
+                          <label className={fieldLabel}>Extra player / hr</label>
+                          <MoneyInput
+                            symbol={currencySymbol(currency)}
+                            invalid={submitted && !!errors.extraPlayerRate}
+                            value={extraPlayerRate}
+                            onChange={setExtraPlayerRate}
+                            placeholder="Off"
+                          />
+                          {submitted && errors.extraPlayerRate && <p className={errorText}>{errors.extraPlayerRate}</p>}
+                        </div>
+                        <div>
+                          <label className={fieldLabel}>Extra player / hr (weekend)</label>
+                          <MoneyInput
+                            symbol={currencySymbol(currency)}
+                            invalid={submitted && !!errors.extraPlayerWeekendRate}
+                            value={extraPlayerWeekendRate}
+                            onChange={setExtraPlayerWeekendRate}
+                            placeholder="Same as weekday"
+                          />
+                          {submitted && errors.extraPlayerWeekendRate && (
+                            <p className={errorText}>{errors.extraPlayerWeekendRate}</p>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Only affects new bookings — bookings already made keep what they were charged.
+                      </p>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className={fieldLabel}>Tax rate</label>
+                    <select className={input} value={taxRateId} onChange={(e) => setTaxRateId(e.target.value)}>
+                      <option value="">No tax</option>
+                      {selectableTaxRates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.percent}%)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </ModalSection>
+
+                {/* 3 · Booking rules */}
+                <ModalSection icon={<SlidersHorizontal size={15} />} title="Booking rules">
+                  <div className={`grid grid-cols-1 gap-3 ${pricingMode === 'per_head' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+                    <div>
+                      <label className={fieldLabel}>Buffer (minutes)</label>
+                      <input
+                        className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
+                        type="number"
+                        min="0"
+                        value={buffer}
+                        onChange={(e) => setBuffer(e.target.value)}
+                      />
+                      {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
+                    </div>
+                    <div>
+                      <label className={fieldLabel}>Capacity (optional)</label>
+                      <input
+                        className={`${input} ${submitted && errors.capacity ? inputInvalid : ''}`}
+                        type="number"
+                        min="1"
+                        value={capacity}
+                        onChange={(e) => setCapacity(e.target.value)}
+                      />
+                      {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
+                    </div>
+                    {pricingMode === 'per_head' && (
+                      <div>
+                        <label className={fieldLabel}>Minimum players</label>
                         <input
-                          className={`${input} ${submitted && errors.includedPlayers ? inputInvalid : ''}`}
+                          className={`${input} ${submitted && errors.minPlayers ? inputInvalid : ''}`}
                           type="number"
                           min="1"
                           step="1"
-                          value={includedPlayers}
-                          onChange={(e) => setIncludedPlayers(e.target.value)}
+                          value={minPlayers}
+                          onChange={(e) => setMinPlayers(e.target.value)}
                         />
-                        {submitted && errors.includedPlayers && <p className={errorText}>{errors.includedPlayers}</p>}
+                        {submitted && errors.minPlayers && <p className={errorText}>{errors.minPlayers}</p>}
                       </div>
-                      <div>
-                        <label className={label}>Extra player rate ({currencySymbol(currency)}/hr)</label>
-                        <input
-                          className={`${input} ${submitted && errors.extraPlayerRate ? inputInvalid : ''}`}
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="Off"
-                          value={extraPlayerRate}
-                          onChange={(e) => setExtraPlayerRate(e.target.value)}
+                    )}
+                  </div>
+                </ModalSection>
+
+                {/* 4 · Appearance & status */}
+                <ModalSection icon={<Palette size={15} />} title="Appearance & status">
+                  <div>
+                    <label className={fieldLabel}>Calendar color (optional)</label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {swatches.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          aria-label={`Use ${c}`}
+                          onClick={() => setColor(color === c ? '' : c)}
+                          className={`h-7 w-7 rounded-full ring-offset-2 ring-offset-card transition hover:scale-110 ${
+                            color.toLowerCase() === c ? 'ring-2 ring-foreground' : ''
+                          }`}
+                          style={{ backgroundColor: c }}
                         />
-                        {submitted && errors.extraPlayerRate && <p className={errorText}>{errors.extraPlayerRate}</p>}
-                      </div>
-                      <div>
-                        <label className={label}>Extra player rate (weekend)</label>
-                        <input
-                          className={`${input} ${submitted && errors.extraPlayerWeekendRate ? inputInvalid : ''}`}
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="Same as weekday"
-                          value={extraPlayerWeekendRate}
-                          onChange={(e) => setExtraPlayerWeekendRate(e.target.value)}
+                      ))}
+                      <div className="relative ml-1 w-32">
+                        <span
+                          className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full border border-border"
+                          style={{ backgroundColor: validColor ? color : 'transparent' }}
                         />
-                        {submitted && errors.extraPlayerWeekendRate && (
-                          <p className={errorText}>{errors.extraPlayerWeekendRate}</p>
-                        )}
+                        <input
+                          className={`${input} py-1.5 pl-8 text-sm`}
+                          placeholder="#3b82f6"
+                          value={color}
+                          onChange={(e) => setColor(e.target.value)}
+                        />
                       </div>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      The station rate covers the included players; each player beyond that adds the extra player rate
-                      per hour. Leave the rate blank to turn this off. Only affects new bookings — bookings already
-                      made keep what they were charged.
-                    </p>
                   </div>
-                )}
-                <div>
-                  <label className={label}>Buffer (minutes)</label>
-                  <input
-                    className={`${input} ${submitted && errors.buffer ? inputInvalid : ''}`}
-                    type="number"
-                    min="0"
-                    value={buffer}
-                    onChange={(e) => setBuffer(e.target.value)}
-                  />
-                  {submitted && errors.buffer && <p className={errorText}>{errors.buffer}</p>}
-                </div>
-                {pricingMode === 'per_head' && (
-                  <div>
-                    <label className={label}>Minimum players</label>
-                    <input
-                      className={`${input} ${submitted && errors.minPlayers ? inputInvalid : ''}`}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={minPlayers}
-                      onChange={(e) => setMinPlayers(e.target.value)}
-                    />
-                    {submitted && errors.minPlayers && <p className={errorText}>{errors.minPlayers}</p>}
-                  </div>
-                )}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={label}>Capacity (optional)</label>
-                    <input
-                      className={`${input} ${submitted && errors.capacity ? inputInvalid : ''}`}
-                      type="number"
-                      min="1"
-                      value={capacity}
-                      onChange={(e) => setCapacity(e.target.value)}
-                    />
-                    {submitted && errors.capacity && <p className={errorText}>{errors.capacity}</p>}
-                  </div>
-                  <div>
-                    <label className={label}>Calendar color (optional)</label>
-                    <input
-                      className={input}
-                      placeholder="#3b82f6"
-                      value={color}
-                      onChange={(e) => setColor(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className={label}>Tax rate</label>
-                  <select className={input} value={taxRateId} onChange={(e) => setTaxRateId(e.target.value)}>
-                    <option value="">No tax</option>
-                    {selectableTaxRates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({t.percent}%)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-                  Active
-                </label>
-                <div>
-                  <label className={label}>Photo</label>
-                  <label
-                    className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-                      uploading
-                        ? 'cursor-not-allowed border-border opacity-60'
-                        : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                    }`}
-                  >
-                    {uploading ? (
-                      <>
-                        <Loader2 size={20} className="animate-spin text-muted-foreground" />
-                        <span className="text-sm text-muted-foreground">Uploading…</span>
-                      </>
-                    ) : fileName ? (
-                      <>
-                        <FileImage size={20} className="text-primary" />
-                        <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
-                        <span className="text-xs text-muted-foreground">Click to replace</span>
-                      </>
-                    ) : (
-                      <>
-                        <UploadCloud size={20} className="text-muted-foreground" />
-                        <span className="text-sm font-medium">Click to upload a photo</span>
-                        <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP or GIF · up to 5MB</span>
-                      </>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,image/gif"
-                      className="hidden"
-                      disabled={uploading}
-                      onChange={handleFile}
-                    />
-                  </label>
-                  {fileName && !uploading && (
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3.5 py-3">
+                    <div>
+                      <p className="text-sm font-medium">Active</p>
+                      <p className="text-xs text-muted-foreground">Inactive types can’t be booked.</p>
+                    </div>
                     <button
                       type="button"
-                      className="mt-1 text-xs text-muted-foreground hover:text-destructive"
-                      onClick={() => {
-                        setImageUrl('')
-                        setFileName(null)
-                      }}
+                      role="switch"
+                      aria-checked={isActive}
+                      aria-label="Active"
+                      onClick={() => setIsActive(!isActive)}
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition ${isActive ? 'bg-primary' : 'bg-muted-foreground/30'}`}
                     >
-                      Remove Image
+                      <span
+                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${isActive ? 'left-[22px]' : 'left-0.5'}`}
+                      />
                     </button>
-                  )}
-                </div>
+                  </div>
+                </ModalSection>
               </>
             )}
           </div>
 
-          {/* Restaurant tenants get no live preview panel (nothing here needs
-           *  previewing) — the actions sit right under the form instead. */}
-          {isRestaurant && actions}
+          {/* Live preview — every other industry only; a table type has no
+           *  photo/color/pricing to preview. */}
+          {!isRestaurant && (
+            <aside className="hidden border-l border-border bg-muted/20 p-5 md:block">
+              <div className="sticky top-5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Live preview</p>
+                <div className="mt-3 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                  <div className="group">
+                    <TypeVisual imageUrl={imageUrl} isActive={isActive} />
+                  </div>
+                  <TypeCardBody
+                    name={name}
+                    rate={rate === '' ? 0 : Number(rate)}
+                    currency={currency}
+                    capacity={capacity === '' ? null : Number(capacity)}
+                    bufferMinutes={buffer === '' ? 0 : Number(buffer)}
+                    description={description}
+                    perPlayer={pricingMode === 'per_head'}
+                  />
+                  {(weekendRate !== '' || hasExtra) && (
+                    <div className="space-y-1 border-t border-border bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
+                      {weekendRate !== '' && !Number.isNaN(Number(weekendRate)) && (
+                        <p>
+                          Weekend:{' '}
+                          <span className="font-medium text-foreground">
+                            {formatMoney(Number(weekendRate), currency)}/{pricingMode === 'per_head' ? 'player/hr' : 'hr'}
+                          </span>
+                        </p>
+                      )}
+                      {hasExtra && !Number.isNaN(Number(extraPlayerRate)) && (
+                        <p>
+                          Includes {Number(includedPlayers) || 1} player{Number(includedPlayers) === 1 ? '' : 's'}, then{' '}
+                          <span className="font-medium text-foreground">
+                            +{formatMoney(Number(extraPlayerRate), currency)}/hr
+                          </span>{' '}
+                          each
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
+          )}
         </div>
 
-        {/* Live preview — every other industry only; a table type has no
-         *  photo/color/pricing to preview. */}
-        {!isRestaurant && (
-          <div className="order-1 flex flex-col border-b border-border bg-gradient-to-b from-muted/30 to-transparent p-6 pt-8 md:order-2 md:border-b-0 md:border-l">
-            <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Live preview</p>
-            <div className="mx-auto mt-3 w-full max-w-[240px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-              <div className="group">
-                <TypeVisual imageUrl={imageUrl} isActive={isActive} />
-              </div>
-              <TypeCardBody
-                name={name}
-                rate={rate === '' ? 0 : Number(rate)}
-                currency={currency}
-                capacity={capacity === '' ? null : Number(capacity)}
-                bufferMinutes={buffer === '' ? 0 : Number(buffer)}
-                description={description}
-                perPlayer={pricingMode === 'per_head'}
-              />
-            </div>
-
-            {actions}
-          </div>
-        )}
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-6 py-3.5">
+          <button
+            className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={pending}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={pending || uploading}
+            onClick={submit}
+          >
+            {pending && <Loader2 size={15} className="animate-spin" />}
+            {pending ? 'Saving…' : row ? 'Save Changes' : isRestaurant ? 'Add Table Type' : 'Add Resource Type'}
+          </button>
+        </div>
       </div>
+    </div>
+  )
+}
+
+/** A titled card that groups related fields inside the type modal. */
+function ModalSection({
+  icon,
+  title,
+  hint,
+  children,
+}: {
+  icon: React.ReactNode
+  title: string
+  hint?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">{icon}</span>
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {hint && <span className="text-xs text-muted-foreground">· {hint}</span>}
+      </div>
+      <div className="space-y-3">{children}</div>
+    </section>
+  )
+}
+
+/** Number input with a currency symbol prefix. */
+function MoneyInput({
+  symbol,
+  value,
+  onChange,
+  invalid,
+  placeholder,
+}: {
+  symbol: string
+  value: string
+  onChange: (v: string) => void
+  invalid?: boolean
+  placeholder?: string
+}) {
+  return (
+    <div className="relative">
+      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+        {symbol}
+      </span>
+      <input
+        className={`${input} pl-8 ${invalid ? inputInvalid : ''}`}
+        type="number"
+        min="0"
+        step="0.01"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   )
 }
