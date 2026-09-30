@@ -184,6 +184,10 @@ const startWalkinInput = z
     // validated against min_players) by startWalkinCore itself when the
     // resource turns out to be per_head; ignored otherwise.
     headCount: z.coerce.number().int().min(1).optional(),
+    // M24 #7: an optional named per-hour setup (studio industries only) —
+    // startWalkinCore re-validates it (this resource + tenant, active,
+    // per-hour, industry) and refuses anything else; never trusted as sent.
+    setupId: z.string().uuid().optional(),
     // M26 #4: cash collected from the customer before this walk-in started —
     // gaming_cafe only. startWalkinCore re-checks the tenant's industry
     // itself and refuses a non-zero value for any other industry.

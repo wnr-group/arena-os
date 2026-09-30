@@ -50,6 +50,7 @@
     "test:board-surcharge-recorrection": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-board-surcharge-recorrection.ts",
     "test:board-surcharge-walkin": "tsx --import ./scripts/server-only-hook.mjs scripts/test-board-surcharge-walkin.ts",
     "test:board-surcharge": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-board-surcharge.ts",
+    "test:walkin-setups": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-setups.ts",
     "test:m29": "npm run test:board-surcharge-settings && npm run test:board-surcharge-pricing && npm run test:board-surcharge-estimate && npm run test:board-surcharge-recorrection && npm run test:board-surcharge-walkin && npm run test:board-surcharge",
     "test:m27":"npm run test:holiday-pricing && npm run test:holiday-rates-settings && npm run test:holiday-estimate-consistency",
     "test:undo-checkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-undo-checkin.ts",
