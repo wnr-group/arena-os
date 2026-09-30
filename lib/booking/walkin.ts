@@ -1088,9 +1088,18 @@ export async function checkoutWalkinCore(
       .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
-  if (persistsHeadCount) {
-    await tx.update(bookings).set({ headCount }).where(eq(bookings.id, walkin.bookingId))
-  }
+  // The booking's own subtotal/total are stamped here too — a walk-in is born
+  // with both at 0 (nothing is priced until now), and every screen that reads
+  // bookings.total (the booking detail, reports) would keep showing 0.00 for
+  // a session that was billed in full. A walk-in carries no discount.
+  await tx
+    .update(bookings)
+    .set({
+      subtotal: priced.unitPrice.toFixed(2),
+      total: priced.unitPrice.toFixed(2),
+      ...(persistsHeadCount ? { headCount } : {}),
+    })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   return { bookingId: walkin.bookingId, total: priced.unitPrice }
 }
@@ -1207,6 +1216,10 @@ export async function reopenWalkinCore(
   } else {
     await tx.update(bookingSlots).set({ slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
   }
+  await tx
+    .update(bookings)
+    .set({ subtotal: '0.00', total: '0.00' })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
     action: 'walkin.reopen',

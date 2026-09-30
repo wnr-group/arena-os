@@ -183,6 +183,8 @@ async function main() {
     const closed = await checkout(studio, id)
     check('checkout: 250.00 (matches the preview)', closed.total === 250, closed)
     check('slot_total 250.00', (await slotOf(id)).slot_total === '250.00')
+    const { rows: bk } = await owner.query('select subtotal, total from bookings where id = $1', [id])
+    check('booking subtotal/total stamped at checkout (not left at 0.00)', bk[0]?.total === '250.00' && bk[0]?.subtotal === '250.00', bk[0])
     const lines = await withUser(studio.userId, (tx) => loadBookingLines(tx, studio.tenantId, id, TZ))
     const bill = priceBill({ lines, discount: 25 })
     check('bill: one line of 250.00, reconciles to the paise', lines.length === 1 && bill.subtotal === 250 && round2(bill.subtotal - bill.discount + bill.taxTotal) === bill.total, bill)

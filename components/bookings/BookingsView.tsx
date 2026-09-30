@@ -141,6 +141,9 @@ const STATUS_STYLE: Record<string, string> = {
   checked_in: 'bg-emerald-500/85 text-white',
   completed: 'bg-zinc-400/80 text-white',
 }
+/** Checked in, but a bill has been raised and is still owed — no longer "in
+progress", not yet "completed" (that only happens once it's fully paid). */
+const BILLED_STYLE = 'bg-amber-500/85 text-white'
 const STATUS_BADGE: Record<string, string> = {
   confirmed: 'bg-blue-500/10 text-blue-600',
   checked_in: 'bg-emerald-500/10 text-emerald-600',
@@ -645,7 +648,9 @@ export function BookingsView({
                             )
                           }}
                           className={`absolute inset-y-2 overflow-hidden rounded-md px-2 py-1 text-left text-xs shadow-sm ${
-                            STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white'
+                            s.status === 'checked_in' && paymentStates[s.bookingId]
+                              ? BILLED_STYLE
+                              : (STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white')
                           } ${isOngoing ? 'border-r-2 border-dashed border-white/70' : ''}`}
                           style={{ left: `${left}%`, width: `${width}%` }}
                         >
@@ -895,7 +900,10 @@ export function BookingsView({
                 v={`${timeInZone(selected.startsAt, timeZone)}–${selected.endsAt ? timeInZone(selected.endsAt, timeZone) : 'Ongoing'}`}
               />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
-              <Row k="Total" v={formatMoney(selected.total, currency)} />
+              <Row
+                k="Total"
+                v={formatMoney(paymentStates[selected.bookingId]?.total ?? Math.max(Number(selected.total), Number(selected.bookingActiveSlotTotal)), currency)}
+              />
               {Number(selected.deposit) > 0 && (
                 <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
               )}
