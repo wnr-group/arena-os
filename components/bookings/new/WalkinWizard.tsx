@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Loader2, Timer, Zap } from 'lucide-react'
+import { Check, Loader2, Sparkles, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isWeekendDay } from '@/lib/booking/rate'
@@ -15,6 +15,9 @@ import {
   WizardCard,
   WizardFooter,
   SelectableTile,
+  SetupOptionTile,
+  WizardStepHeader,
+  WizardStepPanel,
   ChipRow,
   wizardInput,
   wizardLabel,
@@ -433,6 +436,45 @@ export function WalkinWizard({
               )}
             </div>
 
+            {selectedResource && selectedResource.setups.length > 0 && (
+              <div className="mt-6">
+                <WizardStepPanel>
+                <WizardStepHeader
+                  step={2}
+                  icon={<Sparkles size={15} className="text-primary" />}
+                  title="Choose a setup"
+                  subtitle={`Optional — pick a ready-made setup for ${selectedResource.name}, or continue with the standard rate.`}
+                />
+                <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  <SetupOptionTile
+                    selected={setupId === null}
+                    onClick={() => setSetupId(null)}
+                    title="Standard rate"
+                    price={formatMoney(
+                      effectiveRate(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays),
+                      currency,
+                    )}
+                    unit={selectedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                    isBaseRate
+                  />
+                  {selectedResource.setups.map((su) => (
+                    <SetupOptionTile
+                      key={su.id}
+                      selected={setupId === su.id}
+                      onClick={() => setSetupId(su.id)}
+                      title={su.name}
+                      price={formatMoney(Number(su.rate), currency)}
+                      unit="hr"
+                    />
+                  ))}
+                </div>
+                <p className={wizardHint}>
+                  A setup bills at its own flat hourly rate — no weekend, holiday or happy-hour pricing.
+                </p>
+                </WizardStepPanel>
+              </div>
+            )}
+
             {error && step === 0 && <p className={wizardError}>{error}</p>}
             <WizardFooter onNext={() => setStep(1)} nextLabel="Continue" nextDisabled={!resourceId} />
           </div>
@@ -544,32 +586,6 @@ export function WalkinWizard({
                   <div className="mt-2">
                     <ChipRow options={DURATIONS} value={durationMin} onChange={setDurationMin} />
                   </div>
-                </div>
-              )}
-
-              {selectedResource && selectedResource.setups.length > 0 && (
-                <div>
-                  <label className={wizardLabel}>Setup (optional)</label>
-                  <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <SelectableTile
-                      selected={setupId === null}
-                      onClick={() => setSetupId(null)}
-                      title="No setup"
-                      subtitle="Base rate"
-                    />
-                    {selectedResource.setups.map((su) => (
-                      <SelectableTile
-                        key={su.id}
-                        selected={setupId === su.id}
-                        onClick={() => setSetupId(su.id)}
-                        title={su.name}
-                        subtitle={`${formatMoney(Number(su.rate), currency)} / hr`}
-                      />
-                    ))}
-                  </div>
-                  <p className={wizardHint}>
-                    A setup bills at its own flat hourly rate — no weekend, holiday or happy-hour pricing.
-                  </p>
                 </div>
               )}
 

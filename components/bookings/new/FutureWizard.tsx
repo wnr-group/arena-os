@@ -26,6 +26,7 @@ import {
   WizardStepHeader,
   WizardStepPanel,
   SelectableTile,
+  SetupOptionTile,
   wizardInput,
   wizardLabel,
   wizardError,
@@ -1138,80 +1139,6 @@ export function FutureWizard({
         )}
       </WizardCard>
     </div>
-  )
-}
-
-/**
- * M24 #4 UI polish — a setup option gets its own richer treatment instead of
- * reusing the plain device/set SelectableTile: the price is the headline
- * (this is the whole point of a setup), a "Setup" tag marks it as a named
- * upgrade, and "No setup" reads as the deliberately plainer default rather
- * than just another tile in the row.
- */
-function SetupOptionTile({
-  selected,
-  onClick,
-  title,
-  price,
-  unit,
-  isBaseRate,
-}: {
-  selected: boolean
-  onClick: () => void
-  title: string
-  price: string
-  unit: string
-  isBaseRate?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative flex flex-col gap-3 rounded-xl border p-4 text-left transition-all duration-150 motion-safe:hover:-translate-y-0.5 ${
-        selected
-          ? 'border-primary bg-gradient-to-br from-primary/10 via-accent/50 to-transparent shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30'
-          : isBaseRate
-            ? 'border-dashed border-border bg-muted/10 hover:border-primary/40'
-            : 'border-border bg-card hover:border-primary/40 hover:shadow-sm'
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span
-          className={`flex size-8 items-center justify-center rounded-lg transition-colors ${
-            selected
-              ? 'bg-primary text-primary-foreground'
-              : isBaseRate
-                ? 'bg-muted text-muted-foreground'
-                : 'bg-accent text-accent-foreground'
-          }`}
-        >
-          {isBaseRate ? <Gamepad2 size={15} /> : <Sparkles size={15} />}
-        </span>
-        {!isBaseRate && (
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
-            Setup
-          </span>
-        )}
-      </div>
-      <div>
-        <p className="text-sm font-semibold text-foreground">{title}</p>
-        <p className="mt-1 flex items-baseline gap-1">
-          <span className="text-lg font-bold tabular-nums text-primary">{price}</span>
-          <span className="text-xs font-medium text-muted-foreground">/ {unit}</span>
-        </p>
-      </div>
-      {selected && (
-        <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-          <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
-            <path
-              fillRule="evenodd"
-              d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </span>
-      )}
-    </button>
   )
 }
 
