@@ -17,11 +17,15 @@
  *   - the GiST constraint refuses an overlapping historical slot (23P01) and
  *     rolls the whole transaction back
  *   - an audit_log row records the actor and claimed times
- *   - the manager gate: isManager rejects cashier/floor roles
+ *   - the manager gate, via the REAL actions behind the REAL requireManager()
+ *     (cashier / floor_staff / signed-out refused; manager / owner succeed)
+ *   - 7 days back (to the minute) succeeds; the claimed day's weekend, happy-hour
+ *     and holiday rules are what bill, never today's config
  *   - ordinary bookings still default to backdated=false
  *
- *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-backdated-booking.ts
+ *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-backdated-booking.ts
  */
+import { createHash, randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
 
@@ -279,12 +283,165 @@ async function main() {
     check('a normal booking has backdated = false', row.backdated === false)
   }
 
-  // ══ 8. manager gate ══════════════════════════════════════════════════════
-  console.log('\n── role gate (requireManager uses isManager) ──')
-  check('owner passes', isManager('owner'))
-  check('manager passes', isManager('manager'))
-  check('cashier refused', !isManager('cashier' as never))
-  check('floor_staff refused', !isManager('floor_staff' as never))
+  // ══ 7b. the window's inner edge ══════════════════════════════════════════
+  console.log('\n── just inside 7 days back ──')
+  {
+    const ps5C = await makeResource(A, 'PS5 Backdated3', '100.00')
+    // Fresh clock + a few minutes' margin: the suite itself takes a while to get here.
+    const start = new Date(Date.now() - 7 * DAY + 5 * 60_000)
+    const input = base(ps5C.resourceId, start, new Date(start.getTime() + 3600_000))
+    const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
+    const r = await record({ ...input, amountCollected: pv.total })
+    check('a session 7 days back (to the minute) succeeds and lands completed', r.completed === true)
+    const inv = (await owner.query(`select status from invoices where id=$1`, [r.invoiceId])).rows[0]
+    check('...with a real, paid invoice', inv.status === 'paid', inv)
+  }
+
+  // ══ 7c. historical pricing: the claimed day's rules, not today's ═════════
+  console.log('\n── weekend / happy hour / holiday of the CLAIMED day ──')
+  {
+    const wknd = await makeResource(A, 'WKND Backdated', '100.00')
+    await owner.query(`update resource_types set weekend_rate='150.00' where id=$1`, [wknd.typeId])
+    const hh = await makeResource(A, 'HH Backdated', '100.00')
+    const { weekdayInZone } = await import('../lib/booking/time')
+
+    const priced = async (resourceId: string, dateStr: string, from: string, to: string) => {
+      const input = base(resourceId, localAt(dateStr, from), localAt(dateStr, to))
+      const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
+      const r = await record({ ...input, amountCollected: pv.total })
+      const slot = (await owner.query(`select rate_applied, slot_total from booking_slots where booking_id=$1`, [r.bookingId])).rows[0]
+      return { rate: Number(slot.rate_applied), total: Number(slot.slot_total), completed: r.completed }
+    }
+
+    // Weekend: the claimed date's weekday is configured as the weekend day.
+    const dW = addDays(today, -3)
+    const dWeekday = addDays(today, -2)
+    await owner.query(
+      `insert into business_profiles (tenant_id, weekend_days) values ($1, $2)
+       on conflict (tenant_id) do update set weekend_days = excluded.weekend_days`,
+      [A.tenantId, [weekdayInZone(dW, TZ)]],
+    )
+    const w = await priced(wknd.resourceId, dW, '10:00', '11:00')
+    check('claimed weekend day bills the weekend rate (150)', w.rate === 150 && w.total === 150 && w.completed, w)
+    const wc = await priced(wknd.resourceId, dWeekday, '10:00', '11:00')
+    check('a claimed weekday bills the base rate (100)', wc.rate === 100, wc)
+
+    // Happy hour: a rule for the claimed day's weekday + window.
+    const dH = addDays(today, -4)
+    await owner.query(
+      `insert into happy_hours (tenant_id,name,days_of_week,start_time,end_time,discount_type,discount_value,is_active)
+       values ($1,'Backdated HH',$2,'10:00','11:00','percentage',50,true)`,
+      [A.tenantId, [weekdayInZone(dH, TZ)]],
+    )
+    const h = await priced(hh.resourceId, dH, '10:00', '11:00')
+    check('claimed day inside its happy-hour window bills discounted (50)', h.rate === 50 && h.total === 50, h)
+    const hc = await priced(hh.resourceId, addDays(today, -5), '10:00', '11:00')
+    check('same clock time on a day the rule does not cover bills 100', hc.rate === 100, hc)
+    const hOut = await priced(hh.resourceId, dH, '15:00', '16:00')
+    check('same day, outside the window, bills 100', hOut.rate === 100, hOut)
+
+    // A holiday configured for TODAY must not touch a session claimed earlier.
+    await owner.query(`insert into holiday_rates (tenant_id,resource_type_id,date,rate) values ($1,$2,$3,'999.00')`, [
+      A.tenantId, hh.typeId, today,
+    ])
+    const notToday = await priced(hh.resourceId, addDays(today, -6), '18:00', '19:00')
+    check("today's holiday rate does not leak onto an earlier claimed day (100)", notToday.rate === 100, notToday)
+    await owner.query(`delete from happy_hours where tenant_id=$1`, [A.tenantId])
+    await owner.query(`delete from business_profiles where tenant_id=$1`, [A.tenantId])
+  }
+
+  // ══ 8. manager gate — the REAL action behind the REAL requireManager() ═══
+  console.log('\n── role gate (direct action calls) ──')
+  check('isManager: owner/manager pass, cashier/floor_staff refused',
+    isManager('owner') && isManager('manager') && !isManager('cashier' as never) && !isManager('floor_staff' as never))
+  {
+    const { recordBackdatedBooking, quoteBackdatedBooking } = await import('../lib/actions/backdated-bookings')
+    const tag = randomBytes(3).toString('hex')
+    const slug = `testbackdatedact${tag}`
+    const t = await owner.query<{ id: string }>(
+      `insert into tenants (slug,name,status,timezone,industry) values ($1,'Act Co','active',$2,'gaming_cafe') returning id`,
+      [slug, TZ],
+    )
+    const tenantId = t.rows[0].id
+    const br = await owner.query<{ id: string }>(
+      `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`,
+      [tenantId],
+    )
+    const branchId = br.rows[0].id
+    const rt = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'PS5 Act','100.00') returning id`,
+      [tenantId],
+    )
+    const rs = await owner.query<{ id: string }>(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Act-1','available') returning id`,
+      [tenantId, branchId, rt.rows[0].id],
+    )
+    const sessions: Record<string, { token: string; membershipId: string }> = {}
+    for (const role of ['owner', 'manager', 'cashier', 'floor_staff']) {
+      const u = await owner.query<{ id: string }>(
+        `insert into users (email,password_hash,full_name) values ($1,'x',$2) returning id`,
+        [`act-${role}-${tag}@example.test`, role],
+      )
+      const token = randomBytes(32).toString('hex')
+      await owner.query(`insert into sessions (id, user_id, expires_at) values ($1,$2, now() + interval '1 day')`, [
+        createHash('sha256').update(token).digest('hex'),
+        u.rows[0].id,
+      ])
+      const m = await owner.query<{ id: string }>(
+        `insert into memberships (tenant_id,user_id,branch_id,role,status,full_name) values ($1,$2,$3,$4::member_role,'active',$5) returning id`,
+        [tenantId, u.rows[0].id, branchId, role, role],
+      )
+      sessions[role] = { token, membershipId: m.rows[0].id }
+    }
+    const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
+    g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': slug }
+    const signedInAs = (role: string) => {
+      g.__ARENA_TEST_SESSION = sessions[role].token
+    }
+    const input = (start: Date, end: Date) => ({
+      branchId,
+      customerName: 'Act Customer',
+      customerPhone: '9876500044',
+      slots: [{ resourceId: rs.rows[0].id, startsAt: start.toISOString(), endsAt: end.toISOString() }],
+      amountCollected: 100,
+      paymentMethod: 'cash' as const,
+    })
+    const good = () => input(localAt(yesterday, '10:00'), localAt(yesterday, '11:00'))
+    const bookingCount = async () => Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [tenantId])).rows[0].count)
+
+    for (const role of ['cashier', 'floor_staff']) {
+      signedInAs(role)
+      const r = await recordBackdatedBooking(good())
+      check(`${role} is refused by the action`, /owners and managers/i.test(r.error ?? ''), r)
+      const q = await quoteBackdatedBooking(good())
+      check(`${role} is refused by the preview too`, /owners and managers/i.test(q.error ?? ''), q)
+    }
+    check('...and nothing was written', (await bookingCount()) === 0)
+
+    signedInAs('manager')
+    const old = await recordBackdatedBooking(input(new Date(now.getTime() - 8 * DAY), new Date(now.getTime() - 8 * DAY + 3600_000)))
+    check('manager: 8 days back is refused by the action', /7 days/.test(old.error ?? ''), old)
+    const fut = await recordBackdatedBooking(input(new Date(now.getTime() - 3600_000), new Date(now.getTime() + 3600_000)))
+    check('manager: a session that ends in the future is refused', /already ended/.test(fut.error ?? ''), fut)
+    check('...refusals wrote nothing', (await bookingCount()) === 0)
+
+    const ok = await recordBackdatedBooking(good())
+    check('manager: a valid backdated booking succeeds and lands completed', !ok.error && ok.completed === true, ok)
+    const row = (await owner.query(`select status, backdated from bookings where id=$1`, [ok.bookingId])).rows[0]
+    check('...status completed, backdated true', row?.status === 'completed' && row?.backdated === true, row)
+    const aud = (await owner.query(`select actor_membership_id from audit_log where entity_id=$1 and action='booking.backdated_entry'`, [ok.bookingId])).rows
+    check('...audit row names the manager', aud.length === 1 && aud[0].actor_membership_id === sessions.manager.membershipId, aud)
+
+    signedInAs('owner')
+    const overlap = await recordBackdatedBooking(input(localAt(yesterday, '10:30'), localAt(yesterday, '11:30')))
+    check('overlap is refused with the standard friendly message', /just taken/i.test(overlap.error ?? ''), overlap)
+    const ok2 = await recordBackdatedBooking(input(localAt(yesterday, '12:00'), localAt(yesterday, '13:00')))
+    check('owner: a valid backdated booking succeeds too', !ok2.error && ok2.completed === true, ok2)
+
+    g.__ARENA_TEST_SESSION = undefined
+    const anon = await recordBackdatedBooking(good())
+    check('signed out is refused', !!anon.error && !anon.bookingId, anon)
+  }
 
   // ══ 9. restaurant ════════════════════════════════════════════════════════
   console.log('\n── restaurant ──')
