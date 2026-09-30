@@ -77,7 +77,7 @@ const resourceTypeInput = z.object({
   // M29 #2: board pricing — the base rate covers includedPlayers players and
   // each player beyond that adds extraPlayerRate per hour (blank/null = the
   // surcharge is off). Same null-before-coerce union as weekendRate above.
-  includedPlayers: z.coerce.number().int().positive('Included players must be a whole number of at least 1.').default(1),
+  includedPlayers: z.coerce.number().int().positive('Included players must be a whole number of at least 1.').max(1000, 'Included players is too large.').default(1),
   extraPlayerRate: z
     .preprocess(
       (v) => (v === '' || v === null || v === undefined ? null : v),

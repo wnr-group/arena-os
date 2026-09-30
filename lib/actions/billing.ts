@@ -186,7 +186,7 @@ export async function createInvoiceForBooking(
 
 const updateHeadCountInput = z.object({
   bookingId: z.string().uuid(),
-  headCount: z.coerce.number().int().min(1, 'Enter at least 1 player.'),
+  headCount: z.coerce.number().int().min(1, 'Enter at least 1 player.').max(1000, 'That player count is too large.'),
 })
 
 type UpdateHeadCountResult = { error?: string; headCount?: number }

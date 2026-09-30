@@ -230,6 +230,16 @@ async function main() {
   }
   await owner.query(`update resource_types set extra_player_rate = '50.00', extra_player_weekend_rate = '80.00' where id = $1`, [boardType])
 
+  // ══ 5b. pricing drift since booking: refuse, never reprice at today's rates ══
+  console.log('\n── rate changed since booking ──')
+  const drift = await book(units[5] ?? units[4], FRI, '16:00', '17:00', 2)
+  const driftBefore = await state(drift.id)
+  await owner.query(`update resource_types set hourly_rate = '999.00' where id = $1`, [boardType])
+  const driftMsg = await refused(() => correct(drift.id, 4))
+  check('base rate changed after booking: correction refused', /pricing has changed/i.test(driftMsg ?? ''), driftMsg)
+  check('…and the booking is untouched', JSON.stringify(await state(drift.id)) === JSON.stringify(driftBefore))
+  await owner.query(`update resource_types set hourly_rate = '300.00' where id = $1`, [boardType])
+
   // ══ 6. plain board ═══════════════════════════════════════════════════════
   console.log('\n── plain board: no player-count editor ──')
   const pl = await book(plain, FRI, '10:00', '11:00')

@@ -11,10 +11,10 @@
  * paperwork is never backdated, only the session.
  */
 import 'server-only'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { bookings } from '@/db/schema'
+import { auditLog, bookings } from '@/db/schema'
 import { createBookingCore, BookingError, type CreateBookingSlotInput } from '@/lib/booking/service'
 import { issueInvoiceForBooking, writeAudit } from '@/lib/billing/invoice'
 import { recordPaymentForInvoice, getInvoiceSettlement, paise, type PosPaymentMethod } from '@/lib/billing/payments'
@@ -106,6 +106,39 @@ export async function recordBackdatedBookingCore(
   const amount = input.amountCollected
   if (!Number.isFinite(amount) || amount < 0) throw new BookingError('Amount collected must be zero or more.')
 
+  // Idempotent on the client's key: a double-click or a retry after a commit
+  // whose response was lost must return the booking already recorded, not
+  // collide with its own slot (23P01) and invite a duplicate on another
+  // resource. The advisory lock makes a concurrent second call wait for the
+  // first to commit, then find it here.
+  const key = input.idempotencyKey
+  if (key) {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`backdated:${ctx.tenantId}:${key}`}))`)
+    const [prior] = await tx
+      .select({ after: auditLog.after })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.tenantId, ctx.tenantId),
+          eq(auditLog.action, 'booking.backdated_entry'),
+          sql`${auditLog.after}->>'idempotencyKey' = ${key}`,
+        ),
+      )
+      .limit(1)
+    const a = prior?.after as
+      | { bookingId?: string; bookingNumber?: string; invoiceId?: string; invoiceNumber?: string; completed?: boolean }
+      | undefined
+    if (a?.bookingId && a.bookingNumber && a.invoiceId && a.invoiceNumber) {
+      return {
+        bookingId: a.bookingId,
+        bookingNumber: a.bookingNumber,
+        invoiceId: a.invoiceId,
+        invoiceNumber: a.invoiceNumber,
+        completed: Boolean(a.completed),
+      }
+    }
+  }
+
   const { created, invoice } = await createAndBill(tx, ctx, input, now)
 
   if (paise(amount) > 0) {
@@ -149,7 +182,9 @@ export async function recordBackdatedBookingCore(
     entityId: created.id,
     before: {},
     after: {
+      bookingId: created.id,
       bookingNumber: created.bookingNumber,
+      idempotencyKey: key ?? null,
       enteredAt: now.toISOString(),
       enteredOn: todayInZone(ctx.timezone, now),
       slots: input.slots.map((s) => ({ resourceId: s.resourceId, startsAt: s.startsAt, endsAt: s.endsAt })),

@@ -124,6 +124,19 @@ async function main() {
   const record = (input: ReturnType<typeof base>) =>
     withUser(A.userId, (tx) => recordBackdatedBookingCore(tx, { ...ctxA, membershipId: A.membershipId }, input))
 
+  // ══ 0. idempotent retry: same key returns the first booking, no duplicate ══
+  console.log('\n── idempotency key ──')
+  {
+    const key = 'idem-test-key-0001'
+    const inp = base(ps5.resourceId, localAt(yesterday, '08:00'), localAt(yesterday, '09:00'), { idempotencyKey: key })
+    const first = await record(inp)
+    const again = await record(inp)
+    check('retry returns the SAME booking instead of a slot collision', again.bookingId === first.bookingId && again.invoiceNumber === first.invoiceNumber, { first, again })
+    const n = Number((await owner.query(`select count(*) from bookings where tenant_id=$1 and id=$2`, [A.tenantId, first.bookingId])).rows[0].count)
+    const inv = Number((await owner.query(`select count(*) from invoices where booking_id=$1`, [first.bookingId])).rows[0].count)
+    check('one booking and one invoice exist', n === 1 && inv === 1, { n, inv })
+  }
+
   // ══ 1. happy path — yesterday, fully paid ════════════════════════════════
   console.log('\n── yesterday, paid in full ──')
   const r1 = await record(base(ps5.resourceId, localAt(yesterday, '10:00'), localAt(yesterday, '12:00')))

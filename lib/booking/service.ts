@@ -830,6 +830,8 @@ export async function updateBookingHeadCountCore(
   if (surchargeSlots.length > 0 && !timezone) {
     const [t] = await tx.select({ tz: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
     timezone = t?.tz
+    // Day-rate resolution depends on it — never guess UTC.
+    if (!timezone) throw new BookingError('Could not resolve the business timezone to re-price this booking.')
   }
   let newSubtotal = 0
   for (const s of slots) {
@@ -841,23 +843,40 @@ export async function updateBookingHeadCountCore(
       // base + max(0, players − included) × extra rate, then happy hour /
       // holiday) can never drift from #3. Parallel to the per_head branch
       // below, which is untouched.
-      const [repriced] = (
-        await priceBookingSlots(
-          tx,
-          { tenantId: ctx.tenantId, timezone: timezone ?? 'UTC' },
-          {
-            branchId: booking.branchId,
-            slots: [
-              {
-                resourceId: s.resourceId,
-                startsAt: new Date(s.startsAt).toISOString(),
-                endsAt: new Date(s.endsAt).toISOString(),
-              },
-            ],
-            headCount: input.headCount,
-          },
-        )
-      ).slots
+      const slotEndsAt = s.endsAt
+      const repriceAt = async (count: number) =>
+        (
+          await priceBookingSlots(
+            tx,
+            { tenantId: ctx.tenantId, timezone: timezone! },
+            {
+              branchId: booking.branchId,
+              slots: [
+                {
+                  resourceId: s.resourceId,
+                  startsAt: new Date(s.startsAt).toISOString(),
+                  endsAt: new Date(slotEndsAt).toISOString(),
+                },
+              ],
+              headCount: count,
+            },
+          )
+        ).slots[0]
+      // The snapshot only keeps the combined, happy-hour-blended rate, so the
+      // frozen base/extra components can't be replayed. Instead prove the LIVE
+      // config still reproduces what was charged at the OLD count: if it
+      // doesn't (a rate, holiday or happy-hour rule changed since booking),
+      // re-pricing would silently reprice the whole slot at today's rates, not
+      // just the player delta — refuse rather than do that.
+      if (s.headCount !== null) {
+        const baseline = await repriceAt(s.headCount)
+        if (round2(Number(baseline.slotTotal)) !== round2(Number(s.slotTotal))) {
+          throw new BookingError(
+            'Pricing has changed since this booking was made, so the player count can’t be corrected here — cancel and rebook it instead.',
+          )
+        }
+      }
+      const repriced = await repriceAt(input.headCount)
       if (repriced.extraPlayerRateApplied === null) {
         // The surcharge was switched off since this was booked — re-pricing
         // would silently turn it into a plain booking.

@@ -41,7 +41,7 @@ const recordBackdatedInput = z.object({
       }),
     )
     .min(1, 'Add at least one resource slot'),
-  headCount: z.coerce.number().int().min(1).optional(),
+  headCount: z.coerce.number().int().min(1).max(1000).optional(),
   amountCollected: z.coerce
     .number({ invalid_type_error: 'Enter a valid amount.' })
     .finite('Enter a valid amount.')
