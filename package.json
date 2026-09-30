@@ -42,6 +42,7 @@
     "test:holiday-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-holiday-pricing.ts",
     "test:holiday-rates-settings": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-holiday-rates-settings.ts",
     "test:holiday-estimate-consistency": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-holiday-estimate-consistency.ts",
+    "test:backdated-booking": "tsx --import ./scripts/server-only-hook.mjs scripts/test-backdated-booking.ts",
     "test:m27": "npm run test:holiday-pricing && npm run test:holiday-rates-settings && npm run test:holiday-estimate-consistency",
     "test:undo-checkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-undo-checkin.ts",
     "test:reopen-walkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-reopen-walkin.ts",

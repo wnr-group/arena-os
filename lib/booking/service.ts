@@ -81,6 +81,11 @@ export type CreateBookingInput = {
    *  for every booking and every other industry — see bookings.advance_paid
    *  (M26 #1). */
   advancePaid?: number
+  /** M28: set ONLY by recordBackdatedBooking (lib/booking/backdated.ts) — a
+   *  booking entered after the session already happened. Never accepted from
+   *  a client: every action's zod schema strips unknown keys, and the public
+   *  path builds its own input object. */
+  backdated?: boolean
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -641,6 +646,7 @@ export async function createBookingCore(
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
       advancePaid: advancePaid.toFixed(2),
+      backdated: input.backdated ?? false,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
