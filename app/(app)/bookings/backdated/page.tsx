@@ -49,6 +49,9 @@ export default async function BackdatedBookingPage() {
       typeName: r.typeName,
       pricingMode: r.pricingMode,
       minPlayers: r.minPlayers,
+      // M29 #4: a per_resource board with an extra-player rate also takes a player count.
+      includedPlayers: r.includedPlayers,
+      hasSurcharge: r.pricingMode === 'per_resource' && r.extraPlayerRate !== null,
       setups: setupsByResource[r.id] ?? [],
     }))
 

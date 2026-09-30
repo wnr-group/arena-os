@@ -83,6 +83,8 @@ export default async function NewBookingPage({
       capacity: r.typeCapacity,
       pricingMode: r.pricingMode,
       minPlayers: r.minPlayers,
+      includedPlayers: r.includedPlayers,
+      extraPlayerRate: r.extraPlayerRate,
       setups: setupsByResource[r.id] ?? [],
     }))
 

@@ -18,6 +18,8 @@ export type BackdatedResource = {
   typeName: string
   pricingMode: string
   minPlayers: number
+  includedPlayers: number
+  hasSurcharge: boolean
   setups: { id: string; name: string }[]
 }
 
@@ -69,6 +71,13 @@ export function BackdatedBookingForm({
 
   const resource = resources.find((r) => r.id === resourceId)
   const isPerHead = resource?.pricingMode === 'per_head'
+  // M29 #4: a board with an extra-player rate takes a player count too (the
+  // server refuses a surcharge booking without one).
+  const takesPlayers = isPerHead || Boolean(resource?.hasSurcharge)
+  useEffect(() => {
+    if (resource?.hasSurcharge) setHeadCount(resource.includedPlayers)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceId])
   const minDate = addDays(today, -MAX_DAYS_BACK)
 
   // Wall-clock -> instants. An end at or before the start means the session ran
@@ -104,7 +113,7 @@ export function BackdatedBookingForm({
       quoteBackdatedBooking({
         branchId,
         slots,
-        headCount: isPerHead ? headCount : undefined,
+        headCount: takesPlayers ? headCount : undefined,
         customerPhone: isValidPhone(customerPhone) ? customerPhone : undefined,
       })
         .then((r) => {
@@ -128,7 +137,7 @@ export function BackdatedBookingForm({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [branchId, slots, isPerHead, headCount, customerPhone])
+  }, [branchId, slots, takesPlayers, headCount, customerPhone])
 
   const amount = amountText ?? (preview ? String(preview.total) : '')
   const amountNum = Number(amount)
@@ -153,7 +162,7 @@ export function BackdatedBookingForm({
         customerEmail,
         notes: notes || undefined,
         slots,
-        headCount: isPerHead ? headCount : undefined,
+        headCount: takesPlayers ? headCount : undefined,
         amountCollected: amountNum,
         paymentMethod: method,
         idempotencyKey,
@@ -219,7 +228,7 @@ export function BackdatedBookingForm({
               </select>
             </div>
           )}
-          {isPerHead && (
+          {takesPlayers && (
             <div>
               <label htmlFor="bd-heads" className={wizardLabel}>
                 Players
@@ -227,7 +236,7 @@ export function BackdatedBookingForm({
               <input
                 id="bd-heads"
                 type="number"
-                min={resource?.minPlayers ?? 1}
+                min={isPerHead ? (resource?.minPlayers ?? 1) : 1}
                 className={`${wizardInput} mt-1`}
                 value={headCount}
                 onChange={(e) => setHeadCount(Math.max(1, Number(e.target.value) || 1))}
