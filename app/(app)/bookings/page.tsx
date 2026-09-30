@@ -11,6 +11,7 @@ import { listDepositStates } from '@/lib/payments/data'
 import { listBookingPaymentStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
+import { industryHasBackdatedEntry } from '@/lib/booking/backdated-industry'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 
 function toMinutes(hhmm: string): number {
@@ -200,7 +201,7 @@ export default async function BookingsPage({
       canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
       canToggle86={canManageKitchen(ctx.role)}
       showFoodOrdering={showFoodOrdering}
-      canRecordBackdated={isManager(ctx.role)}
+      canRecordBackdated={isManager(ctx.role) && industryHasBackdatedEntry(ctx.tenant.industry)}
     />
   )
 }
