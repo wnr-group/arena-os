@@ -37,6 +37,12 @@ export type AvailabilityResponse = {
    *  this instead of a static, date-blind rate, so it can never drift from
    *  what createBooking/quoteBooking actually charge once a date is picked. */
   rate?: string
+  /** M29 #4: the per-extra-player hourly rate for the SELECTED date, resolved
+   *  with the same weekday/weekend day logic as `rate` (resolveDayRate on the
+   *  extra-player pair, exactly as priceBookingSlots does per slot — a holiday
+   *  rate replaces only the base, never the extra rate). Undefined unless the
+   *  type is a per_resource board with a surcharge configured. */
+  extraRate?: string
 }
 
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
@@ -59,6 +65,9 @@ export async function getAvailableStarts(
           weekdayRate: resources.hourlyRateOverride,
           typeRate: resourceTypes.hourlyRate,
           typeWeekendRate: resourceTypes.weekendRate,
+          pricingMode: resourceTypes.pricingMode,
+          extraPlayerRate: resourceTypes.extraPlayerRate,
+          extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
         })
         .from(resources)
         .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -86,6 +95,16 @@ export async function getAvailableStarts(
       const weekdayRate = Number(res.weekdayRate ?? res.typeRate)
       const weekendRate = res.typeWeekendRate === null ? null : Number(res.typeWeekendRate)
       const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, tz, weekendDays)
+      const extraRate =
+        res.pricingMode === 'per_resource' && res.extraPlayerRate !== null
+          ? resolveDayRate(
+              Number(res.extraPlayerRate),
+              res.extraPlayerWeekendRate === null ? null : Number(res.extraPlayerWeekendRate),
+              anchor,
+              tz,
+              weekendDays,
+            )
+          : null
 
       const [hours] = await tx
         .select({
@@ -147,6 +166,7 @@ export async function getAvailableStarts(
         allStarts: allStarts.map((d) => d.toISOString()),
         isClosed: resolvedHours.isClosed,
         rate: rate.toFixed(2),
+        extraRate: extraRate === null ? undefined : extraRate.toFixed(2),
       }
     })
   } catch (e) {
@@ -177,6 +197,12 @@ export type TypeAvailabilityResponse = {
   /** M27 #4: same field, same precedence, as AvailabilityResponse.rate above
    *  — see its own doc comment. */
   rate?: string
+  /** M29 #4: the per-extra-player hourly rate for the SELECTED date, resolved
+   *  with the same weekday/weekend day logic as `rate` (resolveDayRate on the
+   *  extra-player pair, exactly as priceBookingSlots does per slot — a holiday
+   *  rate replaces only the base, never the extra rate). Undefined unless the
+   *  type is a per_resource board with a surcharge configured. */
+  extraRate?: string
 }
 
 /**
@@ -202,6 +228,9 @@ export async function getAvailableStartsForType(
           buffer: resourceTypes.bufferMinutes,
           typeRate: resourceTypes.hourlyRate,
           typeWeekendRate: resourceTypes.weekendRate,
+          pricingMode: resourceTypes.pricingMode,
+          extraPlayerRate: resourceTypes.extraPlayerRate,
+          extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
         })
         .from(resources)
         .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -237,6 +266,16 @@ export async function getAvailableStartsForType(
       const weekdayRate = Number(resourceRows[0].typeRate)
       const weekendRate = resourceRows[0].typeWeekendRate === null ? null : Number(resourceRows[0].typeWeekendRate)
       const rate = holiday ? Number(holiday.rate) : resolveDayRate(weekdayRate, weekendRate, anchor, tz, weekendDays)
+      const extraRate =
+        resourceRows[0].pricingMode === 'per_resource' && resourceRows[0].extraPlayerRate !== null
+          ? resolveDayRate(
+              Number(resourceRows[0].extraPlayerRate),
+              resourceRows[0].extraPlayerWeekendRate === null ? null : Number(resourceRows[0].extraPlayerWeekendRate),
+              anchor,
+              tz,
+              weekendDays,
+            )
+          : null
 
       const [hours] = await tx
         .select({
@@ -316,6 +355,7 @@ export async function getAvailableStartsForType(
         allStarts: allStarts.map((d) => d.toISOString()),
         isClosed: resolvedHours.isClosed,
         rate: rate.toFixed(2),
+        extraRate: extraRate === null ? undefined : extraRate.toFixed(2),
       }
     })
   } catch (e) {

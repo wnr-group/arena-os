@@ -176,6 +176,13 @@ export const resourceTypes = pgTable(
     // configured — weekend prices the same as weekday. hourlyRate (and
     // resources.hourlyRateOverride) remains the weekday rate.
     weekendRate: numeric('weekend_rate', { precision: 10, scale: 2 }),
+    // M29 #1 (0105): board pricing — the base rate covers includedPlayers
+    // players, plus extraPlayerRate per extra player per hour (null = off;
+    // extraPlayerWeekendRate null falls back to extraPlayerRate). per_resource
+    // types on gaming_cafe tenants only; enforced in the write path.
+    includedPlayers: smallint('included_players').notNull().default(1),
+    extraPlayerRate: numeric('extra_player_rate', { precision: 10, scale: 2 }),
+    extraPlayerWeekendRate: numeric('extra_player_weekend_rate', { precision: 10, scale: 2 }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -388,6 +395,10 @@ export const bookings = pgTable(
     // folded into a real payments row against an issued invoice, so the
     // same cash can never be applied twice.
     advanceApplied: boolean('advance_applied').notNull().default(false),
+    // M28 #1 (0104): true when an owner/manager entered this booking after the
+    // session already happened (backdated entry). Explicit flag, never inferred
+    // from timestamps. False for every booking created any other way.
+    backdated: boolean('backdated').notNull().default(false),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -460,6 +471,10 @@ export const bookingSlots = pgTable(
     // row and every slot with no holiday rate configured for its resource
     // type/date.
     holidayRateApplied: boolean('holiday_rate_applied').notNull().default(false),
+    // M29 #1 (0105): per-extra-player rate charged for this slot, frozen at
+    // booking time. Null unless a board-with-surcharge booking (headCount
+    // then holds the player count).
+    extraPlayerRateApplied: numeric('extra_player_rate_applied', { precision: 10, scale: 2 }),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),

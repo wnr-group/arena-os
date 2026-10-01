@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock,
   Eye,
+  History,
   Loader2,
   Minus,
   Plus,
@@ -32,6 +33,7 @@ import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
 import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
+import { lateEntryLabel } from '@/lib/booking/late-entry'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 
@@ -85,6 +87,10 @@ type Slot = {
    *  slots; the Bookings table shows every status regardless. */
   active: boolean
   cancellationReason: string | null
+  /** M28: true when the booking was entered after the session happened. */
+  backdated: boolean
+  /** When the booking row was actually created (ISO) — the "recorded" half of a late entry. */
+  bookingCreatedAt: string
 }
 export type OrderItemLine = {
   itemId: string
@@ -135,6 +141,9 @@ const STATUS_STYLE: Record<string, string> = {
   checked_in: 'bg-emerald-500/85 text-white',
   completed: 'bg-zinc-400/80 text-white',
 }
+/** Checked in, but a bill has been raised and is still owed — no longer "in
+progress", not yet "completed" (that only happens once it's fully paid). */
+const BILLED_STYLE = 'bg-amber-500/85 text-white'
 const STATUS_BADGE: Record<string, string> = {
   confirmed: 'bg-blue-500/10 text-blue-600',
   checked_in: 'bg-emerald-500/10 text-emerald-600',
@@ -186,6 +195,7 @@ export function BookingsView({
   canRequestVoidComp,
   canToggle86,
   showFoodOrdering,
+  canRecordBackdated = false,
 }: {
   branchId: string
   branchName: string
@@ -241,6 +251,8 @@ export function BookingsView({
    *  order" link entirely, rather than just disabling them. Every other
    *  industry (gaming_cafe, restaurant) is unaffected. */
   showFoodOrdering: boolean
+  /** Owner/manager only (M28) — shows the "Record past booking" entry point. The action itself re-checks the role. */
+  canRecordBackdated?: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -513,6 +525,14 @@ export function BookingsView({
               <Plus size={16} /> New booking
             </Link>
           )}
+          {canRecordBackdated && (
+            <Link
+              href="/bookings/backdated"
+              className="inline-flex items-center gap-1.5 rounded-md border border-transparent bg-accent px-3 py-2 text-base font-medium text-accent-foreground transition hover:bg-accent/70"
+            >
+              <History size={16} /> Record past booking
+            </Link>
+          )}
           {showFoodOrdering && (
             <button
               onClick={() => setOrderDialog({})}
@@ -628,7 +648,9 @@ export function BookingsView({
                             )
                           }}
                           className={`absolute inset-y-2 overflow-hidden rounded-md px-2 py-1 text-left text-xs shadow-sm ${
-                            STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white'
+                            s.status === 'checked_in' && paymentStates[s.bookingId]
+                              ? BILLED_STYLE
+                              : (STATUS_STYLE[s.status] ?? 'bg-zinc-500 text-white')
                           } ${isOngoing ? 'border-r-2 border-dashed border-white/70' : ''}`}
                           style={{ left: `${left}%`, width: `${width}%` }}
                         >
@@ -740,6 +762,14 @@ export function BookingsView({
                           >
                             {SOURCE_LABELS[b.source] ?? b.source}
                           </span>
+                          {b.representative.backdated && (
+                            <span
+                              title={lateEntryLabel(b.representative.bookingCreatedAt, b.startsAt, timeZone)}
+                              className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white"
+                            >
+                              Entered late
+                            </span>
+                          )}
                         </div>
                         {b.customerPhone && <p className="text-sm text-muted-foreground">{b.customerPhone}</p>}
                       </td>
@@ -855,12 +885,25 @@ export function BookingsView({
               <Row k="Customer" v={selected.customerName || 'Walk-in'} />
               {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
               <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
+              {selected.backdated && (
+                <div>
+                  <span className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white">
+                    Entered late
+                  </span>
+                  <p className="mt-1 text-muted-foreground">
+                    {lateEntryLabel(selected.bookingCreatedAt, selected.startsAt, timeZone)}
+                  </p>
+                </div>
+              )}
               <Row
                 k="Time"
                 v={`${timeInZone(selected.startsAt, timeZone)}–${selected.endsAt ? timeInZone(selected.endsAt, timeZone) : 'Ongoing'}`}
               />
               <Row k="Status" v={selected.status.replace('_', ' ')} />
-              <Row k="Total" v={formatMoney(selected.total, currency)} />
+              <Row
+                k="Total"
+                v={formatMoney(paymentStates[selected.bookingId]?.total ?? Math.max(Number(selected.total), Number(selected.bookingActiveSlotTotal)), currency)}
+              />
               {Number(selected.deposit) > 0 && (
                 <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
               )}

@@ -37,6 +37,9 @@ export function listResourceTypes(ctx: ActiveContext) {
         taxPercent: taxRates.percent,
         pricingMode: resourceTypes.pricingMode,
         minPlayers: resourceTypes.minPlayers,
+        includedPlayers: resourceTypes.includedPlayers,
+        extraPlayerRate: resourceTypes.extraPlayerRate,
+        extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
         isActive: resourceTypes.isActive,
         createdAt: resourceTypes.createdAt,
         updatedAt: resourceTypes.updatedAt,
@@ -65,6 +68,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         typeRate: resourceTypes.hourlyRate,
         pricingMode: resourceTypes.pricingMode,
         minPlayers: resourceTypes.minPlayers,
+        includedPlayers: resourceTypes.includedPlayers,
+        extraPlayerRate: resourceTypes.extraPlayerRate,
         rateOverride: resources.hourlyRateOverride,
         imageUrl: resources.imageUrl,
         description: resources.description,
@@ -245,6 +250,9 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         // BookingsView show a live "Part paid" indicator, before any bill
         // exists, once sum(active slot_total) outgrows it.
         advancePaid: bookings.advancePaid,
+        // M28 #4: entered after the fact (backdated entry) + when it was entered.
+        backdated: bookings.backdated,
+        bookingCreatedAt: bookings.createdAt,
       })
       .from(bookingSlots)
       .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))

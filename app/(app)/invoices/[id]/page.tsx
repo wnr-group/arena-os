@@ -9,6 +9,7 @@ import { PrintButton } from '@/components/invoices/PrintButton'
 import { InvoiceActions } from '@/components/invoices/InvoiceActions'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
+import { lateEntryLabel } from '@/lib/booking/late-entry'
 
 /** Matches a UUID, so a junk id 404s instead of erroring in the query. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -101,6 +102,15 @@ export default async function InvoiceReceiptPage({
           <PrintButton />
         </div>
       </div>
+
+      {/* Screen-only: a manager can tell this came from a backdated entry
+          without cross-referencing the booking. Never printed on the tax invoice. */}
+      {receipt.lateEntry && (
+        <div className="no-print mx-auto mt-3 max-w-3xl rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm text-violet-900">
+          <span className="font-semibold">Entered late.</span>{' '}
+          {lateEntryLabel(receipt.lateEntry.recordedAt, receipt.lateEntry.sessionStart, tz)}
+        </div>
+      )}
 
       {/* ── the receipt ── */}
       <article className="print-sheet mx-auto mt-4 max-w-3xl rounded-lg border bg-card p-6 shadow-sm sm:p-8">

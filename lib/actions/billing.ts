@@ -186,7 +186,7 @@ export async function createInvoiceForBooking(
 
 const updateHeadCountInput = z.object({
   bookingId: z.string().uuid(),
-  headCount: z.coerce.number().int().min(1, 'Enter at least 1 player.'),
+  headCount: z.coerce.number().int().min(1, 'Enter at least 1 player.').max(1000, 'That player count is too large.'),
 })
 
 type UpdateHeadCountResult = { error?: string; headCount?: number }
@@ -210,7 +210,7 @@ export async function updateBookingHeadCount(
     }
     const v = updateHeadCountInput.parse(input)
     const result = await withUser(ctx.user.id, (tx) =>
-      updateBookingHeadCountCore(tx, { tenantId: ctx.tenant.id }, v),
+      updateBookingHeadCountCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
     )
     revalidatePath(`/pos/${v.bookingId}`)
     return { headCount: result.headCount }

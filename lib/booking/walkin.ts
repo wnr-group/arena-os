@@ -35,7 +35,8 @@ import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
+import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
+import { industryHasStudioSetups } from './studio-setups'
 import { BookingError, nextBookingNumber } from './service'
 import { paise } from '@/lib/billing/payments'
 import { round2 } from '@/lib/billing/pricing'
@@ -138,6 +139,10 @@ export type WalkinResourceOption = {
   pricingMode: string
   /** Floor on head_count for a per_head station; meaningless otherwise. */
   minPlayers: number
+  /** M24 #7: this station's ACTIVE per-hour setups (a per-day setup can't
+   *  start "now" as an open tab, so it's never offered here). Always empty
+   *  outside the studio industries (lib/booking/studio-setups.ts). */
+  setups: { id: string; name: string; rate: string }[]
 }
 
 /**
@@ -198,6 +203,29 @@ export async function listWalkinResources(
       )
     const occupiedNow = new Set(occupiedRows.map((r) => r.resourceId))
 
+    // M24 #7: studio industries only — every other industry can never have a
+    // setup, so skip the query rather than fetch rows no resource could have.
+    const setupsByResource = new Map<string, { id: string; name: string; rate: string }[]>()
+    if (industryHasStudioSetups(ctx.tenant.industry)) {
+      const setupRows = await tx
+        .select({ id: resourceSetups.id, resourceId: resourceSetups.resourceId, name: resourceSetups.name, rate: resourceSetups.rate })
+        .from(resourceSetups)
+        .where(
+          and(
+            eq(resourceSetups.tenantId, ctx.tenant.id),
+            inArray(resourceSetups.resourceId, ids),
+            eq(resourceSetups.isActive, true),
+            eq(resourceSetups.rateUnit, 'hour'),
+          ),
+        )
+        .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+      for (const s of setupRows) {
+        const list = setupsByResource.get(s.resourceId) ?? []
+        list.push({ id: s.id, name: s.name, rate: s.rate })
+        setupsByResource.set(s.resourceId, list)
+      }
+    }
+
     // Every upcoming active slot for these resources, earliest first — then
     // reduced to "first seen per resourceId" in JS below rather than a SQL
     // DISTINCT ON, matching this codebase's own preference for a small
@@ -252,6 +280,7 @@ export async function listWalkinResources(
           : null,
         pricingMode: r.pricingMode,
         minPlayers: r.minPlayers,
+        setups: setupsByResource.get(r.id) ?? [],
       }
     })
   })
@@ -287,6 +316,11 @@ export type ActiveWalkin = {
   pricingMode: string | null
   headCount: number | null
   minPlayers: number
+  /** M29 #6: board surcharge — the per-extra-player rate frozen at start (null
+   *  = no surcharge, every pre-M29 walk-in) and the type's LIVE included
+   *  players. The checkout/timed dialogs show a Players control when set. */
+  extraPlayerRateApplied: string | null
+  includedPlayers: number
   /** M26 #5: cash collected before this walk-in started (M26 #1/#4) — '0.00'
    *  for every walk-in with nothing collected upfront, and for every
    *  non-gaming_cafe tenant (server-refused at creation, see
@@ -322,6 +356,8 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         pricingMode: bookingSlots.pricingMode,
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
+        extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+        includedPlayers: resourceTypes.includedPlayers,
         warningMinutes: bookings.warningMinutes,
         advancePaid: bookings.advancePaid,
       })
@@ -358,6 +394,12 @@ export type StartWalkinInput = {
    *  otherwise. Captured now so a checkout-time edit (see checkoutWalkinCore)
    *  has something to default from. */
   headCount?: number
+  /** M24 #7: start on a named per-hour setup (studio industries only) — bills
+   *  at the setup's flat hourly rate instead of the base rate, with no
+   *  weekend / holiday / happy-hour / per-head composition, exactly as a
+   *  reserved setup slot does (priceBookingSlots). Re-validated here against
+   *  this resource + tenant + active + per-hour, never trusted at face value. */
+  setupId?: string
   /** M26 #4: cash collected from the customer before this walk-in started —
    *  gaming_cafe only (startWalkinCore re-checks the tenant's industry
    *  itself, never trusting this from the caller). Absent or 0 is a no-op —
@@ -434,6 +476,10 @@ export async function startWalkinCore(
       taxPercent: taxRates.percent,
       pricingMode: resourceTypes.pricingMode,
       minPlayers: resourceTypes.minPlayers,
+      // M29 #6: board extra-player surcharge (0105).
+      includedPlayers: resourceTypes.includedPlayers,
+      extraPlayerRate: resourceTypes.extraPlayerRate,
+      extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
     })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -480,6 +526,41 @@ export async function startWalkinCore(
     }
   }
 
+  // M24 #7: a setup prices INSTEAD OF the base-rate path below (no weekend,
+  // holiday, happy hour, per-head or surcharge) — same precedence
+  // priceBookingSlots gives a reserved setup slot. Gated to studio industries
+  // server-side (the picker is only a convenience) and re-resolved against
+  // THIS resource + tenant, fail-closed like priceBookingSlots.
+  let setup: { id: string; name: string; rate: number } | null = null
+  if (input.setupId) {
+    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    if (!t || !industryHasStudioSetups(t.industry)) {
+      throw new BookingError('Setups are only available for studio businesses.')
+    }
+    const [row] = await tx
+      .select({
+        id: resourceSetups.id,
+        resourceId: resourceSetups.resourceId,
+        name: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+        isActive: resourceSetups.isActive,
+      })
+      .from(resourceSetups)
+      .where(and(eq(resourceSetups.tenantId, ctx.tenantId), eq(resourceSetups.id, input.setupId)))
+      .limit(1)
+    if (!row || row.resourceId !== resource.id || !row.isActive) {
+      throw new BookingError('This setup is no longer available for the selected resource.')
+    }
+    if (row.rateUnit !== 'hour') {
+      throw new BookingError('A per-day setup can’t be used for a walk-in — book it as a future booking instead.')
+    }
+    setup = { id: row.id, name: row.name, rate: Number(row.rate) }
+    if (setup.rate <= 0) {
+      throw new BookingError('This setup has no hourly rate set — a walk-in can’t bill at zero.')
+    }
+  }
+
   const weekdayRate = Number(resource.rateOverride ?? resource.typeRate)
   // A zero EFFECTIVE rate (a per-resource override, not just the type rate
   // already rejected above) would price a timed session to ₹0 — indistinguishable
@@ -493,17 +574,20 @@ export async function startWalkinCore(
   // Snapshotted onto holiday_rate_applied below so checkout (which only ever
   // reads this snapshot back, never re-resolves it) knows to skip
   // happy-hour splitting too — see loadWalkinForCheckout/checkoutWalkinCore.
-  const [holiday] = await tx
-    .select({ rate: holidayRates.rate })
-    .from(holidayRates)
-    .where(
-      and(
-        eq(holidayRates.tenantId, ctx.tenantId),
-        eq(holidayRates.resourceTypeId, resource.resourceTypeId),
-        eq(holidayRates.date, todayInZone(ctx.timezone, startAt)),
-      ),
-    )
-    .limit(1)
+  // A setup walk-in never consults a holiday rate (priced instead of it).
+  const [holiday] = setup
+    ? []
+    : await tx
+        .select({ rate: holidayRates.rate })
+        .from(holidayRates)
+        .where(
+          and(
+            eq(holidayRates.tenantId, ctx.tenantId),
+            eq(holidayRates.resourceTypeId, resource.resourceTypeId),
+            eq(holidayRates.date, todayInZone(ctx.timezone, startAt)),
+          ),
+        )
+        .limit(1)
   const holidayRateApplied = holiday !== undefined
 
   // M22 #2: resolved by the session's START day and snapshotted onto
@@ -512,9 +596,11 @@ export async function startWalkinCore(
   // past midnight still bills the day it started on.
   const weekendRate = resource.typeWeekendRate === null ? null : Number(resource.typeWeekendRate)
   const weekendDays = await loadWeekendDays(tx, ctx.tenantId)
-  const rate = holidayRateApplied
-    ? Number(holiday.rate)
-    : resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
+  const rate = setup
+    ? setup.rate
+    : holidayRateApplied
+      ? Number(holiday.rate)
+      : resolveDayRate(weekdayRate, weekendRate, startAt, ctx.timezone, weekendDays)
   // Re-check the RESOLVED rate, not just weekdayRate above: a type can set
   // weekend_rate to exactly 0 (a free-on-weekends config) independently of
   // a positive weekday rate, or a holiday rate itself to 0. That would slip
@@ -544,7 +630,7 @@ export async function startWalkinCore(
   // until checkout — checkoutWalkinCore defaults to whatever's stored here,
   // and the checkout dialog lets the operator edit it before confirming.
   let headCount: number | null = null
-  if (resource.pricingMode === 'per_head') {
+  if (resource.pricingMode === 'per_head' && !setup) {
     const requested = input.headCount
     if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
       throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
@@ -555,6 +641,28 @@ export async function startWalkinCore(
       )
     }
     headCount = requested
+  }
+  // M29 #6: a per_resource board with an extra-player rate also carries a
+  // player count — defaulting to the included players (no surcharge) when the
+  // caller doesn't send one, since a walk-in is priced at checkout where the
+  // real count is confirmed (same idea as the public flow's default). Mode is
+  // re-checked here so a per_head type never reads as a board. The extra rate
+  // is day-resolved by the session's START day and snapshotted, exactly like
+  // the base rate — checkout reads it back, never re-resolves.
+  let extraPlayerRateApplied: string | null = null
+  if (!setup && resource.pricingMode === 'per_resource' && resource.extraPlayerRate !== null) {
+    const requested = input.headCount
+    if (requested !== undefined && (!Number.isInteger(requested) || requested < 1)) {
+      throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
+    }
+    headCount = requested ?? resource.includedPlayers
+    extraPlayerRateApplied = resolveDayRate(
+      Number(resource.extraPlayerRate),
+      resource.extraPlayerWeekendRate === null ? null : Number(resource.extraPlayerWeekendRate),
+      startAt,
+      ctx.timezone,
+      weekendDays,
+    ).toFixed(2)
   }
 
   const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, { phone: input.phone, name: input.name })
@@ -597,9 +705,16 @@ export async function startWalkinCore(
     resourceName: resource.name,
     resourceTypeName: resource.typeName,
     taxRatePercent: Number(taxPercent).toFixed(2),
-    pricingMode: resource.pricingMode,
+    // A setup walk-in is flat: stored as per_resource so nothing downstream
+    // (the checkout/timed dialogs' Players control, resolveHeadCount) treats
+    // it as a per-head or surcharge session.
+    pricingMode: setup ? 'per_resource' : resource.pricingMode,
     headCount,
     holidayRateApplied,
+    extraPlayerRateApplied,
+    // M24 #7: snapshot, same discipline as a reserved setup slot.
+    setupId: setup?.id ?? null,
+    setupName: setup?.name ?? null,
   })
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
@@ -638,6 +753,11 @@ type WalkinForCheckout = {
    *  previewWalkinCheckout/checkoutWalkinCore), same "instead of" precedence
    *  priceBookingSlots gives a holiday rate. */
   holidayRateApplied: boolean
+  /** M24 #7: true when this session started on a named setup — priced flat,
+   *  so checkout skips happy-hour splitting just like a holiday rate. Read off
+   *  the slot's snapshotted setup_name as well as setup_id: the id is nulled
+   *  (ON DELETE SET NULL) if the setup is later deleted, the name is not. */
+  isSetup: boolean
   billingMode: WalkinMode
   /** Open-tab: null until checkout finalizes it. Timed: the committed end
    *  (mirrors `bookings.committed_end_at`, kept in sync by extendWalkinCore),
@@ -662,6 +782,12 @@ type WalkinForCheckout = {
    *  editable right up until checkout. Only meaningful when pricingMode is
    *  'per_head'; 1 otherwise. */
   minPlayers: number
+  /** M29 #6: the per-extra-player hourly rate frozen at start — null for every
+   *  walk-in without a board surcharge. Never re-resolved at checkout. */
+  extraPlayerRate: number | null
+  /** The type's CURRENT included players (live, like minPlayers — a walk-in's
+   *  player count stays editable until checkout). 1 when there's no surcharge. */
+  includedPlayers: number
 }
 
 /**
@@ -714,6 +840,9 @@ export async function loadWalkinForCheckout(
     pricingMode: bookingSlots.pricingMode,
     headCount: bookingSlots.headCount,
     holidayRateApplied: bookingSlots.holidayRateApplied,
+    extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+    setupId: bookingSlots.setupId,
+    setupName: bookingSlots.setupName,
   }
   const slotWhere = and(eq(bookingSlots.bookingId, booking.id), eq(bookingSlots.tenantId, ctx.tenantId), eq(bookingSlots.active, true))
   const slotRows = lock
@@ -735,6 +864,20 @@ export async function loadWalkinForCheckout(
       .limit(1)
     minPlayers = typeRow?.minPlayers ?? 1
   }
+  // M29 #6: eligibility is the slot's own extra_player_rate_applied snapshot;
+  // included players is read live, same as minPlayers above.
+  const extraPlayerRate =
+    pricingMode !== 'per_head' && slot.extraPlayerRateApplied !== null ? Number(slot.extraPlayerRateApplied) : null
+  let includedPlayers = 1
+  if (extraPlayerRate !== null) {
+    const [typeRow] = await tx
+      .select({ includedPlayers: resourceTypes.includedPlayers })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(eq(resources.id, slot.resourceId))
+      .limit(1)
+    includedPlayers = typeRow?.includedPlayers ?? 1
+  }
 
   return {
     bookingId: booking.id,
@@ -743,6 +886,7 @@ export async function loadWalkinForCheckout(
     startsAt: slot.startsAt,
     rate: Number(slot.rateApplied),
     holidayRateApplied: slot.holidayRateApplied,
+    isSetup: slot.setupId !== null || slot.setupName !== null,
     billingMode: (booking.billingMode as WalkinMode) ?? 'open_tab',
     slotEndsAt: slot.endsAt,
     slotTotal: slot.slotTotal,
@@ -750,6 +894,8 @@ export async function loadWalkinForCheckout(
     pricingMode,
     headCount: slot.headCount,
     minPlayers,
+    extraPlayerRate,
+    includedPlayers,
   }
 }
 
@@ -761,6 +907,16 @@ export async function loadWalkinForCheckout(
  * validate. Pure (no DB) — safe after either a locking or a read-only load.
  */
 function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefined): number {
+  // M29 #6: a board-with-surcharge walk-in has an editable player count too,
+  // but no floor — fewer players than included just means no surcharge — so
+  // it only needs to be a positive whole number.
+  if (walkin.extraPlayerRate !== null) {
+    const players = requested ?? walkin.headCount ?? walkin.includedPlayers
+    if (!Number.isInteger(players) || players < 1) {
+      throw new BookingError('Enter a whole number of players, at least 1.')
+    }
+    return players
+  }
   if (walkin.pricingMode !== 'per_head') return 1
   const headCount = requested ?? walkin.headCount ?? walkin.minPlayers
   if (!Number.isInteger(headCount) || headCount < 1) {
@@ -777,6 +933,21 @@ function resolveHeadCount(walkin: WalkinForCheckout, requested: number | undefin
     )
   }
   return headCount
+}
+
+/**
+ * The hourly rate and multiplier priceElapsedTime should price at. A plain or
+ * per_head walk-in is unchanged: the snapshotted rate, with headCount as the
+ * per-player multiplier (1 for per_resource). A board-with-surcharge walk-in
+ * prices the COMBINED rate — base + max(0, players − included) × extra rate —
+ * with no further multiplication, the same composition order as
+ * priceBookingSlots (M29 #3): happy hour (skipped on a holiday date) then
+ * segments that one figure.
+ */
+function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): { rate: number; multiplier: number } {
+  if (walkin.extraPlayerRate === null) return { rate: walkin.rate, multiplier: headCount }
+  const extraPlayers = Math.max(0, headCount - walkin.includedPlayers)
+  return { rate: walkin.rate + extraPlayers * walkin.extraPlayerRate, multiplier: 1 }
 }
 
 /**
@@ -843,8 +1014,9 @@ export async function previewWalkinCheckout(
   const headCount = resolveHeadCount(walkin, input.headCount)
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
-  const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+  const rules = walkin.holidayRateApplied || walkin.isSetup ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
+  const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
   return {
     total: priced.unitPrice,
     billableEnd: billableEndTime(walkin.startsAt, priceEnd).toISOString(),
@@ -893,14 +1065,17 @@ export async function checkoutWalkinCore(
   const headCount = resolveHeadCount(walkin, input.headCount)
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
-  const rules = walkin.holidayRateApplied ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
-  const priced = priceElapsedTime(walkin.startsAt, priceEnd, walkin.rate, rules, ctx.timezone, headCount)
+  const rules = walkin.holidayRateApplied || walkin.isSetup ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
+  const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
+  const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
 
   // M21 per-head #4: the (possibly just-edited) head count is written here,
   // at the moment checkout actually commits — same "preview travels loose,
   // only checkout persists" discipline endAt already has. A per_resource
   // slot's head_count stays null; nothing to write.
-  const headCountUpdate = walkin.pricingMode === 'per_head' ? { headCount } : {}
+  // M29 #6: a surcharge walk-in persists its (possibly edited) count too.
+  const persistsHeadCount = walkin.pricingMode === 'per_head' || walkin.extraPlayerRate !== null
+  const headCountUpdate = persistsHeadCount ? { headCount } : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx
@@ -913,9 +1088,18 @@ export async function checkoutWalkinCore(
       .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
-  if (walkin.pricingMode === 'per_head') {
-    await tx.update(bookings).set({ headCount }).where(eq(bookings.id, walkin.bookingId))
-  }
+  // The booking's own subtotal/total are stamped here too — a walk-in is born
+  // with both at 0 (nothing is priced until now), and every screen that reads
+  // bookings.total (the booking detail, reports) would keep showing 0.00 for
+  // a session that was billed in full. A walk-in carries no discount.
+  await tx
+    .update(bookings)
+    .set({
+      subtotal: priced.unitPrice.toFixed(2),
+      total: priced.unitPrice.toFixed(2),
+      ...(persistsHeadCount ? { headCount } : {}),
+    })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   return { bookingId: walkin.bookingId, total: priced.unitPrice }
 }
@@ -1032,6 +1216,10 @@ export async function reopenWalkinCore(
   } else {
     await tx.update(bookingSlots).set({ slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
   }
+  await tx
+    .update(bookings)
+    .set({ subtotal: '0.00', total: '0.00' })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
     action: 'walkin.reopen',

@@ -26,6 +26,7 @@ import {
   WizardStepHeader,
   WizardStepPanel,
   SelectableTile,
+  SetupOptionTile,
   wizardInput,
   wizardLabel,
   wizardError,
@@ -45,6 +46,8 @@ type ResourceTypeOption = {
   capacity: number | null
   pricingMode: string
   minPlayers: number
+  includedPlayers: number
+  extraPlayerRate: string | null
 }
 type TimeSlot = { startsAt: string; resourceId: string }
 /** The whole working-day grid, taken slots included — mirrors the public
@@ -103,6 +106,8 @@ export function FutureWizard({
           capacity: r.capacity,
           pricingMode: r.pricingMode,
           minPlayers: r.minPlayers,
+          includedPlayers: r.includedPlayers,
+          extraPlayerRate: r.extraPlayerRate,
         })
       }
     }
@@ -122,6 +127,14 @@ export function FutureWizard({
   )
   const selectedType = resourceTypes.find((t) => t.id === resourceTypeId)
   const isPerHead = selectedType?.pricingMode === 'per_head'
+  // M29 #4: a per_resource board with an extra-player rate also takes a
+  // player count (bills base + extra players × rate — see
+  // lib/booking/service.ts:priceBookingSlots). Re-checks the mode, like the
+  // server does, so a per_head type never reads as a board.
+  const hasSurcharge = selectedType?.pricingMode === 'per_resource' && selectedType.extraPlayerRate != null
+  const takesPlayers = isPerHead || hasSurcharge
+  const minHeadCount = isPerHead ? (selectedType?.minPlayers ?? 1) : 1
+  const defaultHeadCount = isPerHead ? (selectedType?.minPlayers ?? 1) : (selectedType?.includedPlayers ?? 1)
 
   // M27 #4: starts at the type's flat weekday rate (the same figure the
   // device picker quotes before any date is picked), then follows whatever
@@ -135,8 +148,13 @@ export function FutureWizard({
   // a stale rate over — same "reset on resourceTypeId change" discipline
   // headCount below already follows.
   const [hourlyRate, setHourlyRate] = useState(Number(selectedType?.hourlyRate ?? 0))
+  // M29 #4: the per-extra-player hourly rate — starts at the weekday figure,
+  // then follows the day-resolved `extraRate` the availability fetch returns
+  // (weekend/weekday by the selected date; a holiday only replaces the base).
+  const [extraRate, setExtraRate] = useState(Number(selectedType?.extraPlayerRate ?? 0))
   useEffect(() => {
     setHourlyRate(Number(selectedType?.hourlyRate ?? 0))
+    setExtraRate(Number(selectedType?.extraPlayerRate ?? 0))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceTypeId])
 
@@ -144,9 +162,9 @@ export function FutureWizard({
   // type's min_players, and resets to it whenever the selected type changes
   // (switching device types mid-flow shouldn't carry a stale count over from
   // a different type's minimum). No max cap, per the design doc.
-  const [headCount, setHeadCount] = useState(selectedType?.minPlayers ?? 1)
+  const [headCount, setHeadCount] = useState(defaultHeadCount)
   useEffect(() => {
-    setHeadCount(selectedType?.minPlayers ?? 1)
+    setHeadCount(defaultHeadCount)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceTypeId])
 
@@ -205,7 +223,14 @@ export function FutureWizard({
   const setupStepNum = showSetupPicker ? (chooseSetStepNum ?? deviceStepNum) + 1 : null
 
   const priceFor = (minutes: number) => {
-    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : hourlyRate * (isPerHead ? headCount : 1)
+    // M29 #4: a board's combined hourly rate mirrors priceBookingSlots —
+    // base + max(0, players − included) × extra rate. This duration list is
+    // still a flat, start-time-blind estimate (no happy hour); the real quote
+    // below is the server's own priceBookingSlots.
+    const boardRate = hasSurcharge
+      ? hourlyRate + Math.max(0, headCount - (selectedType?.includedPlayers ?? 1)) * extraRate
+      : hourlyRate
+    const rate = activeSetup?.rateUnit === 'hour' ? Number(activeSetup.rate) : isPerHead ? hourlyRate * headCount : boardRate
     return (rate * minutes) / 60
   }
 
@@ -259,6 +284,7 @@ export function FutureWizard({
         setSlots(grid)
         setIsClosed(Boolean(r.isClosed))
         if (r.rate !== undefined) setHourlyRate(Number(r.rate))
+        if (r.extraRate !== undefined) setExtraRate(Number(r.extraRate))
       })
       return () => {
         cancelled = true
@@ -284,6 +310,7 @@ export function FutureWizard({
       setSlots(grid)
       setIsClosed(Boolean(r.isClosed))
       if (r.rate !== undefined) setHourlyRate(Number(r.rate))
+      if (r.extraRate !== undefined) setExtraRate(Number(r.extraRate))
     })
     return () => {
       cancelled = true
@@ -455,7 +482,7 @@ export function FutureWizard({
       resourceId: quoteWindow.resourceId,
       startsAt: quoteWindow.startsAt,
       endsAt: quoteWindow.endsAt,
-      headCount: isPerHead ? headCount : undefined,
+      headCount: takesPlayers ? headCount : undefined,
       setupId: setupId ?? undefined,
     }).then((r) => {
       if (cancelled) return
@@ -477,7 +504,7 @@ export function FutureWizard({
     quoteWindow?.startsAt,
     quoteWindow?.endsAt,
     headCount,
-    isPerHead,
+    takesPlayers,
     setupId,
     isDayRateSetup,
     rangeConflict,
@@ -537,7 +564,7 @@ export function FutureWizard({
             setupId: setupId ?? undefined,
           },
         ],
-        headCount: isPerHead ? headCount : undefined,
+        headCount: takesPlayers ? headCount : undefined,
         advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
       })
       if (r.error) {
@@ -698,14 +725,14 @@ export function FutureWizard({
               </WizardStepPanel>
             )}
 
-            {isPerHead && selectedType && (
+            {takesPlayers && selectedType && (
               <div className="max-w-xs">
                 <label className={wizardLabel}>Players</label>
                 <div className="mt-1 flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setHeadCount((h) => Math.max(selectedType.minPlayers, h - 1))}
-                    disabled={headCount <= selectedType.minPlayers}
+                    onClick={() => setHeadCount((h) => Math.max(minHeadCount, h - 1))}
+                    disabled={headCount <= minHeadCount}
                     className="rounded-lg border border-border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-40"
                   >
                     −
@@ -722,7 +749,9 @@ export function FutureWizard({
                   </button>
                 </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  {selectedType.name} is priced per player — minimum {selectedType.minPlayers}.
+                  {isPerHead
+                    ? `${selectedType.name} is priced per player — minimum ${selectedType.minPlayers}.`
+                    : `${selectedType.name} includes ${selectedType.includedPlayers} player${selectedType.includedPlayers === 1 ? '' : 's'} — each extra player adds ${formatMoney(extraRate, currency)} / hr.`}
                 </p>
               </div>
             )}
@@ -947,7 +976,7 @@ export function FutureWizard({
                       />
                     </>
                   )}
-                  {isPerHead && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
+                  {takesPlayers && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
                   <div className="flex items-center justify-between gap-3">
                     <dt className="text-muted-foreground">Price</dt>
                     <dd className="flex items-center gap-1.5 font-medium text-foreground">
@@ -1080,7 +1109,7 @@ export function FutureWizard({
                 )}
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
-                {isPerHead && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
+                {takesPlayers && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
                 {advancePaymentEnabled && Number(advancePaid) > 0 && (
                   <SummaryRow k="Collected now" v={formatMoney(Number(advancePaid), currency)} />
                 )}
@@ -1110,80 +1139,6 @@ export function FutureWizard({
         )}
       </WizardCard>
     </div>
-  )
-}
-
-/**
- * M24 #4 UI polish — a setup option gets its own richer treatment instead of
- * reusing the plain device/set SelectableTile: the price is the headline
- * (this is the whole point of a setup), a "Setup" tag marks it as a named
- * upgrade, and "No setup" reads as the deliberately plainer default rather
- * than just another tile in the row.
- */
-function SetupOptionTile({
-  selected,
-  onClick,
-  title,
-  price,
-  unit,
-  isBaseRate,
-}: {
-  selected: boolean
-  onClick: () => void
-  title: string
-  price: string
-  unit: string
-  isBaseRate?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative flex flex-col gap-3 rounded-xl border p-4 text-left transition-all duration-150 motion-safe:hover:-translate-y-0.5 ${
-        selected
-          ? 'border-primary bg-gradient-to-br from-primary/10 via-accent/50 to-transparent shadow-[0_4px_16px_-6px_rgba(139,34,66,0.35)] ring-1 ring-primary/30'
-          : isBaseRate
-            ? 'border-dashed border-border bg-muted/10 hover:border-primary/40'
-            : 'border-border bg-card hover:border-primary/40 hover:shadow-sm'
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span
-          className={`flex size-8 items-center justify-center rounded-lg transition-colors ${
-            selected
-              ? 'bg-primary text-primary-foreground'
-              : isBaseRate
-                ? 'bg-muted text-muted-foreground'
-                : 'bg-accent text-accent-foreground'
-          }`}
-        >
-          {isBaseRate ? <Gamepad2 size={15} /> : <Sparkles size={15} />}
-        </span>
-        {!isBaseRate && (
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
-            Setup
-          </span>
-        )}
-      </div>
-      <div>
-        <p className="text-sm font-semibold text-foreground">{title}</p>
-        <p className="mt-1 flex items-baseline gap-1">
-          <span className="text-lg font-bold tabular-nums text-primary">{price}</span>
-          <span className="text-xs font-medium text-muted-foreground">/ {unit}</span>
-        </p>
-      </div>
-      {selected && (
-        <span className="absolute right-2.5 top-2.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-          <svg viewBox="0 0 20 20" fill="currentColor" className="size-3">
-            <path
-              fillRule="evenodd"
-              d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.414L8.5 12.086l6.79-6.796a1 1 0 011.414 0z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </span>
-      )}
-    </button>
   )
 }
 

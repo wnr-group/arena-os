@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Loader2, Timer, Zap } from 'lucide-react'
+import { Check, Loader2, Sparkles, Timer, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { startWalkin, listWalkinResources, lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isWeekendDay } from '@/lib/booking/rate'
@@ -15,6 +15,9 @@ import {
   WizardCard,
   WizardFooter,
   SelectableTile,
+  SetupOptionTile,
+  WizardStepHeader,
+  WizardStepPanel,
   ChipRow,
   wizardInput,
   wizardLabel,
@@ -65,6 +68,9 @@ type ResourceOption = {
    *  Start & billing step's Players field. */
   pricingMode: string
   minPlayers: number
+  /** M24 #7: this station's active per-hour setups — empty outside the studio
+   *  industries (the server only ever sends them there). */
+  setups: { id: string; name: string; rate: string }[]
 }
 
 /** M22 bugfix: the rate a station actually bills at `startAt` — weekday or
@@ -180,6 +186,11 @@ export function WalkinWizard({
   // max cap, per the design doc.
   const [headCount, setHeadCount] = useState(1)
 
+  // M24 #7: optional named per-hour setup (studio industries only). null =
+  // "No setup — base rate". Reset whenever a different station is picked,
+  // since a setup belongs to exactly one station.
+  const [setupId, setSetupId] = useState<string | null>(null)
+
   // M26 #4: "amount collected now" — gaming_cafe only (see
   // advancePaymentEnabled above). Plain string state so the field can sit
   // empty rather than default to a misleading "0"; blank means "nothing
@@ -225,11 +236,14 @@ export function WalkinWizard({
   const startAtIso = useMemo(() => startAt.toISOString(), [startAt])
   const freeResources = resources?.filter((r) => r.isFree) ?? []
   const selectedResource = freeResources.find((r) => r.id === resourceId) ?? null
-  const isPerHead = selectedResource?.pricingMode === 'per_head'
+  const activeSetup = selectedResource?.setups.find((x) => x.id === setupId) ?? null
+  // A setup prices flat (no per-head multiplier, weekend or holiday rate), so
+  // picking one takes the Players field out of play — same as a reserved setup.
+  const isPerHead = selectedResource?.pricingMode === 'per_head' && !activeSetup
   // M22 follow-up: see isUnbillable's own doc comment. Recomputed against
   // the ACTUAL chosen start time (startAt, nudged by offsetMin) — same
   // reasoning the Rate/Estimated-total row below already applies.
-  const unbillable = selectedResource
+  const unbillable = selectedResource && !activeSetup
     ? isUnbillable(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays)
     : false
   // An open tab has no end time until checkout — unlike a timed session,
@@ -282,6 +296,7 @@ export function WalkinWizard({
   // out from under an already-made selection.
   function pickResource(r: { id: string }) {
     setResourceId(r.id)
+    setSetupId(null)
   }
 
   async function submit() {
@@ -327,6 +342,7 @@ export function WalkinWizard({
         mode,
         durationMin: mode === 'timed' ? durationMin : undefined,
         headCount: isPerHead ? headCount : undefined,
+        setupId: activeSetup ? activeSetup.id : undefined,
         advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
       })
       if (r.error) {
@@ -419,6 +435,45 @@ export function WalkinWizard({
                 />
               )}
             </div>
+
+            {selectedResource && selectedResource.setups.length > 0 && (
+              <div className="mt-6">
+                <WizardStepPanel>
+                <WizardStepHeader
+                  step={2}
+                  icon={<Sparkles size={15} className="text-primary" />}
+                  title="Choose a setup"
+                  subtitle={`Optional — pick a ready-made setup for ${selectedResource.name}, or continue with the standard rate.`}
+                />
+                <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  <SetupOptionTile
+                    selected={setupId === null}
+                    onClick={() => setSetupId(null)}
+                    title="Standard rate"
+                    price={formatMoney(
+                      effectiveRate(selectedResource.hourlyRate, selectedResource.weekendRate, startAt, timeZone, weekendDays),
+                      currency,
+                    )}
+                    unit={selectedResource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}
+                    isBaseRate
+                  />
+                  {selectedResource.setups.map((su) => (
+                    <SetupOptionTile
+                      key={su.id}
+                      selected={setupId === su.id}
+                      onClick={() => setSetupId(su.id)}
+                      title={su.name}
+                      price={formatMoney(Number(su.rate), currency)}
+                      unit="hr"
+                    />
+                  ))}
+                </div>
+                <p className={wizardHint}>
+                  A setup bills at its own flat hourly rate — no weekend, holiday or happy-hour pricing.
+                </p>
+                </WizardStepPanel>
+              </div>
+            )}
 
             {error && step === 0 && <p className={wizardError}>{error}</p>}
             <WizardFooter onNext={() => setStep(1)} nextLabel="Continue" nextDisabled={!resourceId} />
@@ -590,6 +645,7 @@ export function WalkinWizard({
                 <dl className="space-y-1.5">
                   <SummaryRow k="Station" v={selectedResource?.name ?? '—'} />
                   <SummaryRow k="Customer" v={name.trim() || phone} />
+                  {activeSetup && <SummaryRow k="Setup" v={activeSetup.name} />}
                   <SummaryRow k="Billing" v={mode === 'open_tab' ? 'Open tab' : `Timed · ${durationMin} min`} />
                   {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
                   {advancePaymentEnabled && Number(advancePaid) > 0 && (
@@ -604,13 +660,15 @@ export function WalkinWizard({
                             // start time (startAt, nudged by offsetMin), not
                             // just "now" — a nudge can push the session onto
                             // the other side of a weekday/weekend boundary.
-                            const rate = effectiveRate(
-                              selectedResource.hourlyRate,
-                              selectedResource.weekendRate,
-                              startAt,
-                              timeZone,
-                              weekendDays,
-                            )
+                            const rate = activeSetup
+                              ? Number(activeSetup.rate)
+                              : effectiveRate(
+                                  selectedResource.hourlyRate,
+                                  selectedResource.weekendRate,
+                                  startAt,
+                                  timeZone,
+                                  weekendDays,
+                                )
                             return mode === 'timed'
                               ? formatMoney((rate * durationMin * (isPerHead ? headCount : 1)) / 60, currency)
                               : `${formatMoney(rate, currency)} / ${isPerHead ? 'player / hr' : 'hr'}`

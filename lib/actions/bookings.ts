@@ -95,7 +95,7 @@ const createInput = z.object({
   // (and validated against min_players) by priceBookingSlots itself when a
   // slot's resource type turns out to be per_head; meaningless and ignored
   // otherwise.
-  headCount: z.coerce.number().int().min(1).optional(),
+  headCount: z.coerce.number().int().min(1).max(1000).optional(),
 })
 
 /** Server action: create a booking across one or more resource slots for the signed-in tenant. */
@@ -122,7 +122,7 @@ const quoteBookingInput = z.object({
   endsAt: z.string().datetime(),
   // M21 per-head #4: required only when the resource turns out to be
   // per_head — priceBookingSlots itself validates that, same as createBooking.
-  headCount: z.coerce.number().int().min(1).optional(),
+  headCount: z.coerce.number().int().min(1).max(1000).optional(),
   // M24 #2: an optional named setup for this resource — priceBookingSlots
   // re-validates it belongs to this resource/tenant and is active, same as
   // headCount above.
@@ -183,7 +183,11 @@ const startWalkinInput = z
     // M21 per-head #4: player count for a per_head station — required (and
     // validated against min_players) by startWalkinCore itself when the
     // resource turns out to be per_head; ignored otherwise.
-    headCount: z.coerce.number().int().min(1).optional(),
+    headCount: z.coerce.number().int().min(1).max(1000).optional(),
+    // M24 #7: an optional named per-hour setup (studio industries only) —
+    // startWalkinCore re-validates it (this resource + tenant, active,
+    // per-hour, industry) and refuses anything else; never trusted as sent.
+    setupId: z.string().uuid().optional(),
     // M26 #4: cash collected from the customer before this walk-in started —
     // gaming_cafe only. startWalkinCore re-checks the tenant's industry
     // itself and refuses a non-zero value for any other industry.
@@ -280,7 +284,7 @@ const checkoutWalkinInput = z.object({
   // lib/booking/walkin.ts). Like endAt, this travels with the preview/
   // checkout pair and is only WRITTEN to booking_slots/bookings at the
   // moment checkoutWalkinCore actually runs, never by the preview.
-  headCount: z.coerce.number().int().min(1).optional(),
+  headCount: z.coerce.number().int().min(1).max(1000).optional(),
 })
 
 type CheckoutWalkinResult = { error?: string; bookingId?: string; total?: number }

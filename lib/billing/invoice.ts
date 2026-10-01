@@ -229,6 +229,9 @@ export async function loadBookingLines(
       happyHourApplied: bookingSlots.happyHourApplied,
       // M24 #2: 'hour' (default) or 'day' — see this function's doc comment.
       rateUnit: bookingSlots.rateUnit,
+      // M29 #3 — see the holiday + surcharge case in the line shape below.
+      holidayRateApplied: bookingSlots.holidayRateApplied,
+      extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
     })
     .from(bookingSlots)
     .where(
@@ -265,8 +268,14 @@ export async function loadBookingLines(
           // happy-hour/walk-in shape: v1 setups don't compose with either
           // (see lib/booking/service.ts:priceBookingSlots' doc comment).
           { qty: daysInRange(s.startsAt, s.endsAt, timeZone), unitPrice: Number(s.rateApplied) }
-        : isWalkin || s.happyHourApplied
-          ? // qty=1, unitPrice=the whole priced total — same "one computed
+        : isWalkin || s.happyHourApplied || (s.holidayRateApplied && s.extraPlayerRateApplied !== null)
+          ? // M29 #3: a holiday-priced board slot with a surcharge is two
+            // separately-rounded flat components (holiday base + extra players),
+            // so a single hours × rate pair could be a paise off slot_total —
+            // it bills as one computed charge, same as the blended cases.
+            // A non-holiday surcharge slot keeps hours × rate_applied: its
+            // rate_applied is the combined hourly rate, exactly like a plain
+            // slot's. qty=1, unitPrice=the whole priced total — same "one computed
             // charge" shape priceElapsedTime itself returns, rather than a
             // qty/rate pair that would need to multiply back to that figure.
             // M23 #1: a happy-hour-blended RESERVED slot takes this same

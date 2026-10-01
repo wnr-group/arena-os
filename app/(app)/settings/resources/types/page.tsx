@@ -74,6 +74,9 @@ export default async function ResourceTypesPage() {
           taxRateName: t.taxRateName,
           pricingMode: t.pricingMode,
           minPlayers: t.minPlayers,
+          includedPlayers: t.includedPlayers,
+          extraPlayerRate: t.extraPlayerRate,
+          extraPlayerWeekendRate: t.extraPlayerWeekendRate,
           isActive: t.isActive,
         }))}
         ratesByType={ratesByType}

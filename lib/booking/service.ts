@@ -81,6 +81,11 @@ export type CreateBookingInput = {
    *  for every booking and every other industry — see bookings.advance_paid
    *  (M26 #1). */
   advancePaid?: number
+  /** M28: set ONLY by recordBackdatedBooking (lib/booking/backdated.ts) — a
+   *  booking entered after the session already happened. Never accepted from
+   *  a client: every action's zod schema strips unknown keys, and the public
+   *  path builds its own input object. */
+  backdated?: boolean
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -118,6 +123,11 @@ export type PricedBookingSlot = {
    *  Always false for a setup slot: a setup prices instead of a holiday rate,
    *  same as it prices instead of weekend/happy-hour. */
   holidayRateApplied: boolean
+  /** M29 #3: the per-extra-player hourly rate this slot billed at (weekday or
+   *  weekend, resolved by the slot's own start day), frozen at booking time.
+   *  Null unless the slot's type had a board surcharge configured — then
+   *  headCount holds the player count. Never re-derived from live config. */
+  extraPlayerRateApplied: string | null
 }
 
 /**
@@ -237,6 +247,10 @@ export async function priceBookingSlots(
       rateOverride: resources.hourlyRateOverride,
       pricingMode: resourceTypes.pricingMode,
       minPlayers: resourceTypes.minPlayers,
+      // M29 #3: board extra-player surcharge (0105).
+      includedPlayers: resourceTypes.includedPlayers,
+      extraPlayerRate: resourceTypes.extraPlayerRate,
+      extraPlayerWeekendRate: resourceTypes.extraPlayerWeekendRate,
       // Only a rate with appliesTo 'resources' or 'both' can ever be set here
       // (enforced in lib/actions/resources.ts), so no re-check is needed at
       // read time — unlike menu items, which snapshot from a live join too
@@ -418,10 +432,38 @@ export async function priceBookingSlots(
         // for a setup slot (excluded from the holidayTypeIds/holidayDates
         // lookup-set above), so this is always false, not just "usually."
         holidayRateApplied: false,
+        // M29 #3: a setup never consults includedPlayers/extraPlayerRate.
+        extraPlayerRateApplied: null,
       }
     }
 
     const hours = durationHours(startsAt, endsAt)
+
+    // M29 #3: board extra-player surcharge — a per_resource type with an
+    // extra_player_rate configured bills base + extraPlayers × extraRate.
+    // pricingMode is re-checked here even though upsertResourceType refuses the
+    // combination: a per_head type with these columns set must never be
+    // double-priced, however they got there. Resolved by the slot's own start
+    // day, same as the base rate. headCount may be below includedPlayers (no
+    // penalty — the Math.max floor makes the surcharge 0, never negative).
+    let extraRate: number | null = null
+    let extraPlayers = 0
+    let surchargeHeadCount: number | null = null
+    if (r.pricingMode === 'per_resource' && r.extraPlayerRate !== null) {
+      const requested = input.headCount
+      if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
+        throw new BookingError(`${r.typeName} is priced per player — enter the number of players.`)
+      }
+      surchargeHeadCount = requested
+      extraPlayers = Math.max(0, requested - r.includedPlayers)
+      extraRate = resolveDayRate(
+        Number(r.extraPlayerRate),
+        r.extraPlayerWeekendRate === null ? null : Number(r.extraPlayerWeekendRate),
+        startsAt,
+        ctx.timezone,
+        weekendDays,
+      )
+    }
 
     // M27 #2: a holiday rate PRICES INSTEAD OF weekend/happy-hour — same
     // "instead of, not on top of" precedence M24's setup branch above already
@@ -442,6 +484,9 @@ export async function priceBookingSlots(
       // all, so an active happy-hour rule cannot touch it. Same
       // round2(rate × hours) shape as the M24 setup branch's flat total.
       rawTotal = round2(rate * hours)
+      // M29 #3: the surcharge rides along as another flat-that-day component —
+      // undiscounted, still no priceTimeRangeSegments call.
+      if (extraRate !== null) rawTotal += round2(extraPlayers * extraRate * hours)
     } else {
       const weekdayRate = Number(r.rateOverride ?? r.typeRate)
       const weekendRate = r.typeWeekendRate === null ? null : Number(r.typeWeekendRate)
@@ -451,7 +496,11 @@ export async function priceBookingSlots(
       // discount each segment — see this function's doc comment for the
       // composition order. `rawTotal` is unrounded and, for a per_head slot,
       // is still the PER-PLAYER figure — headCount multiplies below.
-      const seg = priceTimeRangeSegments(startsAt, endsAt, rate, happyHourRules, ctx.timezone)
+      // M29 #3: with a surcharge the COMBINED hourly rate is what gets
+      // segmented, so a happy-hour rule discounts base + extra uniformly.
+      // Without one this passes `rate` itself — byte-identical to before.
+      const effectiveRate = extraRate === null ? rate : rate + extraPlayers * extraRate
+      const seg = priceTimeRangeSegments(startsAt, endsAt, effectiveRate, happyHourRules, ctx.timezone)
       rawTotal = seg.total
       discounted = seg.discounted
     }
@@ -476,6 +525,9 @@ export async function priceBookingSlots(
       headCount = requested
       total = headCount * rawTotal
     } else {
+      // M29 #3: a surcharge slot snapshots the actual player count (the
+      // adjustment is already baked into rawTotal — no multiplication here).
+      headCount = surchargeHeadCount
       total = rawTotal
     }
     subtotal += total
@@ -489,7 +541,8 @@ export async function priceBookingSlots(
     // holiday-priced slot was never segmented at all, so `rate` itself (not
     // a rawTotal/hours reconstruction, which could round differently) is the
     // exact figure that was billed.
-    const blendedRate = holidayRate !== undefined ? rate : rawTotal / hours
+    const blendedRate =
+      holidayRate !== undefined ? (extraRate === null ? rate : rate + extraPlayers * extraRate) : rawTotal / hours
 
     return {
       resourceId: s.resourceId,
@@ -507,6 +560,7 @@ export async function priceBookingSlots(
       setupName: null,
       rateUnit: 'hour',
       holidayRateApplied: holidayRate !== undefined,
+      extraPlayerRateApplied: extraRate === null ? null : extraRate.toFixed(2),
     }
   })
 
@@ -537,13 +591,25 @@ export async function resolvePublicHeadCount(
   resourceIds: string[],
 ): Promise<number | undefined> {
   const rows = await tx
-    .select({ pricingMode: resourceTypes.pricingMode, minPlayers: resourceTypes.minPlayers })
+    .select({
+      pricingMode: resourceTypes.pricingMode,
+      minPlayers: resourceTypes.minPlayers,
+      includedPlayers: resourceTypes.includedPlayers,
+      extraPlayerRate: resourceTypes.extraPlayerRate,
+    })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(and(eq(resources.tenantId, tenantId), inArray(resources.id, resourceIds)))
   const perHead = rows.filter((r) => r.pricingMode === 'per_head')
-  if (perHead.length === 0) return undefined
-  return perHead.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+  // M29 #3: a board with a surcharge also needs a player count to price. The
+  // public flow doesn't ask, so it books at the included players — no
+  // surcharge online; any extra players are a staff matter at check-in.
+  const boards = rows.filter((r) => r.pricingMode === 'per_resource' && r.extraPlayerRate !== null)
+  if (perHead.length === 0 && boards.length === 0) return undefined
+  return Math.max(
+    perHead.reduce((max, r) => Math.max(max, r.minPlayers), 1),
+    boards.reduce((max, r) => Math.max(max, r.includedPlayers), 1),
+  )
 }
 
 /**
@@ -641,6 +707,7 @@ export async function createBookingCore(
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
       advancePaid: advancePaid.toFixed(2),
+      backdated: input.backdated ?? false,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -680,7 +747,7 @@ export type UpdateBookingHeadCountInput = { bookingId: string; headCount: number
  */
 export async function updateBookingHeadCountCore(
   tx: Db,
-  ctx: { tenantId: string },
+  ctx: { tenantId: string; timezone?: string },
   input: UpdateBookingHeadCountInput,
 ): Promise<{ bookingId: string; headCount: number }> {
   if (!Number.isInteger(input.headCount) || input.headCount < 1) {
@@ -688,7 +755,7 @@ export async function updateBookingHeadCountCore(
   }
 
   const [booking] = await tx
-    .select({ id: bookings.id, discount: bookings.discount })
+    .select({ id: bookings.id, discount: bookings.discount, branchId: bookings.branchId })
     .from(bookings)
     .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
     .for('update')
@@ -712,6 +779,8 @@ export async function updateBookingHeadCountCore(
       headCount: bookingSlots.headCount,
       // M23 follow-up — see the re-price loop below.
       happyHourApplied: bookingSlots.happyHourApplied,
+      // M29 #5: non-null only for a board-with-surcharge slot.
+      extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
     })
     .from(bookingSlots)
     .where(
@@ -719,22 +788,32 @@ export async function updateBookingHeadCountCore(
     )
     .for('update')
   const perHeadSlots = slots.filter((s) => s.pricingMode === 'per_head')
-  if (perHeadSlots.length === 0) {
+  // M29 #5: a board-with-surcharge slot has an editable player count too —
+  // eligibility is the slot's own extra_player_rate_applied snapshot (what was
+  // charged at booking time), not the type's current config.
+  const isSurchargeSlot = (s: (typeof slots)[number]) =>
+    s.pricingMode !== 'per_head' && s.extraPlayerRateApplied !== null
+  const surchargeSlots = slots.filter(isSurchargeSlot)
+  if (perHeadSlots.length === 0 && surchargeSlots.length === 0) {
     throw new BookingError('This booking has no per-head resource to adjust.')
   }
 
   // min_players is checked against the resource type's CURRENT setting, not
-  // a snapshot — see the doc comment above.
-  const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
-  const typeRows = await tx
-    .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
-    .from(resources)
-    .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
-    .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
-  const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
-  if (input.headCount < minPlayers) {
-    const name = typeRows[0]?.typeName ?? 'This resource'
-    throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+  // a snapshot — see the doc comment above. per_head slots only: a surcharge
+  // board has no real floor (fewer players than included just means no
+  // surcharge), so it only needs the positive-integer check at the top.
+  if (perHeadSlots.length > 0) {
+    const resourceIds = [...new Set(perHeadSlots.map((s) => s.resourceId))]
+    const typeRows = await tx
+      .select({ minPlayers: resourceTypes.minPlayers, typeName: resourceTypes.name })
+      .from(resources)
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, resourceIds)))
+    const minPlayers = typeRows.reduce((max, r) => Math.max(max, r.minPlayers), 1)
+    if (input.headCount < minPlayers) {
+      const name = typeRows[0]?.typeName ?? 'This resource'
+      throw new BookingError(`${name} needs at least ${minPlayers} player${minPlayers === 1 ? '' : 's'}.`)
+    }
   }
 
   // Re-price every per_head slot AND refresh the booking's stored subtotal/
@@ -744,9 +823,79 @@ export async function updateBookingHeadCountCore(
   // denormalized columns are read straight out and would otherwise go stale.
   // A per_head slot with no ends_at yet (an open-tab walk-in) is priced at
   // checkout, not here, so its slot_total is left to checkoutWalkinCore.
+  // M29 #5: only a surcharge re-price needs the tenant's timezone (day-rate
+  // resolution); resolved lazily so every existing caller keeps passing just
+  // { tenantId }.
+  let timezone = ctx.timezone
+  if (surchargeSlots.length > 0 && !timezone) {
+    const [t] = await tx.select({ tz: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
+    timezone = t?.tz
+    // Day-rate resolution depends on it — never guess UTC.
+    if (!timezone) throw new BookingError('Could not resolve the business timezone to re-price this booking.')
+  }
   let newSubtotal = 0
   for (const s of slots) {
-    if (s.pricingMode === 'per_head' && s.endsAt !== null) {
+    if (isSurchargeSlot(s) && s.endsAt !== null) {
+      // M29 #5: a board-with-surcharge slot re-prices by running the SAME
+      // priceBookingSlots a fresh booking goes through, for this slot's own
+      // frozen window and the new player count — so the composition
+      // (day rate resolved against the slot's OWN startsAt, not today, then
+      // base + max(0, players − included) × extra rate, then happy hour /
+      // holiday) can never drift from #3. Parallel to the per_head branch
+      // below, which is untouched.
+      const slotEndsAt = s.endsAt
+      const repriceAt = async (count: number) =>
+        (
+          await priceBookingSlots(
+            tx,
+            { tenantId: ctx.tenantId, timezone: timezone! },
+            {
+              branchId: booking.branchId,
+              slots: [
+                {
+                  resourceId: s.resourceId,
+                  startsAt: new Date(s.startsAt).toISOString(),
+                  endsAt: new Date(slotEndsAt).toISOString(),
+                },
+              ],
+              headCount: count,
+            },
+          )
+        ).slots[0]
+      // The snapshot only keeps the combined, happy-hour-blended rate, so the
+      // frozen base/extra components can't be replayed. Instead prove the LIVE
+      // config still reproduces what was charged at the OLD count: if it
+      // doesn't (a rate, holiday or happy-hour rule changed since booking),
+      // re-pricing would silently reprice the whole slot at today's rates, not
+      // just the player delta — refuse rather than do that.
+      if (s.headCount !== null) {
+        const baseline = await repriceAt(s.headCount)
+        if (round2(Number(baseline.slotTotal)) !== round2(Number(s.slotTotal))) {
+          throw new BookingError(
+            'Pricing has changed since this booking was made, so the player count can’t be corrected here — cancel and rebook it instead.',
+          )
+        }
+      }
+      const repriced = await repriceAt(input.headCount)
+      if (repriced.extraPlayerRateApplied === null) {
+        // The surcharge was switched off since this was booked — re-pricing
+        // would silently turn it into a plain booking.
+        throw new BookingError('Extra-player pricing is no longer set up for this resource, so the player count can’t be corrected here.')
+      }
+      const slotTotal = round2(Number(repriced.slotTotal))
+      newSubtotal += slotTotal
+      await tx
+        .update(bookingSlots)
+        .set({
+          headCount: input.headCount,
+          rateApplied: repriced.rateApplied,
+          extraPlayerRateApplied: repriced.extraPlayerRateApplied,
+          slotTotal: slotTotal.toFixed(2),
+          happyHourApplied: repriced.happyHourApplied,
+          holidayRateApplied: repriced.holidayRateApplied,
+        })
+        .where(and(eq(bookingSlots.id, s.id), eq(bookingSlots.tenantId, ctx.tenantId)))
+    } else if (s.pricingMode === 'per_head' && s.endsAt !== null) {
       // M23 follow-up: rate_applied is a per-hour BLEND rounded to cents
       // (priceBookingSlots) — for a happy-hour slot, flat headCount × rate ×
       // hours can't reproduce the exact per-segment total

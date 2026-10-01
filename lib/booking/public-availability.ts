@@ -638,6 +638,61 @@ export async function getPublicResourceSetups(tenantId: string, resourceId: stri
   return rows.map((r) => ({ ...r, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) }))
 }
 
+export type PublicTypeUnit = { id: string; name: string; setups: PublicResourceSetup[] }
+
+/**
+ * The bookable units of one resource type at the public branch, each with its
+ * active setups (studio industries only — callers gate on
+ * industryHasStudioSetups before calling). A studio type's units are distinct
+ * physical sets ("Set A"), each with its own named setups, so the by-type page
+ * can't auto-assign one the way it does for interchangeable gaming stations:
+ * the customer must pick the set to see its setups.
+ */
+export async function getPublicTypeUnitsWithSetups(
+  tenantId: string,
+  branchId: string,
+  resourceTypeId: string,
+): Promise<PublicTypeUnit[]> {
+  return withPublicTenant(tenantId, async (tx) => {
+    const units = await tx
+      .select({ id: resources.id, name: resources.name })
+      .from(resources)
+      .where(
+        and(
+          eq(resources.tenantId, tenantId),
+          eq(resources.branchId, branchId),
+          eq(resources.resourceTypeId, resourceTypeId),
+          eq(resources.status, 'available'),
+        ),
+      )
+      .orderBy(asc(resources.sortOrder), asc(resources.name))
+    if (units.length === 0) return []
+    const rows = await tx
+      .select({
+        id: resourceSetups.id,
+        resourceId: resourceSetups.resourceId,
+        name: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+      })
+      .from(resourceSetups)
+      .where(
+        and(
+          eq(resourceSetups.tenantId, tenantId),
+          inArray(resourceSetups.resourceId, units.map((u) => u.id)),
+          eq(resourceSetups.isActive, true),
+        ),
+      )
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    return units.map((u) => ({
+      ...u,
+      setups: rows
+        .filter((r) => r.resourceId === u.id)
+        .map((r) => ({ id: r.id, name: r.name, rate: r.rate, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) })),
+    }))
+  })
+}
+
 export type PublicDayRangeWindow = { startsAt: string; endsAt: string; conflict: boolean } | { error: string }
 
 /**

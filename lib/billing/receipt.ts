@@ -16,11 +16,11 @@
  * Takes a `tx` (like ./invoice.ts and ./payments.ts) so it can be exercised on
  * an RLS-scoped transaction without a request context.
  */
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, min } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import type { TaxBreakupLine } from '@/db/schema'
-import { branches, customers, invoiceItems, invoices, promoCodes, tenants } from '@/db/schema'
+import { bookings, bookingSlots, branches, customers, invoiceItems, invoices, promoCodes, tenants } from '@/db/schema'
 import { capturedTotal, listInvoicePayments, paise, type RecordedPayment } from './payments'
 import { loadBusinessProfile } from '@/lib/settings/business-profile'
 import { refundsByPayment } from './refunds'
@@ -135,6 +135,12 @@ export type InvoiceReceipt = {
   paidTotal: string
   balanceDue: string
   fullyPaid: boolean
+  /**
+   * M28 #4: set when the invoice's booking was a backdated entry — when it was
+   * recorded vs the session it claims. Screen-only context for a manager; the
+   * printed tax invoice never mentions it. Null for every other invoice.
+   */
+  lateEntry: { recordedAt: Date; sessionStart: Date } | null
 }
 
 /** Sum a column of stored 2dp strings without floating drift. */
@@ -273,11 +279,14 @@ export async function loadInvoiceReceipt(
       branchPhone: branches.phone,
       customerName: customers.name,
       customerPhone: customers.phone,
+      bookingBackdated: bookings.backdated,
+      bookingCreatedAt: bookings.createdAt,
     })
     .from(invoices)
     .innerJoin(tenants, eq(tenants.id, invoices.tenantId))
     .innerJoin(branches, eq(branches.id, invoices.branchId))
     .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(bookings, and(eq(bookings.tenantId, invoices.tenantId), eq(bookings.id, invoices.bookingId)))
     // Composite, matching the invoices_promo_fk the row was written under, so
     // the join can no more reach another tenant's promo than the FK could.
     .leftJoin(
@@ -364,6 +373,16 @@ export async function loadInvoiceReceipt(
   const total = round2(Number(row.total))
   const balance = round2(total - paid)
 
+  // M28 #4: only a backdated booking needs the extra lookup.
+  let lateEntry: InvoiceReceipt['lateEntry'] = null
+  if (row.bookingBackdated && row.bookingId && row.bookingCreatedAt) {
+    const [slot] = await tx
+      .select({ startsAt: min(bookingSlots.startsAt) })
+      .from(bookingSlots)
+      .where(and(eq(bookingSlots.tenantId, tenantId), eq(bookingSlots.bookingId, row.bookingId)))
+    if (slot?.startsAt) lateEntry = { recordedAt: row.bookingCreatedAt, sessionStart: new Date(slot.startsAt) }
+  }
+
   return {
     invoice: {
       id: row.id,
@@ -410,5 +429,6 @@ export async function loadInvoiceReceipt(
     // Never show a negative amount owing.
     balanceDue: (paise(balance) > 0 ? balance : 0).toFixed(2),
     fullyPaid: paise(balance) <= 0,
+    lateEntry,
   }
 }

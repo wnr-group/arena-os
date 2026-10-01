@@ -21,6 +21,11 @@ export type WizardResource = {
    *  future-booking wizard's Players field. */
   pricingMode: string
   minPlayers: number
+  /** M29 #4: board surcharge — a per_resource type with extraPlayerRate set
+   *  bills base + extra players × rate (weekday figure here; the day-resolved
+   *  rate arrives via the availability fetch). Null = no surcharge. */
+  includedPlayers: number
+  extraPlayerRate: string | null
   /** M24 #4: this unit's own active named setups, if any — empty for every
    *  resource that hasn't had one defined (see components/settings/
    *  ResourceSetupsModal.tsx), which keeps every existing tenant's wizard

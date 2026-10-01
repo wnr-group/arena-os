@@ -30,6 +30,8 @@ export type SessionRow = {
   pricingMode: string | null
   headCount: number | null
   minPlayers: number
+  extraPlayerRateApplied: string | null
+  includedPlayers: number
   /** Minutes before endsAt the heads-up fires — bookings.warning_minutes,
    *  per booking, not a hardcoded constant. */
   warningMinutes: number
