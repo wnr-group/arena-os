@@ -266,6 +266,18 @@ async function main() {
     await owner.query(`update booking_slots set included_players_applied = null where booking_id = $1`, [legacy])
     await owner.query(`update resource_types set included_players = 4 where id = $1`, [typeId])
     check('legacy slot (null snapshot) falls back to live included (4) → no surcharge, 150.00', (await checkout(legacy)).total === 150)
+
+    // Legacy checkout freezes the threshold it priced with, so a LATER edit to
+    // included_players can't hide the extra-player breakdown on the bill.
+    await owner.query(`update resource_types set included_players = 2 where id = $1`, [typeId])
+    const legacy2 = await start(await unit(typeId), 3)
+    await owner.query(`update booking_slots set included_players_applied = null where booking_id = $1`, [legacy2])
+    check('legacy checkout at included 2 → 175.00', (await checkout(legacy2)).total === 175)
+    const frozen = (await owner.query(`select included_players_applied as inc from booking_slots where booking_id=$1`, [legacy2])).rows[0]
+    check('legacy checkout persists the resolved included count (2)', frozen.inc === 2, frozen)
+    await owner.query(`update resource_types set included_players = 4 where id = $1`, [typeId])
+    const after = (await owner.query(`select included_players_applied as inc from booking_slots where booking_id=$1`, [legacy2])).rows[0]
+    check('raising included to 4 afterwards leaves the frozen count at 2 (breakdown still shows 1 extra)', after.inc === 2, after)
   }
 
   // ══ 6. regressions ═══════════════════════════════════════════════════════

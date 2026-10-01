@@ -1085,7 +1085,14 @@ export async function checkoutWalkinCore(
   // slot's head_count stays null; nothing to write.
   // M29 #6: a surcharge walk-in persists its (possibly edited) count too.
   const persistsHeadCount = walkin.pricingMode === 'per_head' || walkin.extraPlayerRate !== null
-  const headCountUpdate = persistsHeadCount ? { headCount } : {}
+  // A surcharge walk-in also freezes the included-player count it was priced
+  // with (walkin.includedPlayers = the start snapshot, or the live value for a
+  // walk-in started before 0106). Without this a legacy walk-in keeps reading
+  // the live value after checkout, so raising included_players later would hide
+  // the extra-player breakdown on a bill that did charge for them.
+  const headCountUpdate = persistsHeadCount
+    ? { headCount, ...(walkin.extraPlayerRate !== null ? { includedPlayersApplied: walkin.includedPlayers } : {}) }
+    : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx
