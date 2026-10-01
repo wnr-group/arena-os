@@ -7,7 +7,6 @@ import { branches } from '@/db/schema'
 import { listResources, listResourceSetups } from '@/lib/booking/data'
 import { todayInZone } from '@/lib/booking/time'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
-import { industryHasBackdatedEntry } from '@/lib/booking/backdated-industry'
 import { BackdatedBookingForm } from '@/components/bookings/BackdatedBookingForm'
 
 /**
@@ -18,7 +17,7 @@ import { BackdatedBookingForm } from '@/components/bookings/BackdatedBookingForm
 export default async function BackdatedBookingPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
-  if (!isManager(ctx.role) || !industryHasBackdatedEntry(ctx.tenant.industry)) redirect('/bookings')
+  if (!isManager(ctx.role)) redirect('/bookings')
 
   const [branch] = await withUser(ctx.user.id, (tx) =>
     tx

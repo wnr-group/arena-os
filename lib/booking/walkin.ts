@@ -32,7 +32,7 @@
  *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
@@ -357,7 +357,8 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
         extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
-        includedPlayers: resourceTypes.includedPlayers,
+        // M29 #8: the start-time snapshot wins; legacy rows fall back to live.
+        includedPlayers: sql<number>`coalesce(${bookingSlots.includedPlayersApplied}, ${resourceTypes.includedPlayers})`,
         warningMinutes: bookings.warningMinutes,
         advancePaid: bookings.advancePaid,
       })
@@ -650,12 +651,15 @@ export async function startWalkinCore(
   // is day-resolved by the session's START day and snapshotted, exactly like
   // the base rate — checkout reads it back, never re-resolves.
   let extraPlayerRateApplied: string | null = null
+  let includedPlayersApplied: number | null = null
   if (!setup && resource.pricingMode === 'per_resource' && resource.extraPlayerRate !== null) {
     const requested = input.headCount
     if (requested !== undefined && (!Number.isInteger(requested) || requested < 1)) {
       throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
     }
     headCount = requested ?? resource.includedPlayers
+    // M29 #8: freeze the included count alongside the extra rate.
+    includedPlayersApplied = resource.includedPlayers
     extraPlayerRateApplied = resolveDayRate(
       Number(resource.extraPlayerRate),
       resource.extraPlayerWeekendRate === null ? null : Number(resource.extraPlayerWeekendRate),
@@ -712,6 +716,7 @@ export async function startWalkinCore(
     headCount,
     holidayRateApplied,
     extraPlayerRateApplied,
+    includedPlayersApplied,
     // M24 #7: snapshot, same discipline as a reserved setup slot.
     setupId: setup?.id ?? null,
     setupName: setup?.name ?? null,
@@ -785,8 +790,9 @@ type WalkinForCheckout = {
   /** M29 #6: the per-extra-player hourly rate frozen at start — null for every
    *  walk-in without a board surcharge. Never re-resolved at checkout. */
   extraPlayerRate: number | null
-  /** The type's CURRENT included players (live, like minPlayers — a walk-in's
-   *  player count stays editable until checkout). 1 when there's no surcharge. */
+  /** Included players frozen at start (M29 #8) so a mid-session type edit can't
+   *  re-price the surcharge; falls back to the type's live value only for a
+   *  walk-in started before 0106. 1 when there's no surcharge. */
   includedPlayers: number
 }
 
@@ -841,6 +847,7 @@ export async function loadWalkinForCheckout(
     headCount: bookingSlots.headCount,
     holidayRateApplied: bookingSlots.holidayRateApplied,
     extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+    includedPlayersApplied: bookingSlots.includedPlayersApplied,
     setupId: bookingSlots.setupId,
     setupName: bookingSlots.setupName,
   }
@@ -865,11 +872,14 @@ export async function loadWalkinForCheckout(
     minPlayers = typeRow?.minPlayers ?? 1
   }
   // M29 #6: eligibility is the slot's own extra_player_rate_applied snapshot;
-  // included players is read live, same as minPlayers above.
+  // included players is the start-time snapshot (M29 #8), live only as a
+  // fallback for a walk-in started before the snapshot existed.
   const extraPlayerRate =
     pricingMode !== 'per_head' && slot.extraPlayerRateApplied !== null ? Number(slot.extraPlayerRateApplied) : null
   let includedPlayers = 1
-  if (extraPlayerRate !== null) {
+  if (extraPlayerRate !== null && slot.includedPlayersApplied !== null) {
+    includedPlayers = slot.includedPlayersApplied
+  } else if (extraPlayerRate !== null) {
     const [typeRow] = await tx
       .select({ includedPlayers: resourceTypes.includedPlayers })
       .from(resources)
@@ -1075,7 +1085,14 @@ export async function checkoutWalkinCore(
   // slot's head_count stays null; nothing to write.
   // M29 #6: a surcharge walk-in persists its (possibly edited) count too.
   const persistsHeadCount = walkin.pricingMode === 'per_head' || walkin.extraPlayerRate !== null
-  const headCountUpdate = persistsHeadCount ? { headCount } : {}
+  // A surcharge walk-in also freezes the included-player count it was priced
+  // with (walkin.includedPlayers = the start snapshot, or the live value for a
+  // walk-in started before 0106). Without this a legacy walk-in keeps reading
+  // the live value after checkout, so raising included_players later would hide
+  // the extra-player breakdown on a bill that did charge for them.
+  const headCountUpdate = persistsHeadCount
+    ? { headCount, ...(walkin.extraPlayerRate !== null ? { includedPlayersApplied: walkin.includedPlayers } : {}) }
+    : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx

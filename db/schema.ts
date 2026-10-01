@@ -475,6 +475,10 @@ export const bookingSlots = pgTable(
     // booking time. Null unless a board-with-surcharge booking (headCount
     // then holds the player count).
     extraPlayerRateApplied: numeric('extra_player_rate_applied', { precision: 10, scale: 2 }),
+    // M29 #8 (0106): included players frozen at walk-in start so a mid-session
+    // resource_types edit can't re-price the surcharge. Null = no snapshot
+    // (legacy / non-board / reserved) -> checkout falls back to the live value.
+    includedPlayersApplied: smallint('included_players_applied'),
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),

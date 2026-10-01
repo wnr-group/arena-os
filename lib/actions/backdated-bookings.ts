@@ -6,7 +6,6 @@ import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { BookingError } from '@/lib/booking/service'
 import { recordBackdatedBookingCore, previewBackdatedBooking, type BackdatedPreview } from '@/lib/booking/backdated'
-import { industryHasBackdatedEntry } from '@/lib/booking/backdated-industry'
 import { BillingError } from '@/lib/billing/invoice'
 import { PaymentError, POS_PAYMENT_METHODS, MAX_PAYMENT_AMOUNT } from '@/lib/billing/payments'
 import { isValidPhone } from '@/lib/customers/phone'
@@ -51,12 +50,6 @@ const recordBackdatedInput = z.object({
   idempotencyKey: z.string().trim().min(8).max(128).optional(),
 })
 
-function assertBackdatedIndustry(industry: string) {
-  if (!industryHasBackdatedEntry(industry)) {
-    throw new BookingError('Recording past bookings is only available for gaming cafes.')
-  }
-}
-
 function fail(e: unknown): RecordResult {
   if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError || e instanceof PaymentError) {
     return { error: e.message }
@@ -77,7 +70,6 @@ function fail(e: unknown): RecordResult {
 export async function recordBackdatedBooking(input: z.input<typeof recordBackdatedInput>): Promise<RecordResult> {
   try {
     const ctx = await requireManager()
-    assertBackdatedIndustry(ctx.tenant.industry)
     const v = recordBackdatedInput.parse(input)
 
     const result = await withUser(ctx.user.id, (tx) =>
@@ -111,7 +103,6 @@ export async function quoteBackdatedBooking(
 ): Promise<{ error?: string; preview?: BackdatedPreview }> {
   try {
     const ctx = await requireManager()
-    assertBackdatedIndustry(ctx.tenant.industry)
     const v = previewBackdatedInput.parse(input)
     const preview = await previewBackdatedBooking(
       (fn) => withUser(ctx.user.id, fn),

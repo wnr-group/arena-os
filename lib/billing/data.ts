@@ -159,6 +159,22 @@ export type BillableBookingHeader = {
   /** M29 #5: the surcharge type's players covered by the base rate — live,
    *  display-only. Null unless a surcharge slot exists. */
   includedPlayers: number | null
+  /** Board with extra players: the session charge split into base + extra, for
+   *  the bill screen's "Player charges" box. Display-only (the bill itself is
+   *  unchanged). Null when there are no extra players, or the split can't be
+   *  read off exactly (a reserved happy-hour slot). */
+  playerCharges: PlayerCharges | null
+}
+
+export type PlayerCharges = {
+  includedPlayers: number
+  headCount: number
+  extraPlayers: number
+  /** Per extra player, per hour. */
+  extraRate: number
+  base: number
+  extra: number
+  total: number
 }
 
 /** One check of a split bill (M18 #2) — the same shape a normal invoice's
@@ -365,8 +381,15 @@ export async function getBillableForBooking(
     // from the slot's OWN extra_player_rate_applied snapshot (non-null only
     // when a surcharge was configured at booking time), never the type's
     // current config — same snapshot-vs-live discipline as M25's corrections.
-    const [surchargeSlot] = await tx
-      .select({ includedPlayers: resourceTypes.includedPlayers })
+    const surchargeSlots = await tx
+      .select({
+        includedPlayers: sql<number>`coalesce(${bookingSlots.includedPlayersApplied}, ${resourceTypes.includedPlayers})`,
+        headCount: bookingSlots.headCount,
+        slotTotal: bookingSlots.slotTotal,
+        rateApplied: bookingSlots.rateApplied,
+        extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+        happyHourApplied: bookingSlots.happyHourApplied,
+      })
       .from(bookingSlots)
       .innerJoin(resources, eq(resources.id, bookingSlots.resourceId))
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -378,7 +401,41 @@ export async function getBillableForBooking(
           isNotNull(bookingSlots.extraPlayerRateApplied),
         ),
       )
-      .limit(1)
+      .orderBy(bookingSlots.startsAt)
+    const surchargeSlot = surchargeSlots[0]
+
+    // Split each surcharge slot's charge into base + extra players. The extra's
+    // share is read off the billed total in proportion to the hourly rates
+    // (rate_applied is the COMBINED rate on a reserved slot, the base rate on a
+    // walk-in), so it adds back to the total exactly.
+    let playerCharges: PlayerCharges | null = null
+    {
+      let base = 0
+      let extra = 0
+      for (const s of surchargeSlots) {
+        const total = Number(s.slotTotal)
+        const extraRate = Number(s.extraPlayerRateApplied)
+        const extraPlayers = Math.max(0, (s.headCount ?? 0) - s.includedPlayers)
+        if (!(total > 0) || !(extraRate > 0) || extraPlayers === 0) continue
+        if (s.happyHourApplied && row.channel !== 'walkin') continue
+        const extraHourly = extraPlayers * extraRate
+        const combined = row.channel === 'walkin' ? Number(s.rateApplied) + extraHourly : Number(s.rateApplied)
+        if (!(combined > 0)) continue
+        const e = Math.min(total, round2((total * extraHourly) / combined))
+        extra = round2(extra + e)
+        base = round2(base + (total - e))
+        playerCharges ??= {
+          includedPlayers: s.includedPlayers,
+          headCount: s.headCount ?? 0,
+          extraPlayers,
+          extraRate,
+          base: 0,
+          extra: 0,
+          total: 0,
+        }
+      }
+      if (playerCharges) playerCharges = { ...playerCharges, base, extra, total: round2(base + extra) }
+    }
 
     // The membership benefit, for DISPLAY on the bill screen. Priced against the
     // undiscounted subtotal, exactly as issueInvoiceForBooking() does, through
@@ -429,6 +486,7 @@ export async function getBillableForBooking(
         minPlayers: perHeadSlot?.minPlayers ?? null,
         hasEditablePlayerCount: Boolean(perHeadSlot || surchargeSlot),
         includedPlayers: surchargeSlot?.includedPlayers ?? null,
+        playerCharges,
         branchId: row.branchId,
         branchName: row.branchName,
         customerId: row.customerId,
