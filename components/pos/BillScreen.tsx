@@ -40,6 +40,16 @@ type BookingHeader = {
   hasEditablePlayerCount: boolean
   /** A surcharge type's included players (display only); null when none. */
   includedPlayers: number | null
+  /** Board with extra players: base + extra split of the session charge. */
+  playerCharges: {
+    includedPlayers: number
+    headCount: number
+    extraPlayers: number
+    extraRate: number
+    base: number
+    extra: number
+    total: number
+  } | null
 }
 type ExistingInvoice = { id: string; invoiceNumber: string; status: string }
 
@@ -551,6 +561,7 @@ export function BillScreen({
       {splitChecks ? (
         <div className="mt-6 space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
+          {booking.playerCharges && <PlayerCharges charges={booking.playerCharges} money={money} />}
           {foodItems.length > 0 && <LineTable title="Food & beverage" items={foodItems} money={money} />}
           {serviceChargeItems.length > 0 && (
             <LineTable title="Service charge" items={serviceChargeItems} money={money} />
@@ -586,6 +597,7 @@ export function BillScreen({
         {/* ── lines ── */}
         <div className="space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
+          {booking.playerCharges && <PlayerCharges charges={booking.playerCharges} money={money} />}
           {foodItems.length > 0 && (
             <LineTable title="Food & beverage" items={foodItems} money={money} />
           )}
@@ -877,6 +889,49 @@ export function BillScreen({
         />
       )}
     </div>
+  )
+}
+
+/** Base + extra-player split of the session charge, so the cashier (and the
+ *  customer) can see exactly what the extra players cost. Display-only. */
+function PlayerCharges({
+  charges,
+  money,
+}: {
+  charges: NonNullable<BookingHeader['playerCharges']>
+  money: (n: number) => string
+}) {
+  return (
+    <section className="rounded-lg border bg-muted/30 p-4">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Player charges</h2>
+      <dl className="mt-3 space-y-1.5 text-base">
+        <div className="flex justify-between gap-4">
+          <dt>
+            Base charge{' '}
+            <span className="text-sm text-muted-foreground">
+              (up to {charges.includedPlayers} player{charges.includedPlayers === 1 ? '' : 's'})
+            </span>
+          </dt>
+          <dd className="tabular-nums">{money(charges.base)}</dd>
+        </div>
+        <div className="flex justify-between gap-4">
+          <dt>
+            Extra players{' '}
+            <span className="text-sm text-muted-foreground">
+              ({charges.extraPlayers} × {money(charges.extraRate)} / hr)
+            </span>
+          </dt>
+          <dd className="tabular-nums">{money(charges.extra)}</dd>
+        </div>
+        <div className="flex justify-between gap-4 border-t pt-1.5 font-semibold">
+          <dt>
+            Session total{' '}
+            <span className="text-sm font-normal text-muted-foreground">({charges.headCount} players)</span>
+          </dt>
+          <dd className="tabular-nums">{money(charges.total)}</dd>
+        </div>
+      </dl>
+    </section>
   )
 }
 
