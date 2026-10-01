@@ -194,7 +194,7 @@ export function WalkInAvailabilityCalendar({
                 subtitle={`${formatMoney(Number(t.hourlyRate), currency)}/${t.pricingMode === 'per_head' ? 'player' : 'hr'}`}
                 badge={
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className={`text-xs font-semibold ${freeCount > 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive'}`}>
+                    <span className={`text-xs font-semibold ${freeCount > 0 ? 'text-primary' : 'text-destructive'}`}>
                       {freeCount} of {t.rows.length} free
                     </span>
                     {t.capacity != null && (
@@ -431,7 +431,7 @@ function ResourceAvailabilityBar({
       ) : (
         <>
           <div
-            className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-emerald-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] dark:text-emerald-200 ${
+            className={`absolute inset-y-1.5 flex flex-col justify-center overflow-hidden py-1 pl-3 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] ${
               showBookedSegment ? 'rounded-l-md' : 'rounded-md'
             }`}
             style={{
