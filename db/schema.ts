@@ -1929,7 +1929,8 @@ export const payments = pgTable(
   ],
 )
 
-// M30 #1 (0107): append-only ledger of advance tenders — one row per tender,
+// M30 #1 (0107): ledger of advance tenders — one row per tender, inserted once
+// and only ever updated to stamp invoice_id when consumed,
 // keyed to the booking (no invoice exists yet at collection time). A booking's
 // advance is always SUM(amount), never cached. Supersedes bookings.advance_paid
 // / advance_applied (kept in place, unread). `method in (cash,card,upi)` and

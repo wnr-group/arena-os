@@ -271,7 +271,6 @@ async function main() {
     const rows = await paymentsFor(inv.invoiceId)
     check('no ₹0 payments row was inserted', rows.length === 0)
 
-    const b = await bookingRow(bookingId)
     const stamped = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
     check("the tender is still stamped — this booking's advance was reckoned with once", stamped.rows[0].invoice_id === inv.invoiceId)
 

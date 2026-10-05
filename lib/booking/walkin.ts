@@ -39,8 +39,6 @@ import { resources, resourceTypes, resourceSetups, holidayRates, bookings, booki
 import { industryHasStudioSetups } from './studio-setups'
 import { advancePaidTotals } from './advance-ledger'
 import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
-import { paise } from '@/lib/billing/payments'
-import { round2 } from '@/lib/billing/pricing'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
 import { resolveDayRate } from './rate'
