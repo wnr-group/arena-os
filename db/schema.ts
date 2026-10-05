@@ -386,6 +386,8 @@ export const bookings = pgTable(
     // M21 per-head #1 (0094): player count for a per_head booking. Null for
     // every per_resource booking.
     headCount: smallint('head_count'),
+    // SUPERSEDED by advance_payments (M30 #1, 0107) — advancePaid/advanceApplied
+    // are retained but no longer read; sum the ledger instead.
     // M26 #1 (0101): cash collected from the customer before this
     // booking/walk-in existed, recorded by staff. Distinct from `deposit`
     // (money still owed via the online Razorpay "Pay Deposit" flow). 0 for
@@ -1924,6 +1926,40 @@ export const payments = pgTable(
     index('idx_payments_tenant_gateway_payment')
       .on(t.tenantId, t.gatewayPaymentId)
       .where(sql`${t.gatewayPaymentId} is not null`),
+  ],
+)
+
+// M30 #1 (0107): append-only ledger of advance tenders — one row per tender,
+// keyed to the booking (no invoice exists yet at collection time). A booking's
+// advance is always SUM(amount), never cached. Supersedes bookings.advance_paid
+// / advance_applied (kept in place, unread). `method in (cash,card,upi)` and
+// `amount >= 0` are CHECKs in the migration.
+export const advancePayments = pgTable(
+  'advance_payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    bookingId: uuid('booking_id').notNull(),
+    method: text('method').notNull(),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    collectedBy: uuid('collected_by').references(() => memberships.id, { onDelete: 'set null' }),
+    // Set once this tender is folded into a real invoice's payments row; null
+    // = still unconsumed. Per row, replacing the booking-level advance_applied.
+    invoiceId: uuid('invoice_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'advance_payments_booking_fk',
+      columns: [t.tenantId, t.bookingId],
+      foreignColumns: [bookings.tenantId, bookings.id],
+    }).onDelete('cascade'),
+    index('idx_advance_payments_booking').on(t.tenantId, t.bookingId),
   ],
 )
 
