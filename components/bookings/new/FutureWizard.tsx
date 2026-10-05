@@ -19,6 +19,8 @@ import {
   DURATIONS,
   SLOT_MINUTES,
 } from '@/components/public-booking/ResourceBookingPage'
+import { AdvanceTenderEditor } from './AdvanceTenderEditor'
+import { cleanAdvanceTenders, sumAdvanceTenders, type AdvanceTenderRow } from './advance-tenders'
 import { StepProgress } from './StepProgress'
 import {
   WizardCard,
@@ -168,10 +170,12 @@ export function FutureWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resourceTypeId])
 
-  // M26 #4: "amount collected now" — gaming_cafe only (advancePaymentEnabled
-  // above). Plain string state so the field can sit empty rather than
-  // default to a misleading "0"; blank means "nothing collected upfront."
-  const [advancePaid, setAdvancePaid] = useState('')
+  // M30 #5: advance tenders collected upfront — gaming_cafe only
+  // (advancePaymentEnabled above). Starts with no rows: nothing collected is
+  // the default. What is sent and what the running total shows both come from
+  // cleanAdvanceTenders(advanceRows), so they cannot disagree.
+  const [advanceRows, setAdvanceRows] = useState<AdvanceTenderRow[]>([])
+  const advanceTenders = advancePaymentEnabled ? cleanAdvanceTenders(advanceRows) : []
 
   // M24 #4: setups live on individual physical units (resources), not on the
   // type itself — a type-level pick alone can't show them, since which unit
@@ -565,9 +569,7 @@ export function FutureWizard({
           },
         ],
         headCount: takesPlayers ? headCount : undefined,
-        // Single cash tender until the split-tender UI lands (M30 #5).
-        advanceTenders:
-          advancePaymentEnabled && Number(advancePaid) > 0 ? [{ method: 'cash' as const, amount: Number(advancePaid) }] : [],
+        advanceTenders,
       })
       if (r.error) {
         setError(r.error)
@@ -1069,24 +1071,13 @@ export function FutureWizard({
 
             {advancePaymentEnabled && (
               <div className="mt-5">
-                <label htmlFor="future-advance-paid" className={wizardLabel}>
-                  Amount collected now (optional)
-                </label>
-                <input
-                  id="future-advance-paid"
-                  className={`${wizardInput} mt-1`}
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={advancePaid}
-                  onChange={(e) => setAdvancePaid(e.target.value)}
+                <AdvanceTenderEditor
+                  idPrefix="future-advance"
+                  rows={advanceRows}
+                  onChange={setAdvanceRows}
+                  currency={currency}
+                  hint="Money already taken from the customer before this booking — add one row per cash, card or UPI payment. Leave empty if nothing was collected upfront."
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Cash already taken from the customer before this booking. Leave blank if nothing was collected
-                  upfront.
-                </p>
               </div>
             )}
 
@@ -1112,8 +1103,8 @@ export function FutureWizard({
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
                 {takesPlayers && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
-                {advancePaymentEnabled && Number(advancePaid) > 0 && (
-                  <SummaryRow k="Collected now" v={formatMoney(Number(advancePaid), currency)} />
+                {advanceTenders.length > 0 && (
+                  <SummaryRow k="Collected now" v={formatMoney(sumAdvanceTenders(advanceTenders), currency)} />
                 )}
                 <div className="flex items-center justify-between border-t border-border pt-2 text-base font-bold text-foreground">
                   <span>Total</span>

@@ -62,6 +62,7 @@
     "test:advance-payment-booking-creation": "tsx --import ./scripts/server-only-hook.mjs scripts/test-advance-payment-booking-creation.ts",
     "test:advance-cancellation-review": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-cancellation-review.ts",
     "test:advance-cash-payment": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-cash-payment.ts",
+    "test:advance-tender-form": "tsx scripts/test-advance-tender-form.ts",
     "test:advance-tenders": "tsx --import ./scripts/server-only-hook.mjs scripts/test-advance-tenders.ts",
     "test:m26": "npm run test:advance-payment && npm run test:unbilled-completion-gate && npm run test:advance-payment-booking-creation && npm run test:advance-cancellation-review && npm run test:advance-cash-payment",
     "_comment:m16": "The M16 suites need BOTH hooks. Two of them additionally drive server actions, which call cookies()/revalidatePath() and therefore need the Next request-runtime stub — run without it they fail 48/61 or die with 'cookies was called outside a request scope', which looks like a product bug and is not one.",
