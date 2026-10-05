@@ -25,6 +25,7 @@ import {
   startWalkinCore,
   checkoutWalkinCore,
   extendWalkinCore,
+  correctWalkinEndTimeCore,
   reopenWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
@@ -425,6 +426,47 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
     const pg = pgError(e)
     if (pg?.code === '23P01') {
       return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
+    }
+    return fail(e)
+  }
+}
+
+const correctWalkinEndTimeInput = z.object({
+  bookingId: z.string().uuid(),
+  newEndAt: z.string().datetime(),
+})
+
+/**
+ * Set a timed walk-in's committed end to a correct absolute time, earlier or
+ * later (M31 #1) — the way back from an accidental extend. A sibling of
+ * extendWalkin, which is left untouched. Same gate as every other walk-in
+ * action; no money moves here, the new window is priced at checkout.
+ */
+export async function correctWalkinEndTime(
+  input: z.input<typeof correctWalkinEndTimeInput>,
+): Promise<ExtendWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to change a walk-in’s end time.')
+    }
+    const v = correctWalkinEndTimeInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      correctWalkinEndTimeCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+
+    revalidatePath('/bookings')
+    return result
+  } catch (e) {
+    // 23P01: a LATER end would now overlap another booking on this device
+    // (an earlier end can never trigger it).
+    const pg = pgError(e)
+    if (pg?.code === '23P01') {
+      return { error: 'Can’t move the end time that late — this device has another booking starting soon.' }
     }
     return fail(e)
   }

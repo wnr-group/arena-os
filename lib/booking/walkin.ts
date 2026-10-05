@@ -1161,6 +1161,75 @@ export async function extendWalkinCore(
   return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
 }
 
+export type CorrectWalkinEndTimeInput = { bookingId: string; newEndAt: string }
+
+/**
+ * M31 #1 — set a timed walk-in's committed end to a staff-supplied ABSOLUTE
+ * time, earlier or later than the current one. The sibling of
+ * extendWalkinCore (which stays additive-only and untouched): that one can
+ * only push the end forward, so an accidental +60 had no way back.
+ *
+ * Reuses the same load/lock and the same timed / not-yet-checked-out guards.
+ * Re-pricing needs no new wiring: checkout and previewWalkinCheckout always
+ * price fresh from whatever committed_end_at currently is.
+ *
+ * Overlap: bookings.committed_end_at and booking_slots.ends_at move together
+ * exactly as extend does, so the GiST exclusion constraint (0003)
+ * re-validates the slot write whichever way it moved — a LATER time that now
+ * collides is rejected (23P01) like any extend; an EARLIER time shrinks the
+ * range to a strict subset of one already accepted and can never conflict.
+ *
+ * Extra guards beyond extend: the new end must be after the session started
+ * (a friendly error ahead of the ends_at > starts_at CHECK), must still be in
+ * the future (a running session can't be corrected to a time already past —
+ * that is what checkout is for), and within WALKIN_EXTEND_MAX_MINUTES of now.
+ *
+ * Unlike extend, this is a correction tool, so it is audited (same
+ * discipline as undo-check-in / reopen-walkin).
+ */
+export async function correctWalkinEndTimeCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  input: CorrectWalkinEndTimeInput,
+): Promise<{ bookingId: string; committedEndAt: string }> {
+  const newEnd = new Date(input.newEndAt)
+  if (Number.isNaN(newEnd.getTime())) throw new BookingError('Enter a valid end time.')
+
+  const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
+  if (walkin.billingMode !== 'timed') {
+    throw new BookingError('Only a timed walk-in has an end time to correct.')
+  }
+  if (Number(walkin.slotTotal) > 0) {
+    throw new BookingError('This session has already been checked out — nothing left to correct.')
+  }
+  if (!walkin.committedEndAt) throw new BookingError('This walk-in has no committed end time.')
+
+  const now = new Date()
+  if (newEnd <= walkin.startsAt) throw new BookingError('The end time must be after the session started.')
+  if (newEnd <= now) {
+    throw new BookingError('The end time must be in the future — the session is still running.')
+  }
+  if (newEnd.getTime() - now.getTime() > WALKIN_EXTEND_MAX_MINUTES * 60_000) {
+    throw new BookingError(`Enter a time within the next ${WALKIN_EXTEND_MAX_MINUTES / 60} hours.`)
+  }
+
+  await tx
+    .update(bookings)
+    .set({ committedEndAt: newEnd })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+  await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
+
+  await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
+    action: 'walkin.end_time_corrected',
+    entityType: 'booking',
+    entityId: walkin.bookingId,
+    before: { committedEndAt: walkin.committedEndAt.toISOString() },
+    after: { committedEndAt: newEnd.toISOString() },
+  })
+
+  return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
+}
+
 /**
  * M25 #2 — undo an accidental walk-in checkout: reverses what
  * checkoutWalkinCore froze, so the session resumes as though it were never
