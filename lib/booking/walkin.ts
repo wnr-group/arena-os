@@ -32,14 +32,13 @@
  *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lte, ne, or } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
 import { industryHasStudioSetups } from './studio-setups'
-import { BookingError, nextBookingNumber } from './service'
-import { paise } from '@/lib/billing/payments'
-import { round2 } from '@/lib/billing/pricing'
+import { advancePaidTotals } from './advance-ledger'
+import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
 import { resolveBookingCustomer } from './customer'
 import { ACTIVE_BOOKING_STATUSES } from './attribution'
 import { resolveDayRate } from './rate'
@@ -357,9 +356,9 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         headCount: bookingSlots.headCount,
         minPlayers: resourceTypes.minPlayers,
         extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
-        includedPlayers: resourceTypes.includedPlayers,
+        // M29 #8: the start-time snapshot wins; legacy rows fall back to live.
+        includedPlayers: sql<number>`coalesce(${bookingSlots.includedPlayersApplied}, ${resourceTypes.includedPlayers})`,
         warningMinutes: bookings.warningMinutes,
-        advancePaid: bookings.advancePaid,
       })
       .from(bookings)
       .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
@@ -376,7 +375,15 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
       )
       .orderBy(asc(bookingSlots.startsAt)),
   )
-  return rows.map((r) => ({ ...r, billingMode: (r.billingMode as WalkinMode) ?? 'open_tab' }))
+  // M30 #4: collected-upfront figure summed live from the ledger, one grouped query.
+  const advance = await withUser(ctx.user.id, (tx) =>
+    advancePaidTotals(tx, ctx.tenant.id, [...new Set(rows.map((r) => r.bookingId))]),
+  )
+  return rows.map((r) => ({
+    ...r,
+    billingMode: (r.billingMode as WalkinMode) ?? 'open_tab',
+    advancePaid: advance.get(r.bookingId) ?? '0.00',
+  }))
 }
 
 export type StartWalkinInput = {
@@ -400,11 +407,10 @@ export type StartWalkinInput = {
    *  reserved setup slot does (priceBookingSlots). Re-validated here against
    *  this resource + tenant + active + per-hour, never trusted at face value. */
   setupId?: string
-  /** M26 #4: cash collected from the customer before this walk-in started —
-   *  gaming_cafe only (startWalkinCore re-checks the tenant's industry
-   *  itself, never trusting this from the caller). Absent or 0 is a no-op —
-   *  see bookings.advance_paid (M26 #1). */
-  advancePaid?: number
+  /** M30 #2: advance tenders collected before this walk-in started —
+   *  gaming_cafe only (re-validated by validateAdvanceTenders, never trusted
+   *  from the caller). Absent or empty is a no-op. */
+  advanceTenders?: AdvanceTenderInput[]
 }
 
 /**
@@ -420,19 +426,7 @@ export async function startWalkinCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: StartWalkinInput,
 ): Promise<{ id: string; bookingNumber: string; confirmationToken: string }> {
-  const advancePaid = round2(input.advancePaid ?? 0)
-  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
-    throw new BookingError('Amount collected must be zero or more.')
-  }
-  if (paise(advancePaid) > 0) {
-    // M26 #4: gaming_cafe only — re-checked here against the tenant row
-    // itself, never trusted from the caller. Same discipline
-    // createBookingCore's own advance gate follows (lib/booking/service.ts).
-    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
-    if (t?.industry !== 'gaming_cafe') {
-      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
-    }
-  }
+  const advance = await validateAdvanceTenders(tx, ctx.tenantId, input.advanceTenders)
 
   const startAt = new Date(input.startAt)
   if (Number.isNaN(startAt.getTime())) throw new BookingError('Invalid start time.')
@@ -650,12 +644,15 @@ export async function startWalkinCore(
   // is day-resolved by the session's START day and snapshotted, exactly like
   // the base rate — checkout reads it back, never re-resolves.
   let extraPlayerRateApplied: string | null = null
+  let includedPlayersApplied: number | null = null
   if (!setup && resource.pricingMode === 'per_resource' && resource.extraPlayerRate !== null) {
     const requested = input.headCount
     if (requested !== undefined && (!Number.isInteger(requested) || requested < 1)) {
       throw new BookingError(`${resource.typeName} is priced per player — enter the number of players.`)
     }
     headCount = requested ?? resource.includedPlayers
+    // M29 #8: freeze the included count alongside the extra rate.
+    includedPlayersApplied = resource.includedPlayers
     extraPlayerRateApplied = resolveDayRate(
       Number(resource.extraPlayerRate),
       resource.extraPlayerWeekendRate === null ? null : Number(resource.extraPlayerWeekendRate),
@@ -686,7 +683,6 @@ export async function startWalkinCore(
       createdBy: ctx.membershipId,
       checkedInAt: now,
       headCount,
-      advancePaid: advancePaid.toFixed(2),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -712,19 +708,30 @@ export async function startWalkinCore(
     headCount,
     holidayRateApplied,
     extraPlayerRateApplied,
+    includedPlayersApplied,
     // M24 #7: snapshot, same discipline as a reserved setup slot.
     setupId: setup?.id ?? null,
     setupName: setup?.name ?? null,
   })
 
+  await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
+
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }
 
-/** How far from "now" an OPEN-TAB walk-in's confirmed checkout end may be
- *  nudged, either direction — same shape as WALKIN_START_WINDOW_MINUTES.
+/** The NORMAL checkout window for an OPEN-TAB walk-in: how far from "now" the
+ *  confirmed end is expected to sit, either direction — same shape as
+ *  WALKIN_START_WINDOW_MINUTES. A checkout inside it is routine and
+ *  unaudited; one in the PAST beyond it is a late checkout (M32) and audited.
+ *  Also still the bound on how far in the FUTURE an end may be nudged.
  *  Meaningless for a TIMED walk-in: its checkout is gated on the committed
  *  end instead (see resolveCheckoutWindow). */
 export const WALKIN_CHECKOUT_WINDOW_MINUTES = 30
+
+/** M32: how far back an open-tab walk-in's checkout end may be entered when
+ *  staff forgot to close it out. Mirrors M28's 7-day precedent for entering
+ *  something money-affecting after the fact — named as this feature's own. */
+export const WALKIN_LATE_CHECKOUT_MAX_DAYS = 7
 
 /** Ceiling on a single extend (M21 #5) — "any number of minutes" per the
  *  design doc, bounded only so a mistyped value can't silently commit a
@@ -785,8 +792,9 @@ type WalkinForCheckout = {
   /** M29 #6: the per-extra-player hourly rate frozen at start — null for every
    *  walk-in without a board surcharge. Never re-resolved at checkout. */
   extraPlayerRate: number | null
-  /** The type's CURRENT included players (live, like minPlayers — a walk-in's
-   *  player count stays editable until checkout). 1 when there's no surcharge. */
+  /** Included players frozen at start (M29 #8) so a mid-session type edit can't
+   *  re-price the surcharge; falls back to the type's live value only for a
+   *  walk-in started before 0106. 1 when there's no surcharge. */
   includedPlayers: number
 }
 
@@ -841,6 +849,7 @@ export async function loadWalkinForCheckout(
     headCount: bookingSlots.headCount,
     holidayRateApplied: bookingSlots.holidayRateApplied,
     extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+    includedPlayersApplied: bookingSlots.includedPlayersApplied,
     setupId: bookingSlots.setupId,
     setupName: bookingSlots.setupName,
   }
@@ -865,11 +874,14 @@ export async function loadWalkinForCheckout(
     minPlayers = typeRow?.minPlayers ?? 1
   }
   // M29 #6: eligibility is the slot's own extra_player_rate_applied snapshot;
-  // included players is read live, same as minPlayers above.
+  // included players is the start-time snapshot (M29 #8), live only as a
+  // fallback for a walk-in started before the snapshot existed.
   const extraPlayerRate =
     pricingMode !== 'per_head' && slot.extraPlayerRateApplied !== null ? Number(slot.extraPlayerRateApplied) : null
   let includedPlayers = 1
-  if (extraPlayerRate !== null) {
+  if (extraPlayerRate !== null && slot.includedPlayersApplied !== null) {
+    includedPlayers = slot.includedPlayersApplied
+  } else if (extraPlayerRate !== null) {
     const [typeRow] = await tx
       .select({ includedPlayers: resourceTypes.includedPlayers })
       .from(resources)
@@ -954,9 +966,10 @@ function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): 
  * Validate `endAt` and resolve the [start, end) window checkout actually
  * prices — mode-specific (M21 #5):
  *
- *   - Open tab: `endAt` (defaulting to now) must be within
- *     WALKIN_CHECKOUT_WINDOW_MINUTES of now and after the session started —
- *     it IS the priced window's own end.
+ *   - Open tab: `endAt` (defaulting to now) must be no more than
+ *     WALKIN_CHECKOUT_WINDOW_MINUTES ahead of now, no more than
+ *     WALKIN_LATE_CHECKOUT_MAX_DAYS behind it (M32 — a forgotten tab), and
+ *     after the session started — it IS the priced window's own end.
  *   - Timed: `endAt` (defaulting to now) must not be past the committed end
  *     (extensions included) — "Extend the session before checking out"
  *     rather than a silent overstay charge. The priced window's end is
@@ -974,9 +987,16 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
 
   if (walkin.billingMode === 'open_tab') {
     if (walkin.slotEndsAt !== null) throw new BookingError('This session has already been checked out.')
-    const windowMs = WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000
-    if (Math.abs(endAt.getTime() - now.getTime()) > windowMs) {
-      throw new BookingError(`End time must be within ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes of now.`)
+    // M32: the past side is widened to WALKIN_LATE_CHECKOUT_MAX_DAYS so a
+    // forgotten tab can be closed out at the time it really ended. The future
+    // side is deliberately unchanged — still at most the normal window ahead
+    // (also absorbs a few seconds of client/server clock skew on a routine
+    // "end = now" checkout).
+    if (endAt.getTime() - now.getTime() > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
+      throw new BookingError(`End time cannot be more than ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes in the future.`)
+    }
+    if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+      throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
     }
     if (endAt.getTime() <= walkin.startsAt.getTime()) {
       throw new BookingError('End time must be after the session started.')
@@ -1057,7 +1077,7 @@ export async function previewWalkinCheckout(
  */
 export async function checkoutWalkinCore(
   tx: Db,
-  ctx: { tenantId: string; timezone: string },
+  ctx: { tenantId: string; timezone: string; membershipId?: string | null },
   input: CheckoutWalkinInput,
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
@@ -1075,7 +1095,14 @@ export async function checkoutWalkinCore(
   // slot's head_count stays null; nothing to write.
   // M29 #6: a surcharge walk-in persists its (possibly edited) count too.
   const persistsHeadCount = walkin.pricingMode === 'per_head' || walkin.extraPlayerRate !== null
-  const headCountUpdate = persistsHeadCount ? { headCount } : {}
+  // A surcharge walk-in also freezes the included-player count it was priced
+  // with (walkin.includedPlayers = the start snapshot, or the live value for a
+  // walk-in started before 0106). Without this a legacy walk-in keeps reading
+  // the live value after checkout, so raising included_players later would hide
+  // the extra-player breakdown on a bill that did charge for them.
+  const headCountUpdate = persistsHeadCount
+    ? { headCount, ...(walkin.extraPlayerRate !== null ? { includedPlayersApplied: walkin.includedPlayers } : {}) }
+    : {}
 
   if (walkin.billingMode === 'open_tab') {
     await tx
@@ -1100,6 +1127,27 @@ export async function checkoutWalkinCore(
       ...(persistsHeadCount ? { headCount } : {}),
     })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  // M32: an open-tab checkout whose entered end sits outside the NORMAL window
+  // is a late checkout — a correction, not routine ops — so it is audited
+  // (entered end vs when it actually happened). A routine checkout inside the
+  // window writes nothing, exactly as before; a timed walk-in never does.
+  if (walkin.billingMode === 'open_tab') {
+    const checkedOutAt = new Date()
+    if (Math.abs(priceEnd.getTime() - checkedOutAt.getTime()) > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
+      await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
+        action: 'walkin.late_checkout',
+        entityType: 'booking',
+        entityId: walkin.bookingId,
+        before: { endsAt: null },
+        after: {
+          enteredEndAt: priceEnd.toISOString(),
+          checkedOutAt: checkedOutAt.toISOString(),
+          total: priced.unitPrice.toFixed(2),
+        },
+      })
+    }
+  }
 
   return { bookingId: walkin.bookingId, total: priced.unitPrice }
 }
@@ -1144,6 +1192,75 @@ export async function extendWalkinCore(
     .set({ committedEndAt: newEnd })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
   await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
+
+  return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
+}
+
+export type CorrectWalkinEndTimeInput = { bookingId: string; newEndAt: string }
+
+/**
+ * M31 #1 — set a timed walk-in's committed end to a staff-supplied ABSOLUTE
+ * time, earlier or later than the current one. The sibling of
+ * extendWalkinCore (which stays additive-only and untouched): that one can
+ * only push the end forward, so an accidental +60 had no way back.
+ *
+ * Reuses the same load/lock and the same timed / not-yet-checked-out guards.
+ * Re-pricing needs no new wiring: checkout and previewWalkinCheckout always
+ * price fresh from whatever committed_end_at currently is.
+ *
+ * Overlap: bookings.committed_end_at and booking_slots.ends_at move together
+ * exactly as extend does, so the GiST exclusion constraint (0003)
+ * re-validates the slot write whichever way it moved — a LATER time that now
+ * collides is rejected (23P01) like any extend; an EARLIER time shrinks the
+ * range to a strict subset of one already accepted and can never conflict.
+ *
+ * Extra guards beyond extend: the new end must be after the session started
+ * (a friendly error ahead of the ends_at > starts_at CHECK), must still be in
+ * the future (a running session can't be corrected to a time already past —
+ * that is what checkout is for), and within WALKIN_EXTEND_MAX_MINUTES of now.
+ *
+ * Unlike extend, this is a correction tool, so it is audited (same
+ * discipline as undo-check-in / reopen-walkin).
+ */
+export async function correctWalkinEndTimeCore(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  input: CorrectWalkinEndTimeInput,
+): Promise<{ bookingId: string; committedEndAt: string }> {
+  const newEnd = new Date(input.newEndAt)
+  if (Number.isNaN(newEnd.getTime())) throw new BookingError('Enter a valid end time.')
+
+  const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
+  if (walkin.billingMode !== 'timed') {
+    throw new BookingError('Only a timed walk-in has an end time to correct.')
+  }
+  if (Number(walkin.slotTotal) > 0) {
+    throw new BookingError('This session has already been checked out — nothing left to correct.')
+  }
+  if (!walkin.committedEndAt) throw new BookingError('This walk-in has no committed end time.')
+
+  const now = new Date()
+  if (newEnd <= walkin.startsAt) throw new BookingError('The end time must be after the session started.')
+  if (newEnd <= now) {
+    throw new BookingError('The end time must be in the future — the session is still running.')
+  }
+  if (newEnd.getTime() - now.getTime() > WALKIN_EXTEND_MAX_MINUTES * 60_000) {
+    throw new BookingError(`Enter a time within the next ${WALKIN_EXTEND_MAX_MINUTES / 60} hours.`)
+  }
+
+  await tx
+    .update(bookings)
+    .set({ committedEndAt: newEnd })
+    .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+  await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
+
+  await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
+    action: 'walkin.end_time_corrected',
+    entityType: 'booking',
+    entityId: walkin.bookingId,
+    before: { committedEndAt: walkin.committedEndAt.toISOString() },
+    after: { committedEndAt: newEnd.toISOString() },
+  })
 
   return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
 }

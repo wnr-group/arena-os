@@ -9,6 +9,8 @@ import { isWeekendDay } from '@/lib/booking/rate'
 import { computeAvailabilityWindow } from '@/lib/booking/walkin-availability'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
+import { AdvanceTenderEditor } from './AdvanceTenderEditor'
+import { cleanAdvanceTenders, sumAdvanceTenders, type AdvanceTenderRow } from './advance-tenders'
 import { StepProgress } from './StepProgress'
 import { WalkInAvailabilityCalendar } from './WalkInAvailabilityCalendar'
 import {
@@ -191,11 +193,11 @@ export function WalkinWizard({
   // since a setup belongs to exactly one station.
   const [setupId, setSetupId] = useState<string | null>(null)
 
-  // M26 #4: "amount collected now" — gaming_cafe only (see
-  // advancePaymentEnabled above). Plain string state so the field can sit
-  // empty rather than default to a misleading "0"; blank means "nothing
-  // collected upfront," same as never having typed anything.
-  const [advancePaid, setAdvancePaid] = useState('')
+  // M30 #5: advance tenders collected upfront — gaming_cafe only (see
+  // advancePaymentEnabled above). Starts with no rows; what is sent and what
+  // the running total shows both come from cleanAdvanceTenders(advanceRows).
+  const [advanceRows, setAdvanceRows] = useState<AdvanceTenderRow[]>([])
+  const advanceTenders = advancePaymentEnabled ? cleanAdvanceTenders(advanceRows) : []
 
   // Same phone-first lookup as the old dialog — name stays optional either
   // way, so this only ever pre-fills it, never gates the form.
@@ -343,7 +345,7 @@ export function WalkinWizard({
         durationMin: mode === 'timed' ? durationMin : undefined,
         headCount: isPerHead ? headCount : undefined,
         setupId: activeSetup ? activeSetup.id : undefined,
-        advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
+        advanceTenders,
       })
       if (r.error) {
         setError(r.error)
@@ -619,26 +621,13 @@ export function WalkinWizard({
               )}
 
               {advancePaymentEnabled && (
-                <div>
-                  <label htmlFor="walkin-advance-paid" className={wizardLabel}>
-                    Amount collected now (optional)
-                  </label>
-                  <input
-                    id="walkin-advance-paid"
-                    className={`${wizardInput} mt-1`}
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    value={advancePaid}
-                    onChange={(e) => setAdvancePaid(e.target.value)}
-                  />
-                  <p className={wizardHint}>
-                    Cash already taken at the counter before this session started. Leave blank if nothing was
-                    collected upfront.
-                  </p>
-                </div>
+                <AdvanceTenderEditor
+                  idPrefix="walkin-advance"
+                  rows={advanceRows}
+                  onChange={setAdvanceRows}
+                  currency={currency}
+                  hint="Money already taken at the counter before this session started — add one row per cash, card or UPI payment. Leave empty if nothing was collected upfront."
+                />
               )}
 
               <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm">
@@ -648,8 +637,8 @@ export function WalkinWizard({
                   {activeSetup && <SummaryRow k="Setup" v={activeSetup.name} />}
                   <SummaryRow k="Billing" v={mode === 'open_tab' ? 'Open tab' : `Timed · ${durationMin} min`} />
                   {isPerHead && <SummaryRow k="Players" v={String(headCount)} />}
-                  {advancePaymentEnabled && Number(advancePaid) > 0 && (
-                    <SummaryRow k="Collected now" v={formatMoney(Number(advancePaid), currency)} />
+                  {advanceTenders.length > 0 && (
+                    <SummaryRow k="Collected now" v={formatMoney(sumAdvanceTenders(advanceTenders), currency)} />
                   )}
                   <SummaryRow
                     k={mode === 'timed' ? 'Estimated total' : 'Rate'}

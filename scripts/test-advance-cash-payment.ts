@@ -121,8 +121,12 @@ async function main() {
 
   const bookingRow = async (id: string) =>
     (
-      await owner.query<{ status: string; advance_paid: string; advance_applied: boolean; deposit_review_required: boolean }>(
-        `select status, advance_paid, advance_applied, deposit_review_required from bookings where id=$1`,
+      await owner.query<{ status: string; advance_total: string; consumed: boolean; deposit_review_required: boolean }>(
+        // M30 #4: the advance is read from the ledger, never the superseded columns.
+        `select status, deposit_review_required,
+           (select coalesce(sum(amount),0)::numeric(10,2)::text from advance_payments where booking_id=bookings.id) advance_total,
+           (select coalesce(bool_and(invoice_id is not null), false) from advance_payments where booking_id=bookings.id) consumed
+         from bookings where id=$1`,
         [id],
       )
     ).rows[0]
@@ -146,12 +150,12 @@ async function main() {
       customerName: 'Rahul',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('booking created via the real createBooking action', !r.error && Boolean(r.bookingId), r.error)
     shortBookingId = r.bookingId!
-    check('advance_paid landed correctly', (await bookingRow(shortBookingId)).advance_paid === '400.00')
+    check('the advance landed in the ledger correctly', (await bookingRow(shortBookingId)).advance_total === '400.00')
 
     const billed = await createInvoiceForBooking({ bookingId: shortBookingId })
     check('the bill screen raises the invoice', !billed.error && Boolean(billed.invoiceId), billed.error)
@@ -174,7 +178,7 @@ async function main() {
       customerName: 'Priya',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 1500,
+      advanceTenders: [{ method: 'cash', amount: 1500 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('booking created', !r.error && Boolean(r.bookingId), r.error)
@@ -198,7 +202,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 100,
+      advanceTenders: [{ method: 'cash', amount: 100 }],
     })
     check('walk-in started via the real startWalkin action', !started.error && Boolean(started.bookingId), started.error)
     walkinShortId = started.bookingId!
@@ -225,7 +229,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
     })
     check('walk-in started', !started.error && Boolean(started.bookingId), started.error)
     const bookingId = started.bookingId!
@@ -250,7 +254,7 @@ async function main() {
       customerName: 'Amit',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     const complete1 = await setBookingStatus(shortR.bookingId!, 'completed')
@@ -264,7 +268,7 @@ async function main() {
       customerName: 'Sana',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 1000,
+      advanceTenders: [{ method: 'cash', amount: 1000 }],
       slots: [{ resourceId: stationA, startsAt: s2.toISOString(), endsAt: e2.toISOString() }],
     })
     const complete2 = await setBookingStatus(coveredR.bookingId!, 'completed')
@@ -285,7 +289,7 @@ async function main() {
       customerName: 'Test',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
       slots: [{ resourceId: stationR, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('a restaurant tenant calling createBooking with a forged advance is refused', Boolean(restBooking.error), restBooking)
@@ -298,7 +302,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
     })
     check('a restaurant tenant cannot even reach the advance gate — walk-ins are refused outright', Boolean(restWalkin.error), restWalkin)
 
@@ -311,7 +315,7 @@ async function main() {
       customerName: 'Test',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
       slots: [{ resourceId: stationS, startsAt: ss.toISOString(), endsAt: se.toISOString() }],
     })
     check('a recording_studio tenant calling createBooking with a forged advance is refused', Boolean(studioBooking.error), studioBooking)
@@ -326,7 +330,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
     })
     check('a recording_studio tenant reaches (and is refused by) the advance gate itself', Boolean(studioWalkin.error), studioWalkin)
     check('…mentioning gaming-cafe', (studioWalkin.error ?? '').toLowerCase().includes('gaming-cafe'))
@@ -343,7 +347,7 @@ async function main() {
       customerName: 'Neha',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 250,
+      advanceTenders: [{ method: 'cash', amount: 250 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     const cancelled = await setBookingStatus(r.bookingId!, 'cancelled', 'Testing the cash-advance safety net')
@@ -351,17 +355,49 @@ async function main() {
     check('an unconsumed cash advance raises deposit_review_required on cancel', (await bookingRow(r.bookingId!)).deposit_review_required === true)
 
     // Reuse #2's OWN booking, whose advance was already folded into a real
-    // invoice (advance_applied = true) when it auto-completed above —
+    // invoice (every ledger row stamped with it) when it auto-completed above —
     // proves the flag stays down across the full real lifecycle, not just
-    // in a script that sets advance_applied by hand.
+    // in a script that seeds the ledger by hand.
     const beforeCancel = await bookingRow(coveredBookingId)
-    check('sanity: that booking really does have advance_applied = true already', beforeCancel.advance_applied === true)
+    check("sanity: that booking's tenders are really already consumed", beforeCancel.consumed === true)
     const cancelled2 = await setBookingStatus(coveredBookingId, 'cancelled', 'Refund correction')
     check('cancelling an already-completed, already-settled booking still succeeds', !cancelled2.error, cancelled2)
     check(
       'deposit_review_required stays false — that advance is already on a real payment record, not orphaned',
       (await bookingRow(coveredBookingId)).deposit_review_required === false,
     )
+  }
+
+  // ══ M30 #6 — a 3-tender advance through the real actions ═════════════════
+  console.log('\n── staff wizard path: cash + card + UPI advance ──')
+  {
+    const { start, end } = nextSlot()
+    const r = await createBooking({
+      branchId: G.branchId,
+      customerName: 'Asha',
+      customerPhone: nextPhone(),
+      source: 'staff',
+      advanceTenders: [
+        { method: 'cash', amount: 100 },
+        { method: 'card', amount: 80 },
+        { method: 'upi', amount: 20 },
+      ],
+      slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
+    })
+    check('booking created with three tenders', !r.error && Boolean(r.bookingId), r.error)
+    const led = await owner.query(`select method, amount::text amount from advance_payments where booking_id=$1 order by amount desc`, [r.bookingId])
+    check('three advance_payments rows, one per tender', led.rows.length === 3)
+
+    const billed = await createInvoiceForBooking({ bookingId: r.bookingId! })
+    check('the bill screen raises the invoice', !billed.error && Boolean(billed.invoiceId), billed.error)
+    const rows = (await paymentsFor(billed.invoiceId!)).sort((a: { amount: string }, b: { amount: string }) => Number(b.amount) - Number(a.amount))
+    check(
+      'three payments rows, each with its own method and amount',
+      rows.length === 3 && rows[0].method === 'cash' && rows[0].amount === '100.00' && rows[1].method === 'card' && rows[1].amount === '80.00' && rows[2].method === 'upi' && rows[2].amount === '20.00',
+      rows,
+    )
+    const stamped = await owner.query(`select 1 from advance_payments where booking_id=$1 and invoice_id=$2`, [r.bookingId, billed.invoiceId])
+    check('every tender is stamped with the invoice', stamped.rowCount === 3)
   }
 
   await owner.end()

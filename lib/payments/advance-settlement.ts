@@ -5,7 +5,7 @@
  * the identical "money the venue already holds → a real payment row" carry-
  * over for an ONLINE Razorpay deposit. This is the same idea for CASH
  * collected at the counter before the booking even existed
- * (bookings.advance_paid, M26 #1) — a separate module and a separate booking
+ * (advance_payments, M30 #1; was bookings.advance_paid) — a separate module and a separate booking
  * column on purpose: a Razorpay deposit is money verified through a gateway
  * signature, an advance is a staff assertion that cash is already in the
  * till, and bookings.deposit is already wired to the "Pay Deposit" Razorpay
@@ -23,11 +23,11 @@
  * lib/payments/deposit-settlement.ts: this takes a `tx`, opens no
  * connection, reads no environment and holds no credential.
  */
-import { and, eq } from 'drizzle-orm'
+import { and, asc, eq, isNull } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { auditLog, bookings, invoices, payments, tenants } from '@/db/schema'
-import { capturedTotal, paise } from '@/lib/billing/payments'
+import { advancePayments, auditLog, bookings, invoices, payments, tenants } from '@/db/schema'
+import { capturedTotal, paise, type PosPaymentMethod } from '@/lib/billing/payments'
 import { settleInvoicePaid } from '@/lib/billing/loyalty'
 import { round2 } from '@/lib/billing/pricing'
 import { completeBookingIfFullySettled } from '@/lib/booking/service'
@@ -35,33 +35,49 @@ import { completeBookingIfFullySettled } from '@/lib/booking/service'
 type Db = NodePgDatabase<typeof schema>
 
 export type AppliedAdvance = {
-  paymentId: string
-  /** Rupees, 2dp — capped at what the invoice can still take, never the raw advance_paid. */
+  /** One entry per tender that landed as a payments row, each with its OWN method. */
+  applied: { paymentId: string; method: PosPaymentMethod; amount: number }[]
+  /** Rupees, 2dp — sum of `applied`: capped at what the invoice could take, never the raw tender total. */
   amount: number
 }
 
 /**
- * Fold a gaming-cafe booking's pre-collected cash advance onto the invoice
- * that was just raised for it.
+ * Fold a gaming-cafe booking's pre-collected advance tenders onto the invoice
+ * that was just raised for it (M30 #3).
+ *
+ * Every unconsumed advance_payments row (invoice_id is null) becomes its OWN
+ * captured payments row carrying that tender's own method — a cash + card +
+ * UPI advance is three payments, not one lumped 'cash' payment.
  *
  * Runs in the caller's transaction — called from issueInvoiceForBooking right
  * after the invoice and its items are inserted — so the invoice and the
- * advance's carry-over commit or roll back together: a bill can never be
- * raised showing an advance that was not actually recorded, or the reverse.
+ * advance's carry-over commit or roll back together.
  *
- * Returns null (a no-op) for: every non-gaming_cafe tenant; a booking with
- * nothing collected upfront (advance_paid = 0); and a booking whose advance
- * was already applied (advance_applied = true). That last check is what
- * makes this safe to call at most once per booking no matter how billing is
- * retried — advance_applied flips to true in the SAME update that would
- * otherwise let a second call re-apply the same cash.
+ * Returns null (a no-op) for: every non-gaming_cafe tenant; a booking with no
+ * unconsumed tenders; and an invoice that cannot be found. Idempotent per
+ * ROW: a tender is reckoned with by stamping its invoice_id, so re-running
+ * billing can never apply the same tender twice.
  *
- * Capped at the invoice's remaining balance, not the full advance_paid: if
- * the customer paid ₹1000 upfront but the real bill is only ₹800, exactly
- * ₹800 is applied (the booking fully settles) and the ₹200 difference is
- * handled the same way any cash overpayment is — staff hands back change at
- * the counter. This does not track or refund the excess; that is out of
- * scope for v1.
+ * Capped per tender at the invoice's remaining balance: if ₹500 is tendered
+ * with only ₹300 of room left, ₹300 is applied, the row is still stamped
+ * (reckoned with once), and the ₹200 is handed back as change at the counter
+ * — the excess is not tracked (v1 scope, unchanged). Tenders are taken oldest
+ * first; once the invoice is covered, every tender not yet reached — INCLUDING
+ * one that would land exactly when the invoice already has zero room left
+ * (a deposit or a 100%-comp already covers it) — is left genuinely unconsumed
+ * (invoice_id stays null), not stamped for nothing.
+ *
+ * Adversarial review of PR #38 caught the earlier shape of this: the loop
+ * used to stamp the OLDEST tender regardless of room, "matching what the
+ * single-lump version did" when there was only ever one tender to reckon
+ * with. Once a booking can carry several tenders, that generalised into
+ * silently writing off exactly one arbitrary tender's cash — it stayed
+ * invisible to hasUnconsumedAdvance (the cancellation-review safety net)
+ * forever, with no audit trail for the mutation (the function returns before
+ * the audit insert whenever nothing was actually applied). Now EVERY tender
+ * on a fully-covered invoice stays unconsumed, so it still surfaces for
+ * manual review if the booking is later cancelled, same as any other
+ * genuinely-unconsumed tender.
  */
 export async function applyAdvancePaymentToInvoice(
   tx: Db,
@@ -73,18 +89,11 @@ export async function applyAdvancePaymentToInvoice(
   if (t?.industry !== 'gaming_cafe') return null
 
   const [booking] = await tx
-    .select({
-      advancePaid: bookings.advancePaid,
-      advanceApplied: bookings.advanceApplied,
-      createdBy: bookings.createdBy,
-    })
+    .select({ createdBy: bookings.createdBy })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
     .limit(1)
-  if (!booking || booking.advanceApplied) return null
-
-  const advancePaid = round2(Number(booking.advancePaid))
-  if (paise(advancePaid) <= 0) return null
+  if (!booking) return null
 
   const [invoice] = await tx
     .select({
@@ -99,50 +108,80 @@ export async function applyAdvancePaymentToInvoice(
     .limit(1)
   if (!invoice) return null
 
+  // Locked so two concurrent bill-raises can't both read the same row as
+  // unconsumed. Oldest first — arbitrary but deterministic.
+  const tenders = await tx
+    .select()
+    .from(advancePayments)
+    .where(
+      and(
+        eq(advancePayments.tenantId, tenantId),
+        eq(advancePayments.bookingId, bookingId),
+        isNull(advancePayments.invoiceId),
+      ),
+    )
+    .orderBy(asc(advancePayments.createdAt), asc(advancePayments.id))
+    .for('update')
+  if (tenders.length === 0) return null
+
   const total = round2(Number(invoice.total))
   const alreadyPaid = await capturedTotal(tx, tenantId, invoice.id)
-  const amount = round2(Math.min(advancePaid, Math.max(0, total - alreadyPaid)))
+  let remaining = round2(Math.max(0, total - alreadyPaid))
 
-  // Flipped true regardless of whether there was anything left to apply (e.g.
-  // a free/fully-comped bill leaves nothing to absorb) — this booking's
-  // advance has been reckoned with once, and must never be considered again.
-  await tx
-    .update(bookings)
-    .set({ advanceApplied: true })
-    .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
+  const applied: AppliedAdvance['applied'] = []
+  const reckoned: { method: string; tendered: string; applied: string }[] = []
+  for (const tender of tenders) {
+    // Nothing left for THIS or any later tender (oldest-first, remaining only
+    // shrinks) — stop here and leave every remaining row unconsumed, rather
+    // than stamping one for nothing. See the doc comment above for why this
+    // used to sacrifice exactly the oldest tender instead.
+    if (paise(remaining) <= 0) break
 
-  if (paise(amount) <= 0) return null
+    const tendered = round2(Number(tender.amount))
+    const amount = round2(Math.min(tendered, remaining))
 
-  const [payment] = await tx
-    .insert(payments)
-    .values({
-      tenantId,
-      branchId: invoice.branchId,
-      invoiceId: invoice.id,
-      method: 'cash',
-      amount: amount.toFixed(2),
-      status: 'captured',
-      // No cashier took this money right now — it was collected earlier, at
-      // the counter, before the booking existed. Same reasoning as
-      // recordVerifiedGatewayPayment's collectedBy: null for a gateway
-      // payment nobody at the till handled.
-      collectedBy: null,
-    })
-    .returning({ id: payments.id })
+    await tx
+      .update(advancePayments)
+      .set({ invoiceId: invoice.id })
+      .where(and(eq(advancePayments.id, tender.id), eq(advancePayments.tenantId, tenantId)))
 
-  // Durable, append-only record that real money landed on this invoice —
-  // same discipline every other payment-recording path in this codebase
-  // follows (see writeAudit's own doc comment in lib/billing/invoice.ts).
-  // Attributed to whoever created the booking (who collected the cash), not
-  // whoever happens to be raising the bill now.
+    const [payment] = await tx
+      .insert(payments)
+      .values({
+        tenantId,
+        branchId: invoice.branchId,
+        invoiceId: invoice.id,
+        method: tender.method as PosPaymentMethod,
+        amount: amount.toFixed(2),
+        status: 'captured',
+        // Nobody is taking this money right now — it was collected earlier;
+        // carry over whoever collected it then, if known.
+        collectedBy: tender.collectedBy,
+      })
+      .returning({ id: payments.id })
+    applied.push({ paymentId: payment.id, method: tender.method as PosPaymentMethod, amount })
+    remaining = round2(remaining - amount)
+    reckoned.push({ method: tender.method, tendered: tendered.toFixed(2), applied: amount.toFixed(2) })
+  }
+
+  const amount = round2(applied.reduce((sum, a) => sum + a.amount, 0))
+  if (applied.length === 0) return null
+
+  // Durable, append-only record that real money landed on this invoice, with
+  // per-tender detail (method, tendered, applied). Attributed to whoever
+  // created the booking, not whoever happens to be raising the bill now.
   await tx.insert(auditLog).values({
     tenantId,
     actorMembershipId: booking.createdBy,
     action: 'booking.advance_applied',
     entityType: 'invoice',
     entityId: invoice.id,
-    before: { booking_id: bookingId, advance_paid: advancePaid.toFixed(2) },
-    after: { invoice_id: invoice.id, amount_applied: amount.toFixed(2) },
+    before: { booking_id: bookingId, tenders: reckoned.map(({ method, tendered }) => ({ method, amount: tendered })) },
+    after: {
+      invoice_id: invoice.id,
+      amount_applied: amount.toFixed(2),
+      tenders: reckoned,
+    },
   })
 
   const newPaid = round2(alreadyPaid + amount)
@@ -176,5 +215,5 @@ export async function applyAdvancePaymentToInvoice(
     }
   }
 
-  return { paymentId: payment.id, amount }
+  return { applied, amount }
 }

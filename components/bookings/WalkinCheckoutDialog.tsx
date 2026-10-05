@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Loader2 } from 'lucide-react'
+import { CalendarClock, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { checkoutWalkin, previewWalkinCheckout } from '@/lib/actions/bookings'
-import { formatMoney, timeInZone } from '@/lib/format'
+import { dateInZone, formatMoney, timeInZone } from '@/lib/format'
+import { LATE_CHECKOUT_MAX_DAYS, resolveLateCheckoutEnd, toDatetimeLocal } from '@/lib/booking/walkin-end-time'
 
 /** Mirrors lib/booking/walkin.ts's WALKIN_CHECKOUT_WINDOW_MINUTES (5-min steps within it). */
 const OFFSET_STEP_MIN = 5
@@ -62,7 +63,23 @@ export function WalkinCheckoutDialog({
   // open — same idea as the walk-in start form's own offset control.
   const [baseNow] = useState(() => new Date())
   const [offsetMin, setOffsetMin] = useState(0)
-  const endAtIso = new Date(baseNow.getTime() + offsetMin * 60_000).toISOString()
+
+  // M32 #2: "This was a while ago" — a forgotten tab closed at the time it
+  // really ended, up to LATE_CHECKOUT_MAX_DAYS back. Off by default: the
+  // ±30-min stepper above stays the everyday path, completely unchanged. The
+  // picker value is the BRANCH's wall time (see resolveLateCheckoutEnd);
+  // client validation is a convenience, checkoutWalkinCore is the guard.
+  const [late, setLate] = useState(false)
+  const [lateValue, setLateValue] = useState(() => toDatetimeLocal(baseNow, timeZone))
+  const lateMin = toDatetimeLocal(new Date(baseNow.getTime() - LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000), timeZone)
+  const lateMax = toDatetimeLocal(baseNow, timeZone)
+  const lateResult = late ? resolveLateCheckoutEnd(lateValue, timeZone, baseNow, booking.startsAt) : null
+  const lateError = lateResult && 'error' in lateResult ? lateResult.error : null
+
+  // The one endAt both the live preview and the confirm use. null = the late
+  // picker holds something unusable right now (nothing is priced or sent).
+  const stepperIso = new Date(baseNow.getTime() + offsetMin * 60_000).toISOString()
+  const endAtIso: string | null = lateResult ? ('iso' in lateResult ? lateResult.iso : null) : stepperIso
 
   const isPerHead = booking.pricingMode === 'per_head'
   const isBoard = !isPerHead && booking.extraPlayerRateApplied != null
@@ -85,6 +102,13 @@ export function WalkinCheckoutDialog({
 
   useEffect(() => {
     let cancelled = false
+    if (endAtIso === null) {
+      // An unusable late-picker value: show its own message, price nothing.
+      setPreview(null)
+      setPreviewError(null)
+      setPreviewLoading(false)
+      return
+    }
     setPreviewLoading(true)
     setPreviewError(null)
     previewWalkinCheckout({
@@ -105,9 +129,10 @@ export function WalkinCheckoutDialog({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booking.bookingId, offsetMin, headCount])
+  }, [booking.bookingId, endAtIso, headCount])
 
   function confirm() {
+    if (endAtIso === null) return
     setError(null)
     start(async () => {
       const r = await checkoutWalkin({
@@ -137,7 +162,49 @@ export function WalkinCheckoutDialog({
           {booking.customerName || booking.customerPhone || 'Walk-in'} · started {timeInZone(booking.startsAt, timeZone)}
         </p>
 
-        <label className="mt-4 block text-sm font-medium text-foreground">End time</label>
+        <label className="mt-4 block text-sm font-medium text-foreground" htmlFor={late ? 'walkin-late-end' : undefined}>
+          End time
+        </label>
+        {late ? (
+          <div className="mt-2">
+            <input
+              id="walkin-late-end"
+              type="datetime-local"
+              value={lateValue}
+              min={lateMin}
+              max={lateMax}
+              onChange={(e) => setLateValue(e.target.value)}
+              disabled={pending}
+              className="min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-base tabular-nums outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+            />
+            {endAtIso ? (
+              <p className="mt-1.5 text-sm font-medium text-foreground">
+                Closing at {dateInZone(endAtIso, timeZone)}, {timeInZone(endAtIso, timeZone)}
+              </p>
+            ) : null}
+            {lateError && (
+              <p role="alert" className="mt-1.5 text-sm text-destructive">
+                {lateError}
+              </p>
+            )}
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Enter when the session really ended — up to {LATE_CHECKOUT_MAX_DAYS} days back. This is recorded as a late
+              checkout.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setLate(false)
+                setLateValue(toDatetimeLocal(baseNow, timeZone))
+              }}
+              disabled={pending}
+              className="mt-2 text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50"
+            >
+              ← Back to quick adjust
+            </button>
+          </div>
+        ) : (
+        <>
         <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
@@ -148,7 +215,7 @@ export function WalkinCheckoutDialog({
             − {OFFSET_STEP_MIN} min
           </button>
           <span className="flex-1 rounded-lg border border-border bg-accent/40 px-3 py-2 text-center text-base font-semibold text-foreground">
-            {timeInZone(endAtIso, timeZone)}
+            {timeInZone(stepperIso, timeZone)}
             {offsetMin !== 0 && (
               <span className="ml-1.5 text-xs font-normal text-muted-foreground">
                 ({offsetMin > 0 ? `+${offsetMin}` : offsetMin} min)
@@ -165,6 +232,16 @@ export function WalkinCheckoutDialog({
           </button>
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">Up to {OFFSET_MAX_MIN} minutes either side of now.</p>
+        <button
+          type="button"
+          onClick={() => setLate(true)}
+          disabled={pending}
+          className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50"
+        >
+          <CalendarClock size={12} aria-hidden /> This was a while ago
+        </button>
+        </>
+        )}
 
         {takesPlayers && (
           <>
@@ -229,7 +306,7 @@ export function WalkinCheckoutDialog({
           <button
             type="button"
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={pending || previewLoading || !preview}
+            disabled={pending || previewLoading || !preview || endAtIso === null}
             onClick={confirm}
           >
             {pending && <Loader2 size={14} className="animate-spin" />}

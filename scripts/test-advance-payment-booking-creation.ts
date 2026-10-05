@@ -120,7 +120,7 @@ async function main() {
   }
 
   const bookingRow = async (id: string) =>
-    (await ownerPool.query(`select advance_paid, channel from bookings where id=$1`, [id])).rows[0]
+    (await ownerPool.query(`select (select coalesce(sum(amount),0)::numeric(10,2)::text from advance_payments where booking_id=bookings.id) advance_paid, channel from bookings where id=$1`, [id])).rows[0]
 
   const expectReject = async (label: string, fn: () => Promise<unknown>, messageIncludes?: string) => {
     try {
@@ -147,7 +147,7 @@ async function main() {
         source: 'staff',
         discount: 0,
         deposit: 0,
-        advancePaid: 250,
+        advanceTenders: [{ method: 'cash', amount: 250 }],
         slots: [{ resourceId: A.resourceId, startsAt: start.toISOString(), endsAt: end.toISOString() }],
       }),
     )
@@ -180,7 +180,7 @@ async function main() {
     const start = day()
     const end = new Date(start.getTime() + 2 * 3600_000)
     await expectReject(
-      'a negative advancePaid is refused, independent of industry',
+      'a negative advance tender is refused, independent of industry',
       () =>
         withUser(A.userId, (tx) =>
           createBookingCore(tx, A.ctx, {
@@ -188,11 +188,11 @@ async function main() {
             source: 'staff',
             discount: 0,
             deposit: 0,
-            advancePaid: -50,
+            advanceTenders: [{ method: 'cash', amount: -50 }],
             slots: [{ resourceId: A.resourceId, startsAt: start.toISOString(), endsAt: end.toISOString() }],
           }),
         ),
-      'zero or more',
+      'greater than zero',
     )
   }
 
@@ -211,7 +211,7 @@ async function main() {
             source: 'staff',
             discount: 0,
             deposit: 0,
-            advancePaid: 500,
+            advanceTenders: [{ method: 'cash', amount: 500 }],
             slots: [{ resourceId: T.resourceId, startsAt: start.toISOString(), endsAt: end.toISOString() }],
           }),
         ),
@@ -250,7 +250,7 @@ async function main() {
         phone: '9876500001',
         startAt: new Date().toISOString(),
         mode: 'open_tab',
-        advancePaid: 300,
+        advanceTenders: [{ method: 'cash', amount: 300 }],
       }),
     )
     const row = await bookingRow(w.id)
@@ -291,7 +291,7 @@ async function main() {
             phone: `987660${String(1000 + phoneSeq++).padStart(4, '0')}`,
             startAt: new Date().toISOString(),
             mode: 'open_tab',
-            advancePaid: 500,
+            advanceTenders: [{ method: 'cash', amount: 500 }],
           }),
         ),
       'gaming-cafe',
@@ -304,7 +304,7 @@ async function main() {
   console.log('\n── startWalkinCore: a negative advance ──')
   {
     await expectReject(
-      'a negative advancePaid is refused, independent of industry',
+      'a negative advance tender is refused, independent of industry',
       () =>
         withUser(A.userId, (tx) =>
           startWalkinCore(tx, A.ctx, {
@@ -313,10 +313,10 @@ async function main() {
             phone: `987670${String(1000 + phoneSeq++).padStart(4, '0')}`,
             startAt: new Date().toISOString(),
             mode: 'open_tab',
-            advancePaid: -1,
+            advanceTenders: [{ method: 'cash', amount: -1 }],
           }),
         ),
-      'zero or more',
+      'greater than zero',
     )
   }
 

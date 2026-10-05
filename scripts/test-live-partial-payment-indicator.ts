@@ -95,14 +95,26 @@ async function main() {
   await owner.query('delete from bookings where tenant_id=$1', [A.tenantId])
   await owner.query('delete from sequences where tenant_id=$1', [A.tenantId])
 
+  /** M30 #4: the board/list loaders sum the advance_payments ledger live; the
+   *  superseded bookings.advance_paid column is deliberately left at 0. */
+  const ledger = async (bookingId: string, tenders: [string, number][]) => {
+    for (const [method, amount] of tenders) {
+      await owner.query(
+        `insert into advance_payments (tenant_id,branch_id,booking_id,method,amount) values ($1,$2,$3,$4,$5)`,
+        [A.tenantId, A.branchId, bookingId, method, amount.toFixed(2)],
+      )
+    }
+  }
+
   // ══ 1. listActiveWalkins carries advance_paid through ═══════════════════
   console.log('\n── listActiveWalkins ──')
   {
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,channel,billing_mode,subtotal,total,advance_paid,checked_in_at)
-       values ($1,$2,'LI-1','checked_in','walkin','open_tab','0','0','350.00',now()) returning id`,
+       values ($1,$2,'LI-1','checked_in','walkin','open_tab','0','0','0.00',now()) returning id`,
       [A.tenantId, A.branchId],
     )
+    await ledger(bk.rows[0].id, [['cash', 200], ['upi', 150]])
     await owner.query(
       `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,rate_applied,slot_total,resource_name,resource_type_name,active)
        values ($1,$2,$3,now(),null,'200.00','0.00','S1','PS5',true)`,
@@ -111,7 +123,7 @@ async function main() {
     const rows = await listActiveWalkins(A.ctx, A.branchId)
     const row = rows.find((r) => r.bookingId === bk.rows[0].id)
     check('the active walk-in is returned', row !== undefined)
-    check("…carrying advance_paid = '350.00' through to the board's props", row?.advancePaid === '350.00')
+    check("…carrying the ledger SUM (200 cash + 150 UPI) = '350.00' through to the board's props", row?.advancePaid === '350.00')
   }
 
   // ══ 2. listDayBookings carries advance_paid AND slot_total through ══════
@@ -132,9 +144,10 @@ async function main() {
     const today = todayInZone(TZ, start)
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,channel,subtotal,total,advance_paid)
-       values ($1,$2,'LI-2','confirmed','reserved','500','500','200.00') returning id`,
+       values ($1,$2,'LI-2','confirmed','reserved','500','500','0.00') returning id`,
       [A.tenantId, A.branchId],
     )
+    await ledger(bk.rows[0].id, [['card', 200]])
     await owner.query(
       `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,rate_applied,slot_total,resource_name,resource_type_name,active)
        values ($1,$2,$3,$4,$5,'200.00','500.00','S2','PS5',true)`,

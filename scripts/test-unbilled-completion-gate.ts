@@ -109,6 +109,20 @@ async function main() {
 
   let seq = 0
   /** A confirmed booking worth `total` rupees (2h at total/2 an hour), with an optional advance and channel. */
+  /** M30 #4: the gate sums the advance_payments ledger live; the superseded
+   *  bookings.advance_paid is left at 0. Seeded as two tenders (cash + UPI) so
+   *  the SUM is exercised, not just one row. */
+  async function seedLedger(t: typeof A, bookingId: string, advancePaid: number) {
+    if (advancePaid <= 0) return
+    const first = Math.round(advancePaid * 100) / 200
+    for (const [method, amount] of [['cash', first], ['upi', advancePaid - first]] as const) {
+      await owner.query(
+        `insert into advance_payments (tenant_id,branch_id,booking_id,method,amount) values ($1,$2,$3,$4,$5)`,
+        [t.tenantId, t.branchId, bookingId, method, amount.toFixed(2)],
+      )
+    }
+  }
+
   async function makeBooking(
     t: typeof A,
     total = 1000,
@@ -119,9 +133,10 @@ async function main() {
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,channel,created_by)
        values ($1,$2,$3,'confirmed','0','0',$4,$5,$6) returning id`,
-      [t.tenantId, t.branchId, `GT-${n}`, advancePaid.toFixed(2), channel, t.membershipId],
+      [t.tenantId, t.branchId, `GT-${n}`, '0.00', channel, t.membershipId],
     )
     const bookingId = bk.rows[0].id
+    await seedLedger(t, bookingId, advancePaid)
     const s = new Date(Date.UTC(2042, 0, 1 + (n % 27), 4, 0, 0))
     await owner.query(
       `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,
@@ -151,9 +166,10 @@ async function main() {
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,channel,billing_mode,created_by)
        values ($1,$2,$3,'checked_in','0','0',$4,'walkin','open_tab',$5) returning id`,
-      [t.tenantId, t.branchId, `GT-${n}`, advancePaid.toFixed(2), t.membershipId],
+      [t.tenantId, t.branchId, `GT-${n}`, '0.00', t.membershipId],
     )
     const bookingId = bk.rows[0].id
+    await seedLedger(t, bookingId, advancePaid)
     const s = new Date(Date.UTC(2042, 0, 1 + (n % 27), 4, 0, 0))
     const ends = checkedOut ? new Date(s.getTime() + 2 * 3600_000) : null
     const slotTotal = checkedOut ? total : 0

@@ -3,8 +3,10 @@
 import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
+import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
@@ -23,6 +25,7 @@ import {
   startWalkinCore,
   checkoutWalkinCore,
   extendWalkinCore,
+  correctWalkinEndTimeCore,
   reopenWalkinCore,
   previewWalkinCheckout as previewWalkinCheckoutCore,
   listWalkinResources as listWalkinResourcesForBranch,
@@ -60,6 +63,10 @@ function fail(e: unknown): Result {
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 
+const advanceTendersSchema = z
+  .array(z.object({ method: z.enum(POS_PAYMENT_METHODS), amount: z.coerce.number().positive() }))
+  .default([])
+
 const createInput = z.object({
   branchId: z.string().uuid(),
   customerName: z.string().trim().min(1, 'Customer name is required.'),
@@ -73,11 +80,10 @@ const createInput = z.object({
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
   discount: z.coerce.number().min(0).default(0),
   deposit: z.coerce.number().min(0).default(0),
-  // M26 #4: cash collected from the customer before this booking existed —
-  // gaming_cafe only. Threaded through the same way `deposit` above is;
-  // createBookingCore re-checks the tenant's industry itself and refuses a
-  // non-zero value for any other industry, never trusting this schema alone.
-  advancePaid: z.coerce.number().min(0).default(0),
+  // M30 #2: advance tenders collected before this booking existed, one per
+  // mode — gaming_cafe only. createBookingCore re-validates every tender and
+  // the tenant's industry itself, never trusting this schema alone.
+  advanceTenders: advanceTendersSchema,
   slots: z
     .array(
       z.object({
@@ -188,10 +194,9 @@ const startWalkinInput = z
     // startWalkinCore re-validates it (this resource + tenant, active,
     // per-hour, industry) and refuses anything else; never trusted as sent.
     setupId: z.string().uuid().optional(),
-    // M26 #4: cash collected from the customer before this walk-in started —
-    // gaming_cafe only. startWalkinCore re-checks the tenant's industry
-    // itself and refuses a non-zero value for any other industry.
-    advancePaid: z.coerce.number().min(0).default(0),
+    // M30 #2: advance tenders collected before this walk-in started —
+    // gaming_cafe only. startWalkinCore re-validates them and the industry.
+    advanceTenders: advanceTendersSchema,
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return
@@ -375,7 +380,7 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
     const v = checkoutWalkinInput.parse(input)
 
     const result = await withUser(ctx.user.id, (tx) =>
-      checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+      checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
     )
 
     revalidatePath('/bookings')
@@ -421,6 +426,47 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
     const pg = pgError(e)
     if (pg?.code === '23P01') {
       return { error: 'Can’t extend — this device has another booking starting soon. Try a shorter extension.' }
+    }
+    return fail(e)
+  }
+}
+
+const correctWalkinEndTimeInput = z.object({
+  bookingId: z.string().uuid(),
+  newEndAt: z.string().datetime(),
+})
+
+/**
+ * Set a timed walk-in's committed end to a correct absolute time, earlier or
+ * later (M31 #1) — the way back from an accidental extend. A sibling of
+ * extendWalkin, which is left untouched. Same gate as every other walk-in
+ * action; no money moves here, the new window is priced at checkout.
+ */
+export async function correctWalkinEndTime(
+  input: z.input<typeof correctWalkinEndTimeInput>,
+): Promise<ExtendWalkinResult> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant') {
+      throw new AuthError(WALKIN_INDUSTRY_ERROR)
+    }
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to change a walk-in’s end time.')
+    }
+    const v = correctWalkinEndTimeInput.parse(input)
+
+    const result = await withUser(ctx.user.id, (tx) =>
+      correctWalkinEndTimeCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
+    )
+
+    revalidatePath('/bookings')
+    return result
+  } catch (e) {
+    // 23P01: a LATER end would now overlap another booking on this device
+    // (an earlier end can never trigger it).
+    const pg = pgError(e)
+    if (pg?.code === '23P01') {
+      return { error: 'Can’t move the end time that late — this device has another booking starting soon.' }
     }
     return fail(e)
   }
@@ -723,21 +769,20 @@ export async function setBookingStatus<S extends BookingStatus>(
       // M26 #6: mirror the online-deposit safety net (lib/portal/cancel.ts's
       // `depositReviewRequired: eligibility.hasDeposit`) for a gaming-cafe
       // cash advance. An advance already folded into an invoice
-      // (advance_applied, M26 #2) is accounted for on a real payment record,
+      // (invoice_id set on its ledger row, M30) is accounted for on a real payment record,
       // not orphaned by this cancellation, so it does not raise the flag —
       // same reasoning unbilledAdvanceCheck (lib/booking/service.ts, M26 #3)
       // uses for the completion gate. Reuses the same column the customer
       // portal already reads rather than inventing a parallel one: the staff
       // action in both cases is identical ("go refund this customer
-      // manually"). No effect on any other industry or an advance_paid = 0
+      // manually"). No effect on any other industry or a booking with no advance
       // booking.
       if (status === 'cancelled' && ctx.tenant.industry === 'gaming_cafe') {
-        const [row] = await tx
-          .select({ advancePaid: bookings.advancePaid, advanceApplied: bookings.advanceApplied })
-          .from(bookings)
-          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
-          .limit(1)
-        if (row && Number(row.advancePaid) > 0 && !row.advanceApplied) {
+        // M30 #4: any tender still unconsumed (invoice_id null) — more
+        // precise than the old booking-level flag: a tender already applied
+        // to an invoice never re-raises the review, even if that invoice was
+        // later voided and the booking re-billed.
+        if (await hasUnconsumedAdvance(tx, ctx.tenant.id, id)) {
           set.depositReviewRequired = true
         }
       }

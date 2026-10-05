@@ -475,6 +475,54 @@ async function main() {
     )
     const b = (await owner.query(`select status, backdated from bookings where id=$1`, [rr.bookingId])).rows[0]
     check('restaurant backdated booking lands completed', b.status === 'completed' && b.backdated === true, b)
+    const rInv = (await owner.query(`select status, issued_at from invoices where booking_id=$1`, [rr.bookingId])).rows[0]
+    check('restaurant invoice is stamped with TODAY, not the session date', todayInZone(TZ, new Date(rInv.issued_at)) === today, rInv)
+
+    // Gates: the action no longer has an industry gate, but role + window still apply for restaurants.
+    {
+      const { recordBackdatedBooking } = await import('../lib/actions/backdated-bookings')
+      const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
+      const rslug = `testbackdatedrestact${randomBytes(3).toString('hex')}`
+      const rt = await owner.query<{ id: string }>(
+        `insert into tenants (slug,name,status,timezone,industry) values ($1,'Rest Act','active',$2,'restaurant') returning id`,
+        [rslug, TZ],
+      )
+      const rb = await owner.query<{ id: string }>(`insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`, [rt.rows[0].id])
+      const rty = await owner.query<{ id: string }>(`insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Table','0.00') returning id`, [rt.rows[0].id])
+      const rres = await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'T-1','available') returning id`,
+        [rt.rows[0].id, rb.rows[0].id, rty.rows[0].id],
+      )
+      const mk = async (role: string) => {
+        const u = await owner.query<{ id: string }>(`insert into users (email,password_hash,full_name) values ($1,'x',$2) returning id`, [`${role}-${rslug}@example.test`, role])
+        const token = randomBytes(32).toString('hex')
+        await owner.query(`insert into sessions (id, user_id, expires_at) values ($1,$2, now() + interval '1 day')`, [createHash('sha256').update(token).digest('hex'), u.rows[0].id])
+        await owner.query(`insert into memberships (tenant_id,user_id,branch_id,role,status,full_name) values ($1,$2,$3,$4::member_role,'active',$5)`, [rt.rows[0].id, u.rows[0].id, rb.rows[0].id, role, role])
+        return token
+      }
+      const tokens = { manager: await mk('manager'), cashier: await mk('cashier') }
+      g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': rslug }
+      const mkInput = (s: Date, e: Date) => ({
+        branchId: rb.rows[0].id,
+        customerName: 'Diner',
+        customerPhone: '9876500055',
+        slots: [{ resourceId: rres.rows[0].id, startsAt: s.toISOString(), endsAt: e.toISOString() }],
+        amountCollected: 0,
+        paymentMethod: 'cash' as const,
+      })
+      const cnt = async () => Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [rt.rows[0].id])).rows[0].count)
+      g.__ARENA_TEST_SESSION = tokens.cashier
+      const rc = await recordBackdatedBooking(mkInput(localAt(d, '19:00'), localAt(d, '20:00')))
+      check('restaurant: cashier still refused', /owners and managers/i.test(rc.error ?? ''), rc)
+      g.__ARENA_TEST_SESSION = tokens.manager
+      const rold = await recordBackdatedBooking(mkInput(new Date(now.getTime() - 8 * DAY), new Date(now.getTime() - 8 * DAY + 3600_000)))
+      check('restaurant: 8 days back still refused', /7 days/.test(rold.error ?? ''), rold)
+      check('restaurant: refusals wrote nothing', (await cnt()) === 0)
+      const rok = await recordBackdatedBooking(mkInput(localAt(d, '19:00'), localAt(d, '20:00')))
+      const rrow = (await owner.query(`select status, backdated from bookings where id=$1`, [rok.bookingId])).rows[0]
+      check('restaurant: manager action succeeds (no industry gate), lands completed', !rok.error && rrow?.status === 'completed' && rrow?.backdated === true, { rok, rrow })
+      g.__ARENA_TEST_SESSION = undefined
+    }
 
     // Regression: the shared, real-time path still excludes restaurants.
     const live = await withUser(R.userId, (tx) =>
