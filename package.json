@@ -57,7 +57,7 @@
     "test:reopen-walkin": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-reopen-walkin.ts",
     "test:order-line-correction": "tsx --import ./scripts/server-only-hook.mjs scripts/test-order-line-correction.ts",
     "test:walkin-end-time-resolver": "tsx scripts/test-walkin-end-time-resolver.ts",
-    "test:correct-walkin-end-time": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-correct-walkin-end-time.ts",
+    "test:walkin-end-time-correction": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-end-time-correction.ts",
     "test:m25": "npm run test:undo-checkin && npm run test:reopen-walkin && npm run test:order-line-correction",
     "test:advance-payment": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-payment.ts",
     "test:unbilled-completion-gate": "tsx --import ./scripts/server-only-hook.mjs scripts/test-unbilled-completion-gate.ts",

@@ -1,5 +1,5 @@
 /**
- * M31 #1 — correctWalkinEndTime: set a timed walk-in's committed end to a
+ * M31 #1/#3 — correctWalkinEndTime: set a timed walk-in's committed end to a
  * staff-supplied ABSOLUTE time (earlier or later), the way back from an
  * accidental extend. Driven through the real server action
  * (lib/actions/bookings.ts), with extendWalkin / previewWalkinCheckout /
@@ -20,11 +20,17 @@
  *   - an audit_log row (before/after) is written on every success, none on a
  *     refusal
  *
- *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-correct-walkin-end-time.ts
+ *   - the new window re-prices under the features' OWN rules: a happy-hour segment
+ *     that was inside the old window but outside the shortened one stops applying;
+ *     a holiday-rate walk-in and a setup-priced walk-in stay flat over the new window
+ *   - cross-tenant: another tenant's owner cannot correct this booking
+ *
+ *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-end-time-correction.ts
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
+import { todayInZone } from '../lib/booking/time'
 
 let pass = 0,
   fail = 0
@@ -279,6 +285,161 @@ async function main() {
     const clear = await correctWalkinEndTime({ bookingId: id, newEndAt: iso(base.starts + 90 * MIN) })
     check('a later time that stays clear of the reservation works', !clear.error)
     check('every success was audited (shrink + clear = 2 rows)', (await auditCount(id)) === 2)
+  }
+
+  // ══ 6. pricing follows the features' own rules over the NEW window ═══════════
+  console.log('\n── re-pricing: happy hour, holiday rate, setup ──')
+  {
+    const TZ = 'Asia/Kolkata'
+    const hhmm = (ms: number) =>
+      new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms))
+    const sod = (ms: number) => Number(hhmm(ms).slice(0, 2)) * 60 + Number(hhmm(ms).slice(3))
+
+    // — happy hour: a rule inside the old (extended) window, outside the shortened one —
+    const nowMs = Date.now()
+    const ruleStart = nowMs + 45 * MIN
+    const ruleEnd = nowMs + 95 * MIN
+    if (sod(ruleStart) < sod(ruleEnd) && sod(nowMs) < sod(ruleStart)) {
+      await owner.query(`delete from happy_hours where tenant_id=$1`, [tenantId])
+      await owner.query(
+        `insert into happy_hours (tenant_id,name,days_of_week,start_time,end_time,discount_type,discount_value,is_active)
+         values ($1,'Correction HH','{0,1,2,3,4,5,6}',$2,$3,'percentage',50,true)`,
+        [tenantId, hhmm(ruleStart), hhmm(ruleEnd)],
+      )
+      const id = await startTimed(await station('Station HH'), 30)
+      const base = await row(id)
+      await extendWalkin({ bookingId: id, addMinutes: 60 })
+      const long = await previewWalkinCheckout({ bookingId: id })
+      check('with the long window the happy-hour segment applies (cheaper than 90min × ₹200/hr = ₹300)', (long.total ?? 999) < 300)
+
+      const fixed = await correctWalkinEndTime({ bookingId: id, newEndAt: iso(base.starts + 30 * MIN) })
+      check('shrinking to start+30min succeeds', !fixed.error)
+      const short = await previewWalkinCheckout({ bookingId: id })
+      check('the shortened window falls entirely outside the rule: full price 30min × ₹200/hr = ₹100.00', short.total === 100)
+      const out = await checkoutWalkin({ bookingId: id })
+      check('checkout bills exactly the re-priced preview', !out.error && out.total === 100)
+      await owner.query(`delete from happy_hours where tenant_id=$1`, [tenantId])
+    } else {
+      console.log('•  happy-hour re-pricing case skipped — the 95-minute window would cross local midnight')
+    }
+
+    // — holiday rate: flat holiday price over the new window, happy-hour rules ignored —
+    const holType = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Holiday PS5','200.00')
+       on conflict (tenant_id,name) do update set hourly_rate=excluded.hourly_rate returning id`,
+      [tenantId],
+    )
+    await owner.query(`delete from holiday_rates where resource_type_id=$1`, [holType.rows[0].id])
+    await owner.query(`insert into holiday_rates (tenant_id,resource_type_id,date,rate) values ($1,$2,$3,'300.00')`, [
+      tenantId,
+      holType.rows[0].id,
+      todayInZone(TZ),
+    ])
+    const holStation = (
+      await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Station Holiday','available')
+         on conflict (tenant_id,name) do update set status='available' returning id`,
+        [tenantId, branchId, holType.rows[0].id],
+      )
+    ).rows[0].id
+    {
+      // a happy-hour rule covering all day must NOT touch a holiday-priced session
+      await owner.query(
+        `insert into happy_hours (tenant_id,name,days_of_week,start_time,end_time,discount_type,discount_value,is_active)
+         values ($1,'All-day HH','{0,1,2,3,4,5,6}','00:00','23:59','percentage',50,true)`,
+        [tenantId],
+      )
+      const id = await startTimed(holStation, 30)
+      const base = await row(id)
+      await extendWalkin({ bookingId: id, addMinutes: 60 })
+      check('holiday walk-in, 90min: 1.5h × ₹300 = ₹450.00', (await previewWalkinCheckout({ bookingId: id })).total === 450)
+      const fixed = await correctWalkinEndTime({ bookingId: id, newEndAt: iso(base.starts + 45 * MIN) })
+      check('correcting a holiday-rate walk-in succeeds', !fixed.error)
+      const pv = await previewWalkinCheckout({ bookingId: id })
+      check('…and it stays flat at the holiday rate over the new window: 0.75h × ₹300 = ₹225.00 (no happy-hour discount)', pv.total === 225)
+      const out = await checkoutWalkin({ bookingId: id })
+      check('checkout bills exactly the preview', !out.error && out.total === 225)
+      await owner.query(`delete from happy_hours where tenant_id=$1`, [tenantId])
+    }
+  }
+
+  // — setup-priced walk-in (studio industry) —
+  console.log('\n── re-pricing: setup-priced walk-in (studio) ──')
+  {
+    const studioSlug = 'testcorrectwalkin-studio'
+    const st = await owner.query<{ id: string }>(
+      `insert into tenants (slug,name,status,timezone,industry) values ($1,$2,'active','Asia/Kolkata','recording_studio')
+       on conflict (slug) do update set name=excluded.name, industry='recording_studio' returning id`,
+      [studioSlug, `${studioSlug} co`],
+    )
+    const studioTenantId = st.rows[0].id
+    const sb = await owner.query<{ id: string }>(
+      `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
+       on conflict (tenant_id,name) do update set is_primary=true returning id`,
+      [studioTenantId],
+    )
+    const studioBranch = sb.rows[0].id
+    const studioOwner = await makeUserAndMembership(studioTenantId, 'owner', `owner@${studioSlug}.test`)
+    await owner.query('delete from booking_slots where tenant_id=$1', [studioTenantId])
+    await owner.query('delete from bookings where tenant_id=$1', [studioTenantId])
+    await owner.query('delete from sequences where tenant_id=$1', [studioTenantId])
+    const sType = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Room',$2)
+       on conflict (tenant_id,name) do update set hourly_rate=excluded.hourly_rate returning id`,
+      [studioTenantId, '100.00'],
+    )
+    const room = (
+      await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Room 1','available')
+         on conflict (tenant_id,name) do update set status='available' returning id`,
+        [studioTenantId, studioBranch, sType.rows[0].id],
+      )
+    ).rows[0].id
+    // A timed checkout leaves the slot on its committed end, so the cross-tenant
+    // probe below gets its own room rather than colliding with the first session.
+    const room2 = (
+      await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Room 2','available')
+         on conflict (tenant_id,name) do update set status='available' returning id`,
+        [studioTenantId, studioBranch, sType.rows[0].id],
+      )
+    ).rows[0].id
+    await owner.query(`delete from resource_setups where resource_id=$1`, [room])
+    const setupId = (
+      await owner.query<{ id: string }>(
+        `insert into resource_setups (tenant_id,resource_id,name,rate,rate_unit,is_active) values ($1,$2,'Live band','500.00','hour',true) returning id`,
+        [studioTenantId, room],
+      )
+    ).rows[0].id
+
+    await signInAs(studioOwner, studioSlug)
+    const started = await startWalkin({ branchId: studioBranch, resourceId: room, phone: nextPhone(), startAt: new Date().toISOString(), mode: 'timed', durationMin: 30, setupId })
+    check('a setup-priced timed walk-in starts', !started.error && Boolean(started.bookingId))
+    const id = started.bookingId!
+    const base = await row(id)
+    await extendWalkin({ bookingId: id, addMinutes: 60 })
+    check('90min on the ₹500/hr setup = ₹750.00', (await previewWalkinCheckout({ bookingId: id })).total === 750)
+    const fixed = await correctWalkinEndTime({ bookingId: id, newEndAt: iso(base.starts + 45 * MIN) })
+    check('correcting it succeeds', !fixed.error)
+    check('…and it re-prices at the SETUP rate over the new window: 0.75h × ₹500 = ₹375.00', (await previewWalkinCheckout({ bookingId: id })).total === 375)
+    const out = await checkoutWalkin({ bookingId: id })
+    check('checkout bills exactly the preview', !out.error && out.total === 375)
+
+    // ── cross-tenant fail-closed ────────────────────────────────────────────
+    const live = await startWalkin({ branchId: studioBranch, resourceId: room2, phone: nextPhone(), startAt: new Date().toISOString(), mode: 'timed', durationMin: 30 })
+    const liveId = live.bookingId!
+    const liveBase = await row(liveId)
+    await signInAs(ownerUserId, slug) // the OTHER tenant's owner
+    const cross = await correctWalkinEndTime({ bookingId: liveId, newEndAt: iso(liveBase.starts + 20 * MIN) })
+    check("another tenant's owner cannot correct this booking (fails closed)", (cross.error ?? '').toLowerCase().includes('not found'))
+    check('…and nothing changed, nothing audited', (await row(liveId)).committed === liveBase.committed && (await auditCount(liveId)) === 0)
+
+    await owner.query(`delete from audit_log where tenant_id=$1`, [studioTenantId])
+    await owner.query('delete from booking_slots where tenant_id=$1', [studioTenantId])
+    await owner.query('delete from bookings where tenant_id=$1', [studioTenantId])
+    await owner.query('delete from customers where tenant_id=$1', [studioTenantId])
+    await owner.query('delete from sessions where user_id=$1', [studioOwner])
+    await signInAs(ownerUserId, slug)
   }
 
   await wipe()
