@@ -266,6 +266,39 @@ async function main() {
     check('bill loader: surcharge booking editable, includedPlayers 2, no per_head mode', sv?.booking.hasEditablePlayerCount === true && sv.booking.includedPlayers === 2 && sv.booking.pricingMode === null && sv.booking.minPlayers === null, sv?.booking)
   }
 
+  // ══ 8. bill breakdown: slots that disagree on the extra rate ═════════════
+  console.log('\n── playerCharges breakdown ──')
+  {
+    const single = await book(units[6] ?? units[0], FRI, '17:00', '18:00', 4)
+    const sv = await getBillableForBooking(activeCtx, single.id)
+    check(
+      'a normal surcharge booking still shows its breakdown (2 included, 4 players, ₹50 extra rate)',
+      sv?.booking.playerCharges?.includedPlayers === 2 && sv.booking.playerCharges.headCount === 4 && sv.booking.playerCharges.extraRate === 50,
+      sv?.booking.playerCharges,
+    )
+
+    // One booking, two surcharge slots on different days: the weekday slot
+    // froze the ₹50 extra rate, the weekend slot ₹80. One header ("4 × ₹50")
+    // would not match the summed amounts, so the loader shows none.
+    const mixed = await withUser(userId, (tx) =>
+      createBookingCore(tx, ctx, {
+        branchId,
+        source: 'staff',
+        discount: 0,
+        deposit: 0,
+        headCount: 4,
+        slots: [
+          { resourceId: units[0], startsAt: at(FRI, '19:00').toISOString(), endsAt: at(FRI, '20:00').toISOString() },
+          { resourceId: units[1], startsAt: at(SAT, '19:00').toISOString(), endsAt: at(SAT, '20:00').toISOString() },
+        ],
+      }),
+    )
+    const mv = await getBillableForBooking(activeCtx, mixed.id)
+    const rates = await owner.query(`select extra_player_rate_applied r from booking_slots where booking_id=$1 order by starts_at`, [mixed.id])
+    check('the two slots really did freeze different extra rates', new Set(rates.rows.map((r) => r.r)).size === 2, rates.rows)
+    check('…and the bill shows no combined breakdown rather than a misleading one', mv?.booking.playerCharges === null, mv?.booking.playerCharges)
+  }
+
   await owner.query('delete from tenants where id = $1', [tenantId])
   await owner.query('delete from users where id = $1', [userId])
   await owner.end()

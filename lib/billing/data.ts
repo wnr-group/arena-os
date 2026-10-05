@@ -412,6 +412,11 @@ export async function getBillableForBooking(
     {
       let base = 0
       let extra = 0
+      // The breakdown header (players / rate) is one set of figures, so it is
+      // only meaningful when every contributing slot agrees on it. If slots
+      // differ, the amounts below would not match the header — show no
+      // breakdown rather than a misleading one.
+      let mixed = false
       for (const s of surchargeSlots) {
         const total = Number(s.slotTotal)
         const extraRate = Number(s.extraPlayerRateApplied)
@@ -424,6 +429,14 @@ export async function getBillableForBooking(
         const e = Math.min(total, round2((total * extraHourly) / combined))
         extra = round2(extra + e)
         base = round2(base + (total - e))
+        if (
+          playerCharges &&
+          (playerCharges.includedPlayers !== s.includedPlayers ||
+            playerCharges.headCount !== (s.headCount ?? 0) ||
+            playerCharges.extraRate !== extraRate)
+        ) {
+          mixed = true
+        }
         playerCharges ??= {
           includedPlayers: s.includedPlayers,
           headCount: s.headCount ?? 0,
@@ -434,7 +447,7 @@ export async function getBillableForBooking(
           total: 0,
         }
       }
-      if (playerCharges) playerCharges = { ...playerCharges, base, extra, total: round2(base + extra) }
+      if (playerCharges) playerCharges = mixed ? null : { ...playerCharges, base, extra, total: round2(base + extra) }
     }
 
     // The membership benefit, for DISPLAY on the bill screen. Priced against the

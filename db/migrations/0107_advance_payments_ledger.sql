@@ -86,8 +86,13 @@ declare
 begin
   select count(*), coalesce(sum(advance_paid), 0)
     into old_n, old_sum from public.bookings where advance_paid > 0;
-  select count(*), coalesce(sum(amount), 0)
-    into new_n, new_sum from public.advance_payments;
+  -- Ledger side scoped to the bookings that were backfilled (advance_paid > 0),
+  -- so a ledger row that exists for some other reason can never fail the check.
+  select count(*), coalesce(sum(ap.amount), 0)
+    into new_n, new_sum
+    from public.advance_payments ap
+    join public.bookings b on b.tenant_id = ap.tenant_id and b.id = ap.booking_id
+   where b.advance_paid > 0;
 
   if old_n <> new_n or old_sum <> new_sum then
     raise exception

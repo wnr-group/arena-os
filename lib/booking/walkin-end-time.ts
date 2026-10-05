@@ -68,7 +68,12 @@ export function resolveLateCheckoutEnd(
   const m = /^(\d{4}-\d{2}-\d{2})T(([01]\d|2[0-3]):[0-5]\d)$/.exec(value)
   if (!m) return { error: 'Enter a valid date and time.' }
   const end = zonedTimeToUtc(m[1], m[2], timeZone)
-  if (Number.isNaN(end.getTime())) return { error: 'Enter a valid date and time.' }
+  // Date.UTC silently rolls an impossible date (2030-02-30) over to the next
+  // month, so round-trip the instant and reject anything that doesn't read
+  // back as exactly what was typed.
+  if (Number.isNaN(end.getTime()) || toDatetimeLocal(end, timeZone) !== value) {
+    return { error: 'Enter a valid date and time.' }
+  }
   if (end.getTime() > now.getTime()) return { error: 'The end time can’t be in the future.' }
   if (now.getTime() - end.getTime() > LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
     return { error: `Pick a time within the last ${LATE_CHECKOUT_MAX_DAYS} days.` }

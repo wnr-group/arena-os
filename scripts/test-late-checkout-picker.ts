@@ -39,7 +39,15 @@ async function main() {
   const beforeStart = resolveLateCheckoutEnd('2030-06-05T09:00', TZ, now, startsAt)
   check('a time before the session started is refused', 'error' in beforeStart && beforeStart.error.includes('after the session started'))
   check('an empty value is refused', 'error' in resolveLateCheckoutEnd('', TZ, now, startsAt))
-  check('a malformed value is refused', 'error' in resolveLateCheckoutEnd('2030-06-08 14:30', TZ, now, startsAt) && 'error' in resolveLateCheckoutEnd('2030-13-45T99:99', TZ, now, startsAt))
+  const invalidMsg = 'Enter a valid date and time.'
+  const msg = (v: string) => {
+    const r = resolveLateCheckoutEnd(v, TZ, now, '2020-01-01T00:00:00.000Z')
+    return 'error' in r ? r.error : null
+  }
+  check('an impossible calendar date (30 Feb) gets the "valid date" message, not rolled into March', msg('2030-02-30T10:00') === invalidMsg)
+  check('…and 31 Apr / 31 Jun / 29 Feb in a non-leap year are refused the same way', msg('2030-04-31T10:00') === invalidMsg && msg('2030-06-31T10:00') === invalidMsg && msg('2029-02-29T10:00') === invalidMsg)
+  check('…while a real leap day still gets past that check (and fails only on range)', msg('2028-02-29T10:00') !== invalidMsg)
+  check('a malformed value is refused','error' in resolveLateCheckoutEnd('2030-06-08 14:30', TZ, now, startsAt) && 'error' in resolveLateCheckoutEnd('2030-13-45T99:99', TZ, now, startsAt))
 
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)
