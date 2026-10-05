@@ -17,6 +17,7 @@ import { todayInZone, weekdayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
+import { advancePaidTotal } from './advance-ledger'
 import { getInvoiceSettlement, paise, POS_PAYMENT_METHODS, type PosPaymentMethod } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
@@ -653,16 +654,13 @@ export type AdvanceTenderInput = { method: PosPaymentMethod; amount: number }
  *   - any tender at all requires a gaming_cafe tenant — re-read from the
  *     tenant row, failing closed for every other industry
  *
- * `total` is what the interim bookings.advance_paid dual-write stores so the
- * M26 readers keep working until M30 #3/#4 switch them to the ledger; drop
- * that write once nothing reads the column.
  */
 export async function validateAdvanceTenders(
   tx: Db,
   tenantId: string,
   tenders: AdvanceTenderInput[] | undefined,
-): Promise<{ tenders: AdvanceTenderInput[]; total: number }> {
-  if (!tenders || tenders.length === 0) return { tenders: [], total: 0 }
+): Promise<{ tenders: AdvanceTenderInput[] }> {
+  if (!tenders || tenders.length === 0) return { tenders: [] }
 
   const clean = tenders.map((t) => {
     if (!(POS_PAYMENT_METHODS as readonly string[]).includes(t.method)) {
@@ -680,7 +678,7 @@ export async function validateAdvanceTenders(
     throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
   }
 
-  return { tenders: clean, total: round2(clean.reduce((sum, x) => sum + x.amount, 0)) }
+  return { tenders: clean }
 }
 
 /**
@@ -773,7 +771,6 @@ export async function createBookingCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
-      advancePaid: advance.total.toFixed(2), // M30 interim dual-write — see validateAdvanceTenders
       backdated: input.backdated ?? false,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
@@ -1233,13 +1230,16 @@ async function unbilledAdvanceCheck(
   if (industry !== 'gaming_cafe') return null
 
   const [booking] = await tx
-    .select({ advancePaid: bookings.advancePaid, channel: bookings.channel, billingMode: bookings.billingMode })
+    .select({ channel: bookings.channel, billingMode: bookings.billingMode })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
     .limit(1)
   if (!booking || (booking.channel !== 'reserved' && booking.channel !== 'walkin')) return null
 
-  const advancePaid = round2(Number(booking.advancePaid))
+  // M30 #4: summed live from the ledger. This only runs when no invoice
+  // exists (findLiveBilling returned null), so no row can have invoice_id set
+  // yet — every row counts, no filter.
+  const advancePaid = round2(await advancePaidTotal(tx, tenantId, bookingId))
   if (paise(advancePaid) <= 0) return null
 
   if (booking.channel === 'walkin') {

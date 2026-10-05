@@ -109,16 +109,15 @@ async function main() {
   /** A confirmed booking worth `total` rupees (2h at total/2 an hour), with an optional advance already recorded on it. */
   type Tender = { method: 'cash' | 'card' | 'upi'; amount: number }
   async function makeBooking(t: typeof A, total = 1000, advance: number | Tender[] = 0) {
-    // M30 #3: the fold-in reads the advance_payments ledger; a bare number is
-    // one cash tender, as the shipped M26 recorded. advance_paid is mirrored
-    // (interim dual-write) for the readers not yet switched.
+    // M30 #3/#4: the fold-in reads the advance_payments ledger; a bare number
+    // is one cash tender, as the shipped M26 recorded. The superseded
+    // bookings.advance_paid is deliberately left at 0 — nothing reads it.
     const tenders: Tender[] = typeof advance === 'number' ? (advance > 0 ? [{ method: 'cash', amount: advance }] : []) : advance
-    const advancePaid = tenders.reduce((sum, x) => sum + x.amount, 0)
     const n = ++seq
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,created_by)
        values ($1,$2,$3,'confirmed','0','0',$4,$5) returning id`,
-      [t.tenantId, t.branchId, `AV-${n}`, advancePaid.toFixed(2), t.membershipId],
+      [t.tenantId, t.branchId, `AV-${n}`, '0.00', t.membershipId],
     )
     for (const [i, x] of tenders.entries()) {
       await owner.query(
@@ -146,7 +145,7 @@ async function main() {
     (await owner.query(`select method, amount, status, collected_by from payments where invoice_id=$1`, [invoiceId])).rows
 
   const bookingRow = async (bookingId: string) =>
-    (await owner.query(`select advance_paid, advance_applied, status from bookings where id=$1`, [bookingId])).rows[0]
+    (await owner.query(`select status from bookings where id=$1`, [bookingId])).rows[0]
 
   // ══ 1. an advance smaller than the total ═══════════════════════════════════
   console.log('\n── advance smaller than the total ──')
@@ -167,7 +166,8 @@ async function main() {
     check('…₹400 paid, ₹600 still due', s?.paid === 400 && s?.balance === 600)
 
     const b = await bookingRow(bookingId)
-    check('advance_applied flipped to true', b.advance_applied === true)
+    const stamped = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check('the tender is stamped with the invoice (consumed)', stamped.rows.length === 1 && stamped.rows[0].invoice_id === inv.invoiceId)
     check('the booking is still active (not auto-completed — a balance remains)', b.status === 'confirmed')
 
     const audit = await owner.query(
@@ -237,8 +237,8 @@ async function main() {
     const rows = await paymentsFor(inv.invoiceId)
     check('no payments row was inserted', rows.length === 0)
 
-    const b = await bookingRow(bookingId)
-    check('advance_applied stays false — nothing was ever reckoned with', b.advance_applied === false)
+    const none = await owner.query(`select 1 from advance_payments where booking_id=$1`, [bookingId])
+    check('no ledger rows exist — nothing was ever collected or reckoned with', none.rowCount === 0)
 
     const s = await stateOf(A, bookingId)
     check('the booking reads "issued" (Unpaid), same as any other unpaid bill', s?.status === 'issued')
@@ -254,9 +254,8 @@ async function main() {
     const rows = await paymentsFor(inv.invoiceId)
     check('no payments row was inserted, despite advance_paid = 400 sitting on the booking', rows.length === 0)
 
-    const b = await bookingRow(bookingId)
-    check('advance_applied stays false — the column is never even looked at for this industry', b.advance_applied === false)
-    check('advance_paid itself is untouched (still 400.00, not silently cleared)', b.advance_paid === '400.00')
+    const led = await owner.query(`select amount::text amount, invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check('the ledger row is untouched — still ₹400, still unconsumed (invoice_id null)', led.rows.length === 1 && led.rows[0].amount === '400.00' && led.rows[0].invoice_id === null)
 
     const s = await stateOf(R, bookingId)
     check('the booking reads "issued" (Unpaid) — same as if advance_paid did not exist', s?.status === 'issued')
@@ -273,7 +272,8 @@ async function main() {
     check('no ₹0 payments row was inserted', rows.length === 0)
 
     const b = await bookingRow(bookingId)
-    check('advance_applied still flips true — this booking\'s advance was reckoned with once', b.advance_applied === true)
+    const stamped = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check("the tender is still stamped — this booking's advance was reckoned with once", stamped.rows[0].invoice_id === inv.invoiceId)
 
     const s = await stateOf(A, bookingId)
     check('the booking still reads "paid" — a ₹0 bill, not a phantom balance', s?.status === 'paid' && s?.total === 0)

@@ -1,6 +1,7 @@
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
+import { advancePaidTotals } from './advance-ledger'
 import {
   resourceTypes,
   resources,
@@ -249,7 +250,6 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         // creation) and every booking with nothing collected upfront. Lets
         // BookingsView show a live "Part paid" indicator, before any bill
         // exists, once sum(active slot_total) outgrows it.
-        advancePaid: bookings.advancePaid,
         // M28 #4: entered after the fact (backdated entry) + when it was entered.
         backdated: bookings.backdated,
         bookingCreatedAt: bookings.createdAt,
@@ -295,6 +295,8 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
             .groupBy(bookingSlots.bookingId)
         : []
     const totalByBooking = new Map(totalRows.map((t) => [t.bookingId, t.total]))
+    // M30 #4: the advance collected, summed live from the ledger (one grouped query).
+    const advanceByBooking = await advancePaidTotals(tx, ctx.tenant.id, bookingIds)
 
     return rows.map((r) => ({
       ...r,
@@ -303,6 +305,7 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
       // overlapping the viewed day. This is what BookingsView's advance-gap
       // check must use instead of summing slotTotal itself.
       bookingActiveSlotTotal: totalByBooking.get(r.bookingId) ?? '0.00',
+      advancePaid: advanceByBooking.get(r.bookingId) ?? '0.00',
     }))
   })
 }

@@ -152,27 +152,6 @@ export async function applyAdvancePaymentToInvoice(
     if (paise(remaining) <= 0) break
   }
 
-  // INTERIM (M30): the cancellation review and completion gate still read the
-  // old booking-level flag until M30 #4 switches them to the ledger, so keep
-  // it true once nothing unconsumed is left. Remove with advance_paid reads.
-  const left = await tx
-    .select({ id: advancePayments.id })
-    .from(advancePayments)
-    .where(
-      and(
-        eq(advancePayments.tenantId, tenantId),
-        eq(advancePayments.bookingId, bookingId),
-        isNull(advancePayments.invoiceId),
-      ),
-    )
-    .limit(1)
-  if (left.length === 0) {
-    await tx
-      .update(bookings)
-      .set({ advanceApplied: true })
-      .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
-  }
-
   const amount = round2(applied.reduce((sum, a) => sum + a.amount, 0))
   if (applied.length === 0) return null
 

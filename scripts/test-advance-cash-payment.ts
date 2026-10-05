@@ -121,8 +121,12 @@ async function main() {
 
   const bookingRow = async (id: string) =>
     (
-      await owner.query<{ status: string; advance_paid: string; advance_applied: boolean; deposit_review_required: boolean }>(
-        `select status, advance_paid, advance_applied, deposit_review_required from bookings where id=$1`,
+      await owner.query<{ status: string; advance_total: string; consumed: boolean; deposit_review_required: boolean }>(
+        // M30 #4: the advance is read from the ledger, never the superseded columns.
+        `select status, deposit_review_required,
+           (select coalesce(sum(amount),0)::numeric(10,2)::text from advance_payments where booking_id=bookings.id) advance_total,
+           (select coalesce(bool_and(invoice_id is not null), false) from advance_payments where booking_id=bookings.id) consumed
+         from bookings where id=$1`,
         [id],
       )
     ).rows[0]
@@ -151,7 +155,7 @@ async function main() {
     })
     check('booking created via the real createBooking action', !r.error && Boolean(r.bookingId), r.error)
     shortBookingId = r.bookingId!
-    check('advance_paid landed correctly', (await bookingRow(shortBookingId)).advance_paid === '400.00')
+    check('the advance landed in the ledger correctly', (await bookingRow(shortBookingId)).advance_total === '400.00')
 
     const billed = await createInvoiceForBooking({ bookingId: shortBookingId })
     check('the bill screen raises the invoice', !billed.error && Boolean(billed.invoiceId), billed.error)
@@ -351,11 +355,11 @@ async function main() {
     check('an unconsumed cash advance raises deposit_review_required on cancel', (await bookingRow(r.bookingId!)).deposit_review_required === true)
 
     // Reuse #2's OWN booking, whose advance was already folded into a real
-    // invoice (advance_applied = true) when it auto-completed above —
+    // invoice (every ledger row stamped with it) when it auto-completed above —
     // proves the flag stays down across the full real lifecycle, not just
-    // in a script that sets advance_applied by hand.
+    // in a script that seeds the ledger by hand.
     const beforeCancel = await bookingRow(coveredBookingId)
-    check('sanity: that booking really does have advance_applied = true already', beforeCancel.advance_applied === true)
+    check("sanity: that booking's tenders are really already consumed", beforeCancel.consumed === true)
     const cancelled2 = await setBookingStatus(coveredBookingId, 'cancelled', 'Refund correction')
     check('cancelling an already-completed, already-settled booking still succeeds', !cancelled2.error, cancelled2)
     check(

@@ -120,7 +120,7 @@ async function main() {
   }
 
   const bookingRow = async (id: string) =>
-    (await ownerPool.query(`select advance_paid, channel from bookings where id=$1`, [id])).rows[0]
+    (await ownerPool.query(`select (select coalesce(sum(amount),0)::numeric(10,2)::text from advance_payments where booking_id=bookings.id) advance_paid, channel from bookings where id=$1`, [id])).rows[0]
 
   const expectReject = async (label: string, fn: () => Promise<unknown>, messageIncludes?: string) => {
     try {

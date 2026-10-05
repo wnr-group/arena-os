@@ -37,6 +37,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
 import { industryHasStudioSetups } from './studio-setups'
+import { advancePaidTotals } from './advance-ledger'
 import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
 import { paise } from '@/lib/billing/payments'
 import { round2 } from '@/lib/billing/pricing'
@@ -360,7 +361,6 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
         // M29 #8: the start-time snapshot wins; legacy rows fall back to live.
         includedPlayers: sql<number>`coalesce(${bookingSlots.includedPlayersApplied}, ${resourceTypes.includedPlayers})`,
         warningMinutes: bookings.warningMinutes,
-        advancePaid: bookings.advancePaid,
       })
       .from(bookings)
       .innerJoin(bookingSlots, eq(bookingSlots.bookingId, bookings.id))
@@ -377,7 +377,15 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
       )
       .orderBy(asc(bookingSlots.startsAt)),
   )
-  return rows.map((r) => ({ ...r, billingMode: (r.billingMode as WalkinMode) ?? 'open_tab' }))
+  // M30 #4: collected-upfront figure summed live from the ledger, one grouped query.
+  const advance = await withUser(ctx.user.id, (tx) =>
+    advancePaidTotals(tx, ctx.tenant.id, [...new Set(rows.map((r) => r.bookingId))]),
+  )
+  return rows.map((r) => ({
+    ...r,
+    billingMode: (r.billingMode as WalkinMode) ?? 'open_tab',
+    advancePaid: advance.get(r.bookingId) ?? '0.00',
+  }))
 }
 
 export type StartWalkinInput = {
@@ -677,7 +685,6 @@ export async function startWalkinCore(
       createdBy: ctx.membershipId,
       checkedInAt: now,
       headCount,
-      advancePaid: advance.total.toFixed(2), // M30 interim dual-write — see validateAdvanceTenders
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 

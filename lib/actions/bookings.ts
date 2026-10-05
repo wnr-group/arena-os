@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
+import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
@@ -726,21 +727,20 @@ export async function setBookingStatus<S extends BookingStatus>(
       // M26 #6: mirror the online-deposit safety net (lib/portal/cancel.ts's
       // `depositReviewRequired: eligibility.hasDeposit`) for a gaming-cafe
       // cash advance. An advance already folded into an invoice
-      // (advance_applied, M26 #2) is accounted for on a real payment record,
+      // (invoice_id set on its ledger row, M30) is accounted for on a real payment record,
       // not orphaned by this cancellation, so it does not raise the flag —
       // same reasoning unbilledAdvanceCheck (lib/booking/service.ts, M26 #3)
       // uses for the completion gate. Reuses the same column the customer
       // portal already reads rather than inventing a parallel one: the staff
       // action in both cases is identical ("go refund this customer
-      // manually"). No effect on any other industry or an advance_paid = 0
+      // manually"). No effect on any other industry or a booking with no advance
       // booking.
       if (status === 'cancelled' && ctx.tenant.industry === 'gaming_cafe') {
-        const [row] = await tx
-          .select({ advancePaid: bookings.advancePaid, advanceApplied: bookings.advanceApplied })
-          .from(bookings)
-          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
-          .limit(1)
-        if (row && Number(row.advancePaid) > 0 && !row.advanceApplied) {
+        // M30 #4: any tender still unconsumed (invoice_id null) — more
+        // precise than the old booking-level flag: a tender already applied
+        // to an invoice never re-raises the review, even if that invoice was
+        // later voided and the booking re-billed.
+        if (await hasUnconsumedAdvance(tx, ctx.tenant.id, id)) {
           set.depositReviewRequired = true
         }
       }
