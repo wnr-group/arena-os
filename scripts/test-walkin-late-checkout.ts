@@ -1,5 +1,5 @@
 /**
- * M32 #1 — late checkout for a forgotten open-tab walk-in: checkoutWalkin's
+ * M32 #1/#3 — late checkout for a forgotten open-tab walk-in: checkoutWalkin's
  * `endAt` may now sit up to 7 days in the past (it used to be capped at ±30
  * minutes of now), is audited when it falls outside the normal window, and
  * everything else about checkout is unchanged. Driven through the real server
@@ -16,14 +16,20 @@
  *     refused, as is an end after (or at) the session start's wrong side, and
  *     an end more than the normal window in the FUTURE
  *   - a timed walk-in is untouched: still prices its committed end, never audits
- *   - same gate as a normal checkout: a cashier may late-check-out (not
- *     manager-only); kitchen staff, restaurant tenants and other tenants may not
+ *   - same gate as a normal checkout: EVERY walk-in role (owner, manager, cashier,
+ *     receptionist, floor_staff) may late-check-out (not manager-only); kitchen
+ *     staff, restaurant tenants and other tenants may not
+ *   - pricing composes over the entered HISTORICAL window: a happy-hour rule
+ *     keyed to the weekday the session really ran on applies (and one for another
+ *     weekday does not); a holiday-rate walk-in stays flat at its start-time
+ *     snapshot, happy hour ignored
  *
- *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-late-checkout.ts
+ *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-late-checkout.ts
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
+import { addDays, todayInZone, weekdayInZone, zonedTimeToUtc } from '../lib/booking/time'
 
 let pass = 0,
   fail = 0
@@ -119,6 +125,7 @@ async function main() {
   }
   await wipe()
 
+  const roleUsers: string[] = []
   let phoneSeq = 0
   const nextPhone = () => `98765${String(80000 + phoneSeq++).padStart(5, '0')}`
 
@@ -273,8 +280,89 @@ async function main() {
     check('…and it is audited against them', (await audits(id)).length === 1)
   }
 
+  // ══ 6. every walk-in role may do a late checkout ══════════════════════════
+  console.log('\n── every canManageWalkins role ──')
+  for (const role of ['owner', 'manager', 'cashier', 'receptionist', 'floor_staff']) {
+    const uid = await makeUser(A.tenantId, role, `${role}@${slug}.test`)
+    roleUsers.push(uid)
+    await signInAs(ownerId, slug)
+    const id = await startTab(await station(`Role ${role}`))
+    await backdate(id, 2 * DAY)
+    const base = await slot(id)
+    await signInAs(uid, slug)
+    const out = await checkoutWalkin({ bookingId: id, endAt: iso(base.starts + 60 * MIN) })
+    check(`${role} can do a late checkout`, !out.error && out.total === 200)
+    check(`…and it is audited`, (await audits(id)).length === 1)
+  }
+
+  // ══ 7. pricing composes over the entered historical window ════════════════
+  console.log('\n── historical-day pricing ──')
+  {
+    const TZ = 'Asia/Kolkata'
+    // Fix the session on a known past local day, 10:00–12:00, so it never
+    // straddles midnight and the weekday is unambiguous.
+    const day = addDays(todayInZone(TZ), -3)
+    const sessionStart = zonedTimeToUtc(day, '10:00', TZ).getTime()
+    const sessionEnd = sessionStart + 120 * MIN
+    const weekday = weekdayInZone(day, TZ)
+    const otherWeekday = (weekday + 3) % 7
+    const setStart = async (bookingId: string) =>
+      owner.query(`update booking_slots set starts_at = $2 where booking_id=$1`, [bookingId, iso(sessionStart)])
+    await signInAs(ownerId, slug)
+
+    // a happy-hour rule for the weekday the session REALLY ran on → applies
+    await owner.query(`delete from happy_hours where tenant_id=$1`, [A.tenantId])
+    await owner.query(
+      `insert into happy_hours (tenant_id,name,days_of_week,start_time,end_time,discount_type,discount_value,is_active)
+       values ($1,'Ran-on weekday HH',$2,'00:00','23:59','percentage',50,true)`,
+      [A.tenantId, `{${weekday}}`],
+    )
+    const hhId = await startTab(await station('Station HH Day'))
+    await setStart(hhId)
+    const hhPreview = await previewWalkinCheckout({ bookingId: hhId, endAt: iso(sessionEnd) })
+    check("a happy-hour rule for the weekday the session really ran on applies over the entered window: 2h × ₹200/hr × 50% = ₹200.00", hhPreview.total === 200)
+    const hhOut = await checkoutWalkin({ bookingId: hhId, endAt: iso(sessionEnd) })
+    check('…and checkout bills exactly the preview', !hhOut.error && hhOut.total === 200)
+
+    // the same rule keyed to a DIFFERENT weekday does not apply
+    await owner.query(`update happy_hours set days_of_week=$2 where tenant_id=$1`, [A.tenantId, `{${otherWeekday}}`])
+    const ctlId = await startTab(await station('Station HH Control'))
+    await setStart(ctlId)
+    const ctl = await previewWalkinCheckout({ bookingId: ctlId, endAt: iso(sessionEnd) })
+    check("…while a rule for another weekday leaves the full price: ₹400.00", ctl.total === 400)
+    await checkoutWalkin({ bookingId: ctlId, endAt: iso(sessionEnd) })
+
+    // a holiday-rate walk-in stays flat at its start-time snapshot; happy hour ignored
+    await owner.query(`update happy_hours set days_of_week='{0,1,2,3,4,5,6}' where tenant_id=$1`, [A.tenantId])
+    const holType = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Late Holiday PS5','200.00')
+       on conflict (tenant_id,name) do update set hourly_rate=excluded.hourly_rate returning id`,
+      [A.tenantId],
+    )
+    await owner.query(`delete from holiday_rates where resource_type_id=$1`, [holType.rows[0].id])
+    await owner.query(`insert into holiday_rates (tenant_id,resource_type_id,date,rate) values ($1,$2,$3,'300.00')`, [
+      A.tenantId,
+      holType.rows[0].id,
+      todayInZone(TZ),
+    ])
+    const holStation = (
+      await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Station Late Holiday','available')
+         on conflict (tenant_id,name) do update set status='available' returning id`,
+        [A.tenantId, A.branchId, holType.rows[0].id],
+      )
+    ).rows[0].id
+    const holId = await startTab(holStation)
+    await setStart(holId)
+    const hol = await previewWalkinCheckout({ bookingId: holId, endAt: iso(sessionEnd) })
+    check('a holiday-rate walk-in stays flat at its start-time snapshot over the entered window: 2h × ₹300 = ₹600.00 (happy hour ignored)', hol.total === 600)
+    const holOut = await checkoutWalkin({ bookingId: holId, endAt: iso(sessionEnd) })
+    check('…and checkout bills exactly the preview', !holOut.error && holOut.total === 600)
+    await owner.query(`delete from happy_hours where tenant_id=$1`, [A.tenantId])
+  }
+
   await wipe()
-  await owner.query('delete from sessions where user_id = any($1)', [[ownerId, cashierId, kitchenId, restoOwnerId, otherOwnerId]])
+  await owner.query('delete from sessions where user_id = any($1)', [[ownerId, cashierId, kitchenId, restoOwnerId, otherOwnerId, ...roleUsers]])
   g.__ARENA_TEST_SESSION = undefined
   g.__ARENA_TEST_HEADERS = undefined
   await owner.end()

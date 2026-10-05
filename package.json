@@ -58,7 +58,7 @@
     "test:order-line-correction": "tsx --import ./scripts/server-only-hook.mjs scripts/test-order-line-correction.ts",
     "test:walkin-end-time-resolver": "tsx scripts/test-walkin-end-time-resolver.ts",
     "test:late-checkout-picker": "tsx --import ./scripts/server-only-hook.mjs scripts/test-late-checkout-picker.ts",
-    "test:late-checkout": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-late-checkout.ts",
+    "test:walkin-late-checkout": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-late-checkout.ts",
     "test:walkin-end-time-correction": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-walkin-end-time-correction.ts",
     "test:m25": "npm run test:undo-checkin && npm run test:reopen-walkin && npm run test:order-line-correction",
     "test:advance-payment": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-payment.ts",
