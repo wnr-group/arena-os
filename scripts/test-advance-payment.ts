@@ -17,7 +17,10 @@
  *   - advance_applied guards against ever applying the same cash twice
  *   - advance_paid = 0 is a true no-op — no payment row, advance_applied stays false
  *   - a non-gaming_cafe tenant (e.g. restaurant) is a no-op even with advance_paid > 0
- *   - a ₹0 (fully comped) bill flips advance_applied without inserting a ₹0 payment
+ *   - a ₹0 (fully comped) bill leaves the tender genuinely unconsumed (no ₹0
+ *     payment, invoice_id stays null) — adversarial review of PR #38 found the
+ *     earlier shape stamped it anyway "for nothing," hiding real cash from the
+ *     cancellation-review safety net; see advance-settlement.ts's doc comment
  *   - the audit_log row lands in the SAME transaction as the invoice
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-advance-payment.ts
@@ -261,7 +264,12 @@ async function main() {
     check('the booking reads "issued" (Unpaid) — same as if advance_paid did not exist', s?.status === 'issued')
   }
 
-  // ══ 7. a ₹0 (fully comped) bill: advance_applied flips, no ₹0 payment row ═══
+  // ══ 7. a ₹0 (fully comped) bill: the tender is left genuinely unconsumed ═══
+  // Adversarial review of PR #38: the earlier shape stamped the tender's
+  // invoice_id anyway ("reckoned with once, for nothing"), which silently hid
+  // real collected cash from hasUnconsumedAdvance (the cancellation-review
+  // safety net) with zero audit trail for the mutation. Now it's left
+  // unconsumed, same as any other tender an invoice had no room for.
   console.log('\n── a free bill with an advance already collected ──')
   {
     const bookingId = await makeBooking(A, 1000, 400)
@@ -272,10 +280,49 @@ async function main() {
     check('no ₹0 payments row was inserted', rows.length === 0)
 
     const stamped = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
-    check("the tender is still stamped — this booking's advance was reckoned with once", stamped.rows[0].invoice_id === inv.invoiceId)
+    check('the tender is left UNCONSUMED, not silently written off', stamped.rows[0].invoice_id === null)
+
+    const audit = await owner.query(`select 1 from audit_log where action='booking.advance_applied' and entity_id=$1`, [inv.invoiceId])
+    check('…and no audit_log row was written for a mutation that never happened', audit.rows.length === 0)
 
     const s = await stateOf(A, bookingId)
-    check('the booking still reads "paid" — a ₹0 bill, not a phantom balance', s?.status === 'paid' && s?.total === 0)
+    check('the booking still reads "paid" — a ₹0 bill, not a phantom balance (settled at invoice issue, not via the advance)', s?.status === 'paid' && s?.total === 0)
+  }
+
+  // ══ 7b. same, but with MULTIPLE tenders — none are sacrificed ══════════════
+  console.log('\n── a free bill with a SPLIT advance already collected ──')
+  {
+    const bookingId = await makeBooking(A, 1000, [
+      { method: 'cash', amount: 300 },
+      { method: 'upi', amount: 100 },
+    ])
+    const inv = await bill(A, bookingId, 1000) // discounted to zero
+    check('nothing was left to apply — reported as a no-op', inv.advance === null)
+
+    const rows = await paymentsFor(inv.invoiceId)
+    check('no ₹0 payments rows were inserted', rows.length === 0)
+
+    const led = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check('every tender is left unconsumed — not just all-but-the-oldest', led.rows.length === 2 && led.rows.every((r: { invoice_id: string | null }) => r.invoice_id === null))
+  }
+
+  // ══ 7c. a deposit alone covers the bill; advance tenders stay untouched ════
+  // The realistic repro the adversarial review traced: issueInvoiceForBooking
+  // calls applyPaidDepositsToInvoice BEFORE applyAdvancePaymentToInvoice, so an
+  // online deposit that already covers the total leaves `remaining = 0` before
+  // this function ever looks at a single tender.
+  console.log('\n── a deposit alone covers the bill; the advance is untouched ──')
+  {
+    const bookingId = await makeBooking(A, 500, [{ method: 'cash', amount: 200 }])
+    await owner.query(
+      `insert into payment_intents (tenant_id, branch_id, booking_id, purpose, status, gateway, gateway_order_id, gateway_payment_id, amount)
+       values ($1, $2, $3, 'booking_deposit', 'paid', 'razorpay', $4, $5, '500.00')`,
+      [A.tenantId, A.branchId, bookingId, `order_test_${bookingId}`, `pay_test_${bookingId}`],
+    )
+    const inv = await bill(A, bookingId, 0)
+    check('the deposit alone settles the bill', inv.advance === null)
+    const led = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check('the advance tender is untouched — still available for manual reconciliation', led.rows[0].invoice_id === null)
   }
 
   const ledgerFor = async (bookingId: string) =>

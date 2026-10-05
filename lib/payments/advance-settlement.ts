@@ -62,10 +62,22 @@ export type AppliedAdvance = {
  * with only ₹300 of room left, ₹300 is applied, the row is still stamped
  * (reckoned with once), and the ₹200 is handed back as change at the counter
  * — the excess is not tracked (v1 scope, unchanged). Tenders are taken oldest
- * first; once the invoice is covered the loop stops and any tenders not
- * reached stay unconsumed. The first tender is always reckoned with, even if
- * the invoice has no room (free bill / covered by a deposit), matching what
- * the single-lump version did.
+ * first; once the invoice is covered, every tender not yet reached — INCLUDING
+ * one that would land exactly when the invoice already has zero room left
+ * (a deposit or a 100%-comp already covers it) — is left genuinely unconsumed
+ * (invoice_id stays null), not stamped for nothing.
+ *
+ * Adversarial review of PR #38 caught the earlier shape of this: the loop
+ * used to stamp the OLDEST tender regardless of room, "matching what the
+ * single-lump version did" when there was only ever one tender to reckon
+ * with. Once a booking can carry several tenders, that generalised into
+ * silently writing off exactly one arbitrary tender's cash — it stayed
+ * invisible to hasUnconsumedAdvance (the cancellation-review safety net)
+ * forever, with no audit trail for the mutation (the function returns before
+ * the audit insert whenever nothing was actually applied). Now EVERY tender
+ * on a fully-covered invoice stays unconsumed, so it still surfaces for
+ * manual review if the booking is later cancelled, same as any other
+ * genuinely-unconsumed tender.
  */
 export async function applyAdvancePaymentToInvoice(
   tx: Db,
@@ -119,37 +131,37 @@ export async function applyAdvancePaymentToInvoice(
   const applied: AppliedAdvance['applied'] = []
   const reckoned: { method: string; tendered: string; applied: string }[] = []
   for (const tender of tenders) {
+    // Nothing left for THIS or any later tender (oldest-first, remaining only
+    // shrinks) — stop here and leave every remaining row unconsumed, rather
+    // than stamping one for nothing. See the doc comment above for why this
+    // used to sacrifice exactly the oldest tender instead.
+    if (paise(remaining) <= 0) break
+
     const tendered = round2(Number(tender.amount))
     const amount = round2(Math.min(tendered, remaining))
 
-    // Stamped regardless of how much was absorbed — reckoned with once, the
-    // excess is not tracked.
     await tx
       .update(advancePayments)
       .set({ invoiceId: invoice.id })
       .where(and(eq(advancePayments.id, tender.id), eq(advancePayments.tenantId, tenantId)))
 
-    if (paise(amount) > 0) {
-      const [payment] = await tx
-        .insert(payments)
-        .values({
-          tenantId,
-          branchId: invoice.branchId,
-          invoiceId: invoice.id,
-          method: tender.method as PosPaymentMethod,
-          amount: amount.toFixed(2),
-          status: 'captured',
-          // Nobody is taking this money right now — it was collected earlier;
-          // carry over whoever collected it then, if known.
-          collectedBy: tender.collectedBy,
-        })
-        .returning({ id: payments.id })
-      applied.push({ paymentId: payment.id, method: tender.method as PosPaymentMethod, amount })
-      remaining = round2(remaining - amount)
-    }
+    const [payment] = await tx
+      .insert(payments)
+      .values({
+        tenantId,
+        branchId: invoice.branchId,
+        invoiceId: invoice.id,
+        method: tender.method as PosPaymentMethod,
+        amount: amount.toFixed(2),
+        status: 'captured',
+        // Nobody is taking this money right now — it was collected earlier;
+        // carry over whoever collected it then, if known.
+        collectedBy: tender.collectedBy,
+      })
+      .returning({ id: payments.id })
+    applied.push({ paymentId: payment.id, method: tender.method as PosPaymentMethod, amount })
+    remaining = round2(remaining - amount)
     reckoned.push({ method: tender.method, tendered: tendered.toFixed(2), applied: amount.toFixed(2) })
-
-    if (paise(remaining) <= 0) break
   }
 
   const amount = round2(applied.reduce((sum, a) => sum + a.amount, 0))
