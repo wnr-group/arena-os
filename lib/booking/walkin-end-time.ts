@@ -33,3 +33,46 @@ export function resolveCorrectedEnd(startsAtIso: string, timeStr: string, timeZo
   }
   return null
 }
+
+/**
+ * M32 #2 — the checkout dialog's "This was a while ago" date+time picker.
+ *
+ * `<input type="datetime-local">` yields a wall-clock string with no zone
+ * ("2026-10-02T14:30"). It is read as the BRANCH's wall time (the same zone the
+ * rest of the dialog renders in), never the browser's, so a device in another
+ * zone can't shift the bill.
+ *
+ * Client-side validation is a convenience only — checkoutWalkinCore re-checks
+ * every bound and is the actual guard. LATE_CHECKOUT_MAX_DAYS mirrors the
+ * server's WALKIN_LATE_CHECKOUT_MAX_DAYS (a test pins them equal); it is
+ * repeated here because lib/booking/walkin.ts is server-only.
+ */
+export const LATE_CHECKOUT_MAX_DAYS = 7
+
+/** An instant as a datetime-local value ('YYYY-MM-DDTHH:mm') in `timeZone`. */
+export function toDatetimeLocal(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date)
+  const hh = (parts.find((p) => p.type === 'hour')?.value ?? '00').replace(/^24$/, '00')
+  const mm = parts.find((p) => p.type === 'minute')?.value ?? '00'
+  return `${todayInZone(timeZone, date)}T${hh}:${mm}`
+}
+
+export type LateEndResult = { iso: string } | { error: string }
+
+export function resolveLateCheckoutEnd(
+  value: string,
+  timeZone: string,
+  now: Date,
+  startsAtIso: string,
+): LateEndResult {
+  const m = /^(\d{4}-\d{2}-\d{2})T(([01]\d|2[0-3]):[0-5]\d)$/.exec(value)
+  if (!m) return { error: 'Enter a valid date and time.' }
+  const end = zonedTimeToUtc(m[1], m[2], timeZone)
+  if (Number.isNaN(end.getTime())) return { error: 'Enter a valid date and time.' }
+  if (end.getTime() > now.getTime()) return { error: 'The end time can’t be in the future.' }
+  if (now.getTime() - end.getTime() > LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+    return { error: `Pick a time within the last ${LATE_CHECKOUT_MAX_DAYS} days.` }
+  }
+  if (end.getTime() <= new Date(startsAtIso).getTime()) return { error: 'The end time must be after the session started.' }
+  return { iso: end.toISOString() }
+}
