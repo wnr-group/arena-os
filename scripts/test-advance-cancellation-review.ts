@@ -94,7 +94,9 @@ async function main() {
   future.setUTCDate(future.getUTCDate() + 5)
   future.setUTCHours(6, 0, 0, 0)
 
-  async function makeBooking(t: typeof G, advancePaid: number) {
+  type Tender = { method: 'cash' | 'card' | 'upi'; amount: number }
+  async function makeBooking(t: typeof G, advance: number | Tender[]) {
+    const tenders: Tender[] = typeof advance === 'number' ? (advance > 0 ? [{ method: 'cash', amount: advance }] : []) : advance
     g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': t.slug }
     g.__ARENA_TEST_SESSION = t.userToken
     const startsAt = new Date(future)
@@ -105,7 +107,7 @@ async function main() {
       customerName: 'Test Customer',
       customerPhone: `90000${String(Math.floor(Math.random() * 100000)).padStart(5, '0')}`,
       source: 'staff',
-      advanceTenders: advancePaid > 0 ? [{ method: 'cash' as const, amount: advancePaid }] : [],
+      advanceTenders: tenders,
       slots: [{ resourceId: t.resourceId, startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() }],
     })
     if (!r.bookingId) throw new Error(`createBooking failed: ${r.error}`)
@@ -231,6 +233,61 @@ async function main() {
       'flag raised — only the genuinely unconsumed tender counts, and it does',
       (await readBooking(bookingId)).deposit_review_required === true,
     )
+  }
+
+  console.log('\n── prior invoice consumed SOME tenders, booking re-billed, then cancelled ──')
+  {
+    // Three tenders; the first alone more than covers the bill, so the others
+    // are never reached by invoice #1 and stay unconsumed. A scenario the old
+    // single advance_applied flag could not even express.
+    const bookingId = await makeBooking(G, [
+      { method: 'cash', amount: 10000 },
+      { method: 'upi', amount: 50 },
+      { method: 'card', amount: 30 },
+    ])
+    const ownerRow = await owner.query<{ id: string }>(`select id from users where email = $1`, [
+      `owner-gaming_cafe-${tag}@example.test`,
+    ])
+    const inv1 = await withUser(ownerRow.rows[0].id, (tx) => issueInvoiceForBooking(tx, { id: G.tenantId, timezone: TZ }, { bookingId }))
+    const led = await owner.query(`select method, invoice_id from advance_payments where booking_id=$1 order by created_at, amount desc`, [bookingId])
+    const consumedBy1 = led.rows.filter((r) => r.invoice_id === inv1.invoiceId).length
+    check('invoice #1 consumed the first tender only; the rest were never reached', consumedBy1 === 1 && led.rows.filter((r) => r.invoice_id === null).length === 2)
+
+    // The bill is voided and the booking re-billed: invoice #2 picks up the
+    // still-unconsumed tenders — and nothing is applied twice.
+    // Simulated: a real void needs the captured payments refunded first, and a
+    // settled booking has auto-completed — so reopen it to allow the re-bill.
+    await owner.query(`update invoices set status='void' where id=$1`, [inv1.invoiceId])
+    await owner.query(`update bookings set status='confirmed' where id=$1`, [bookingId])
+    const inv2 = await withUser(ownerRow.rows[0].id, (tx) => issueInvoiceForBooking(tx, { id: G.tenantId, timezone: TZ }, { bookingId }))
+    check('the re-bill is a different invoice', inv2.invoiceId !== inv1.invoiceId)
+    const after = await owner.query(`select invoice_id from advance_payments where booking_id=$1`, [bookingId])
+    check('every tender is now reckoned with (first on invoice #1, the rest on #2)', after.rows.every((r) => r.invoice_id !== null))
+    const onInv1 = await owner.query(`select count(*)::int n from payments where invoice_id=$1`, [inv1.invoiceId])
+    check('the first tender was NOT applied a second time to invoice #2', after.rows.filter((r) => r.invoice_id === inv1.invoiceId).length === 1 && onInv1.rows[0].n === 1)
+
+    g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': G.slug }
+    g.__ARENA_TEST_SESSION = G.userToken
+    const r = await setBookingStatus(bookingId, 'cancelled', 'Re-billed then cancelled')
+    check('cancellation itself succeeds', !r.error, r.error)
+    check('flag stays down — no tender is left unconsumed', (await readBooking(bookingId)).deposit_review_required === false)
+  }
+
+  console.log('\n── tenders never reached by any invoice → flag raised on cancel ──')
+  {
+    const bookingId = await makeBooking(G, [
+      { method: 'cash', amount: 10000 },
+      { method: 'upi', amount: 300 },
+    ])
+    const ownerRow = await owner.query<{ id: string }>(`select id from users where email = $1`, [
+      `owner-gaming_cafe-${tag}@example.test`,
+    ])
+    await withUser(ownerRow.rows[0].id, (tx) => issueInvoiceForBooking(tx, { id: G.tenantId, timezone: TZ }, { bookingId }))
+    g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': G.slug }
+    g.__ARENA_TEST_SESSION = G.userToken
+    const r = await setBookingStatus(bookingId, 'cancelled', 'Unreached tender')
+    check('cancellation itself succeeds', !r.error, r.error)
+    check('flag raised — the UPI tender was never reckoned with, staff must review it', (await readBooking(bookingId)).deposit_review_required === true)
   }
 
   await owner.end()

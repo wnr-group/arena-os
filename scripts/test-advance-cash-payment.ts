@@ -368,6 +368,38 @@ async function main() {
     )
   }
 
+  // ══ M30 #6 — a 3-tender advance through the real actions ═════════════════
+  console.log('\n── staff wizard path: cash + card + UPI advance ──')
+  {
+    const { start, end } = nextSlot()
+    const r = await createBooking({
+      branchId: G.branchId,
+      customerName: 'Asha',
+      customerPhone: nextPhone(),
+      source: 'staff',
+      advanceTenders: [
+        { method: 'cash', amount: 100 },
+        { method: 'card', amount: 80 },
+        { method: 'upi', amount: 20 },
+      ],
+      slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
+    })
+    check('booking created with three tenders', !r.error && Boolean(r.bookingId), r.error)
+    const led = await owner.query(`select method, amount::text amount from advance_payments where booking_id=$1 order by amount desc`, [r.bookingId])
+    check('three advance_payments rows, one per tender', led.rows.length === 3)
+
+    const billed = await createInvoiceForBooking({ bookingId: r.bookingId! })
+    check('the bill screen raises the invoice', !billed.error && Boolean(billed.invoiceId), billed.error)
+    const rows = (await paymentsFor(billed.invoiceId!)).sort((a: { amount: string }, b: { amount: string }) => Number(b.amount) - Number(a.amount))
+    check(
+      'three payments rows, each with its own method and amount',
+      rows.length === 3 && rows[0].method === 'cash' && rows[0].amount === '100.00' && rows[1].method === 'card' && rows[1].amount === '80.00' && rows[2].method === 'upi' && rows[2].amount === '20.00',
+      rows,
+    )
+    const stamped = await owner.query(`select 1 from advance_payments where booking_id=$1 and invoice_id=$2`, [r.bookingId, billed.invoiceId])
+    check('every tender is stamped with the invoice', stamped.rowCount === 3)
+  }
+
   await owner.end()
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)

@@ -695,14 +695,20 @@ export async function recordAdvanceTenders(
 ): Promise<void> {
   if (tenders.length === 0) return
 
+  // One insert shares a single now(), which would leave the fold-in's
+  // oldest-first order to a random id tiebreak. A distinct created_at per
+  // tender (1ms apart, in entry order) makes "oldest first" mean "the order
+  // staff entered them".
+  const base = Date.now()
   await tx.insert(advancePayments).values(
-    tenders.map((t) => ({
+    tenders.map((t, i) => ({
       tenantId: ctx.tenantId,
       branchId: booking.branchId,
       bookingId: booking.bookingId,
       method: t.method,
       amount: t.amount.toFixed(2),
       collectedBy: ctx.membershipId,
+      createdAt: new Date(base + i),
     })),
   )
 
