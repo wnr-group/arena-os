@@ -721,11 +721,19 @@ export async function startWalkinCore(
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }
 
-/** How far from "now" an OPEN-TAB walk-in's confirmed checkout end may be
- *  nudged, either direction — same shape as WALKIN_START_WINDOW_MINUTES.
+/** The NORMAL checkout window for an OPEN-TAB walk-in: how far from "now" the
+ *  confirmed end is expected to sit, either direction — same shape as
+ *  WALKIN_START_WINDOW_MINUTES. A checkout inside it is routine and
+ *  unaudited; one in the PAST beyond it is a late checkout (M32) and audited.
+ *  Also still the bound on how far in the FUTURE an end may be nudged.
  *  Meaningless for a TIMED walk-in: its checkout is gated on the committed
  *  end instead (see resolveCheckoutWindow). */
 export const WALKIN_CHECKOUT_WINDOW_MINUTES = 30
+
+/** M32: how far back an open-tab walk-in's checkout end may be entered when
+ *  staff forgot to close it out. Mirrors M28's 7-day precedent for entering
+ *  something money-affecting after the fact — named as this feature's own. */
+export const WALKIN_LATE_CHECKOUT_MAX_DAYS = 7
 
 /** Ceiling on a single extend (M21 #5) — "any number of minutes" per the
  *  design doc, bounded only so a mistyped value can't silently commit a
@@ -960,9 +968,10 @@ function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): 
  * Validate `endAt` and resolve the [start, end) window checkout actually
  * prices — mode-specific (M21 #5):
  *
- *   - Open tab: `endAt` (defaulting to now) must be within
- *     WALKIN_CHECKOUT_WINDOW_MINUTES of now and after the session started —
- *     it IS the priced window's own end.
+ *   - Open tab: `endAt` (defaulting to now) must be no more than
+ *     WALKIN_CHECKOUT_WINDOW_MINUTES ahead of now, no more than
+ *     WALKIN_LATE_CHECKOUT_MAX_DAYS behind it (M32 — a forgotten tab), and
+ *     after the session started — it IS the priced window's own end.
  *   - Timed: `endAt` (defaulting to now) must not be past the committed end
  *     (extensions included) — "Extend the session before checking out"
  *     rather than a silent overstay charge. The priced window's end is
@@ -980,9 +989,16 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
 
   if (walkin.billingMode === 'open_tab') {
     if (walkin.slotEndsAt !== null) throw new BookingError('This session has already been checked out.')
-    const windowMs = WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000
-    if (Math.abs(endAt.getTime() - now.getTime()) > windowMs) {
-      throw new BookingError(`End time must be within ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes of now.`)
+    // M32: the past side is widened to WALKIN_LATE_CHECKOUT_MAX_DAYS so a
+    // forgotten tab can be closed out at the time it really ended. The future
+    // side is deliberately unchanged — still at most the normal window ahead
+    // (also absorbs a few seconds of client/server clock skew on a routine
+    // "end = now" checkout).
+    if (endAt.getTime() - now.getTime() > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
+      throw new BookingError(`End time cannot be more than ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes in the future.`)
+    }
+    if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+      throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
     }
     if (endAt.getTime() <= walkin.startsAt.getTime()) {
       throw new BookingError('End time must be after the session started.')
@@ -1063,7 +1079,7 @@ export async function previewWalkinCheckout(
  */
 export async function checkoutWalkinCore(
   tx: Db,
-  ctx: { tenantId: string; timezone: string },
+  ctx: { tenantId: string; timezone: string; membershipId?: string | null },
   input: CheckoutWalkinInput,
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
@@ -1113,6 +1129,27 @@ export async function checkoutWalkinCore(
       ...(persistsHeadCount ? { headCount } : {}),
     })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
+
+  // M32: an open-tab checkout whose entered end sits outside the NORMAL window
+  // is a late checkout — a correction, not routine ops — so it is audited
+  // (entered end vs when it actually happened). A routine checkout inside the
+  // window writes nothing, exactly as before; a timed walk-in never does.
+  if (walkin.billingMode === 'open_tab') {
+    const checkedOutAt = new Date()
+    if (Math.abs(priceEnd.getTime() - checkedOutAt.getTime()) > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
+      await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
+        action: 'walkin.late_checkout',
+        entityType: 'booking',
+        entityId: walkin.bookingId,
+        before: { endsAt: null },
+        after: {
+          enteredEndAt: priceEnd.toISOString(),
+          checkedOutAt: checkedOutAt.toISOString(),
+          total: priced.unitPrice.toFixed(2),
+        },
+      })
+    }
+  }
 
   return { bookingId: walkin.bookingId, total: priced.unitPrice }
 }

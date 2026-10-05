@@ -380,7 +380,7 @@ export async function checkoutWalkin(input: z.input<typeof checkoutWalkinInput>)
     const v = checkoutWalkinInput.parse(input)
 
     const result = await withUser(ctx.user.id, (tx) =>
-      checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, v),
+      checkoutWalkinCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
     )
 
     revalidatePath('/bookings')
