@@ -107,13 +107,26 @@ async function main() {
 
   let seq = 0
   /** A confirmed booking worth `total` rupees (2h at total/2 an hour), with an optional advance already recorded on it. */
-  async function makeBooking(t: typeof A, total = 1000, advancePaid = 0) {
+  type Tender = { method: 'cash' | 'card' | 'upi'; amount: number }
+  async function makeBooking(t: typeof A, total = 1000, advance: number | Tender[] = 0) {
+    // M30 #3: the fold-in reads the advance_payments ledger; a bare number is
+    // one cash tender, as the shipped M26 recorded. advance_paid is mirrored
+    // (interim dual-write) for the readers not yet switched.
+    const tenders: Tender[] = typeof advance === 'number' ? (advance > 0 ? [{ method: 'cash', amount: advance }] : []) : advance
+    const advancePaid = tenders.reduce((sum, x) => sum + x.amount, 0)
     const n = ++seq
     const bk = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,booking_number,status,subtotal,total,advance_paid,created_by)
        values ($1,$2,$3,'confirmed','0','0',$4,$5) returning id`,
       [t.tenantId, t.branchId, `AV-${n}`, advancePaid.toFixed(2), t.membershipId],
     )
+    for (const [i, x] of tenders.entries()) {
+      await owner.query(
+        `insert into advance_payments (tenant_id,branch_id,booking_id,method,amount,collected_by,created_at)
+         values ($1,$2,$3,$4,$5,$6, now() + ($7 || ' milliseconds')::interval)`,
+        [t.tenantId, t.branchId, bk.rows[0].id, x.method, x.amount.toFixed(2), t.membershipId, String(i)],
+      )
+    }
     const s = new Date(Date.UTC(2041, 0, 1 + (n % 27), 4, 0, 0))
     await owner.query(
       `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,
@@ -147,7 +160,7 @@ async function main() {
     check('exactly one payments row was inserted for the advance', rows.length === 1)
     check("…method 'cash', status 'captured'", rows[0].method === 'cash' && rows[0].status === 'captured')
     check('…for exactly ₹400 — the advance, not the total', rows[0].amount === '400.00')
-    check('…no cashier is attributed — it was collected earlier, not at this till', rows[0].collected_by === null)
+    check("…attributed to whoever collected it at the time (the tender's own collected_by)", rows[0].collected_by === A.membershipId)
 
     const s = await stateOf(A, bookingId)
     check('listBookingPaymentStates reports "partially_paid" — ZERO changes to that function', s?.status === 'partially_paid')
@@ -264,6 +277,60 @@ async function main() {
 
     const s = await stateOf(A, bookingId)
     check('the booking still reads "paid" — a ₹0 bill, not a phantom balance', s?.status === 'paid' && s?.total === 0)
+  }
+
+  const ledgerFor = async (bookingId: string) =>
+    (await owner.query(`select method, amount::text amount, invoice_id from advance_payments where booking_id=$1 order by created_at`, [bookingId])).rows
+  const byAmountDesc = (a: { amount: string }, b: { amount: string }) => Number(b.amount) - Number(a.amount)
+
+  // ══ 8. M30 #3 — each tender becomes its own payments row, own method ═══════
+  console.log('\n── split advance: cash + card + UPI ──')
+  {
+    const bookingId = await makeBooking(A, 1000, [
+      { method: 'cash', amount: 300 },
+      { method: 'card', amount: 200 },
+      { method: 'upi', amount: 100 },
+    ])
+    const inv = await bill(A, bookingId)
+    const rows = (await paymentsFor(inv.invoiceId)).sort(byAmountDesc)
+    check('three tenders → three payments rows', rows.length === 3)
+    check(
+      '…each with its own method and amount',
+      rows[0].method === 'cash' && rows[0].amount === '300.00' && rows[1].method === 'card' && rows[1].amount === '200.00' && rows[2].method === 'upi' && rows[2].amount === '100.00',
+    )
+    check('…all captured', rows.every((r: { status: string }) => r.status === 'captured'))
+    check('result reports the sum and each applied tender', inv.advance?.amount === 600 && inv.advance?.applied.length === 3)
+    const led = await ledgerFor(bookingId)
+    check('every tender is stamped with the invoice id', led.every((r: { invoice_id: string }) => r.invoice_id === inv.invoiceId))
+    check('listBookingPaymentStates: ₹600 in', (await stateOf(A, bookingId))?.paid === 600)
+    const audit = await owner.query(`select after from audit_log where action='booking.advance_applied' and entity_id=$1`, [inv.invoiceId])
+    check(
+      'one audit entry lists every tender with method + amounts',
+      audit.rows.length === 1 && audit.rows[0].after.tenders.length === 3 && audit.rows[0].after.amount_applied === '600.00',
+    )
+
+    const { applyAdvancePaymentToInvoice } = await import('../lib/payments/advance-settlement')
+    const again = await withUser(A.userId, (tx) => applyAdvancePaymentToInvoice(tx, A.tenantId, bookingId, inv.invoiceId))
+    check('re-running the fold-in is a no-op, no double-apply', again === null && (await paymentsFor(inv.invoiceId)).length === 3)
+  }
+
+  console.log('\n── split advance larger than the bill: capped per tender, oldest first ──')
+  {
+    const bookingId = await makeBooking(A, 500, [
+      { method: 'cash', amount: 300 },
+      { method: 'upi', amount: 300 },
+      { method: 'card', amount: 100 },
+    ])
+    const inv = await bill(A, bookingId)
+    const rows = (await paymentsFor(inv.invoiceId)).sort(byAmountDesc)
+    check(
+      'oldest tender in full (₹300 cash), second capped to the ₹200 left',
+      rows.length === 2 && rows[0].method === 'cash' && rows[0].amount === '300.00' && rows[1].method === 'upi' && rows[1].amount === '200.00',
+    )
+    const led = await ledgerFor(bookingId)
+    check('the capped tender is still stamped (excess not tracked)', led[1].invoice_id === inv.invoiceId)
+    check('the tender not reached stays unconsumed (invoice_id null)', led[2].invoice_id === null)
+    check('the booking is fully paid', (await stateOf(A, bookingId))?.status === 'paid')
   }
 
   await owner.end()
