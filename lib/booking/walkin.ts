@@ -37,7 +37,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
 import { industryHasStudioSetups } from './studio-setups'
-import { BookingError, nextBookingNumber } from './service'
+import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
 import { paise } from '@/lib/billing/payments'
 import { round2 } from '@/lib/billing/pricing'
 import { resolveBookingCustomer } from './customer'
@@ -401,11 +401,10 @@ export type StartWalkinInput = {
    *  reserved setup slot does (priceBookingSlots). Re-validated here against
    *  this resource + tenant + active + per-hour, never trusted at face value. */
   setupId?: string
-  /** M26 #4: cash collected from the customer before this walk-in started —
-   *  gaming_cafe only (startWalkinCore re-checks the tenant's industry
-   *  itself, never trusting this from the caller). Absent or 0 is a no-op —
-   *  see bookings.advance_paid (M26 #1). */
-  advancePaid?: number
+  /** M30 #2: advance tenders collected before this walk-in started —
+   *  gaming_cafe only (re-validated by validateAdvanceTenders, never trusted
+   *  from the caller). Absent or empty is a no-op. */
+  advanceTenders?: AdvanceTenderInput[]
 }
 
 /**
@@ -421,19 +420,7 @@ export async function startWalkinCore(
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: StartWalkinInput,
 ): Promise<{ id: string; bookingNumber: string; confirmationToken: string }> {
-  const advancePaid = round2(input.advancePaid ?? 0)
-  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
-    throw new BookingError('Amount collected must be zero or more.')
-  }
-  if (paise(advancePaid) > 0) {
-    // M26 #4: gaming_cafe only — re-checked here against the tenant row
-    // itself, never trusted from the caller. Same discipline
-    // createBookingCore's own advance gate follows (lib/booking/service.ts).
-    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
-    if (t?.industry !== 'gaming_cafe') {
-      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
-    }
-  }
+  const advance = await validateAdvanceTenders(tx, ctx.tenantId, input.advanceTenders)
 
   const startAt = new Date(input.startAt)
   if (Number.isNaN(startAt.getTime())) throw new BookingError('Invalid start time.')
@@ -690,7 +677,7 @@ export async function startWalkinCore(
       createdBy: ctx.membershipId,
       checkedInAt: now,
       headCount,
-      advancePaid: advancePaid.toFixed(2),
+      advancePaid: advance.total.toFixed(2), // M30 interim dual-write — see validateAdvanceTenders
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -721,6 +708,8 @@ export async function startWalkinCore(
     setupId: setup?.id ?? null,
     setupName: setup?.name ?? null,
   })
+
+  await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }

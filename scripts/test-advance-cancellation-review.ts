@@ -105,7 +105,7 @@ async function main() {
       customerName: 'Test Customer',
       customerPhone: `90000${String(Math.floor(Math.random() * 100000)).padStart(5, '0')}`,
       source: 'staff',
-      advancePaid,
+      advanceTenders: advancePaid > 0 ? [{ method: 'cash' as const, amount: advancePaid }] : [],
       slots: [{ resourceId: t.resourceId, startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() }],
     })
     if (!r.bookingId) throw new Error(`createBooking failed: ${r.error}`)

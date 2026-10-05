@@ -9,7 +9,7 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
+import { advancePayments, resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, orders, auditLog, taxRates, tenants, workingHours } from '@/db/schema'
 import { durationHours, daysInRange, dayWindow } from './availability'
 import { round2 } from '@/lib/billing/pricing'
 import { priceTimeRangeSegments } from '@/lib/billing/elapsed-time'
@@ -17,7 +17,7 @@ import { todayInZone, weekdayInZone } from './time'
 import { resolveDayRate } from './rate'
 import { resolveBookingCustomer } from './customer'
 import { findLiveBilling } from '@/lib/billing/invoice'
-import { getInvoiceSettlement, paise } from '@/lib/billing/payments'
+import { getInvoiceSettlement, paise, POS_PAYMENT_METHODS, type PosPaymentMethod } from '@/lib/billing/payments'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
@@ -75,12 +75,12 @@ export type CreateBookingInput = {
    *  every per_head slot in this booking (bookings.head_count is one value
    *  per booking, not per slot — see 0094_per_head_pricing.sql). */
   headCount?: number
-  /** M26 #4: cash collected from the customer before this booking existed —
-   *  gaming_cafe only (createBookingCore re-checks the tenant's industry
-   *  itself, never trusting this from the caller). Absent or 0 is a no-op
-   *  for every booking and every other industry — see bookings.advance_paid
-   *  (M26 #1). */
-  advancePaid?: number
+  /** M30 #2: advance tenders collected before this booking existed, one per
+   *  mode — gaming_cafe only (createBookingCore re-checks the tenant's
+   *  industry itself, never trusting this from the caller). Absent or empty
+   *  is a no-op for every booking and every other industry. Each lands as its
+   *  own advance_payments row (M30 #1) in the booking's transaction. */
+  advanceTenders?: AdvanceTenderInput[]
   /** M28: set ONLY by recordBackdatedBooking (lib/booking/backdated.ts) — a
    *  booking entered after the session already happened. Never accepted from
    *  a client: every action's zod schema strips unknown keys, and the public
@@ -641,27 +641,94 @@ export async function nextBookingNumber(tx: Db, ctx: { tenantId: string; timezon
   return `BK-${compact}-${String(value).padStart(3, '0')}`
 }
 
+/** One advance tender as the caller supplies it (M30 #2). */
+export type AdvanceTenderInput = { method: PosPaymentMethod; amount: number }
+
+/**
+ * Validate the advance tenders for a new booking/walk-in (M30 #2). Shared by
+ * createBookingCore and startWalkinCore so both enforce the identical rules,
+ * server-side, never trusting the form:
+ *   - every amount is finite and > 0 (a zero tender is refused, not stored)
+ *   - every method is cash/card/upi (POS_PAYMENT_METHODS)
+ *   - any tender at all requires a gaming_cafe tenant — re-read from the
+ *     tenant row, failing closed for every other industry
+ *
+ * `total` is what the interim bookings.advance_paid dual-write stores so the
+ * M26 readers keep working until M30 #3/#4 switch them to the ledger; drop
+ * that write once nothing reads the column.
+ */
+export async function validateAdvanceTenders(
+  tx: Db,
+  tenantId: string,
+  tenders: AdvanceTenderInput[] | undefined,
+): Promise<{ tenders: AdvanceTenderInput[]; total: number }> {
+  if (!tenders || tenders.length === 0) return { tenders: [], total: 0 }
+
+  const clean = tenders.map((t) => {
+    if (!(POS_PAYMENT_METHODS as readonly string[]).includes(t.method)) {
+      throw new BookingError('Choose cash, card or UPI for each advance.')
+    }
+    const amount = round2(Number(t.amount))
+    if (!Number.isFinite(amount) || paise(amount) <= 0) {
+      throw new BookingError('Each advance amount must be greater than zero.')
+    }
+    return { method: t.method, amount }
+  })
+
+  const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, tenantId)).limit(1)
+  if (t?.industry !== 'gaming_cafe') {
+    throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
+  }
+
+  return { tenders: clean, total: round2(clean.reduce((sum, x) => sum + x.amount, 0)) }
+}
+
+/**
+ * Insert the validated tenders as one advance_payments row each, plus ONE
+ * audit entry listing every tender (method + amount), in the caller's
+ * transaction — so a booking refused later (overlap, validation) rolls the
+ * tenders back with it. No-op for an empty list.
+ */
+export async function recordAdvanceTenders(
+  tx: Db,
+  ctx: { tenantId: string; membershipId: string | null },
+  booking: { bookingId: string; branchId: string },
+  tenders: AdvanceTenderInput[],
+): Promise<void> {
+  if (tenders.length === 0) return
+
+  await tx.insert(advancePayments).values(
+    tenders.map((t) => ({
+      tenantId: ctx.tenantId,
+      branchId: booking.branchId,
+      bookingId: booking.bookingId,
+      method: t.method,
+      amount: t.amount.toFixed(2),
+      collectedBy: ctx.membershipId,
+    })),
+  )
+
+  await tx.insert(auditLog).values({
+    tenantId: ctx.tenantId,
+    actorMembershipId: ctx.membershipId,
+    action: 'booking.advance_collected',
+    entityType: 'booking',
+    entityId: booking.bookingId,
+    before: {},
+    after: {
+      tenders: tenders.map((t) => ({ method: t.method, amount: t.amount.toFixed(2) })),
+      total: round2(tenders.reduce((sum, t) => sum + t.amount, 0)).toFixed(2),
+    },
+  })
+}
+
 /** Transactional core of creating a booking: validates the slots, locks for conflicts, and inserts the booking + its slots. */
 export async function createBookingCore(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateBookingInput,
 ): Promise<CreatedBooking> {
-  const advancePaid = round2(input.advancePaid ?? 0)
-  if (!Number.isFinite(advancePaid) || advancePaid < 0) {
-    throw new BookingError('Amount collected must be zero or more.')
-  }
-  if (paise(advancePaid) > 0) {
-    // M26 #4: gaming_cafe only — re-checked here against the tenant row
-    // itself, never trusted from the caller. Same "hiding a button is
-    // convenience, never a guard" discipline upsertResourceSetup's industry
-    // gate follows (lib/actions/resources.ts): a non-zero advance sent for
-    // any other industry is refused outright, not silently zeroed.
-    const [t] = await tx.select({ industry: tenants.industry }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1)
-    if (t?.industry !== 'gaming_cafe') {
-      throw new BookingError('Collecting an advance is only available for gaming-cafe bookings.')
-    }
-  }
+  const advance = await validateAdvanceTenders(tx, ctx.tenantId, input.advanceTenders)
 
   const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
@@ -706,7 +773,7 @@ export async function createBookingCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
-      advancePaid: advancePaid.toFixed(2),
+      advancePaid: advance.total.toFixed(2), // M30 interim dual-write — see validateAdvanceTenders
       backdated: input.backdated ?? false,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
@@ -719,6 +786,8 @@ export async function createBookingCore(
       ...s,
     })),
   )
+
+  await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
 
   return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
 }

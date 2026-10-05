@@ -565,7 +565,9 @@ export function FutureWizard({
           },
         ],
         headCount: takesPlayers ? headCount : undefined,
-        advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
+        // Single cash tender until the split-tender UI lands (M30 #5).
+        advanceTenders:
+          advancePaymentEnabled && Number(advancePaid) > 0 ? [{ method: 'cash' as const, amount: Number(advancePaid) }] : [],
       })
       if (r.error) {
         setError(r.error)

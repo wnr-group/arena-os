@@ -343,7 +343,9 @@ export function WalkinWizard({
         durationMin: mode === 'timed' ? durationMin : undefined,
         headCount: isPerHead ? headCount : undefined,
         setupId: activeSetup ? activeSetup.id : undefined,
-        advancePaid: advancePaymentEnabled && advancePaid ? Number(advancePaid) : undefined,
+        // Single cash tender until the split-tender UI lands (M30 #5).
+        advanceTenders:
+          advancePaymentEnabled && Number(advancePaid) > 0 ? [{ method: 'cash' as const, amount: Number(advancePaid) }] : [],
       })
       if (r.error) {
         setError(r.error)

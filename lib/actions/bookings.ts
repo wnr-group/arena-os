@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
@@ -60,6 +61,10 @@ function fail(e: unknown): Result {
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 
+const advanceTendersSchema = z
+  .array(z.object({ method: z.enum(POS_PAYMENT_METHODS), amount: z.coerce.number().positive() }))
+  .default([])
+
 const createInput = z.object({
   branchId: z.string().uuid(),
   customerName: z.string().trim().min(1, 'Customer name is required.'),
@@ -73,11 +78,10 @@ const createInput = z.object({
   source: z.enum(['walk_in', 'staff', 'online']).default('staff'),
   discount: z.coerce.number().min(0).default(0),
   deposit: z.coerce.number().min(0).default(0),
-  // M26 #4: cash collected from the customer before this booking existed —
-  // gaming_cafe only. Threaded through the same way `deposit` above is;
-  // createBookingCore re-checks the tenant's industry itself and refuses a
-  // non-zero value for any other industry, never trusting this schema alone.
-  advancePaid: z.coerce.number().min(0).default(0),
+  // M30 #2: advance tenders collected before this booking existed, one per
+  // mode — gaming_cafe only. createBookingCore re-validates every tender and
+  // the tenant's industry itself, never trusting this schema alone.
+  advanceTenders: advanceTendersSchema,
   slots: z
     .array(
       z.object({
@@ -188,10 +192,9 @@ const startWalkinInput = z
     // startWalkinCore re-validates it (this resource + tenant, active,
     // per-hour, industry) and refuses anything else; never trusted as sent.
     setupId: z.string().uuid().optional(),
-    // M26 #4: cash collected from the customer before this walk-in started —
-    // gaming_cafe only. startWalkinCore re-checks the tenant's industry
-    // itself and refuses a non-zero value for any other industry.
-    advancePaid: z.coerce.number().min(0).default(0),
+    // M30 #2: advance tenders collected before this walk-in started —
+    // gaming_cafe only. startWalkinCore re-validates them and the industry.
+    advanceTenders: advanceTendersSchema,
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return

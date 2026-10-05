@@ -146,7 +146,7 @@ async function main() {
       customerName: 'Rahul',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('booking created via the real createBooking action', !r.error && Boolean(r.bookingId), r.error)
@@ -174,7 +174,7 @@ async function main() {
       customerName: 'Priya',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 1500,
+      advanceTenders: [{ method: 'cash', amount: 1500 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('booking created', !r.error && Boolean(r.bookingId), r.error)
@@ -198,7 +198,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 100,
+      advanceTenders: [{ method: 'cash', amount: 100 }],
     })
     check('walk-in started via the real startWalkin action', !started.error && Boolean(started.bookingId), started.error)
     walkinShortId = started.bookingId!
@@ -225,7 +225,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
     })
     check('walk-in started', !started.error && Boolean(started.bookingId), started.error)
     const bookingId = started.bookingId!
@@ -250,7 +250,7 @@ async function main() {
       customerName: 'Amit',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 400,
+      advanceTenders: [{ method: 'cash', amount: 400 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     const complete1 = await setBookingStatus(shortR.bookingId!, 'completed')
@@ -264,7 +264,7 @@ async function main() {
       customerName: 'Sana',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 1000,
+      advanceTenders: [{ method: 'cash', amount: 1000 }],
       slots: [{ resourceId: stationA, startsAt: s2.toISOString(), endsAt: e2.toISOString() }],
     })
     const complete2 = await setBookingStatus(coveredR.bookingId!, 'completed')
@@ -285,7 +285,7 @@ async function main() {
       customerName: 'Test',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
       slots: [{ resourceId: stationR, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     check('a restaurant tenant calling createBooking with a forged advance is refused', Boolean(restBooking.error), restBooking)
@@ -298,7 +298,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
     })
     check('a restaurant tenant cannot even reach the advance gate — walk-ins are refused outright', Boolean(restWalkin.error), restWalkin)
 
@@ -311,7 +311,7 @@ async function main() {
       customerName: 'Test',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
       slots: [{ resourceId: stationS, startsAt: ss.toISOString(), endsAt: se.toISOString() }],
     })
     check('a recording_studio tenant calling createBooking with a forged advance is refused', Boolean(studioBooking.error), studioBooking)
@@ -326,7 +326,7 @@ async function main() {
       phone: nextPhone(),
       startAt: new Date().toISOString(),
       mode: 'open_tab',
-      advancePaid: 500,
+      advanceTenders: [{ method: 'cash', amount: 500 }],
     })
     check('a recording_studio tenant reaches (and is refused by) the advance gate itself', Boolean(studioWalkin.error), studioWalkin)
     check('…mentioning gaming-cafe', (studioWalkin.error ?? '').toLowerCase().includes('gaming-cafe'))
@@ -343,7 +343,7 @@ async function main() {
       customerName: 'Neha',
       customerPhone: nextPhone(),
       source: 'staff',
-      advancePaid: 250,
+      advanceTenders: [{ method: 'cash', amount: 250 }],
       slots: [{ resourceId: stationA, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     })
     const cancelled = await setBookingStatus(r.bookingId!, 'cancelled', 'Testing the cash-advance safety net')
