@@ -82,7 +82,15 @@ export function MarketingFooter({ viewer = null }: { viewer?: MarketingViewer } 
         </div>
 
         <div className="mt-12 flex flex-col items-center justify-between gap-2 border-t border-white/10 pt-6 text-xs text-white/45 sm:flex-row">
-          <p>© {year} Arena OS. All rights reserved.</p>
+          <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+            <p>© {year} Arena OS. All rights reserved.</p>
+            <Link href="/privacy" className="transition hover:text-white">
+              Privacy Policy
+            </Link>
+            <Link href="/terms" className="transition hover:text-white">
+              Terms &amp; Conditions
+            </Link>
+          </div>
           <p>Made for venues across India.</p>
           <p>
             Powered by <span className="font-semibold text-white/70">WnR Group</span>
