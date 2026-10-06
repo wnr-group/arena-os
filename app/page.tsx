@@ -1,41 +1,41 @@
+import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
-import { CalendarDays, HandCoins, ChefHat, Boxes, Users, type LucideIcon } from 'lucide-react'
-import { rootDomain } from '@/lib/tenant/subdomain'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getLiveHappyHourBanner } from '@/lib/happy-hours/public'
+import { listPublicPlans, type PublicPlan } from '@/lib/platform/plans/public'
+import { publicSiteFont } from '@/lib/fonts'
 import { TenantHome } from '@/components/public-booking/TenantHome'
 import { HappyHourFloatingWidget } from '@/components/public-booking/HappyHourFloatingWidget'
 import { MarketingNavbar } from '@/components/marketing/MarketingNavbar'
 import { MarketingFooter } from '@/components/marketing/MarketingFooter'
+import { Hero } from '@/components/marketing/sections/Hero'
+import { IndustriesStrip } from '@/components/marketing/sections/IndustriesStrip'
+import { FeatureShowcase } from '@/components/marketing/sections/FeatureShowcase'
+import { BentoGrid } from '@/components/marketing/sections/BentoGrid'
+import { WhyBand } from '@/components/marketing/sections/WhyBand'
+import { HowItWorks } from '@/components/marketing/sections/HowItWorks'
+import { PricingSection } from '@/components/marketing/sections/PricingSection'
+import { Faq } from '@/components/marketing/sections/Faq'
+import { FinalCta } from '@/components/marketing/sections/FinalCta'
 
-const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
-  {
-    icon: CalendarDays,
-    title: 'Bookings',
-    description: 'Real-time availability across every resource, with a mobile-first storefront customers book from directly.',
-  },
-  {
-    icon: HandCoins,
-    title: 'POS & billing',
-    description: 'Take payments, apply happy hours and promo codes, and raise invoices without leaving the booking.',
-  },
-  {
-    icon: ChefHat,
-    title: 'Kitchen & food',
-    description: 'Orders flow straight to a live kitchen queue, from menu item to KOT to table.',
-  },
-  {
-    icon: Boxes,
-    title: 'Resources & menu',
-    description: 'Model every bookable resource and menu item your business runs, organized by type and category.',
-  },
-  {
-    icon: Users,
-    title: 'Staff & attendance',
-    description: 'Rosters, clock-in/out, tasks and performance — all scoped to the right role.',
-  },
-]
+const MARKETING_TITLE = 'Arena OS — Booking, POS & operations for venues'
+const MARKETING_DESCRIPTION =
+  'Run bookings, walk-ins, POS, kitchen, staff and revenue from one platform — built for gaming cafés, studios, VR centres and restaurants in India.'
+
+/**
+ * "/" is shared by the platform marketing page and every tenant's homepage, so the
+ * marketing metadata applies on the root domain only; a tenant subdomain keeps the
+ * app-wide default exactly as before.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  if (await currentTenantSlug()) return {}
+  return {
+    title: MARKETING_TITLE,
+    description: MARKETING_DESCRIPTION,
+    openGraph: { title: MARKETING_TITLE, description: MARKETING_DESCRIPTION, type: 'website' },
+  }
+}
 
 /**
  * Root route — served on both the platform root domain and every tenant
@@ -61,62 +61,34 @@ export default async function RootPage() {
   return <PlatformHome />
 }
 
-function PlatformHome() {
-  const domain = rootDomain()
+async function PlatformHome() {
+
+  // Pricing is a display nicety on a marketing page — if the catalogue can't be
+  // read, the page must still render (the section falls back to a sign-up prompt).
+  let plans: PublicPlan[] = []
+  try {
+    plans = await listPublicPlans()
+  } catch {
+    plans = []
+  }
 
   return (
-    <div className="flex min-h-screen flex-col bg-accent">
+    <div className={`marketing-root flex min-h-screen flex-col overflow-x-clip bg-background ${publicSiteFont.className}`}>
       <MarketingNavbar />
 
       <main className="flex-1">
-        <section
-          id="home"
-          className="relative scroll-mt-16 overflow-hidden border-b border-border-strong bg-gradient-to-b from-primary/20 via-accent to-accent"
-        >
-          <div className="pointer-events-none absolute -right-16 -top-16 size-72 rounded-full bg-primary/20 blur-3xl" />
-          <div className="pointer-events-none absolute -left-16 top-24 size-72 rounded-full bg-accent-foreground/15 blur-3xl" />
-
-          <div className="relative mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-16 text-center sm:py-24">
-            <div className="rounded-full border border-border-strong bg-background/70 px-4 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur-sm">
-              Smart Booking &amp; POS Platform
-            </div>
-            <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">Arena OS</h1>
-            <p className="max-w-xl text-lg text-muted-foreground">
-              One platform to run bookings, POS, food, staff and revenue — for gaming cafes, studios and experience
-              centres. Every business gets its own subdomain and fully isolated data.
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Businesses sign in at{' '}
-              <code className="rounded bg-muted px-1.5 py-0.5">your-business.{domain}</code>
-            </p>
-          </div>
-        </section>
-
-        <section id="features" className="scroll-mt-16 border-b border-border-strong bg-background">
-          <div className="mx-auto max-w-5xl px-4 py-14 sm:px-6">
-            <h2 className="text-center text-2xl font-bold tracking-tight sm:text-3xl">Everything one venue needs</h2>
-            <p className="mx-auto mt-2 max-w-md text-center text-sm text-muted-foreground">
-              Every module below ships together — no add-ons to bolt on later.
-            </p>
-            <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {FEATURES.map(({ icon: Icon, title, description }) => (
-                <div
-                  key={title}
-                  className="group rounded-xl border border-border bg-card p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
-                >
-                  <span className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-300 group-hover:scale-110">
-                    <Icon size={18} />
-                  </span>
-                  <p className="mt-3 text-base font-semibold">{title}</p>
-                  <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
+        <Hero />
+        <IndustriesStrip />
+        <FeatureShowcase />
+        <BentoGrid />
+        <WhyBand />
+        <HowItWorks />
+        <PricingSection plans={plans} />
+        <Faq />
+        <FinalCta />
       </main>
 
-      <MarketingFooter domain={domain} />
+      <MarketingFooter />
     </div>
   )
 }

@@ -59,7 +59,7 @@ export default async function SignupPage() {
         </div>
       </main>
 
-      <MarketingFooter domain={domain} />
+      <MarketingFooter />
     </div>
   )
 }
