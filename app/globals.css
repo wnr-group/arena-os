@@ -611,3 +611,43 @@ html:has(.marketing-root) {
     transform: translateX(120%) skewX(-18deg);
   }
 }
+
+/* 404 page (app/not-found.tsx) — shake for a wrong guess, confetti burst when the free slot is found. Additive,
+ * and gated on prefers-reduced-motion like the rest of the marketing motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .mk-shake {
+    animation: mkShake 0.4s ease-in-out;
+  }
+  @keyframes mkShake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-5px);
+    }
+    40% {
+      transform: translateX(5px);
+    }
+    60% {
+      transform: translateX(-3px);
+    }
+    80% {
+      transform: translateX(3px);
+    }
+  }
+
+  .mk-confetti {
+    animation: mkConfetti 0.95s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @keyframes mkConfetti {
+    from {
+      opacity: 1;
+      transform: rotate(var(--a)) translateY(0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: rotate(var(--a)) translateY(-120px) scale(0.4);
+    }
+  }
+}
