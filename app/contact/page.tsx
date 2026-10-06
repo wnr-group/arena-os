@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { HelpCircle, Mail, MapPin, MessageCircle, Phone, UserPlus, type LucideIcon } from 'lucide-react'
+import { HelpCircle, Mail, MapPin, MessageCircle, Phone, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getContactDetails } from '@/lib/marketing/contact'
 import { MarketingShell } from '@/components/marketing/MarketingShell'
@@ -94,9 +94,6 @@ export default async function ContactPage() {
                 <div className="mt-3 space-y-2 text-sm">
                   <Link href="/#faq" className="flex items-center gap-2.5 font-medium text-primary hover:underline">
                     <HelpCircle size={16} /> Read the FAQ
-                  </Link>
-                  <Link href="/signup" className="flex items-center gap-2.5 font-medium text-primary hover:underline">
-                    <UserPlus size={16} /> Create your workspace
                   </Link>
                 </div>
               </div>

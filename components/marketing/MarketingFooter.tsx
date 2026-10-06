@@ -58,30 +58,27 @@ export function MarketingFooter({ viewer = null }: { viewer?: MarketingViewer } 
             </ul>
           </div>
 
-          <div>
-            <p className={heading}>Account</p>
-            <ul className="mt-4 space-y-2.5">
-              <li>
-                <Link href="/signup" className={link}>
-                  Create your workspace
-                </Link>
-              </li>
-              {!viewer && (
-                <li>
-                  <Link href="/login" className={link}>
-                    Sign in
-                  </Link>
-                </li>
-              )}
-              {viewer?.isPlatformAdmin && (
-                <li>
-                  <Link href="/admin" className={link}>
-                    Admin panel
-                  </Link>
-                </li>
-              )}
-            </ul>
-          </div>
+          {(!viewer || viewer.isPlatformAdmin) && (
+            <div>
+              <p className={heading}>Account</p>
+              <ul className="mt-4 space-y-2.5">
+                {!viewer && (
+                  <li>
+                    <Link href="/login" className={link}>
+                      Sign in
+                    </Link>
+                  </li>
+                )}
+                {viewer?.isPlatformAdmin && (
+                  <li>
+                    <Link href="/admin" className={link}>
+                      Admin panel
+                    </Link>
+                  </li>
+                )}
+              </ul>
+            </div>
+          )}
         </div>
 
         <div className="mt-12 flex flex-col items-center justify-between gap-2 border-t border-white/10 pt-6 text-xs text-white/45 sm:flex-row">
