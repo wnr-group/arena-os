@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Menu, X } from 'lucide-react'
+import { LayoutDashboard, Menu, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
+import type { MarketingViewer } from './viewer'
 
 // Absolute `/#id` hrefs so the same bar works from /signup as well as the homepage.
 const NAV_LINKS = [
@@ -15,8 +16,8 @@ const NAV_LINKS = [
 ]
 
 /** Sticky top nav for the platform's root marketing pages. Transparent at the top of the page, frosted glass once
- * scrolled. Sign in is always visible on larger screens; links collapse behind a hamburger below `md`. */
-export function MarketingNavbar() {
+ * scrolled. Sign in is shown on larger screens unless the visitor is signed in (a platform admin then gets an Admin panel button); links collapse behind a hamburger below `md`. */
+export function MarketingNavbar({ viewer = null }: { viewer?: MarketingViewer } = {}) {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
 
@@ -55,12 +56,23 @@ export function MarketingNavbar() {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2">
-          <Link
-            href="/login"
-            className="hidden rounded-lg px-4 py-2 text-sm font-semibold transition hover:bg-accent sm:inline-flex"
-          >
-            Sign in
-          </Link>
+          {!viewer && (
+            <Link
+              href="/login"
+              className="hidden rounded-lg px-4 py-2 text-sm font-semibold transition hover:bg-accent sm:inline-flex"
+            >
+              Sign in
+            </Link>
+          )}
+          {viewer?.isPlatformAdmin && (
+            <Link
+              href="/admin"
+              className="mk-shine inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-md shadow-primary/25 transition hover:-translate-y-0.5 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30"
+            >
+              <LayoutDashboard size={15} />
+              Admin panel
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
@@ -86,13 +98,15 @@ export function MarketingNavbar() {
                 {link.label}
               </Link>
             ))}
-            <Link
-              href="/login"
-              onClick={() => setOpen(false)}
-              className="rounded-lg px-3 py-3 text-sm font-semibold transition hover:bg-accent"
-            >
-              Sign in
-            </Link>
+            {!viewer && (
+              <Link
+                href="/login"
+                onClick={() => setOpen(false)}
+                className="rounded-lg px-3 py-3 text-sm font-semibold transition hover:bg-accent"
+              >
+                Sign in
+              </Link>
+            )}
           </div>
         </nav>
       )}

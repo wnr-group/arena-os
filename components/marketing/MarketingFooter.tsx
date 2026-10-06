@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
+import type { MarketingViewer } from './viewer'
 
 const PRODUCT = [
   { href: '/#features', label: 'Features' },
@@ -11,7 +12,7 @@ const PRODUCT = [
 const INDUSTRIES = ['Gaming cafés', 'Recording studios', 'Podcast studios', 'Dance studios', 'VR centres', 'Restaurants']
 
 /** Footer for the marketing site: brand, product and industry links, sign-in/sign-up and the copyright line. */
-export function MarketingFooter() {
+export function MarketingFooter({ viewer = null }: { viewer?: MarketingViewer } = {}) {
   const year = new Date().getFullYear()
   const link = 'text-sm text-white/65 transition hover:text-white'
   const heading = 'text-xs font-bold uppercase tracking-[0.16em] text-white/45'
@@ -62,11 +63,20 @@ export function MarketingFooter() {
                   Create your workspace
                 </Link>
               </li>
-              <li>
-                <Link href="/login" className={link}>
-                  Sign in
-                </Link>
-              </li>
+              {!viewer && (
+                <li>
+                  <Link href="/login" className={link}>
+                    Sign in
+                  </Link>
+                </li>
+              )}
+              {viewer?.isPlatformAdmin && (
+                <li>
+                  <Link href="/admin" className={link}>
+                    Admin panel
+                  </Link>
+                </li>
+              )}
             </ul>
           </div>
         </div>

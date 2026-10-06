@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { currentTenantSlug } from '@/lib/tenant/context'
+import { getMarketingViewer } from '@/components/marketing/viewer'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getLiveHappyHourBanner } from '@/lib/happy-hours/public'
 import { listPublicPlans, type PublicPlan } from '@/lib/platform/plans/public'
@@ -72,9 +73,12 @@ async function PlatformHome() {
     plans = []
   }
 
+  // Who is looking, for the Sign in / Admin panel buttons (real session lookup; degrades to signed out).
+  const viewer = await getMarketingViewer()
+
   return (
     <div className={`marketing-root flex min-h-screen flex-col overflow-x-clip bg-background ${publicSiteFont.className}`}>
-      <MarketingNavbar />
+      <MarketingNavbar viewer={viewer} />
 
       <main className="flex-1">
         <Hero />
@@ -85,10 +89,10 @@ async function PlatformHome() {
         <HowItWorks />
         <PricingSection plans={plans} />
         <Faq />
-        <FinalCta />
+        <FinalCta viewer={viewer} />
       </main>
 
-      <MarketingFooter />
+      <MarketingFooter viewer={viewer} />
     </div>
   )
 }

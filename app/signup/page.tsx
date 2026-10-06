@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { currentTenantSlug } from '@/lib/tenant/context'
+import { getMarketingViewer } from '@/components/marketing/viewer'
 import { rootDomain } from '@/lib/tenant/subdomain'
 import { listPublicPlans } from '@/lib/platform/plans/public'
 import { MarketingNavbar } from '@/components/marketing/MarketingNavbar'
@@ -38,10 +39,11 @@ export default async function SignupPage() {
 
   const plans = await listPublicPlans()
   const domain = rootDomain()
+  const viewer = await getMarketingViewer()
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <MarketingNavbar />
+      <MarketingNavbar viewer={viewer} />
 
       <main className="flex-1">
         <div className="mx-auto w-full max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
@@ -59,7 +61,7 @@ export default async function SignupPage() {
         </div>
       </main>
 
-      <MarketingFooter />
+      <MarketingFooter viewer={viewer} />
     </div>
   )
 }
