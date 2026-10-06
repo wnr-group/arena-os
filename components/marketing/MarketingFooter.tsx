@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
+import { ArenaWordmark } from './ui/ArenaWordmark'
 import type { MarketingViewer } from './viewer'
 
 const PRODUCT = [
@@ -24,9 +25,9 @@ export function MarketingFooter({ viewer = null }: { viewer?: MarketingViewer } 
       <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
         <div className="grid grid-cols-2 gap-10 md:grid-cols-4">
           <div className="col-span-2 md:col-span-1">
-            <div className="flex items-center gap-2.5">
+            <div className="group flex items-center gap-2.5">
               <ArenaLogo className="h-9 w-auto shrink-0" />
-              <span className="text-lg font-extrabold tracking-tight">Arena OS</span>
+              <ArenaWordmark tone="dark" />
             </div>
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-white/65">
               The smart booking and POS platform for venues that want to run smoother and grow faster.

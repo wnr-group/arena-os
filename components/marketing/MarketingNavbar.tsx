@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { LayoutDashboard, Menu, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
+import { ArenaWordmark } from './ui/ArenaWordmark'
 import type { MarketingViewer } from './viewer'
 
 // Absolute `/#id` hrefs so the same bar works from /signup as well as the homepage.
@@ -42,9 +43,9 @@ export function MarketingNavbar({ viewer = null }: { viewer?: MarketingViewer } 
       )}
     >
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <Link href="/" className="flex min-w-0 items-center gap-2.5" onClick={() => setOpen(false)}>
+        <Link href="/" className="group flex min-w-0 items-center gap-2.5" onClick={() => setOpen(false)}>
           <ArenaLogo className="h-9 w-auto shrink-0" />
-          <span className="truncate text-lg font-extrabold tracking-tight">Arena OS</span>
+          <ArenaWordmark />
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
