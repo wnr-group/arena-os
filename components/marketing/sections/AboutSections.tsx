@@ -2,11 +2,14 @@ import Link from 'next/link'
 import {
   BarChart3,
   CalendarCheck,
+  Check,
   ChefHat,
+  Eye,
   Gauge,
   Lock,
   Receipt,
   ShieldCheck,
+  Target,
   Users,
   type LucideIcon,
 } from 'lucide-react'
@@ -86,6 +89,92 @@ export function StorySection() {
   )
 }
 
+const MISSION_POINTS = [
+  'Make booking effortless for customers, on any phone.',
+  'Keep the floor fast and free of billing mistakes.',
+  'Give owners clear numbers they can trust.',
+]
+
+/** Vision (dark) and Mission (light) side by side, each with a large faded icon as a watermark. */
+export function VisionMissionSection() {
+  return (
+    <section className="bg-muted py-20 sm:py-28">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6">
+        <SectionHeading
+          eyebrow="Vision & mission"
+          title={
+            <>
+              Where we&apos;re headed, and <span className="mk-gradient-text">how we get there.</span>
+            </>
+          }
+        />
+
+        <div className="mt-14 grid gap-6 lg:grid-cols-2">
+          <Reveal direction="left" className="h-full">
+            <div className="mk-dark group relative h-full overflow-hidden rounded-[2rem] p-8 shadow-2xl shadow-primary/25 sm:p-12">
+              <Eye
+                aria-hidden
+                strokeWidth={1}
+                className="pointer-events-none absolute -bottom-10 -right-10 size-64 text-white/[0.06] transition duration-700 group-hover:scale-110 group-hover:text-white/10"
+              />
+              <div className="mk-blob pointer-events-none absolute -left-16 -top-16 size-56 rounded-full bg-primary/40 blur-3xl" />
+              <div className="relative">
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-[color:var(--mk-gold)]">
+                  <Eye size={14} /> Our vision
+                </span>
+                <h3 className="mt-6 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">
+                  Every venue running{' '}
+                  <span className="bg-gradient-to-r from-white to-[color:var(--mk-gold)] bg-clip-text text-transparent">
+                    smoothly, end to end.
+                  </span>
+                </h3>
+                <p className="mt-5 max-w-md text-base leading-relaxed text-white/75 sm:text-lg">
+                  We picture a future where owners spend their time on their guests and their craft, not on reconciling
+                  spreadsheets. Where every booking, bill and customer visit simply works.
+                </p>
+              </div>
+            </div>
+          </Reveal>
+
+          <Reveal direction="right" delay={120} className="h-full">
+            <div className="group relative h-full overflow-hidden rounded-[2rem] border border-border-strong bg-card p-8 shadow-xl shadow-primary/10 sm:p-12">
+              <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-primary via-[#c0396b] to-[#d49a3a]" />
+              <Target
+                aria-hidden
+                strokeWidth={1}
+                className="pointer-events-none absolute -bottom-10 -right-10 size-64 text-primary/[0.06] transition duration-700 group-hover:scale-110 group-hover:text-primary/10"
+              />
+              <div className="relative">
+                <span className="inline-flex items-center gap-2 rounded-full border border-border-strong bg-accent px-3.5 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-accent-foreground">
+                  <Target size={14} /> Our mission
+                </span>
+                <h3 className="mt-6 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">
+                  Big-venue tools,{' '}
+                  <span className="mk-gradient-text">made simple for every venue.</span>
+                </h3>
+                <p className="mt-5 max-w-md text-base leading-relaxed text-muted-foreground sm:text-lg">
+                  To bring bookings, billing, kitchen and reporting together in one reliable platform that any venue can
+                  run from day one.
+                </p>
+                <ul className="mt-7 space-y-3.5">
+                  {MISSION_POINTS.map((point) => (
+                    <li key={point} className="flex items-start gap-3 text-sm font-medium sm:text-base">
+                      <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                        <Check size={12} strokeWidth={3} />
+                      </span>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </Reveal>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 const VALUES: { icon: LucideIcon; title: string; description: string }[] = [
   {
     icon: Gauge,
@@ -111,7 +200,7 @@ const VALUES: { icon: LucideIcon; title: string; description: string }[] = [
 
 export function ValuesSection() {
   return (
-    <section className="bg-muted py-20 sm:py-28">
+    <section className="bg-background py-20 sm:py-28">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         <SectionHeading
           eyebrow="What we care about"

@@ -3,7 +3,12 @@ import { notFound } from 'next/navigation'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { MarketingShell } from '@/components/marketing/MarketingShell'
 import { PageHero } from '@/components/marketing/sections/PageHero'
-import { BehindSection, StorySection, ValuesSection } from '@/components/marketing/sections/AboutSections'
+import {
+  BehindSection,
+  StorySection,
+  ValuesSection,
+  VisionMissionSection,
+} from '@/components/marketing/sections/AboutSections'
 
 const TITLE = 'About — Arena OS'
 const DESCRIPTION =
@@ -34,6 +39,7 @@ export default async function AboutPage() {
         subtitle="Arena OS brings bookings, walk-ins, billing, food and reporting together, so running a venue feels lighter."
       />
       <StorySection />
+      <VisionMissionSection />
       <ValuesSection />
       <BehindSection />
     </MarketingShell>
