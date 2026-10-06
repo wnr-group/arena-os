@@ -7,6 +7,8 @@ const PRODUCT = [
   { href: '/#industries', label: 'Industries' },
   { href: '/#pricing', label: 'Pricing' },
   { href: '/#faq', label: 'FAQ' },
+  { href: '/about', label: 'About' },
+  { href: '/contact', label: 'Contact' },
 ]
 
 const INDUSTRIES = ['Gaming cafés', 'Recording studios', 'Podcast studios', 'Dance studios', 'VR centres', 'Restaurants']
@@ -84,6 +86,9 @@ export function MarketingFooter({ viewer = null }: { viewer?: MarketingViewer } 
         <div className="mt-12 flex flex-col items-center justify-between gap-2 border-t border-white/10 pt-6 text-xs text-white/45 sm:flex-row">
           <p>© {year} Arena OS. All rights reserved.</p>
           <p>Made for venues across India.</p>
+          <p>
+            Powered by <span className="font-semibold text-white/70">WnR Group</span>
+          </p>
         </div>
       </div>
     </footer>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { LayoutDashboard, Menu, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
@@ -13,11 +14,14 @@ const NAV_LINKS = [
   { href: '/#industries', label: 'Industries' },
   { href: '/#pricing', label: 'Pricing' },
   { href: '/#faq', label: 'FAQ' },
+  { href: '/about', label: 'About' },
+  { href: '/contact', label: 'Contact' },
 ]
 
 /** Sticky top nav for the platform's root marketing pages. Transparent at the top of the page, frosted glass once
  * scrolled. Sign in is shown on larger screens unless the visitor is signed in (a platform admin then gets an Admin panel button); links collapse behind a hamburger below `md`. */
 export function MarketingNavbar({ viewer = null }: { viewer?: MarketingViewer } = {}) {
+  const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
 
@@ -48,7 +52,11 @@ export function MarketingNavbar({ viewer = null }: { viewer?: MarketingViewer } 
             <Link
               key={link.href}
               href={link.href}
-              className="rounded-lg px-3.5 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              aria-current={pathname === link.href ? 'page' : undefined}
+              className={cn(
+                'rounded-lg px-3.5 py-2 text-sm font-medium transition hover:bg-accent hover:text-foreground',
+                pathname === link.href ? 'bg-accent text-foreground' : 'text-muted-foreground',
+              )}
             >
               {link.label}
             </Link>
@@ -93,7 +101,11 @@ export function MarketingNavbar({ viewer = null }: { viewer?: MarketingViewer } 
                 key={link.href}
                 href={link.href}
                 onClick={() => setOpen(false)}
-                className="rounded-lg px-3 py-3 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                aria-current={pathname === link.href ? 'page' : undefined}
+                className={cn(
+                  'rounded-lg px-3 py-3 text-sm font-medium transition hover:bg-accent hover:text-foreground',
+                  pathname === link.href ? 'bg-accent text-foreground' : 'text-muted-foreground',
+                )}
               >
                 {link.label}
               </Link>
