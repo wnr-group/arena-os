@@ -1,8 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
-import { ArrowRight, Check, Minus } from 'lucide-react'
+import { Check, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { formatMoney } from '@/lib/format'
 import type { PublicPlan, PublicEntitlementValue } from '@/lib/platform/plans/public'
@@ -135,12 +134,6 @@ export function PricingSection({ plans }: { plans: PublicPlan[] }) {
             <div className="mx-auto mt-12 max-w-md rounded-2xl border border-border-strong bg-card p-8 text-center shadow-sm">
               <p className="font-semibold">Plans are being finalised.</p>
               <p className="mt-1 text-sm text-muted-foreground">Create your workspace and pick a plan when you&apos;re ready.</p>
-              <Link
-                href="/signup"
-                className="mt-5 inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition hover:bg-primary-hover"
-              >
-                Get started <ArrowRight size={16} />
-              </Link>
             </div>
           </Reveal>
         ) : (
@@ -176,20 +169,7 @@ export function PricingSection({ plans }: { plans: PublicPlan[] }) {
                       {annual ? `Billed ${wholeMoney(yearly, plan.currency)} yearly` : 'Billed monthly'}
                     </p>
 
-                    <Link
-                      href="/signup"
-                      className={cn(
-                        'mk-shine group mt-6 inline-flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-bold transition',
-                        popular
-                          ? 'bg-white text-primary shadow-lg hover:bg-white/90'
-                          : 'bg-primary text-primary-foreground shadow-md shadow-primary/20 hover:bg-primary-hover',
-                      )}
-                    >
-                      Get started
-                      <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
-                    </Link>
-
-                    <ul className="mt-7 space-y-3 text-sm">
+                    <ul className="mt-6 space-y-3 text-sm">
                       {rows.map((r) => (
                         <li
                           key={r.label}

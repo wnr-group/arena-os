@@ -1,5 +1,4 @@
 import Link from 'next/link'
-import { ArrowRight } from 'lucide-react'
 import { Reveal } from '../ui/Reveal'
 
 export function FinalCta() {
@@ -18,13 +17,6 @@ export function FinalCta() {
               Create your workspace today and share your booking link with customers the same day.
             </p>
             <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link
-                href="/signup"
-                className="mk-shine group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-8 py-3.5 text-base font-bold text-primary shadow-lg transition hover:-translate-y-0.5 hover:bg-white/90 sm:w-auto"
-              >
-                Get started
-                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
-              </Link>
               <Link
                 href="/login"
                 className="inline-flex w-full items-center justify-center rounded-xl border border-white/25 px-8 py-3.5 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10 sm:w-auto"

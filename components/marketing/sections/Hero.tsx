@@ -1,5 +1,4 @@
-import Link from 'next/link'
-import { ArrowRight, Check, Sparkles } from 'lucide-react'
+import { Check, Sparkles } from 'lucide-react'
 import { Reveal } from '../ui/Reveal'
 import { HeroMockup } from '../mockups/HeroMockup'
 
@@ -37,13 +36,6 @@ export function Hero() {
 
           <Reveal delay={300}>
             <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link
-                href="/signup"
-                className="mk-shine group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground shadow-lg shadow-primary/30 transition hover:-translate-y-0.5 hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 sm:w-auto"
-              >
-                Get started
-                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
-              </Link>
               <a
                 href="#features"
                 className="inline-flex w-full items-center justify-center rounded-xl border border-border-strong bg-background/80 px-7 py-3.5 text-base font-semibold backdrop-blur transition hover:-translate-y-0.5 hover:border-primary/40 hover:bg-background sm:w-auto"

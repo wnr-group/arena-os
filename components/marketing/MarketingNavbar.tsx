@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowRight, Menu, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { ArenaLogo } from '@/components/ui/ArenaLogo'
 
@@ -15,7 +15,7 @@ const NAV_LINKS = [
 ]
 
 /** Sticky top nav for the platform's root marketing pages. Transparent at the top of the page, frosted glass once
- * scrolled. "Get started" (→ /signup) is always visible; links collapse behind a hamburger below `md`. */
+ * scrolled. Sign in is always visible on larger screens; links collapse behind a hamburger below `md`. */
 export function MarketingNavbar() {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
@@ -60,13 +60,6 @@ export function MarketingNavbar() {
             className="hidden rounded-lg px-4 py-2 text-sm font-semibold transition hover:bg-accent sm:inline-flex"
           >
             Sign in
-          </Link>
-          <Link
-            href="/signup"
-            className="mk-shine group inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-md shadow-primary/25 transition hover:-translate-y-0.5 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30"
-          >
-            Get started
-            <ArrowRight size={15} className="transition-transform group-hover:translate-x-0.5" />
           </Link>
           <button
             type="button"

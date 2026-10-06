@@ -55,7 +55,7 @@ export function MarketingFooter() {
           </div>
 
           <div>
-            <p className={heading}>Get started</p>
+            <p className={heading}>Account</p>
             <ul className="mt-4 space-y-2.5">
               <li>
                 <Link href="/signup" className={link}>
