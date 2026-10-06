@@ -30,6 +30,11 @@ const MODULES: Record<string, string> = {
   'module.events': 'Tournaments & events',
 }
 
+/** Whole-rupee price for display ("₹2,999") — the plan cards don't need paise. */
+function wholeMoney(amount: number, currency: string) {
+  return formatMoney(Math.round(amount), currency).replace(/\.00$/, '')
+}
+
 function prettyKey(key: string) {
   const s = key.replace(/^module\./, '').replace(/[_.]/g, ' ')
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -163,14 +168,12 @@ export function PricingSection({ plans }: { plans: PublicPlan[] }) {
                       </span>
                     )}
                     <h3 className="text-lg font-bold">{plan.name}</h3>
-                    <div className="mt-4 flex items-baseline gap-1.5">
-                      <span className="text-4xl font-extrabold tracking-tight sm:text-5xl">
-                        {formatMoney(Math.round(shown), plan.currency)}
-                      </span>
-                      <span className={popular ? 'text-white/60' : 'text-muted-foreground'}>/ month</span>
+                    <div className="mt-4 flex items-baseline gap-1">
+                      <span className="text-3xl font-extrabold tracking-tight">{wholeMoney(shown, plan.currency)}</span>
+                      <span className={cn('text-sm', popular ? 'text-white/60' : 'text-muted-foreground')}>/mo</span>
                     </div>
                     <p className={cn('mt-1 h-5 text-xs', popular ? 'text-white/60' : 'text-muted-foreground')}>
-                      {annual ? `Billed ${formatMoney(yearly, plan.currency)} yearly` : 'Billed monthly'}
+                      {annual ? `Billed ${wholeMoney(yearly, plan.currency)} yearly` : 'Billed monthly'}
                     </p>
 
                     <Link
