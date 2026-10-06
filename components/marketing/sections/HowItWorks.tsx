@@ -8,7 +8,7 @@ const STEPS = [
   },
   {
     title: 'Set up your venue',
-    description: 'Add resources, prices, working hours, your menu and your team. Connect your Razorpay account.',
+    description: 'Add resources, prices, working hours, your menu and your team. Connect your online payment account.',
   },
   {
     title: 'Start taking bookings',

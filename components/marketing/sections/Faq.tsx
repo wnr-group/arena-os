@@ -17,7 +17,7 @@ const FAQS = [
   },
   {
     q: 'Where do online payments go?',
-    a: 'Straight to your own Razorpay account. You add your keys in settings, and they are stored encrypted. Arena OS never holds your customers’ money.',
+    a: 'Straight to your own online payment account. You connect it once in settings, and the details are stored encrypted. Arena OS never holds your customers’ money.',
   },
   {
     q: 'Can I run walk-ins as well as online bookings?',

@@ -16,7 +16,7 @@ const FEATURES: {
     title: 'A booking site that fills your calendar while you sleep.',
     description:
       'Every venue gets its own branded site. Customers see live availability, pick a time and pay a deposit — all from their phone.',
-    bullets: ['Live availability, no double bookings', 'Online deposits and pay-now via Razorpay', 'QR confirmation and one-scan check-in'],
+    bullets: ['Live availability, no double bookings', 'Online deposits and pay-now at booking', 'QR confirmation and one-scan check-in'],
     mockup: <SiteMockup />,
   },
   {

@@ -17,7 +17,7 @@ export function Hero() {
           <Reveal>
             <span className="inline-flex items-center gap-2 rounded-full border border-border-strong bg-background/80 px-4 py-1.5 text-xs font-semibold text-accent-foreground shadow-sm backdrop-blur sm:text-sm">
               <Sparkles size={14} className="text-primary" />
-              Built for India · GST · UPI · Razorpay
+              Built for India · GST invoices · UPI payments
             </span>
           </Reveal>
 
