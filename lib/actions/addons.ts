@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { branches, bookingAddons, resourceTypeAddons, resourceTypes, bookingSlots, resources } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
+import { canManageWalkins } from '@/lib/auth/roles'
 import { BookingError } from '@/lib/booking/booking-error'
 import { BillingError } from '@/lib/billing/invoice'
 import {
@@ -189,6 +190,12 @@ const setAddonsInput = z.object({
 export async function setBookingSlotAddons(input: z.input<typeof setAddonsInput>): Promise<Result> {
   try {
     const ctx = await requireContext()
+    // Same roles as the other correction tools (undo check-in, reopen a tab,
+    // fix an end time) — not a stricter gate. Re-checked here, never trusting
+    // that the button was hidden.
+    if (!canManageWalkins(ctx.role)) {
+      throw new AuthError('You do not have permission to change add-ons.')
+    }
     const v = setAddonsInput.parse(input)
     await withUser(ctx.user.id, (tx) =>
       setSlotAddonsCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),

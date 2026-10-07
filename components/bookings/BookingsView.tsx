@@ -197,6 +197,7 @@ export function BookingsView({
   canToggle86,
   showFoodOrdering,
   canRecordBackdated = false,
+  canEditAddons = false,
 }: {
   branchId: string
   branchName: string
@@ -254,6 +255,8 @@ export function BookingsView({
   showFoodOrdering: boolean
   /** Owner/manager only (M28) — shows the "Record past booking" entry point. The action itself re-checks the role. */
   canRecordBackdated?: boolean
+  /** M33 — shows the "Add-ons" correction button. setBookingSlotAddons re-checks the role server-side. */
+  canEditAddons?: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -1010,7 +1013,8 @@ export function BookingsView({
               {/* M33: add-ons are editable only while the booking is open AND
                   unbilled (no live invoice -> paymentStates absent). The action
                   re-checks both server-side. */}
-              {(selected.status === 'confirmed' || selected.status === 'checked_in') &&
+              {canEditAddons &&
+                (selected.status === 'confirmed' || selected.status === 'checked_in') &&
                 !paymentStates[selected.bookingId] && (
                   <ActBtn label="Add-ons" variant="muted" onClick={() => setAddonsTarget(selected)} pending={pending} />
                 )}

@@ -506,13 +506,22 @@ export async function setSlotAddonsCore(
 
   const catalog = await lockAddonCatalog(tx, ctx.tenantId, desired.map((d) => d.addonId))
 
-  // Removals first (frees stock for a swap within this edit); rows whose
-  // catalog entry was deleted (addon_id null) can still be removed by id via
-  // being absent from `desired`, which never lists them.
+  // What this edit actually changed — the audit entry's body.
+  const changes: (
+    | { change: 'added'; addon: string; quantity: number }
+    | { change: 'removed'; addon: string; quantity: number }
+    | { change: 'quantity'; addon: string; from: number; to: number }
+  )[] = []
+
+  // Removals first (frees stock for a swap within this edit). A row whose
+  // catalog entry was since deleted (addon_id null) has no id the caller can
+  // list, so it is NOT "absent from desired" — it is left alone: it is booking
+  // history the editor shows read-only, never something an edit may drop.
   const desiredIds = new Set(desired.map((d) => d.addonId))
   for (const e of existing) {
-    if (e.addonId === null || !desiredIds.has(e.addonId)) {
+    if (e.addonId !== null && !desiredIds.has(e.addonId)) {
       await tx.delete(bookingAddons).where(eq(bookingAddons.id, e.id))
+      changes.push({ change: 'removed', addon: e.addonName, quantity: e.quantity })
     }
   }
 
@@ -536,6 +545,7 @@ export async function setSlotAddonsCore(
         .update(bookingAddons)
         .set({ quantity: req.quantity, lineTotal: lineTotal.toFixed(2) })
         .where(eq(bookingAddons.id, prior.id))
+      changes.push({ change: 'quantity', addon: prior.addonName, from: prior.quantity, to: req.quantity })
       continue
     }
 
@@ -559,6 +569,7 @@ export async function setSlotAddonsCore(
       lineTotal: lineTotal.toFixed(2),
       createdBy: ctx.membershipId,
     })
+    changes.push({ change: 'added', addon: valid.name, quantity: req.quantity })
   }
 
   const addonTotal = await sumBookingAddons(tx, ctx.tenantId, booking.id)
@@ -580,21 +591,18 @@ export async function setSlotAddonsCore(
       .where(and(eq(bookings.id, booking.id), eq(bookings.tenantId, ctx.tenantId)))
   }
 
-  await tx.insert(auditLog).values({
-    tenantId: ctx.tenantId,
-    actorMembershipId: ctx.membershipId,
-    action: 'booking.addons_changed',
-    entityType: 'booking',
-    entityId: booking.id,
-    before: {
-      addons: existing.map((e) => ({ name: e.addonName, quantity: e.quantity })),
-    },
-    after: {
-      slotId: slot.id,
-      addons: desired.map((d) => ({ addonId: d.addonId, quantity: d.quantity })),
-      addonTotal: addonTotal.toFixed(2),
-    },
-  })
+  // A correction tool, so it is audited (an edit that changed nothing is not).
+  if (changes.length > 0) {
+    await tx.insert(auditLog).values({
+      tenantId: ctx.tenantId,
+      actorMembershipId: ctx.membershipId,
+      action: 'booking.addon_edited',
+      entityType: 'booking',
+      entityId: booking.id,
+      before: { addons: existing.map((e) => ({ name: e.addonName, quantity: e.quantity })) },
+      after: { slotId: slot.id, changes, addonTotal: addonTotal.toFixed(2) },
+    })
+  }
 
   return { bookingId: booking.id, addonTotal }
 }
