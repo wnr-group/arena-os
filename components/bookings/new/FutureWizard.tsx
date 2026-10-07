@@ -6,6 +6,8 @@ import { CalendarDays, Check, Clock, Gamepad2, Layers, Loader2, Sparkles, Users 
 import { toast } from 'sonner'
 import { getAvailableStarts, getAvailableStartsForType, getDayRangeWindow } from '@/lib/actions/availability'
 import { createBooking, lookupCustomerByPhone, quoteBooking } from '@/lib/actions/bookings'
+import { AddonPicker, estimateAddonTotal, type AddonSelection } from '@/components/bookings/AddonPicker'
+import type { AvailableAddon } from '@/lib/booking/addons'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { addDays } from '@/lib/booking/time'
@@ -467,6 +469,13 @@ export function FutureWizard({
   // the two screens that show a REAL, about-to-be-booked total (the Slot-
   // step summary and Confirm).
   const [quote, setQuote] = useState<{ total: number } | null>(null)
+  // M33: optional rented add-ons for the booked unit (picked on Confirm). The
+  // estimate is display-only — createBookingCore re-prices and re-checks stock.
+  const [addonSel, setAddonSel] = useState<AddonSelection[]>([])
+  const [addonAvail, setAddonAvail] = useState<AvailableAddon[]>([])
+  const addonEstimate = quoteWindow
+    ? estimateAddonTotal(addonSel, addonAvail, quoteWindow.startsAt, quoteWindow.endsAt)
+    : 0
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
@@ -566,6 +575,7 @@ export function FutureWizard({
             startsAt: quoteWindow.startsAt,
             endsAt: quoteWindow.endsAt,
             setupId: setupId ?? undefined,
+            addons: addonSel.length > 0 ? addonSel : undefined,
           },
         ],
         headCount: takesPlayers ? headCount : undefined,
@@ -1081,6 +1091,21 @@ export function FutureWizard({
               </div>
             )}
 
+            {quoteWindow && (
+              <div className="mt-5">
+                <AddonPicker
+                  branchId={branchId}
+                  resourceId={quoteWindow.resourceId}
+                  startsAt={quoteWindow.startsAt}
+                  endsAt={quoteWindow.endsAt}
+                  currency={currency}
+                  value={addonSel}
+                  onChange={setAddonSel}
+                  onAvailable={setAddonAvail}
+                />
+              </div>
+            )}
+
             <div className="mt-5 rounded-lg border border-border bg-muted/40 p-4 text-sm">
               <dl className="space-y-1.5">
                 <SummaryRow k="Device" v={activeUnit?.name ?? selectedType?.name ?? '—'} />
@@ -1103,6 +1128,7 @@ export function FutureWizard({
                 <SummaryRow k="Customer" v={customerName.trim() || customerPhone} />
                 <SummaryRow k="Phone" v={customerPhone} />
                 {takesPlayers && !activeSetup && <SummaryRow k="Players" v={String(headCount)} />}
+                {addonSel.length > 0 && <SummaryRow k="Add-ons" v={formatMoney(addonEstimate, currency)} />}
                 {advanceTenders.length > 0 && (
                   <SummaryRow k="Collected now" v={formatMoney(sumAdvanceTenders(advanceTenders), currency)} />
                 )}
@@ -1113,7 +1139,7 @@ export function FutureWizard({
                     {quoteError ? (
                       <span className="text-sm font-medium text-destructive">{quoteError}</span>
                     ) : (
-                      formatMoney(quote?.total ?? (isDayRateSetup ? 0 : priceFor(duration)), currency)
+                      formatMoney((quote?.total ?? (isDayRateSetup ? 0 : priceFor(duration))) + addonEstimate, currency)
                     )}
                   </span>
                 </div>

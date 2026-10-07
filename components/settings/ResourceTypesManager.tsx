@@ -3,13 +3,14 @@
 import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage, CalendarDays, FileText, Wallet, Users, SlidersHorizontal, Palette } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Boxes, CheckCircle2, XCircle, Loader2, ImageOff, UploadCloud, FileImage, CalendarDays, FileText, Wallet, Users, SlidersHorizontal, Palette, PackagePlus } from 'lucide-react'
 import { upsertResourceType, deleteResourceType, uploadResourceTypeImage } from '@/lib/actions/resources'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { HolidayRatesModal, type HolidayRateRow } from './HolidayRatesModal'
+import { ResourceAddonsModal, type ResourceAddonRow } from './ResourceAddonsModal'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -61,6 +62,7 @@ type TaxRateRow = { id: string; name: string; percent: string; appliesTo: 'food'
 type Modal = { mode: 'add' } | { mode: 'edit'; row: TypeRow }
 type Run = (fn: () => Promise<{ error?: string }>, onSuccess?: () => void) => void
 type HolidayTarget = { resourceTypeId: string; resourceTypeName: string }
+type AddonTarget = { resourceTypeId: string; resourceTypeName: string }
 
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
@@ -106,6 +108,8 @@ export function ResourceTypesManager({
   autoTaxRate = null,
   industry,
   ratesByType,
+  branchId,
+  addonsByType,
 }: {
   currency: string
   types: TypeRow[]
@@ -121,6 +125,11 @@ export function ResourceTypesManager({
    *  type with none simply gets an empty editor ("no holiday rates yet"),
    *  not an error. */
   ratesByType: Record<string, HolidayRateRow[]>
+  /** M33 — the branch add-on stock is pooled at (the tenant's primary branch),
+   *  and every type's add-on catalog at it, keyed by resourceTypeId. Null when
+   *  the tenant has no branch yet, which hides the editor. */
+  branchId: string | null
+  addonsByType: Record<string, ResourceAddonRow[]>
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -128,6 +137,7 @@ export function ResourceTypesManager({
   const [modal, setModal] = useState<Modal | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [holidayTarget, setHolidayTarget] = useState<HolidayTarget | null>(null)
+  const [addonTarget, setAddonTarget] = useState<AddonTarget | null>(null)
   // A table isn't priced by the hour (see TypeModal), so there's nothing
   // meaningful to show in a Rate/Tax column for a restaurant tenant.
   const isRestaurant = industry === 'restaurant'
@@ -266,6 +276,18 @@ export function ResourceTypesManager({
                           <CalendarDays size={16} />
                         </button>
                       )}
+                      {/* M33: add-ons are offered for every industry's resource
+                       *  types — except a restaurant's tables, which have no
+                       *  booking_slots row to attach them to. */}
+                      {!isRestaurant && branchId && (
+                        <button
+                          className={btn}
+                          onClick={() => setAddonTarget({ resourceTypeId: row.id, resourceTypeName: row.name })}
+                          aria-label={`Add-ons for ${row.name}`}
+                        >
+                          <PackagePlus size={16} />
+                        </button>
+                      )}
                       <button className={btn} onClick={() => setModal({ mode: 'edit', row })} aria-label="Edit">
                         <Pencil size={16} />
                       </button>
@@ -310,6 +332,17 @@ export function ResourceTypesManager({
           currency={currency}
           rates={ratesByType[holidayTarget.resourceTypeId] ?? []}
           onClose={() => setHolidayTarget(null)}
+        />
+      )}
+
+      {addonTarget && branchId && (
+        <ResourceAddonsModal
+          resourceTypeId={addonTarget.resourceTypeId}
+          resourceTypeName={addonTarget.resourceTypeName}
+          branchId={branchId}
+          currency={currency}
+          addons={addonsByType[addonTarget.resourceTypeId] ?? []}
+          onClose={() => setAddonTarget(null)}
         />
       )}
     </div>

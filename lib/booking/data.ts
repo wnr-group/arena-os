@@ -6,6 +6,7 @@ import {
   resourceTypes,
   resources,
   resourceSetups,
+  resourceTypeAddons,
   holidayRates,
   workingHours,
   bookings,
@@ -107,6 +108,30 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
       .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
+  )
+}
+
+/**
+ * A branch's add-on catalog (M33) — every resource_type_addons row at that
+ * branch, active or not (the owner editor shows both). Grouped by
+ * resourceTypeId on the client for the per-type "Add-ons" editor.
+ */
+export function listResourceTypeAddons(ctx: ActiveContext, branchId: string) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: resourceTypeAddons.id,
+        resourceTypeId: resourceTypeAddons.resourceTypeId,
+        name: resourceTypeAddons.name,
+        rate: resourceTypeAddons.rate,
+        rateUnit: resourceTypeAddons.rateUnit,
+        stockQuantity: resourceTypeAddons.stockQuantity,
+        isActive: resourceTypeAddons.isActive,
+        sortOrder: resourceTypeAddons.sortOrder,
+      })
+      .from(resourceTypeAddons)
+      .where(and(eq(resourceTypeAddons.tenantId, ctx.tenant.id), eq(resourceTypeAddons.branchId, branchId)))
+      .orderBy(asc(resourceTypeAddons.sortOrder), asc(resourceTypeAddons.name)),
   )
 }
 

@@ -320,7 +320,8 @@ export function BillScreen({
   // the live preview until then. Never a re-price of an issued bill.
   const pricing = issuedPricing ?? preview
 
-  const bookingItems = pricing.items.filter((i) => i.kind === 'booking')
+  // M33: rented add-ons list with the booking's own charges.
+  const bookingItems = pricing.items.filter((i) => i.kind === 'booking' || i.kind === 'addon')
   const foodItems = pricing.items.filter((i) => i.kind === 'food')
   // Present only once a bill/split already exists — `lines` then came from the
   // frozen invoice_items, which include the service-charge line written at

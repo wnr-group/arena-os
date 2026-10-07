@@ -94,7 +94,7 @@ export function WalkinCheckoutDialog({
   // means no surcharge.
   const minPlayers = isBoard ? 1 : (booking.minPlayers ?? 1)
 
-  const [preview, setPreview] = useState<{ total: number; billableEnd: string } | null>(null)
+  const [preview, setPreview] = useState<{ total: number; addonTotal: number; billableEnd: string } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -123,7 +123,7 @@ export function WalkinCheckoutDialog({
         setPreview(null)
         return
       }
-      setPreview({ total: r.total, billableEnd: r.billableEnd })
+      setPreview({ total: r.total, addonTotal: r.addonTotal ?? 0, billableEnd: r.billableEnd })
     })
     return () => {
       cancelled = true
@@ -285,6 +285,11 @@ export function WalkinCheckoutDialog({
           ) : (
             <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">
               {preview ? formatMoney(preview.total, currency) : '—'}
+            </p>
+          )}
+          {preview && preview.addonTotal > 0 && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              Includes {formatMoney(preview.addonTotal, currency)} of rented add-ons.
             </p>
           )}
           <p className="mt-1 text-xs text-muted-foreground">

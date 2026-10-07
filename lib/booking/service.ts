@@ -22,11 +22,12 @@ import { getInvoiceSettlement, paise, POS_PAYMENT_METHODS, type PosPaymentMethod
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
+import { BookingError } from './booking-error'
+import { attachAddonsToSlots, normalizeAddonRequests, sumBookingAddons, type AddonRequest } from './addons'
 
 type Db = NodePgDatabase<typeof schema>
 
-/** Booking rule violations the caller is allowed to show verbatim. */
-export class BookingError extends Error {}
+export { BookingError }
 
 // Same fallback getDayRangeWindow/getPublicDayRangeWindow already use for a
 // branch with no working_hours row for a given day (lib/actions/availability.ts,
@@ -59,6 +60,10 @@ export type CreateBookingSlotInput = {
   /** M24 #2: an optional resource_setups row this slot books at, instead of
    *  the resource's own base rate — see priceBookingSlots' doc comment. */
   setupId?: string
+  /** M33: add-ons to rent with this slot (catalog rows of the resource's type
+   *  at this branch). Re-validated, stock-checked and snapshotted by
+   *  attachAddonsToSlots — never trusted at face value. */
+  addons?: AddonRequest[]
 }
 
 export type CreateBookingInput = {
@@ -782,13 +787,61 @@ export async function createBookingCore(
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
   // Insert slots — the exclusion constraint rejects any overlap atomically.
-  await tx.insert(bookingSlots).values(
-    slotRows.map((s) => ({
-      tenantId: ctx.tenantId,
-      bookingId: booking.id,
-      ...s,
-    })),
-  )
+  const insertedSlots = await tx
+    .insert(bookingSlots)
+    .values(
+      slotRows.map((s) => ({
+        tenantId: ctx.tenantId,
+        bookingId: booking.id,
+        ...s,
+      })),
+    )
+    .returning({ id: bookingSlots.id, resourceId: bookingSlots.resourceId, startsAt: bookingSlots.startsAt })
+
+  // M33: attach add-ons. A reserved/studio booking's one pricing pass is NOW,
+  // so each line's total is computed here and folded into the booking's
+  // subtotal/total. A booking with no add-ons skips all of this and is
+  // byte-identical to before.
+  if (input.slots.some((s) => s.addons && s.addons.length > 0)) {
+    const typeRows = await tx
+      .select({ id: resources.id, resourceTypeId: resources.resourceTypeId })
+      .from(resources)
+      .where(and(eq(resources.tenantId, ctx.tenantId), inArray(resources.id, [...new Set(input.slots.map((s) => s.resourceId))])))
+    const typeByResource = new Map(typeRows.map((r) => [r.id, r.resourceTypeId]))
+    // Input order is preserved by INSERT … RETURNING in practice, but match on
+    // (resource, start) rather than trusting row order for money-adjacent code.
+    const targets = input.slots.map((s, i) => {
+      const priced = slotRows[i]
+      const row = insertedSlots.find(
+        (r) => r.resourceId === priced.resourceId && r.startsAt.getTime() === priced.startsAt.getTime(),
+      )
+      if (!row) throw new BookingError('Could not attach add-ons to the booking.')
+      return {
+        slotId: row.id,
+        resourceTypeId: typeByResource.get(s.resourceId)!,
+        startsAt: priced.startsAt,
+        endsAt: priced.endsAt,
+        addons: normalizeAddonRequests(s.addons),
+      }
+    })
+    const addonTotal = await attachAddonsToSlots(
+      tx,
+      ctx,
+      { bookingId: booking.id, branchId: input.branchId },
+      targets,
+      { priceNow: true },
+    )
+    if (addonTotal > 0) {
+      const withAddons = subtotal + addonTotal
+      await tx
+        .update(bookings)
+        .set({
+          subtotal: withAddons.toFixed(2),
+          total: Math.max(0, withAddons - input.discount).toFixed(2),
+        })
+        .where(eq(bookings.id, booking.id))
+    }
+  }
 
   await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
 
@@ -1001,7 +1054,10 @@ export async function updateBookingHeadCountCore(
       }
     }
   }
-  newSubtotal = round2(newSubtotal)
+  // M33: add-on line totals don't depend on the player count, but they ARE
+  // part of the booking's subtotal — re-adding them keeps this recompute from
+  // silently dropping every add-on off the booking total.
+  newSubtotal = round2(newSubtotal + (await sumBookingAddons(tx, ctx.tenantId, booking.id)))
   const newTotal = Math.max(0, round2(newSubtotal - Number(booking.discount)))
   await tx
     .update(bookings)

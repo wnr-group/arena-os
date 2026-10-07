@@ -15,7 +15,7 @@ import { and, eq, inArray, ne } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { auditLog, bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
+import { auditLog, bookingAddons, bookings, bookingSlots, invoices, invoiceItems, orders, orderItems } from '@/db/schema'
 import { durationHours, daysInRange } from '@/lib/booking/availability'
 import { todayInZone } from '@/lib/booking/time'
 import { timeInZone } from '@/lib/format'
@@ -437,6 +437,53 @@ export async function loadOrderFoodLines(
 }
 
 /**
+ * The booking's rented add-ons (M33), as priceBill lines.
+ *
+ * Each booking_addons row bills as ONE computed charge (qty 1 at its frozen
+ * line_total) — the same "one computed figure" shape a walk-in session line
+ * uses — so a fractional-hour or day-block quantity can never drift a paisa
+ * from what was priced. Name/rate come from the row's own snapshot, never the
+ * live catalog. Taxed at the parent slot's snapshotted resource tax rate.
+ *
+ * Only lines on ACTIVE slots whose line_total > 0 are billed: an add-on on a
+ * walk-in that hasn't been checked out is still 0 (priced at checkout), and a
+ * zero-rate add-on has nothing to charge.
+ */
+export async function loadAddonLines(tx: Db, tenantId: string, bookingId: string): Promise<BillLine[]> {
+  const rows = await tx
+    .select({
+      id: bookingAddons.id,
+      name: bookingAddons.addonName,
+      rateUnit: bookingAddons.rateUnit,
+      rateApplied: bookingAddons.rateApplied,
+      quantity: bookingAddons.quantity,
+      lineTotal: bookingAddons.lineTotal,
+      taxPercent: bookingSlots.taxRatePercent,
+    })
+    .from(bookingAddons)
+    .innerJoin(bookingSlots, eq(bookingSlots.id, bookingAddons.bookingSlotId))
+    .where(
+      and(
+        eq(bookingAddons.tenantId, tenantId),
+        eq(bookingAddons.bookingId, bookingId),
+        eq(bookingSlots.active, true),
+      ),
+    )
+    .orderBy(bookingAddons.createdAt, bookingAddons.id)
+
+  return rows
+    .filter((r) => Number(r.lineTotal) > 0)
+    .map((r) => ({
+      description: `${r.name} × ${r.quantity} · ₹${Number(r.rateApplied).toFixed(2)}/${r.rateUnit === 'day' ? 'day' : 'hr'}`,
+      kind: 'addon' as const,
+      sourceId: r.id,
+      qty: 1,
+      unitPrice: Number(r.lineTotal),
+      taxPercent: Number(r.taxPercent),
+    }))
+}
+
+/**
  * Every billable line for a booking: its time charges plus any food &
  * beverage ordered against it. One booking, one bill — the rest of the
  * pipeline (priceBill, invoice_items, the bill screen's sections) already
@@ -454,8 +501,9 @@ export async function loadBillLines(
   // Sequential, not Promise.all: both share ONE transaction client, and a
   // Postgres connection cannot run two queries at once (see lib/billing/receipt.ts).
   const bookingLines = await loadBookingLines(tx, tenantId, bookingId, timeZone)
+  const addonLines = await loadAddonLines(tx, tenantId, bookingId)
   const foodLines = await loadFoodLines(tx, tenantId, bookingId, orderIds)
-  return [...bookingLines, ...foodLines]
+  return [...bookingLines, ...addonLines, ...foodLines]
 }
 
 /**

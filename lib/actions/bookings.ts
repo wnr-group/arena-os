@@ -63,6 +63,14 @@ function fail(e: unknown): Result {
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 
+// M33: add-ons rented with a slot / walk-in. createBookingCore / startWalkinCore
+// re-validate every id (active, same branch, same resource type), re-check
+// stock under a catalog lock and snapshot name/rate — this schema only shapes.
+const addonRequestsSchema = z
+  .array(z.object({ addonId: z.string().uuid(), quantity: z.coerce.number().int().min(1).max(99) }))
+  .max(50)
+  .optional()
+
 const advanceTendersSchema = z
   .array(z.object({ method: z.enum(POS_PAYMENT_METHODS), amount: z.coerce.number().positive() }))
   .default([])
@@ -94,6 +102,7 @@ const createInput = z.object({
         // re-validates it belongs to this resource/tenant and is active, same
         // as quoteBookingInput's setupId above.
         setupId: z.string().uuid().optional(),
+        addons: addonRequestsSchema,
       }),
     )
     .min(1, 'Add at least one resource slot'),
@@ -197,6 +206,9 @@ const startWalkinInput = z
     // M30 #2: advance tenders collected before this walk-in started —
     // gaming_cafe only. startWalkinCore re-validates them and the industry.
     advanceTenders: advanceTendersSchema,
+    // M33: add-ons rented with this session — stock-checked at start, priced
+    // at checkout.
+    addons: addonRequestsSchema,
   })
   .superRefine((v, ctx) => {
     if (v.mode !== 'timed') return
@@ -306,6 +318,8 @@ export async function previewWalkinCheckout(
 ): Promise<{
   error?: string
   total?: number
+  /** M33: the add-on share of `total` (already included in it). */
+  addonTotal?: number
   billableEnd?: string
   /** M21 per-head #4: the head count this preview priced at (echoes back
    *  input.headCount when provided, else whatever was captured at start),
