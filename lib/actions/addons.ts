@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { branches, resourceTypeAddons, resourceTypes, bookingSlots, resources } from '@/db/schema'
+import { branches, bookingAddons, resourceTypeAddons, resourceTypes, bookingSlots, resources } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { BookingError } from '@/lib/booking/booking-error'
 import { BillingError } from '@/lib/billing/invoice'
@@ -39,11 +39,11 @@ const addonInput = z.object({
   rate: z
     .preprocess(
       (v) => (v === '' || v === null || v === undefined ? null : v),
-      z.union([z.null(), z.coerce.number().min(0, 'Enter a rate of 0 or more.')]),
+      z.union([z.null(), z.coerce.number().gt(0, 'Enter a rate greater than 0.')]),
     )
     .refine((v): v is number => v !== null, { message: 'Rate is required.' }),
   rateUnit: z.enum(['hour', 'day']).default('hour'),
-  stockQuantity: z.coerce.number().int('Stock must be a whole number.').min(0, 'Stock can’t be negative.').max(100000),
+  stockQuantity: z.coerce.number().int('Stock must be a whole number.').min(1, 'Stock must be at least 1.').max(100000),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().default(0),
 })
@@ -105,17 +105,26 @@ export async function upsertResourceTypeAddon(input: z.input<typeof addonInput>)
   }
 }
 
-/** Delete a catalog entry. Booking history survives: booking_addons.addon_id
- *  is ON DELETE SET NULL and the row keeps its own name/rate snapshot. */
+/** Delete a catalog entry — only one no booking has ever used. Anything with
+ *  booking history must be deactivated instead (hidden going forward, history
+ *  and stock accounting intact), so the UI offers Deactivate for those. The FK
+ *  is ON DELETE SET NULL and would not block, which is why this is checked
+ *  here. */
 export async function deleteResourceTypeAddon(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
     const addonId = z.string().uuid().parse(id)
-    await withUser(ctx.user.id, (tx) =>
-      tx
+    await withUser(ctx.user.id, async (tx) => {
+      const [used] = await tx
+        .select({ id: bookingAddons.id })
+        .from(bookingAddons)
+        .where(and(eq(bookingAddons.addonId, addonId), eq(bookingAddons.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (used) throw new AuthError('This add-on has booking history — deactivate it instead of deleting.')
+      await tx
         .delete(resourceTypeAddons)
-        .where(and(eq(resourceTypeAddons.id, addonId), eq(resourceTypeAddons.tenantId, ctx.tenant.id))),
-    )
+        .where(and(eq(resourceTypeAddons.id, addonId), eq(resourceTypeAddons.tenantId, ctx.tenant.id)))
+    })
     revalidatePath('/settings/resources/types')
     revalidatePath('/bookings')
     return {}

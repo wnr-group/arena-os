@@ -4,7 +4,7 @@ import { isManager } from '@/lib/auth/roles'
 import { listResourceTypes, listHolidayRates, listResourceTypeAddons } from '@/lib/booking/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
-import { and, eq } from 'drizzle-orm'
+import { asc, desc, eq } from 'drizzle-orm'
 import { listTaxRates } from '@/lib/tax-rates/data'
 import { findScopeDefaultTaxRate } from '@/lib/tax-rates/resolve'
 import { getBusinessProfile } from '@/lib/settings/business'
@@ -19,14 +19,14 @@ export default async function ResourceTypesPage() {
   if (!ctx) return null
   if (!isManager(ctx.role)) redirect('/dashboard')
 
-  // M33: add-on stock is pooled per branch — the tenant's primary branch, same
-  // one the units page edits resources against.
-  const [branch] = await withUser(ctx.user.id, (tx) =>
+  // M33: add-on stock is pooled per branch, so the editor lets the owner pick
+  // which branch they're configuring (defaulting to the primary one).
+  const branchRows = await withUser(ctx.user.id, (tx) =>
     tx
-      .select({ id: branches.id })
+      .select({ id: branches.id, name: branches.name, isPrimary: branches.isPrimary })
       .from(branches)
-      .where(and(eq(branches.tenantId, ctx.tenant.id), eq(branches.isPrimary, true)))
-      .limit(1),
+      .where(eq(branches.tenantId, ctx.tenant.id))
+      .orderBy(desc(branches.isPrimary), asc(branches.name)),
   )
 
   const [types, taxRates, businessProfile, holidayRates, addons] = await Promise.all([
@@ -34,7 +34,7 @@ export default async function ResourceTypesPage() {
     listTaxRates(ctx),
     getBusinessProfile(ctx),
     listHolidayRates(ctx),
-    branch ? listResourceTypeAddons(ctx, branch.id) : Promise.resolve([]),
+    listResourceTypeAddons(ctx),
   ])
 
   const addonsByType: Record<string, ResourceAddonRow[]> = {}
@@ -42,6 +42,7 @@ export default async function ResourceTypesPage() {
     ;(addonsByType[a.resourceTypeId] ??= []).push({
       id: a.id,
       resourceTypeId: a.resourceTypeId,
+      branchId: a.branchId,
       name: a.name,
       rate: a.rate,
       // Narrowed from the column's plain text — the DB check constraint
@@ -111,7 +112,7 @@ export default async function ResourceTypesPage() {
           isActive: t.isActive,
         }))}
         ratesByType={ratesByType}
-        branchId={branch?.id ?? null}
+        branches={branchRows.map((b) => ({ id: b.id, name: b.name }))}
         addonsByType={addonsByType}
       />
     </div>

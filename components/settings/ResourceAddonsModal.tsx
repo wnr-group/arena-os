@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, X, Loader2, Info } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Loader2, Info, Power } from 'lucide-react'
 import { upsertResourceTypeAddon, deleteResourceTypeAddon } from '@/lib/actions/addons'
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
@@ -12,6 +12,7 @@ import { useConfirm } from '@/components/ui/ConfirmDialog'
 export type ResourceAddonRow = {
   id: string
   resourceTypeId: string
+  branchId: string
   name: string
   rate: string
   rateUnit: 'hour' | 'day'
@@ -53,14 +54,14 @@ const emptyDraft = (nextSortOrder: number): Draft => ({
 export function ResourceAddonsModal({
   resourceTypeId,
   resourceTypeName,
-  branchId,
+  branches,
   currency,
-  addons,
+  addons: allAddons,
   onClose,
 }: {
   resourceTypeId: string
   resourceTypeName: string
-  branchId: string
+  branches: { id: string; name: string }[]
   currency: string
   addons: ResourceAddonRow[]
   onClose: () => void
@@ -76,15 +77,19 @@ export function ResourceAddonsModal({
 
   useBodyScrollLock()
 
+  // Stock is pooled per branch, so the owner picks which branch's catalog
+  // they're editing (the first — primary — by default).
+  const [branchId, setBranchId] = useState(branches[0].id)
+  const addons = allAddons.filter((a) => a.branchId === branchId)
   const rows = [...addons].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
 
   const errors = (() => {
     const e: { name?: string; rate?: string; stock?: string } = {}
     if (!draft.name.trim()) e.name = 'Name is required.'
     if (draft.rate.trim() === '') e.rate = 'Rate is required.'
-    else if (Number.isNaN(Number(draft.rate)) || Number(draft.rate) < 0) e.rate = 'Enter a rate of 0 or more.'
+    else if (Number.isNaN(Number(draft.rate)) || Number(draft.rate) <= 0) e.rate = 'Enter a rate greater than 0.'
     if (draft.stockQuantity.trim() === '') e.stock = 'Stock is required.'
-    else if (!/^\d+$/.test(draft.stockQuantity.trim())) e.stock = 'Enter a whole number, 0 or more.'
+    else if (!/^\d+$/.test(draft.stockQuantity.trim()) || Number(draft.stockQuantity) < 1) e.stock = 'Enter a whole number, 1 or more.'
     return e
   })()
   const isValid = Object.keys(errors).length === 0
@@ -141,10 +146,31 @@ export function ResourceAddonsModal({
     })
   }
 
+  function toggleActive(row: ResourceAddonRow) {
+    start(async () => {
+      const r = await upsertResourceTypeAddon({
+        id: row.id,
+        resourceTypeId,
+        branchId: row.branchId,
+        name: row.name,
+        rate: Number(row.rate),
+        rateUnit: row.rateUnit,
+        stockQuantity: row.stockQuantity,
+        isActive: !row.isActive,
+        sortOrder: row.sortOrder,
+      })
+      if (r.error) toast.error(r.error)
+      else {
+        toast.success(`"${row.name}" ${row.isActive ? 'deactivated' : 'activated'}.`)
+        router.refresh()
+      }
+    })
+  }
+
   async function handleDelete(row: ResourceAddonRow) {
     await confirm({
       title: `Delete add-on "${row.name}"?`,
-      description: 'This cannot be undone. Past bookings keep their own frozen record of this add-on.',
+      description: 'This cannot be undone. An add-on that has been booked can’t be deleted — deactivate it instead.',
       confirmText: 'Delete',
       onConfirm: async () => {
         setDeletingId(row.id)
@@ -176,6 +202,27 @@ export function ResourceAddonsModal({
 
         <h2 className="text-xl font-semibold">Add-ons</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">{resourceTypeName}</p>
+
+        {branches.length > 1 && (
+          <div className="mt-3">
+            <label className={label}>Branch</label>
+            <select
+              className={input}
+              value={branchId}
+              onChange={(e) => {
+                setBranchId(e.target.value)
+                cancelForm()
+              }}
+            >
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">Stock is counted separately for each branch.</p>
+          </div>
+        )}
 
         <div className="mt-3 flex gap-2 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground">
           <Info size={16} className="mt-0.5 shrink-0" />
@@ -212,6 +259,7 @@ export function ResourceAddonsModal({
                 currency={currency}
                 pending={pending}
                 deleting={deletingId === row.id}
+                onToggle={() => toggleActive(row)}
                 onEdit={() => startEdit(row)}
                 onDelete={() => handleDelete(row)}
               />
@@ -259,6 +307,7 @@ function AddonRowView({
   currency,
   pending,
   deleting,
+  onToggle,
   onEdit,
   onDelete,
 }: {
@@ -266,6 +315,7 @@ function AddonRowView({
   currency: string
   pending: boolean
   deleting: boolean
+  onToggle: () => void
   onEdit: () => void
   onDelete: () => void
 }) {
@@ -285,6 +335,16 @@ function AddonRowView({
         </p>
       </div>
       <div className="flex shrink-0 gap-1">
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={pending}
+          onClick={onToggle}
+          aria-label={row.isActive ? `Deactivate ${row.name}` : `Activate ${row.name}`}
+          title={row.isActive ? 'Deactivate (hide from new bookings)' : 'Activate'}
+        >
+          <Power size={15} className={row.isActive ? 'text-emerald-600' : 'text-muted-foreground'} />
+        </button>
         <button
           type="button"
           className="rounded-md p-1.5 text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
@@ -351,7 +411,7 @@ function AddonRowForm({
               className={`${input} ${submitted && errors.rate ? inputInvalid : ''}`}
               placeholder="0.00"
               type="number"
-              min="0"
+              min="0.01"
               step="0.01"
               value={draft.rate}
               onChange={(e) => setDraft({ ...draft, rate: e.target.value })}
@@ -375,7 +435,7 @@ function AddonRowForm({
             className={`${input} ${submitted && errors.stock ? inputInvalid : ''}`}
             placeholder="Units owned"
             type="number"
-            min="0"
+            min="1"
             step="1"
             value={draft.stockQuantity}
             onChange={(e) => setDraft({ ...draft, stockQuantity: e.target.value })}

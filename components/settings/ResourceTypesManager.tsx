@@ -108,7 +108,7 @@ export function ResourceTypesManager({
   autoTaxRate = null,
   industry,
   ratesByType,
-  branchId,
+  branches,
   addonsByType,
 }: {
   currency: string
@@ -125,10 +125,9 @@ export function ResourceTypesManager({
    *  type with none simply gets an empty editor ("no holiday rates yet"),
    *  not an error. */
   ratesByType: Record<string, HolidayRateRow[]>
-  /** M33 — the branch add-on stock is pooled at (the tenant's primary branch),
-   *  and every type's add-on catalog at it, keyed by resourceTypeId. Null when
-   *  the tenant has no branch yet, which hides the editor. */
-  branchId: string | null
+  /** M33 — the tenant's branches (primary first); add-on stock is pooled per
+   *  branch. Empty hides the editor. addonsByType holds every branch's rows. */
+  branches: { id: string; name: string }[]
   addonsByType: Record<string, ResourceAddonRow[]>
 }) {
   const router = useRouter()
@@ -279,7 +278,7 @@ export function ResourceTypesManager({
                       {/* M33: add-ons are offered for every industry's resource
                        *  types — except a restaurant's tables, which have no
                        *  booking_slots row to attach them to. */}
-                      {!isRestaurant && branchId && (
+                      {!isRestaurant && branches.length > 0 && (
                         <button
                           className={btn}
                           onClick={() => setAddonTarget({ resourceTypeId: row.id, resourceTypeName: row.name })}
@@ -335,11 +334,11 @@ export function ResourceTypesManager({
         />
       )}
 
-      {addonTarget && branchId && (
+      {addonTarget && branches.length > 0 && (
         <ResourceAddonsModal
           resourceTypeId={addonTarget.resourceTypeId}
           resourceTypeName={addonTarget.resourceTypeName}
-          branchId={branchId}
+          branches={branches}
           currency={currency}
           addons={addonsByType[addonTarget.resourceTypeId] ?? []}
           onClose={() => setAddonTarget(null)}
