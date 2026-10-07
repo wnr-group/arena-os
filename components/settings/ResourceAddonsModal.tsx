@@ -87,7 +87,7 @@ export function ResourceAddonsModal({
     const e: { name?: string; rate?: string; stock?: string } = {}
     if (!draft.name.trim()) e.name = 'Name is required.'
     if (draft.rate.trim() === '') e.rate = 'Rate is required.'
-    else if (Number.isNaN(Number(draft.rate)) || Number(draft.rate) <= 0) e.rate = 'Enter a rate greater than 0.'
+    else if (Number.isNaN(Number(draft.rate)) || Number(draft.rate) < 0) e.rate = 'Rate cannot be negative.'
     if (draft.stockQuantity.trim() === '') e.stock = 'Stock is required.'
     else if (!/^\d+$/.test(draft.stockQuantity.trim()) || Number(draft.stockQuantity) < 1) e.stock = 'Enter a whole number, 1 or more.'
     return e

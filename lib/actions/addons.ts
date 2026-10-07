@@ -13,6 +13,8 @@ import {
   ADDON_MAX_QUANTITY,
   listAvailableAddons,
   listBookingAddons,
+  lockAddonCatalog,
+  peakReservedAddonUnits,
   setSlotAddonsCore,
   type AvailableAddon,
 } from '@/lib/booking/addons'
@@ -35,12 +37,12 @@ const addonInput = z.object({
   resourceTypeId: z.string().uuid(),
   branchId: z.string().uuid(),
   name: z.string().trim().min(1, 'Name is required.').max(80),
-  // Required and >= 0 — a blank must be REJECTED, not coerced to a free
+  // Required and >= 0 (free add-ons allowed) — a blank must be REJECTED, not coerced to a free
   // add-on (Number('') === 0); same discipline as resourceSetupInput.rate.
   rate: z
     .preprocess(
       (v) => (v === '' || v === null || v === undefined ? null : v),
-      z.union([z.null(), z.coerce.number().gt(0, 'Enter a rate greater than 0.')]),
+      z.union([z.null(), z.coerce.number().min(0, 'Rate cannot be negative.')]),
     )
     .refine((v): v is number => v !== null, { message: 'Rate is required.' }),
   rateUnit: z.enum(['hour', 'day']).default('hour'),
@@ -85,10 +87,24 @@ export async function upsertResourceTypeAddon(input: z.input<typeof addonInput>)
       if (v.id) {
         // Type/branch stay immutable on edit: moving a catalog row would
         // orphan the stock accounting of live bookings.
-        await tx
+        // Lock first so a concurrent attach can't slip in between the stock
+        // check and the update.
+        const locked = (await lockAddonCatalog(tx, ctx.tenant.id, [v.id])).get(v.id)
+        if (!locked) throw new AuthError('Add-on not found.')
+        if (v.stockQuantity < locked.stockQuantity) {
+          const peak = await peakReservedAddonUnits(tx, ctx.tenant.id, v.id)
+          if (v.stockQuantity < peak) {
+            throw new BookingError(
+              `${peak} unit${peak === 1 ? ' is' : 's are'} already reserved at once — stock can't go below ${peak}.`,
+            )
+          }
+        }
+        const updated = await tx
           .update(resourceTypeAddons)
           .set(editable)
           .where(and(eq(resourceTypeAddons.id, v.id), eq(resourceTypeAddons.tenantId, ctx.tenant.id)))
+          .returning({ id: resourceTypeAddons.id })
+        if (updated.length === 0) throw new AuthError('Add-on not found.')
       } else {
         await tx.insert(resourceTypeAddons).values({
           tenantId: ctx.tenant.id,

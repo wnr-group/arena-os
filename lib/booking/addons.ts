@@ -152,6 +152,39 @@ export async function reservedAddonUnits(
   return Number(rows.rows[0]?.reserved ?? 0)
 }
 
+/**
+ * Highest number of units of `addonId` held at once by any current or future
+ * reservation (non-cancelled, not yet ended). Used to refuse lowering stock
+ * below what is already committed. The peak of an interval set is always
+ * reached at some interval's start, so each start (clamped to now) is probed.
+ */
+export async function peakReservedAddonUnits(tx: Db, tenantId: string, addonId: string): Promise<number> {
+  const rows = await tx.execute<{ peak: string }>(sql`
+    with live as (
+      select ba.quantity, ba.starts_at, ba.ends_at
+        from booking_addons ba
+        join bookings b on b.id = ba.booking_id
+       where ba.tenant_id = ${tenantId}
+         and ba.addon_id = ${addonId}
+         and b.status not in (${sql.join(
+           STOCK_RELEASING_STATUSES.map((s) => sql`${s}`),
+           sql`, `,
+         )})
+         and (ba.ends_at is null or ba.ends_at > now())
+    ), probes as (
+      select greatest(starts_at, now()) as t from live
+    )
+    select coalesce(max(held), 0)::int as peak
+      from (
+        select p.t, sum(l.quantity) as held
+          from probes p
+          join live l on l.starts_at <= p.t and (l.ends_at is null or l.ends_at > p.t)
+         group by p.t
+      ) x
+  `)
+  return Number(rows.rows[0]?.peak ?? 0)
+}
+
 type CatalogRow = typeof resourceTypeAddons.$inferSelect
 
 /**
