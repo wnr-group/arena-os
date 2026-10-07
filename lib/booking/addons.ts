@@ -81,6 +81,42 @@ export function normalizeAddonRequests(requests: AddonRequest[] | undefined): Ad
   return [...merged.entries()].map(([addonId, quantity]) => ({ addonId, quantity }))
 }
 
+/*
+ * ════════════════════════════════════════════════════════════════════════════
+ *  STOCK CHECK — READ THIS BEFORE TOUCHING booking_addons
+ * ════════════════════════════════════════════════════════════════════════════
+ *  Nothing in Postgres enforces add-on stock. The booking_slots GiST exclusion
+ *  only forbids strictly overlapping ranges; it cannot express "the SUM of
+ *  quantities over overlapping ranges must stay <= stock_quantity". The only
+ *  thing standing between two concurrent bookings and an oversell is this
+ *  discipline, and it must be followed by EVERY writer:
+ *
+ *    1. lockAddonCatalog(...)   — SELECT … FOR UPDATE the catalog row(s) the
+ *                                 write touches, in ORDER BY id. The fixed
+ *                                 order is what prevents a cross-booking
+ *                                 deadlock (Tx1: Camera→Lens, Tx2: Lens→Camera)
+ *                                 no matter what order the caller listed them.
+ *    2. addonHeadroom(...)      — sum the overlapping booking_addons AFTER the
+ *                                 lock is held (so a racing transaction's
+ *                                 committed rows are visible), compare to
+ *                                 stock_quantity.
+ *    3. insert / update the booking_addons row in the SAME transaction.
+ *
+ *  Skip step 1 — or read headroom before taking the lock — and two bookings can
+ *  both see "1 left" and both insert. Live availability reads (the pickers) are
+ *  deliberately unlocked and advisory only; a commit path must never trust
+ *  them. Any new code that inserts into, or lengthens the window of,
+ *  booking_addons goes through attachAddonsToSlots / setSlotAddonsCore /
+ *  syncSlotAddonEnds, which already do all three.
+ *
+ *  Overlap test: [a,b) and [c,d) overlap iff a < d and c < b. A NULL ends_at
+ *  (an open-tab walk-in still running) is unbounded — same accepted tradeoff
+ *  the resource's own GiST constraint has for an open tab. Cancelled and
+ *  no-show bookings are excluded: a booking that never used its units must not
+ *  hold them.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+
 /**
  * Units of `addonId` already reserved over [startsAt, endsAt) at this branch,
  * across every non-cancelled booking. `endsAt` null = an open tab: an
@@ -118,8 +154,12 @@ export async function reservedAddonUnits(
 
 type CatalogRow = typeof resourceTypeAddons.$inferSelect
 
-/** Lock the referenced catalog rows FOR UPDATE in a fixed (id) order. */
-async function lockCatalog(tx: Db, tenantId: string, ids: string[]): Promise<Map<string, CatalogRow>> {
+/**
+ * Step 1 of the stock discipline (see the banner above): lock the referenced
+ * catalog rows FOR UPDATE in a fixed (id) order, independent of the order the
+ * caller asked for them in. Returns the locked rows keyed by id.
+ */
+export async function lockAddonCatalog(tx: Db, tenantId: string, ids: string[]): Promise<Map<string, CatalogRow>> {
   if (ids.length === 0) return new Map()
   const rows = await tx
     .select()
@@ -137,7 +177,26 @@ function assertAttachable(row: CatalogRow | undefined, slot: AddonSlotTarget, br
   return row
 }
 
-async function assertStock(
+/**
+ * Step 2 of the stock discipline: units still free (stock minus the overlapping
+ * reservations) for a catalog row over the window. Only meaningful for a commit
+ * decision when `row` came from lockAddonCatalog in this same transaction.
+ * May be negative if the owner has since lowered stock below what is booked.
+ */
+export async function addonHeadroom(
+  tx: Db,
+  tenantId: string,
+  row: CatalogRow,
+  startsAt: Date,
+  endsAt: Date | null,
+  excludeBookingSlotId?: string,
+): Promise<number> {
+  const reserved = await reservedAddonUnits(tx, tenantId, row.id, startsAt, endsAt, excludeBookingSlotId)
+  return row.stockQuantity - reserved
+}
+
+/** Refuse (BookingError) if `wanted` units don't fit — call after locking. */
+export async function assertStock(
   tx: Db,
   tenantId: string,
   row: CatalogRow,
@@ -146,8 +205,7 @@ async function assertStock(
   endsAt: Date | null,
   excludeBookingSlotId?: string,
 ): Promise<void> {
-  const reserved = await reservedAddonUnits(tx, tenantId, row.id, startsAt, endsAt, excludeBookingSlotId)
-  const free = row.stockQuantity - reserved
+  const free = await addonHeadroom(tx, tenantId, row, startsAt, endsAt, excludeBookingSlotId)
   if (wanted > free) {
     throw new BookingError(
       free <= 0
@@ -181,7 +239,7 @@ export async function attachAddonsToSlots(
   const ids = [...new Set(normalized.flatMap((s) => s.addons.map((a) => a.addonId)))]
   if (ids.length === 0) return 0
 
-  const catalog = await lockCatalog(tx, ctx.tenantId, ids)
+  const catalog = await lockAddonCatalog(tx, ctx.tenantId, ids)
 
   let total = 0
   for (const slot of normalized) {
@@ -252,7 +310,7 @@ export async function syncSlotAddonEnds(
 
   if (opts.checkStock) {
     const ids = [...new Set(rows.map((r) => r.addonId).filter((id): id is string => id !== null))]
-    const catalog = await lockCatalog(tx, tenantId, ids)
+    const catalog = await lockAddonCatalog(tx, tenantId, ids)
     for (const r of rows) {
       const row = r.addonId ? catalog.get(r.addonId) : undefined
       if (!row) continue
@@ -446,7 +504,7 @@ export async function setSlotAddonsCore(
       : slot.endsAt !== null
   const pricingEnd = slot.endsAt
 
-  const catalog = await lockCatalog(tx, ctx.tenantId, desired.map((d) => d.addonId))
+  const catalog = await lockAddonCatalog(tx, ctx.tenantId, desired.map((d) => d.addonId))
 
   // Removals first (frees stock for a swap within this edit); rows whose
   // catalog entry was deleted (addon_id null) can still be removed by id via
