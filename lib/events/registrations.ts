@@ -20,7 +20,7 @@ import {
  * ── Where the safety actually lives ─────────────────────────────────────────
  *
  * Not here. The capacity rule, the duplicate rule, the FIFO waitlist and the
- * authorisation are all inside migration 0111's functions, which hold
+ * authorisation are all inside migration 0113's functions, which hold
  * `select … from events … for update` while they decide. This module's job is
  * to open the right RLS-scoped transaction, call one of them, and turn a
  * refusal code into something a caller can act on.
@@ -288,7 +288,7 @@ export function listMyEventRegistrations(customerId: string): Promise<MyEventReg
         entryFee: events.entryFee,
       })
       .from(eventRegistrations)
-      // The customer can read `events` (events_customer_select, 0111) and their
+      // The customer can read `events` (events_customer_select, 0113) and their
       // own registration rows, and nothing else on either table.
       .innerJoin(events, eq(events.id, eventRegistrations.eventId))
       .leftJoin(branches, eq(branches.id, events.branchId))
@@ -319,7 +319,7 @@ export type EventEntrant = {
  * The entrants for one event.
  *
  * Runs through withUser() on the restricted connection, so the
- * event_registrations_select policy (0111) is what confines it to the caller's
+ * event_registrations_select policy (0113) is what confines it to the caller's
  * tenant; the explicit tenant predicate is the same belt-and-braces the other
  * event readers use. Waitlisted entries are numbered in FIFO order — the same
  * (created_at, id) ordering promote_event_waitlist() promotes by, so the number
@@ -385,7 +385,7 @@ export async function getEventEntrantCounts(ctx: ActiveContext): Promise<Map<str
           // stale pending_payment rows indefinitely. Counting those made this
           // manager column disagree with both authorities that DO check the
           // expiry (event_registration_occupancy() and
-          // public_event_taken_counts(), migration 0111), so "X / N entered"
+          // public_event_taken_counts(), migration 0113), so "X / N entered"
           // could exceed capacity while the public page still offered places.
           //
           // now() is the DATABASE clock, matching those two functions exactly —
@@ -460,7 +460,7 @@ export const ACTIVE_REGISTRATION_STATUSES: readonly EventRegistrationStatus[] = 
  *
  * ── The refund rule is copied from cancel_event_registration(), not invented ─
  *
- * `refund_required = paid_amount > 0` is exactly what 0111's per-entrant
+ * `refund_required = paid_amount > 0` is exactly what 0113's per-entrant
  * cancellation does. Money received means money owed back; a free event owes
  * nothing and is left unflagged, so the operator's refund list stays a list of
  * actual refunds.

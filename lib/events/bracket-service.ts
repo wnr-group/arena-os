@@ -644,7 +644,7 @@ export async function getEventBracket(
     //
     // Two queries CAN disagree. `seeded` comes from participantNames(), which
     // filters `r.event_id = eventId`, while nothing at the schema level pinned
-    // a match's participant to a registration of the same event until 0122 —
+    // a match's participant to a registration of the same event until 0124 —
     // event_matches_a_fk carried (tenant_id, participant_a) only. So the
     // append below is what a drawn-but-unnamed id degrades to: an 'Entrant'
     // row that ranks, rather than a competitor deleted from the table.
@@ -725,7 +725,7 @@ async function participantNames(
        -- reader fetched and sorted EVERY registration on the event —
        -- cancelled, waitlisted, unpaid — to label a few dozen, and it
        -- answered "who is a participant" with different SQL from
-       -- public_event_participants() (0119/0121), which is the asymmetry
+       -- public_event_participants() (0121/0123), which is the asymmetry
        -- that let the two readers' seed order diverge in the first place.
        and exists (
          select 1 from public.event_matches m
