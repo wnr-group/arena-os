@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0101 public_event_participants: hand back the SEED, not just the
+-- Arena OS — 0121 public_event_participants: hand back the SEED, not just the
 -- name, so the public standings tiebreak can honour the documented rule.
 --
 -- ── The bug this fixes ──────────────────────────────────────────────────────
@@ -7,7 +7,7 @@
 -- computeStandings() (lib/events/bracket.ts) takes a seedOrder and uses it as
 -- the final total-order tiebreak, documented as "an unbroken tie resolves to
 -- whoever checked in first". The public live page (lib/events/public-live.ts)
--- had no way to honour that: 0099 deliberately keeps the public path off
+-- had no way to honour that: 0119 deliberately keeps the public path off
 -- event_registrations entirely — that table holds payment references and
 -- check-in tokens — so it reconstructed an order by walking the match rows.
 --
@@ -43,7 +43,7 @@
 -- somebody was third to arrive is not knowing when they arrived. The draw
 -- already reveals seeding anyway — a bracket pairs seed 1 with the last seed
 -- in plain sight — so this adds no fact a spectator could not already read off
--- the page. Every other guard from 0099 is carried over unchanged: the tenant
+-- the page. Every other guard from 0119 is carried over unchanged: the tenant
 -- pin, the draft/cancelled exclusion, and the `exists` that limits rows to
 -- registrations actually drawn into the bracket.
 --
@@ -54,7 +54,7 @@
 -- by definition — but is stated so the intent survives a future edit.
 --
 -- DROP then CREATE, not CREATE OR REPLACE: the result type gains a column, and
--- replace cannot change a function's result type. The grants 0099 set are
+-- replace cannot change a function's result type. The grants 0119 set are
 -- dropped with it, so they are restated below.
 -- ============================================================================
 
@@ -88,4 +88,4 @@ revoke all on function public.public_event_participants(uuid) from public;
 grant execute on function public.public_event_participants(uuid) to arena_app;
 
 comment on function public.public_event_participants(uuid) is
-  'Display names and seed positions for the participants drawn into one public event''s bracket (M15 #7). SECURITY DEFINER so the public path never touches event_registrations, which holds payment references and check-in tokens. Returns only (registration_id, display_name, seed), only for registrations that appear in event_matches, and only for an event of the tenant pinned by withPublicTenant(). `seed` is the 1-based arrival position — checked_in_at ascending, ties on registration id — matching seedParticipants() in lib/events/bracket.ts, so the public standings tiebreak can resolve a tie the way the documented rule says it does (0101).';
+  'Display names and seed positions for the participants drawn into one public event''s bracket (M15 #7). SECURITY DEFINER so the public path never touches event_registrations, which holds payment references and check-in tokens. Returns only (registration_id, display_name, seed), only for registrations that appear in event_matches, and only for an event of the tenant pinned by withPublicTenant(). `seed` is the 1-based arrival position — checked_in_at ascending, ties on registration id — matching seedParticipants() in lib/events/bracket.ts, so the public standings tiebreak can resolve a tie the way the documented rule says it does (0121).';
