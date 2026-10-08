@@ -413,25 +413,39 @@ function EventModal({
     selectedInBranch,
   ])
 
+  // Empty required fields are flagged by the * on their labels, not by an error
+  // line on a form the manager has only just opened.
+  const missingRequired = !branchId || !title.trim() || !startsAt || !endsAt
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
-      <div className="mt-8 w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-xl">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{modal.mode === 'add' ? 'New Event' : 'Edit Event'}</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm sm:p-6">
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4 sm:px-6">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">{modal.mode === 'add' ? 'New Event' : 'Edit Event'}</h2>
+            <p className="text-sm text-muted-foreground">
+              {modal.mode === 'add' ? 'Set up a tournament, class or get-together.' : 'Update the details of this event.'}
+            </p>
+          </div>
           <button type="button" aria-label="Close" className="rounded-lg p-1.5 hover:bg-muted" onClick={onClose}>
             <X size={18} />
           </button>
         </div>
 
-        <div className="mt-4 space-y-4">
+        <div className="grid flex-1 gap-x-8 gap-y-4 overflow-y-auto px-5 py-5 sm:px-6 md:grid-cols-2">
+         <div className="space-y-4">
           <div>
-            <label className={label} htmlFor="ev-title">Title</label>
+            <label className={label} htmlFor="ev-title">Title<span className="text-destructive"> *</span></label>
             <input id="ev-title" className={input} value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className={label} htmlFor="ev-type">Type</label>
+              <label className={label} htmlFor="ev-type">Type<span className="text-destructive"> *</span></label>
               <select
                 id="ev-type"
                 className={input}
@@ -451,7 +465,7 @@ function EventModal({
               </select>
             </div>
             <div>
-              <label className={label} htmlFor="ev-branch">Venue</label>
+              <label className={label} htmlFor="ev-branch">Venue<span className="text-destructive"> *</span></label>
               <select id="ev-branch" className={input} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
                 {branches.map((b) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
@@ -478,11 +492,11 @@ function EventModal({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className={label} htmlFor="ev-start">Starts</label>
+              <label className={label} htmlFor="ev-start">Starts<span className="text-destructive"> *</span></label>
               <input id="ev-start" type="datetime-local" className={input} value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
             </div>
             <div>
-              <label className={label} htmlFor="ev-end">Ends</label>
+              <label className={label} htmlFor="ev-end">Ends<span className="text-destructive"> *</span></label>
               <input id="ev-end" type="datetime-local" className={input} value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
             </div>
           </div>
@@ -535,9 +549,11 @@ function EventModal({
             </div>
           </div>
 
+         </div>
+         <div className="space-y-4">
           <div>
             <label className={label} htmlFor="ev-desc">Description</label>
-            <textarea id="ev-desc" rows={3} className={input} value={description} onChange={(e) => setDescription(e.target.value)} />
+            <textarea id="ev-desc" rows={4} className={input} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
 
           <ImageUploadField label="Banner" value={bannerUrl} onChange={setBannerUrl} upload={uploadEventBanner} />
@@ -550,7 +566,7 @@ function EventModal({
               their ids never reach the screen. */}
           <div>
             <span className={label}>Reserves</span>
-            <div className="mt-1 space-y-1.5">
+            <div className="mt-1.5 space-y-1.5">
               {(
                 [
                   ['none', 'Nothing — the event does not hold any stations'],
@@ -558,7 +574,12 @@ function EventModal({
                   ['specific', 'Selected stations only'],
                 ] as const
               ).map(([value, text]) => (
-                <label key={value} className="flex items-start gap-2 text-sm">
+                <label
+                  key={value}
+                  className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm transition ${
+                    resourceScope === value ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+                  }`}
+                >
                   <input
                     type="radio"
                     name="ev-scope"
@@ -607,10 +628,12 @@ function EventModal({
             )}
           </div>
 
-          {clientError && <p className="text-sm text-destructive">{clientError}</p>}
+         </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="flex items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-3 sm:px-6">
+          <p className="min-w-0 flex-1 text-sm text-destructive">{missingRequired ? null : clientError}</p>
+          <div className="flex shrink-0 gap-2">
           <button type="button" className={`${btn} border border-border hover:bg-muted`} onClick={onClose}>
             Cancel
           </button>
@@ -644,6 +667,7 @@ function EventModal({
           >
             {pending ? <Loader2 size={16} className="animate-spin" /> : modal.mode === 'add' ? 'Create' : 'Save'}
           </button>
+          </div>
         </div>
       </div>
     </div>
