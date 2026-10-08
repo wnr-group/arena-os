@@ -42,7 +42,7 @@ import type { EventStatus, EventType, TournamentFormat as EventFormat } from './
  * `payment_reference`, `payment_hold_expires_at`, `refund_required`,
  * `check_in_token`, audit rows, or the next-match POINTERS (internal topology a
  * spectator has no use for). `event_registrations` is not readable on the
- * public path at all — see migration 0119.
+ * public path at all — see migration 0121.
  *
  * Registration ids DO appear, because a bracket has to say that the winner of
  * match 1 is the same competitor as the player in match 5. They are opaque
@@ -50,7 +50,7 @@ import type { EventStatus, EventType, TournamentFormat as EventFormat } from './
  * mutation requires a manager session.
  */
 
-/** Statuses a spectator may reach. The outer bound migration 0119 enforces. */
+/** Statuses a spectator may reach. The outer bound migration 0121 enforces. */
 export const PUBLIC_LIVE_STATUSES = [
   'published',
   'registration_open',
@@ -240,7 +240,7 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
     // ── standings, via the SHARED pure function ────────────────────────────
     let standings: PublicStanding[] = []
     if (format === 'round_robin' || format === 'points') {
-      // ORDER comes from the projection's own `seed` column (0121), which is
+      // ORDER comes from the projection's own `seed` column (0123), which is
       // arrival order — checked_in_at, ties on registration id — the same rule
       // seedParticipants() applied when the draw was built. That is what makes
       // the public tiebreak identical to the staff one AND to the rule

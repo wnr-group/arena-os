@@ -7,7 +7,7 @@
  * (305 assertions). This suite covers the half that needs one: writing a draw,
  * following the advancement pointers, the transaction boundaries, and RLS.
  *
- * Everything real: migration 0118, the constraints, the policies, the actual
+ * Everything real: migration 0120, the constraints, the policies, the actual
  * generateEventBracket / recordMatchResult / resetEventBracket, and the actual
  * check-in path that produces the participants. Nothing is stubbed.
  */
@@ -332,9 +332,9 @@ async function main() {
     ).rows.map((r) => r.id)
     check('no invented participant exists', [...ids].every((i) => real.includes(i as string)))
 
-    // …and it is the SCHEMA that says so, not merely this code path (0122).
+    // …and it is the SCHEMA that says so, not merely this code path (0124).
     //
-    // Until 0122 the participant FKs carried (tenant_id, participant_x) only:
+    // Until 0124 the participant FKs carried (tenant_id, participant_x) only:
     // real registration, right tenant, ANY event. A match of one event could
     // therefore name an entrant of another, which both bracket readers resolve
     // names and seeding for with a query filtered to THIS event — so the
