@@ -492,6 +492,82 @@ export const bookingSlots = pgTable(
   ],
 )
 
+// M33 #1 (0108): owner-defined priced add-on catalog per resource type
+// (camera, lens, extra equipment…). Catalog is per type but STOCK is pooled
+// per BRANCH — resourceTypes has no branch column, so the row carries its own
+// explicit branchId. Flat rate only: 'hour' or 'day'.
+export const resourceTypeAddons = pgTable(
+  'resource_type_addons',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    resourceTypeId: uuid('resource_type_id')
+      .notNull()
+      .references(() => resourceTypes.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    rateUnit: text('rate_unit').$type<'hour' | 'day'>().notNull().default('hour'),
+    rate: numeric('rate', { precision: 10, scale: 2 }).notNull(),
+    stockQuantity: integer('stock_quantity').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('resource_type_addons_resource_type_id_branch_id_name_key').on(
+      t.resourceTypeId,
+      t.branchId,
+      t.name,
+    ),
+    index('idx_resource_type_addons_tenant').on(t.tenantId),
+    index('idx_resource_type_addons_type_branch').on(t.resourceTypeId, t.branchId),
+  ],
+)
+
+// M33 #1 (0108): an add-on attached to a booking slot — both the stock
+// reservation and the billing line item. addonName/rateUnit/rateApplied are
+// snapshots frozen at attach time. addonId is ON DELETE SET NULL (mirrors
+// bookingSlots.setupId): deleting a catalog entry never deletes history.
+// endsAt mirrors bookingSlots.endsAt and is kept in lockstep by the app.
+export const bookingAddons = pgTable(
+  'booking_addons',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    bookingId: uuid('booking_id')
+      .notNull()
+      .references(() => bookings.id, { onDelete: 'cascade' }),
+    bookingSlotId: uuid('booking_slot_id')
+      .notNull()
+      .references(() => bookingSlots.id, { onDelete: 'cascade' }),
+    addonId: uuid('addon_id').references(() => resourceTypeAddons.id, { onDelete: 'set null' }),
+    addonName: text('addon_name').notNull(),
+    rateUnit: text('rate_unit').$type<'hour' | 'day'>().notNull(),
+    rateApplied: numeric('rate_applied', { precision: 10, scale: 2 }).notNull(),
+    quantity: integer('quantity').notNull(),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+    // Null for an open-tab walk-in until checkout, same as bookingSlots.endsAt.
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    lineTotal: numeric('line_total', { precision: 10, scale: 2 }).notNull().default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    index('idx_booking_addons_booking').on(t.bookingId),
+    index('idx_booking_addons_slot').on(t.bookingSlotId),
+    index('idx_booking_addons_addon_time').on(t.addonId, t.startsAt),
+  ],
+)
+
 // ── employee management (migration 0006) ────────────────────────────────────
 export const attendance = pgTable(
   'attendance',
@@ -1829,7 +1905,7 @@ export const invoiceItems = pgTable(
     // own add-on, kept distinct from 'adjustment' so reporting can separate
     // "what did we sell" from "what did we add on top".
     kind: text('kind')
-      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge'>()
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon'>()
       .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),

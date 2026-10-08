@@ -48,6 +48,16 @@ import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { billableEndTime, priceElapsedTime } from '@/lib/billing/elapsed-time'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { findLiveBilling } from '@/lib/billing/invoice'
+import { round2 } from '@/lib/billing/pricing'
+import {
+  attachAddonsToSlots,
+  normalizeAddonRequests,
+  previewWalkinAddons,
+  priceWalkinAddons,
+  syncSlotAddonEnds,
+  unpriceWalkinAddons,
+  type AddonRequest,
+} from './addons'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
 
@@ -411,6 +421,9 @@ export type StartWalkinInput = {
    *  gaming_cafe only (re-validated by validateAdvanceTenders, never trusted
    *  from the caller). Absent or empty is a no-op. */
   advanceTenders?: AdvanceTenderInput[]
+  /** M33: add-ons rented with this session (catalog rows of the station's
+   *  type at this branch). Stock-checked now; priced at checkout. */
+  addons?: AddonRequest[]
 }
 
 /**
@@ -690,7 +703,7 @@ export async function startWalkinCore(
   // the station turns out to genuinely overlap an existing active slot —
   // lib/actions/bookings.ts's fail() already translates that into a friendly
   // message, same as every other booking-creation path.
-  await tx.insert(bookingSlots).values({
+  const [insertedSlot] = await tx.insert(bookingSlots).values({
     tenantId: ctx.tenantId,
     bookingId: booking.id,
     resourceId: resource.id,
@@ -712,7 +725,21 @@ export async function startWalkinCore(
     // M24 #7: snapshot, same discipline as a reserved setup slot.
     setupId: setup?.id ?? null,
     setupName: setup?.name ?? null,
-  })
+  }).returning({ id: bookingSlots.id })
+
+  // M33: reserve add-on stock now (a timed session holds [start, committed
+  // end); an open tab holds an unbounded window until checkout stamps its
+  // end). line_total stays 0 — a walk-in is priced once, at checkout.
+  const addonRequests = normalizeAddonRequests(input.addons)
+  if (addonRequests.length > 0) {
+    await attachAddonsToSlots(
+      tx,
+      ctx,
+      { bookingId: booking.id, branchId: input.branchId },
+      [{ slotId: insertedSlot.id, resourceTypeId: resource.resourceTypeId, startsAt: startAt, endsAt, addons: addonRequests }],
+      { priceNow: false },
+    )
+  }
 
   await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
 
@@ -1028,7 +1055,7 @@ export async function previewWalkinCheckout(
   tx: Db,
   ctx: { tenantId: string; timezone: string },
   input: CheckoutWalkinInput,
-): Promise<{ total: number; billableEnd: string; headCount: number; minPlayers: number; pricingMode: string }> {
+): Promise<{ total: number; addonTotal: number; billableEnd: string; headCount: number; minPlayers: number; pricingMode: string }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, false)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
   const headCount = resolveHeadCount(walkin, input.headCount)
@@ -1037,8 +1064,10 @@ export async function previewWalkinCheckout(
   const rules = walkin.holidayRateApplied || walkin.isSetup ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
   const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
+  const addonTotal = await previewWalkinAddons(tx, ctx.tenantId, walkin.slotId, walkin.startsAt, priceEnd)
   return {
-    total: priced.unitPrice,
+    total: round2(priced.unitPrice + addonTotal),
+    addonTotal,
     billableEnd: billableEndTime(walkin.startsAt, priceEnd).toISOString(),
     headCount,
     minPlayers: walkin.minPlayers,
@@ -1115,6 +1144,11 @@ export async function checkoutWalkinCore(
       .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
+  // M33: the walk-in's single pricing pass is NOW — price its add-on lines
+  // over the same [start, priceEnd) window the room used, and stamp their
+  // ends_at in lockstep with the slot's. No-op without add-ons.
+  const addonTotal = await priceWalkinAddons(tx, ctx.tenantId, walkin.slotId, walkin.startsAt, priceEnd)
+  const checkoutTotal = round2(priced.unitPrice + addonTotal)
   // The booking's own subtotal/total are stamped here too — a walk-in is born
   // with both at 0 (nothing is priced until now), and every screen that reads
   // bookings.total (the booking detail, reports) would keep showing 0.00 for
@@ -1122,8 +1156,8 @@ export async function checkoutWalkinCore(
   await tx
     .update(bookings)
     .set({
-      subtotal: priced.unitPrice.toFixed(2),
-      total: priced.unitPrice.toFixed(2),
+      subtotal: checkoutTotal.toFixed(2),
+      total: checkoutTotal.toFixed(2),
       ...(persistsHeadCount ? { headCount } : {}),
     })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
@@ -1149,7 +1183,7 @@ export async function checkoutWalkinCore(
     }
   }
 
-  return { bookingId: walkin.bookingId, total: priced.unitPrice }
+  return { bookingId: walkin.bookingId, total: checkoutTotal }
 }
 
 /**
@@ -1192,6 +1226,7 @@ export async function extendWalkinCore(
     .set({ committedEndAt: newEnd })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
   await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
+  await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, newEnd, { checkStock: true })
 
   return { bookingId: walkin.bookingId, committedEndAt: newEnd.toISOString() }
 }
@@ -1253,6 +1288,7 @@ export async function correctWalkinEndTimeCore(
     .set({ committedEndAt: newEnd })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
   await tx.update(bookingSlots).set({ endsAt: newEnd }).where(eq(bookingSlots.id, walkin.slotId))
+  await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, newEnd, { checkStock: true })
 
   await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
     action: 'walkin.end_time_corrected',
@@ -1330,9 +1366,13 @@ export async function reopenWalkinCore(
 
   if (walkin.billingMode === 'open_tab') {
     await tx.update(bookingSlots).set({ endsAt: null, slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
+    // The tab is open-ended again: its add-ons hold stock unboundedly, so
+    // re-check that nothing else took those units in the meantime.
+    await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, null, { checkStock: true })
   } else {
     await tx.update(bookingSlots).set({ slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
   }
+  await unpriceWalkinAddons(tx, ctx.tenantId, walkin.slotId)
   await tx
     .update(bookings)
     .set({ subtotal: '0.00', total: '0.00' })

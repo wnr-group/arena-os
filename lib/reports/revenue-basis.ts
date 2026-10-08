@@ -123,11 +123,13 @@ export const lineOwed: SQL = sql`((ii.line_total - case when ii.kind = 'service_
  *
  * `topup_lines` is carried so the caller can drop deposit invoices entirely;
  * stored value is never revenue. `adjustment` is folded into food (see the
- * header): it is a split bill's pooled-share line, which is food.
+ * header): it is a split bill's pooled-share line, which is food. An
+ * `addon` (M33, a rented extra on a booking) is resource revenue, so it counts
+ * toward the booking share.
  */
 const invoiceKindShares: SQL = sql`
   select ii.invoice_id,
-         coalesce(sum(owed) filter (where kind = 'booking'), 0)               as booking_lines,
+         coalesce(sum(owed) filter (where kind in ('booking','addon')), 0)    as booking_lines,
          coalesce(sum(owed) filter (where kind in ('food','adjustment')), 0)  as food_lines,
          coalesce(sum(owed) filter (where kind = 'membership'), 0)            as membership_lines,
          coalesce(sum(owed) filter (where kind = 'service_charge'), 0)        as service_charge_lines,

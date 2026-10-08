@@ -81,6 +81,7 @@ const INVOICE_STATE_LABEL: Record<string, string> = {
 const KIND_LABEL: Record<string, string> = {
   booking: 'Booking',
   food: 'Food',
+  addon: 'Add-on',
   membership: 'Membership',
   adjustment: 'Adjustment',
   wallet_topup: 'Wallet top-up',
@@ -320,7 +321,9 @@ export function BillScreen({
   // the live preview until then. Never a re-price of an issued bill.
   const pricing = issuedPricing ?? preview
 
+  // M33: rented add-ons get their own section, distinct from room/board charges.
   const bookingItems = pricing.items.filter((i) => i.kind === 'booking')
+  const addonItems = pricing.items.filter((i) => i.kind === 'addon')
   const foodItems = pricing.items.filter((i) => i.kind === 'food')
   // Present only once a bill/split already exists — `lines` then came from the
   // frozen invoice_items, which include the service-charge line written at
@@ -360,7 +363,7 @@ export function BillScreen({
   const itemsForSplit = useMemo(
     () =>
       pricing.items
-        .filter((i) => i.kind === 'food' && i.sourceId)
+        .filter((i) => (i.kind === 'food' || i.kind === 'addon') && i.sourceId)
         .map((i) => ({
           sourceId: i.sourceId as string,
           description: i.description,
@@ -562,6 +565,7 @@ export function BillScreen({
         <div className="mt-6 space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
           {booking.playerCharges && <PlayerCharges charges={booking.playerCharges} money={money} />}
+          {addonItems.length > 0 && <LineTable title="Add-ons" items={addonItems} money={money} />}
           {foodItems.length > 0 && <LineTable title="Food & beverage" items={foodItems} money={money} />}
           {serviceChargeItems.length > 0 && (
             <LineTable title="Service charge" items={serviceChargeItems} money={money} />
@@ -598,6 +602,7 @@ export function BillScreen({
         <div className="space-y-6">
           <LineTable title="Booking charges" items={bookingItems} money={money} />
           {booking.playerCharges && <PlayerCharges charges={booking.playerCharges} money={money} />}
+          {addonItems.length > 0 && <LineTable title="Add-ons" items={addonItems} money={money} />}
           {foodItems.length > 0 && (
             <LineTable title="Food & beverage" items={foodItems} money={money} />
           )}

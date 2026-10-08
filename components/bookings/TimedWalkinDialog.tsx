@@ -97,7 +97,7 @@ export function TimedWalkinDialog({
   // means no surcharge.
   const minPlayers = isBoard ? 1 : (booking.minPlayers ?? 1)
 
-  const [preview, setPreview] = useState<{ total: number } | null>(null)
+  const [preview, setPreview] = useState<{ total: number; addonTotal: number } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
@@ -122,7 +122,7 @@ export function TimedWalkinDialog({
         setPreview(null)
         return
       }
-      setPreview({ total: r.total })
+      setPreview({ total: r.total, addonTotal: r.addonTotal ?? 0 })
     })
     return () => {
       cancelled = true
@@ -408,6 +408,11 @@ export function TimedWalkinDialog({
                 <p className="mt-1.5 text-3xl font-bold tabular-nums tracking-tight text-foreground">
                   {preview ? formatMoney(preview.total, currency) : '—'}
                 </p>
+                {preview && preview.addonTotal > 0 && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Includes {formatMoney(preview.addonTotal, currency)} of rented add-ons.
+                  </p>
+                )}
                 <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                   For the full committed session, whether it runs the whole way or ends early. Food/orders fold into
                   the same bill.

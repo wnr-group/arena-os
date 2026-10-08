@@ -17,6 +17,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const KIND_LABEL: Record<string, string> = {
   booking: 'Booking',
   food: 'Food',
+  addon: 'Add-on',
   membership: 'Membership',
   adjustment: 'Adjustment',
   wallet_topup: 'Wallet top-up',

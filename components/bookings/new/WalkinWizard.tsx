@@ -10,6 +10,7 @@ import { computeAvailabilityWindow } from '@/lib/booking/walkin-availability'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { AdvanceTenderEditor } from './AdvanceTenderEditor'
+import { AddonPicker, type AddonSelection } from '@/components/bookings/AddonPicker'
 import { cleanAdvanceTenders, sumAdvanceTenders, type AdvanceTenderRow } from './advance-tenders'
 import { StepProgress } from './StepProgress'
 import { WalkInAvailabilityCalendar } from './WalkInAvailabilityCalendar'
@@ -193,6 +194,9 @@ export function WalkinWizard({
   // since a setup belongs to exactly one station.
   const [setupId, setSetupId] = useState<string | null>(null)
 
+  // M33: optional rented add-ons, stock-checked now and priced at checkout.
+  const [addonSel, setAddonSel] = useState<AddonSelection[]>([])
+
   // M30 #5: advance tenders collected upfront — gaming_cafe only (see
   // advancePaymentEnabled above). Starts with no rows; what is sent and what
   // the running total shows both come from cleanAdvanceTenders(advanceRows).
@@ -346,6 +350,7 @@ export function WalkinWizard({
         headCount: isPerHead ? headCount : undefined,
         setupId: activeSetup ? activeSetup.id : undefined,
         advanceTenders,
+        addons: addonSel.length > 0 ? addonSel : undefined,
       })
       if (r.error) {
         setError(r.error)
@@ -618,6 +623,18 @@ export function WalkinWizard({
                     {selectedResource.typeName} is priced per player — minimum {selectedResource.minPlayers}.
                   </p>
                 </div>
+              )}
+
+              {selectedResource && (
+                <AddonPicker
+                  branchId={branchId}
+                  resourceId={selectedResource.id}
+                  startsAt={startAtIso}
+                  endsAt={mode === 'timed' ? new Date(startAt.getTime() + durationMin * 60_000).toISOString() : null}
+                  currency={currency}
+                  value={addonSel}
+                  onChange={setAddonSel}
+                />
               )}
 
               {advancePaymentEnabled && (
