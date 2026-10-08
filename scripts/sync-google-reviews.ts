@@ -1,6 +1,6 @@
 /**
  * Refreshes the cached Google Business Profile reviews for every connected
- * tenant (0106).
+ * tenant (0128).
  *
  *   npm run reviews:sync
  *   # or: npx tsx --import ./scripts/server-only-hook.mjs scripts/sync-google-reviews.ts

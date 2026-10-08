@@ -1,7 +1,7 @@
 -- ============================================================================
--- Arena OS — 0108 the Google review prompt asks only after something FINISHED.
+-- Arena OS — 0130 the Google review prompt asks only after something FINISHED.
 --
--- Tightens what each half of customer_review_eligible() (0105, re-indexed 0107)
+-- Tightens what each half of customer_review_eligible() (0127, re-indexed 0129)
 -- means, while keeping the two halves as OR. Same function, same callers, same
 -- RLS — only the question it answers has changed.
 --
@@ -18,7 +18,7 @@
 --
 --   a booking in (confirmed, checked_in, completed)   OR   a DELIVERED order
 --
--- The BOOKING half is unchanged from 0105 and deliberately so — see below.
+-- The BOOKING half is unchanged from 0127 and deliberately so — see below.
 -- Only the food half moved.
 --
 -- ══ WHERE "DELIVERED" ACTUALLY LIVES — THIS IS THE PART TO READ ═════════════
@@ -50,7 +50,7 @@
 --                                    ticket was served before it was voided.
 --   kots.status = 'served'           the food actually arrived.
 --
--- ══ THE BOOKING SIDE IS UNCHANGED FROM 0105 ════════════════════════════════
+-- ══ THE BOOKING SIDE IS UNCHANGED FROM 0127 ════════════════════════════════
 --
 --   status in (confirmed, checked_in, completed)
 --
@@ -60,7 +60,7 @@
 -- asked again next visit until they say they have reviewed.
 --
 -- `cancelled` and `no_show` stay out: somebody who called off or never turned
--- up has no experience to rate. That is the same line 0105 drew, kept.
+-- up has no experience to rate. That is the same line 0127 drew, kept.
 --
 -- `completed` is included even though ACTIVE_BOOKING_STATUSES omits it — that
 -- constant answers "is this booking live right now", a different question from
@@ -87,7 +87,7 @@
 -- customer eligible, and one customer's history cannot be borrowed by another.
 --
 -- The tenant pin is also what lets the (tenant_id, customer_id) indexes do a
--- two-column lookup instead of walking the whole index — the 0107 fix, kept.
+-- two-column lookup instead of walking the whole index — the 0129 fix, kept.
 -- The KOT side gets its own index below.
 --
 -- OR also short-circuits: a customer with a completed booking never costs the
@@ -100,7 +100,7 @@
 -- idx_kots_open (tenant_id, branch_id, status), which is for the kitchen
 -- screen and cannot serve "is there a served ticket for THIS order".
 -- Postgres would have had to scan, once per candidate order, on every portal
--- page load by an un-answered customer — exactly the platform-wide scan 0107
+-- page load by an un-answered customer — exactly the platform-wide scan 0129
 -- removed from the booking side.
 --
 -- (tenant_id, order_id, status) in that order: tenant_id first to match how
@@ -111,7 +111,7 @@ create index if not exists idx_kots_order_status
   on public.kots(tenant_id, order_id, status);
 
 comment on index public.idx_kots_order_status is
-  'Answers "has a ticket for this order been served" for customer_review_eligible() (0108). Distinct from idx_kots_open, which serves the kitchen screen and leads with branch_id.';
+  'Answers "has a ticket for this order been served" for customer_review_eligible() (0130). Distinct from idx_kots_open, which serves the kitchen screen and leads with branch_id.';
 
 -- ── the eligibility question itself ─────────────────────────────────────────
 create or replace function public.customer_review_eligible()
@@ -149,4 +149,4 @@ revoke all on function public.customer_review_eligible() from public;
 grant execute on function public.customer_review_eligible() to arena_app;
 
 comment on function public.customer_review_eligible() is
-  'Whether the current customer has EITHER a live-or-finished booking OR a DELIVERED food order, and is therefore due the Google review prompt (0105, re-indexed 0107, food half tightened in 0108). Either is enough — a venue with no kitchen, or none with bookable resources, would otherwise never qualify anyone. The booking half is unchanged from 0105: confirmed, checked_in or completed, never cancelled or no_show. The FOOD half now requires an accepted, non-cancelled order whose kitchen ticket is ''served'', because orders.status is the billing lifecycle (open/billed/cancelled) and carries no fulfilment state at all — an ''accepted'' order alone never meant the food arrived. Both halves are pinned to the caller''s own tenant and customer GUCs, never an argument. SECURITY DEFINER because a customer session has no policy on `orders` or `kots`. Returns one boolean.';
+  'Whether the current customer has EITHER a live-or-finished booking OR a DELIVERED food order, and is therefore due the Google review prompt (0127, re-indexed 0129, food half tightened in 0130). Either is enough — a venue with no kitchen, or none with bookable resources, would otherwise never qualify anyone. The booking half is unchanged from 0127: confirmed, checked_in or completed, never cancelled or no_show. The FOOD half now requires an accepted, non-cancelled order whose kitchen ticket is ''served'', because orders.status is the billing lifecycle (open/billed/cancelled) and carries no fulfilment state at all — an ''accepted'' order alone never meant the food arrived. Both halves are pinned to the caller''s own tenant and customer GUCs, never an argument. SECURITY DEFINER because a customer session has no policy on `orders` or `kots`. Returns one boolean.';

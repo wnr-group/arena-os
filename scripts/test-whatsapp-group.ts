@@ -1,5 +1,5 @@
 /**
- * WhatsApp group invite (0104) — the rule, the constraints, and the public read.
+ * WhatsApp group invite (0126) — the rule, the constraints, and the public read.
  *
  * Three layers, tested as three layers, because each one is a different
  * promise:
@@ -140,7 +140,7 @@ async function main() {
   // ════════════════════════════════════════════════════════════════════════
   section('2. the save contract')
   {
-    // googleReviewEnabled is required by the schema (0105) and stated here so
+    // googleReviewEnabled is required by the schema (0127) and stated here so
     // these assertions keep testing the WHATSAPP rule rather than passing or
     // failing because of a field they are not about.
     const base = { invoicePrefix: 'INV', whatsappGroupEnabled: false, googleReviewEnabled: false }

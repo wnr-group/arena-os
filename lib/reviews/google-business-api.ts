@@ -16,7 +16,7 @@
  *
  * The Review resource has exactly four methods: `list`, `get`, `updateReply`
  * and `deleteReply`. There is NO create — a business can only reply. That is
- * why this module reads and never writes, and why the customer prompt (0105)
+ * why this module reads and never writes, and why the customer prompt (0127)
  * has to send people to Google rather than collecting a review here.
  *
  * ══ WHAT IS WIRED, AND WHAT IS UNVERIFIED ═══════════════════════════════════
@@ -153,13 +153,13 @@ export function toGoogleReview(raw: RawGoogleReview): GoogleReviewFromApi | null
 
   // A review permalink is deliberately absent: the Review resource carries
   // none (reviewReplyUrl is for the OWNER to reply, not for a visitor to read),
-  // so there was never a value to store and the column went in 0107.
+  // so there was never a value to store and the column went in 0129.
   return {
     googleReviewId,
     reviewerName: name,
     // Not carried for an anonymous reviewer either — the photo would identify
     // exactly the person who asked not to be identified. Stored but not
-    // rendered; see the column comment in 0107 for why the homepage uses
+    // rendered; see the column comment in 0129 for why the homepage uses
     // initials instead of hotlinking this.
     reviewerPhotoUrl: anonymous ? null : raw.reviewer?.profilePhotoUrl?.trim() || null,
     rating,

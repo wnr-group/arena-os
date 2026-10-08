@@ -12,7 +12,7 @@ import { createGoogleReviewFetcher } from '@/lib/reviews/google-business-api'
 type Result = { error?: string; success?: true }
 
 /**
- * Connect or disconnect a venue's Google Business Profile (0106).
+ * Connect or disconnect a venue's Google Business Profile (0128).
  *
  * ── Why the venue supplies its own OAuth client ────────────────────────────
  *
@@ -29,12 +29,12 @@ type Result = { error?: string; success?: true }
  * ── Authorisation ──────────────────────────────────────────────────────────
  *
  * requireOwner() first, then the write runs inside withUser() so
- * `google_business_credentials_rw` (0106, tightened 0107) is the second gate —
+ * `google_business_credentials_rw` (0128, tightened 0129) is the second gate —
  * the same two layers every settings action uses. Nothing about identity or
  * tenant comes from the browser: `tenant_id` is taken from the authenticated
  * context.
  *
- * OWNER, not manager (0107). This used to be requireManager() while the only
+ * OWNER, not manager (0129). This used to be requireManager() while the only
  * screen that reaches it — /settings/business — redirects anybody who is not
  * the owner. A server action is a public POST endpoint, so that gap let a
  * manager who could not SEE the form still call it: binding their own Google
@@ -105,7 +105,7 @@ function fail(e: unknown): Result {
 }
 
 /**
- * Pull this venue's reviews from Google right now (0107).
+ * Pull this venue's reviews from Google right now (0129).
  *
  * ── Why a button was needed ────────────────────────────────────────────────
  *

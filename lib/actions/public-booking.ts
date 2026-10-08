@@ -524,7 +524,7 @@ export async function createBookingPaymentIntent(
 }
 
 /**
- * Has this booking's deposit settled yet? (0107)
+ * Has this booking's deposit settled yet? (0129)
  *
  * Polled by WhatsappGroupRedirect while a just-paid booking waits for
  * Razorpay's webhook. See getPublicBookingPaymentState() for why a second look

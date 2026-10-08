@@ -1223,7 +1223,7 @@ export const customers = pgTable(
     smsOptIn: boolean('sms_opt_in').notNull().default(true),
     emailOptIn: boolean('email_opt_in').notNull().default(true),
   /**
-   * When this customer said they had left a Google review (0105).
+   * When this customer said they had left a Google review (0127).
    *
    * SELF-DECLARED. Google provides no per-customer submission signal for a
    * review-link flow, so this records the customer's own confirmation and
@@ -1389,14 +1389,14 @@ export const businessProfiles = pgTable('business_profiles', {
   // this tenant treats as weekend for pricing. Default {0,6} (Sat+Sun).
   weekendDays: smallint('weekend_days').array().notNull().default([0, 6]),
   /**
-   * Canonical WhatsApp group invite, or null (migration 0104). Host-pinned by a
+   * Canonical WhatsApp group invite, or null (migration 0126). Host-pinned by a
    * CHECK because the public confirmation page redirects to it automatically —
    * see lib/settings/whatsapp-group.ts for the one shared rule.
    */
   whatsappGroupUrl: text('whatsapp_group_url'),
   /** Whether the confirmation page offers the group. Never true without a URL. */
   whatsappGroupEnabled: boolean('whatsapp_group_enabled').notNull().default(false),
-  /** Canonical Google review link, or null (0105). Host-pinned by CHECK. */
+  /** Canonical Google review link, or null (0127). Host-pinned by CHECK. */
   googleReviewUrl: text('google_review_url'),
   /** Whether eligible customers see the review prompt. Never true without a URL. */
   googleReviewEnabled: boolean('google_review_enabled').notNull().default(false),
@@ -3385,10 +3385,10 @@ export const eventRegistrationsRelations = relations(eventRegistrations, ({ one 
   team: one(eventTeams, { fields: [eventRegistrations.teamId], references: [eventTeams.id] }),
 }))
 
-// ── Google Business Profile: connection + review cache (migration 0106) ──────
+// ── Google Business Profile: connection + review cache (migration 0128) ──────
 //
 // FEATURE B, and unrelated to the customer review prompt on business_profiles
-// (0105). That one is a link we send a customer TO; this is reading what
+// (0127). That one is a link we send a customer TO; this is reading what
 // Google already holds. Separate tables because they have opposite exposure:
 // the credentials are never public, the reviews are public by design.
 
@@ -3408,7 +3408,7 @@ export const googleBusinessCredentials = pgTable('google_business_credentials', 
    * between tenants fails to decrypt rather than authorising as the wrong
    * venue. Read ONLY by lib/reviews/google-credentials.ts.
    */
-  /** Null until the owner completes Google's consent flow. See migration 0106. */
+  /** Null until the owner completes Google's consent flow. See migration 0128. */
   refreshTokenEncrypted: text('refresh_token_encrypted'),
   connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
@@ -3430,7 +3430,7 @@ export const googleReviews = pgTable(
     /** Null when the reviewer chose anonymity; Google really returns this. */
     reviewerName: text('reviewer_name'),
     /**
-     * OPTIONAL (0107). Stored when Google supplies one, rendered by nothing:
+     * OPTIONAL (0129). Stored when Google supplies one, rendered by nothing:
      * the homepage draws initials, because an <img> here would hotlink
      * googleusercontent on every render and leak each visitor's IP to Google.
      * Kept so an avatar UI stays a rendering decision rather than a re-sync.
