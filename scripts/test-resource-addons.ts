@@ -1,7 +1,11 @@
 /**
  * M33 — resource add-ons, end to end against a real database (needs
- * migration 0108 applied):
+ * migration 0108 + 0109 applied):
  *
+ *   rls      a non-manager (cashier/receptionist/floor_staff) can lock the
+ *            catalog FOR UPDATE to attach/edit add-ons, but cannot write the
+ *            catalog directly — 0109's WITH CHECK stays manager-only, so RLS
+ *            backstops requireManager() rather than deferring to it alone
  *   schema   booking_addons.addon_id is ON DELETE SET NULL (deleting a catalog
  *            entry keeps the booking line); the public-SELECT policy exists
  *            and shows only active rows of the public tenant
@@ -290,6 +294,24 @@ async function main() {
       check(`R1/R2 ${role} add-on attach/edit`, false)
     }
     if (bId) await withUser(uid, (tx) => tx.execute(sql`update bookings set status='cancelled' where id=${bId}`))
+
+    // The lock widening above must NOT also widen real catalog writes: USING
+    // is broad (any tenant member can lock) but WITH CHECK stays manager-only,
+    // so a non-manager's raw UPDATE on the catalog itself is refused by RLS —
+    // requireManager() in lib/actions/addons.ts is not the only thing standing
+    // between a cashier and the catalog's rate/stock.
+    try {
+      await withUser(uid, (tx) => tx.execute(sql`update resource_type_addons set rate = '9999.00' where id = ${camera}`))
+      check(`R3 ${role} cannot write the catalog directly (RLS, not just the app gate)`, false)
+    } catch (e) {
+      // Drizzle wraps the raw pg error as DrizzleQueryError.cause — the RLS
+      // violation code (42501) lives there, not on the thrown error itself.
+      const pgCode = (e as { cause?: { code?: string } })?.cause?.code
+      check(`R3 ${role} cannot write the catalog directly (RLS, not just the app gate)`, pgCode === '42501')
+      if (pgCode !== '42501') console.log('   (unexpected)', e)
+    }
+    const stillOriginal = await q<{ rate: string }>(`select rate from resource_type_addons where id=$1`, [camera])
+    check(`R4 ${role}'s blocked write left the catalog rate untouched`, stillOriginal.rows[0].rate === '100.00')
   }
 
   // ── walk-in: hold, ends_at lockstep, checkout pricing ─────────────────────
