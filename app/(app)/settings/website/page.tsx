@@ -28,6 +28,7 @@ export default async function WebsiteSettingsPage() {
         Build your public homepage from ready-made sections — drag to reorder, brand it, preview, then publish.
       </p>
       <WebsiteEditor
+        timeZone={ctx.tenant.timezone}
         sections={sections.map((s) => ({ id: s.id, type: s.type, heading: s.heading, content: s.content }))}
         settings={
           settings
