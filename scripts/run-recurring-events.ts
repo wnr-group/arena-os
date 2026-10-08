@@ -12,7 +12,7 @@
  * ── Why it is safe to run twice, or twice at once ───────────────────────────
  *
  * Not because it checks first — it does not. `idx_events_series_occurrence`
- * (migration 0120) is unique on (series_id, occurrence_period), so a duplicate
+ * (migration 0122) is unique on (series_id, occurrence_period), so a duplicate
  * INSERT is refused by the database. A SELECT-then-INSERT has a window two
  * concurrent jobs can both pass through; a unique index has none. The row lock
  * below turns the race into a no-op rather than an error: whichever job gets
@@ -181,7 +181,7 @@ async function main() {
           //
           // syncEventBlocks() is the SAME function the settings screen calls,
           // not a SQL reimplementation: one definition of what an event holds,
-          // and the booking_slots exclusion constraint (0003/0114) is what
+          // and the booking_slots exclusion constraint (0003/0116) is what
           // actually enforces it. A conflict throws, which rolls this series'
           // transaction back — the occurrence and its block are all-or-nothing,
           // exactly as they are when a manager publishes by hand.
