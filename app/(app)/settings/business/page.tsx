@@ -28,8 +28,8 @@ export default async function BusinessSettingsPage() {
   const googleConnection = await getGoogleConnectionStatus(ctx.tenant.id)
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8">
-      <h1 className="text-2xl font-semibold">Business profile</h1>
+    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Business profile</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         Your legal identity as it appears on every GST invoice. Only the owner can
         change this.
