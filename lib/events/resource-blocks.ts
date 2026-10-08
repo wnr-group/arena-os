@@ -11,7 +11,7 @@ import type { EventStatus } from './types'
  * ══ AN EVENT BLOCK IS A booking_slots ROW ═══════════════════════════════════
  *
  * There is no second availability system here, and that is the entire design.
- * Migration 0094 lets `booking_slots` carry an `event_id` instead of a
+ * Migration 0114 lets `booking_slots` carry an `event_id` instead of a
  * `booking_id`, so the constraint 0003 already declared —
  *
  *     exclude using gist (resource_id with =, tstzrange(starts_at, ends_at) with &&)
@@ -104,7 +104,7 @@ export function statusBlocks(status: EventStatus): boolean {
  *
  *   * a 'branch' event enumerates the branch's resources and then inserts a row
  *     per resource. A station created between the enumeration and the insert
- *     would be missed by this event. (Migration 0094's trigger closes the same
+ *     would be missed by this event. (Migration 0114's trigger closes the same
  *     hole from the other direction, for a resource created while a block is
  *     already committed; the lock closes the window where neither side can see
  *     the other yet.)
@@ -157,7 +157,7 @@ async function lockEvent(tx: DB, tenantId: string, eventId: string): Promise<Eve
  *
  * Both branches read `resources` under the caller's own RLS-scoped
  * transaction, so a station belonging to another tenant cannot appear here even
- * if its id were supplied — and 0094's composite FK makes the cross-tenant
+ * if its id were supplied — and 0114's composite FK makes the cross-tenant
  * selection unrepresentable in the first place.
  *
  * Only `status = 'available'` stations are blocked. One in maintenance is
@@ -216,7 +216,8 @@ export type BlockConflict = {
   /** 'booking' — a customer holds it. 'event' — another event does. */
   heldBy: 'booking' | 'event'
   startsAt: Date
-  endsAt: Date
+  /** Null for an open-ended walk-in that has no end time yet. */
+  endsAt: Date | null
 }
 
 /**
@@ -279,7 +280,7 @@ function conflictMessage(conflicts: BlockConflict[]): string {
   const more =
     conflicts.length > 1 ? ` (and ${conflicts.length - 1} more resource${conflicts.length > 2 ? 's' : ''})` : ''
   return (
-    `${first.resourceName} is already held by ${held} from ${fmt(first.startsAt)} to ${fmt(first.endsAt)}${more}. ` +
+    `${first.resourceName} is already held by ${held} from ${fmt(first.startsAt)} ${first.endsAt ? `to ${fmt(first.endsAt)}` : 'with no end time'}${more}. ` +
     `Free it, pick different resources, or move the event.`
   )
 }
@@ -400,7 +401,7 @@ export async function syncEventBlocks(
  *
  * The selection is validated against the live catalogue rather than trusted:
  * every id must be a resource of THIS tenant in THIS event's branch. A caller
- * passing another tenant's station id gets a refusal, and 0094's composite FK
+ * passing another tenant's station id gets a refusal, and 0114's composite FK
  * would refuse it a second time at the database.
  */
 export async function setEventResources(
@@ -466,7 +467,7 @@ export async function listEventBlocks(
   tx: DB,
   tenantId: string,
   eventId: string,
-): Promise<{ resourceId: string; resourceName: string; startsAt: Date; endsAt: Date }[]> {
+): Promise<{ resourceId: string; resourceName: string; startsAt: Date; endsAt: Date | null }[]> {
   return tx
     .select({
       resourceId: bookingSlots.resourceId,

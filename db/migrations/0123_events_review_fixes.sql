@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0103 events: refund flagging, the `full` status, and recurring
+-- Arena OS — 0123 events: refund flagging, the `full` status, and recurring
 -- resource inheritance. Three review findings, all in the database half.
 --
 -- ══ 1. A SECOND CAPTURE MUST FLAG A REFUND ═════════════════════════════════
@@ -36,14 +36,14 @@
 -- written with resource_scope = 'none' (the events default) and held nothing —
 -- while being created in 'registration_open', a status that is supposed to
 -- reserve. A weekly class therefore left its court bookable by anyone, every
--- week, forever, and 0100's header claiming occurrences get the "same resource
+-- week, forever, and 0120's header claiming occurrences get the "same resource
 -- blocking" was not true.
 --
 -- The template now carries the scope, and the job copies it. Materialising the
 -- BLOCKS stays in the job (scripts/run-recurring-events.ts) through the same
 -- syncEventBlocks() the settings screen uses, rather than being reimplemented
 -- in SQL here — one implementation of "what does this event reserve", which is
--- the whole point of migration 0094.
+-- the whole point of migration 0114.
 -- ============================================================================
 
 -- ── 1. refund flagging on a second capture ──────────────────────────────────
@@ -196,7 +196,7 @@ $$;
 
 -- ── 3. a series carries what its occurrences reserve ────────────────────────
 --
--- Same vocabulary as events.resource_scope (0094), reusing that enum rather
+-- Same vocabulary as events.resource_scope (0114), reusing that enum rather
 -- than declaring a parallel one, so "what does this reserve" has exactly one
 -- meaning across templates and occurrences. Defaults to 'none', which is what
 -- every existing series already behaves as — nothing changes until an owner
@@ -205,7 +205,7 @@ alter table public.event_series
   add column if not exists resource_scope public.event_resource_scope not null default 'none';
 
 comment on column public.event_series.resource_scope is
-  'What each generated occurrence reserves (0103). Copied onto the occurrence, which then materialises booking_slots through syncEventBlocks() exactly as a hand-created event does. ''none'' by default, so an untouched series behaves as before.';
+  'What each generated occurrence reserves (0123). Copied onto the occurrence, which then materialises booking_slots through syncEventBlocks() exactly as a hand-created event does. ''none'' by default, so an untouched series behaves as before.';
 
 -- A series templates 'none' or 'branch' only. 'specific' names individual
 -- stations, and a template has nowhere to keep that list — the occurrence would

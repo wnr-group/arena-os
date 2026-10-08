@@ -17,7 +17,7 @@ import { EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
  * ══ AUTHORIZATION ══════════════════════════════════════════════════════════
  *
  * Every export begins with `await requireManager()`, before parsing input.
- * `event_series_manager_write` (0100) is the database half, and RLS confines
+ * `event_series_manager_write` (0120) is the database half, and RLS confines
  * every statement to the caller's own tenant — so a series id belonging to
  * another business is simply not found, whatever the browser sends.
  *
@@ -34,7 +34,7 @@ import { EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
  * `setSeriesActive(false)` stops FUTURE generation and touches no occurrence
  * that already exists — they took registrations and possibly money. Deleting a
  * series likewise leaves its events standing: `events_series_fk` is ON DELETE
- * SET NULL (0100), so an occurrence loses its provenance and keeps everything
+ * SET NULL (0120), so an occurrence loses its provenance and keeps everything
  * else.
  */
 
@@ -82,7 +82,7 @@ const seriesInput = z.object({
   registrationMode: z.enum(['solo', 'team']).default('solo'),
   teamSize: z.coerce.number().int().min(2).max(20).nullable().optional(),
   /**
-   * What every generated occurrence reserves (0103). 'specific' is absent on
+   * What every generated occurrence reserves (0123). 'specific' is absent on
    * purpose — a template cannot name individual stations, because the ones it
    * named may not exist by the time an occurrence is generated. Mirrored by
    * event_series_resource_scope in the migration.
@@ -168,7 +168,7 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
     await withUser(ctx.user.id, async (tx) => {
       if (v.id) {
         // Editing a series changes what FUTURE occurrences look like. Nothing
-        // touches an event already generated — see 0100's header.
+        // touches an event already generated — see 0120's header.
         await tx
           .update(eventSeries)
           .set(values)
@@ -215,7 +215,7 @@ export async function setEventSeriesActive(seriesId: string, active: boolean): P
 /**
  * Delete a series.
  *
- * `events_series_fk` is ON DELETE SET NULL (0100), so every occurrence it
+ * `events_series_fk` is ON DELETE SET NULL (0120), so every occurrence it
  * produced survives — it simply stops naming its origin. Historical events,
  * their registrations and their money are never destroyed by a template change.
  */
