@@ -2,7 +2,7 @@ import { Star } from 'lucide-react'
 import type { PublicGoogleReviews } from '@/lib/reviews/public'
 
 /**
- * Google reviews on the public homepage (0106, Feature B).
+ * Google reviews on the public homepage (0128, Feature B).
  *
  * Reads NOTHING itself — it is handed the cache's output. The homepage does not
  * call Google, because a public page that made a third-party request per render
@@ -58,7 +58,7 @@ export function GoogleReviewsSection({ data }: { data: PublicGoogleReviews }) {
               )}
               <figcaption className="mt-4 flex items-center gap-2.5 text-xs">
                 {/* Deliberately no <img>, even though r.reviewerPhotoUrl is
-                    now available (0107): rendering it would hotlink a
+                    now available (0129): rendering it would hotlink a
                     googleusercontent URL on every homepage render, leaking each
                     visitor's IP to Google and breaking whenever the URL
                     rotates. Initials cost nothing and cannot 404. The field is

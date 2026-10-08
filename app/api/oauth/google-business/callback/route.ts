@@ -12,7 +12,7 @@ import { googleBusinessCredentials } from '@/db/schema'
 import { eq } from 'drizzle-orm'
 
 /**
- * Step 2: Google sends the owner back here with a one-time code (0106).
+ * Step 2: Google sends the owner back here with a one-time code (0128).
  *
  * ══ THIS ROUTE CANNOT AUTHENTICATE ITS CALLER ═══════════════════════════════
  *

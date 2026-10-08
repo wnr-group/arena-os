@@ -38,7 +38,7 @@ export default async function PortalLayout({ children }: { children: React.React
   // looks at whether a cookie is present.
   const customer = await requireCustomer()
 
-  // The Google review ask (0105), decided entirely on the server: null unless
+  // The Google review ask (0127), decided entirely on the server: null unless
   // the venue enabled it, the link still validates, this customer has had a
   // successful session or order, and they have not already answered.
   //

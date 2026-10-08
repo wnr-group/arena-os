@@ -1,5 +1,5 @@
 /**
- * Google review prompt (0105) — the URL rule, eligibility, completion and
+ * Google review prompt (0127) — the URL rule, eligibility, completion and
  * tenant isolation, against a real database.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-google-review.ts
@@ -303,7 +303,7 @@ async function main() {
   const mkServedFood = async (customerId: string, tenant = A) =>
     mkKot(await mkOrder(customerId, 'billed', 'accepted', tenant), 'served', tenant)
 
-  section('4. eligibility: an ACTIVE booking OR DELIVERED food (0108)')
+  section('4. eligibility: an ACTIVE booking OR DELIVERED food (0130)')
   {
     // Because the rule is OR, each half has to be exercised with the OTHER HALF
     // ABSENT. A customer given a qualifying booking is eligible whatever their
@@ -315,7 +315,7 @@ async function main() {
     check('a customer with no history is NOT eligible', (await eligible(fresh)) === false)
 
     // ── the BOOKING half, with no food anywhere ─────────────────────────────
-    // The booking half is UNCHANGED from 0105: an existing booking that has not
+    // The booking half is UNCHANGED from 0127: an existing booking that has not
     // been called off qualifies on its own, whatever the kitchen is doing.
     for (const st of ['confirmed', 'checked_in', 'completed']) {
       const c = await makeCustomer(A.tenantId, `${st} booking only`)

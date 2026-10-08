@@ -1,5 +1,5 @@
 /**
- * Google Business Profile connection + review cache (0106) — Feature B.
+ * Google Business Profile connection + review cache (0128) — Feature B.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/test-google-business-reviews.ts
  *
@@ -104,7 +104,7 @@ async function main() {
     // Anonymity is Google's own flag and must survive into our copy.
     const anon = toGoogleReview(review('r7', 'FOUR', { reviewer: { isAnonymous: true, displayName: 'Leaked' } }))
     check('an anonymous reviewer keeps no name', anon?.reviewerName === null)
-    // The photo IS carried (optional, 0107) — but never for someone who asked
+    // The photo IS carried (optional, 0129) — but never for someone who asked
     // to be anonymous: that URL would identify exactly the person who opted out.
     check('…and no photo either, for an anonymous reviewer', anon?.reviewerPhotoUrl === null)
     check(
@@ -324,7 +324,7 @@ async function main() {
   // ════════════════════════════════════════════════════════════════════════
   section('3. the sync (fake fetcher — the real one needs Google approval)')
   {
-    // Mirrors the real fetcher's contract (0107): it maps, drops what it
+    // Mirrors the real fetcher's contract (0129): it maps, drops what it
     // cannot store, and REPORTS how many it dropped — so SyncResult.skipped
     // carries a real number instead of a structural zero.
     const fake =

@@ -60,7 +60,7 @@ export function GoogleReviewPrompt({
   // page for a keyboard user who was part-way down it.
   const openerRef = useRef<Element | null>(null)
 
-  // Per CUSTOMER, not a constant (0107). Two people signing in from the same
+  // Per CUSTOMER, not a constant (0129). Two people signing in from the same
   // browser tab used to share one dismissal, so the second was never asked.
   // Not a cross-tenant leak — subdomains are separate origins — but it did
   // silence the prompt for the wrong person.
@@ -90,7 +90,7 @@ export function GoogleReviewPrompt({
     setOpen(false)
   }, [key])
 
-  // ── what aria-modal promises, actually delivered (0107) ───────────────────
+  // ── what aria-modal promises, actually delivered (0129) ───────────────────
   //
   // This dialog already declared role="dialog" aria-modal="true", which tells a
   // screen reader the rest of the page is inert. Nothing enforced it: Escape
@@ -157,7 +157,7 @@ export function GoogleReviewPrompt({
       aria-modal="true"
       aria-labelledby="google-review-title"
     >
-      {/* `relative` (0107): the close button is positioned `absolute`, and
+      {/* `relative` (0129): the close button is positioned `absolute`, and
           without a positioned ancestor here it resolved against the fixed
           overlay instead — so on mobile, where the card is bottom-aligned, the
           ✕ rendered at the top-right of the VIEWPORT, detached from the box it

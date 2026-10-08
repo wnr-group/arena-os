@@ -1,6 +1,6 @@
 -- ============================================================================
--- Arena OS — 0107 audit fixes for the WhatsApp group (0104) and Google review
--- (0105 / 0106) features.
+-- Arena OS — 0129 audit fixes for the WhatsApp group (0126) and Google review
+-- (0127 / 0128) features.
 --
 -- Four unrelated corrections that happen to share a review. Each one is stated
 -- with the finding it closes, so a later reader can tell what was wrong rather
@@ -55,7 +55,7 @@ revoke all on function public.customer_review_eligible() from public;
 grant execute on function public.customer_review_eligible() to arena_app;
 
 comment on function public.customer_review_eligible() is
-  'Whether the current customer has a successful booking or order, and is therefore due the Google review prompt (0105, re-indexed 0107). Both EXISTS clauses are pinned to the caller''s own tenant GUC so they can use the (tenant_id, customer_id) indexes as a two-column lookup rather than walking the whole index. SECURITY DEFINER because a customer session has no policy on `orders`. Returns one boolean.';
+  'Whether the current customer has a successful booking or order, and is therefore due the Google review prompt (0127, re-indexed 0129). Both EXISTS clauses are pinned to the caller''s own tenant GUC so they can use the (tenant_id, customer_id) indexes as a two-column lookup rather than walking the whole index. SECURITY DEFINER because a customer session has no policy on `orders`. Returns one boolean.';
 
 -- ── 2. an index nothing ever read (L1) ──────────────────────────────────────
 --
@@ -100,10 +100,10 @@ alter table public.google_reviews
   drop column if exists review_url;
 
 comment on column public.google_reviews.reviewer_photo_url is
-  'The reviewer''s Google profile photo, when Google supplies one and the reviewer is not anonymous. OPTIONAL — stored but deliberately not rendered: the homepage draws initials, because an <img> here would hotlink googleusercontent on every render and leak each visitor''s IP to Google. Kept so an avatar UI stays a rendering decision rather than a re-sync (0107).';
+  'The reviewer''s Google profile photo, when Google supplies one and the reviewer is not anonymous. OPTIONAL — stored but deliberately not rendered: the homepage draws initials, because an <img> here would hotlink googleusercontent on every render and leak each visitor''s IP to Google. Kept so an avatar UI stays a rendering decision rather than a re-sync (0129).';
 
 comment on table public.google_reviews is
-  'Cached Google Business Profile reviews for one tenant (0105, trimmed 0107). Written only by the sync; read by the public homepage. Every column here is already public on Google, which is why this has a plain public SELECT policy rather than the projection function business_profiles needs. No customer_id: Google does not say which of our customers wrote a review.';
+  'Cached Google Business Profile reviews for one tenant (0127, trimmed 0129). Written only by the sync; read by the public homepage. Every column here is already public on Google, which is why this has a plain public SELECT policy rather than the projection function business_profiles needs. No customer_id: Google does not say which of our customers wrote a review.';
 
 -- ── 4. the connection was manager-writable under an owner-only screen (M2) ──
 --
@@ -130,4 +130,4 @@ create policy google_business_credentials_rw on public.google_business_credentia
         with check (public.auth_role_in(tenant_id) = 'owner');
 
 comment on table public.google_business_credentials is
-  'One tenant''s connected Google Business Profile location and its encrypted refresh token (0105, owner-gated 0107). Owner-only — the same gate business_profiles uses, because connecting an external identity to the business belongs with its legal identity. Never public, never customer-readable. The token is AES-256-GCM sealed with the tenant id as AAD, so a ciphertext moved between rows cannot decrypt.';
+  'One tenant''s connected Google Business Profile location and its encrypted refresh token (0127, owner-gated 0129). Owner-only — the same gate business_profiles uses, because connecting an external identity to the business belongs with its legal identity. Never public, never customer-readable. The token is AES-256-GCM sealed with the tenant id as AAD, so a ciphertext moved between rows cannot decrypt.';

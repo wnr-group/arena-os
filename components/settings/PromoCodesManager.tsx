@@ -62,7 +62,7 @@ function toLocalInput(iso: string): string {
  * `undefined` as the locale meant "whatever runtime this is", which in a
  * SSR-ed client component is the SERVER on the first render and the BROWSER on
  * hydration — 'Sep 8, 2026' against '8 Sep 2026'. Pinned to en-GB like every
- * other date in this project (0107).
+ * other date in this project (0129).
  */
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })

@@ -6,7 +6,7 @@ import { requireCustomer } from '@/lib/auth/customer-guard'
 import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
 
 /**
- * THE Google review prompt decision, made once, on the server (0105).
+ * THE Google review prompt decision, made once, on the server (0127).
  *
  * Every condition the prompt depends on is answered here, so the client
  * component receives a URL or null and has no judgement of its own to make.
@@ -46,7 +46,7 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  * that changed between tabs of the same portal reads as a bug rather than as a
  * design.
  *
- * ── What counts as a QUALIFYING EXPERIENCE (0108) ──────────────────────────
+ * ── What counts as a QUALIFYING EXPERIENCE (0130) ──────────────────────────
  *
  * EITHER of these — one finished experience is enough to have something to
  * review — but each now means something that actually ended:
@@ -69,7 +69,7 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  * requiring both would mean its customers could never be asked. Equally,
  * somebody who only ordered food still had an experience worth rating.
  *
- * Only the FOOD half moved in 0108. An `accepted` order used to qualify on its
+ * Only the FOOD half moved in 0130. An `accepted` order used to qualify on its
  * own, but accepted only means somebody let the order exist — the food may
  * never have left the kitchen.
  *
@@ -83,7 +83,7 @@ export type ReviewPrompt = {
   /** Names the venue in the copy, so the ask reads as the venue's, not ours. */
   venueName: string
   /**
-   * Scopes the browser's "maybe later" memory to THIS customer (0107).
+   * Scopes the browser's "maybe later" memory to THIS customer (0129).
    *
    * The key used to be a constant, so two customers signing in from the same
    * browser tab shared one dismissal: the second was never asked. Not a
@@ -118,7 +118,7 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
 
     // 2 + 3. The venue's link. The function returns null when the owner has not
     //    enabled it; normalize re-validates because this value's next stop is
-    //    an href in a customer's browser, and a row written before the 0105
+    //    an href in a customer's browser, and a row written before the 0127
     //    CHECK existed must not be able to send anybody off-Google.
     const { rows } = await tx.execute<{ url: string | null }>(
       sql`select public.public_google_review(${customer.tenantId}::uuid) as url`,
@@ -126,8 +126,8 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
     const url = normalizeGoogleReviewUrl(rows[0]?.url ?? null)
     if (!url) return null
 
-    // 4. Eligibility, through customer_review_eligible() (0105; its FOOD half
-    //    tightened to "actually delivered" in 0108, booking half unchanged).
+    // 4. Eligibility, through customer_review_eligible() (0127; its FOOD half
+    //    tightened to "actually delivered" in 0130, booking half unchanged).
     //
     //    NOT a query from here: a customer session has no policy on `orders`
     //    or `kots` at all — only staff and the public tenant GUC do — so an
@@ -169,7 +169,7 @@ export async function getReviewPrompt(venueName: string): Promise<ReviewPrompt |
 export async function markReviewPromptCompleted(): Promise<boolean> {
   const customer = await requireCustomer()
   return withCustomer(customer.id, async (tx) => {
-    // customer_complete_review_prompt() (0105), not an UPDATE from here: a
+    // customer_complete_review_prompt() (0127), not an UPDATE from here: a
     // customer session has no permissive UPDATE policy on `customers` —
     // customers_customer_isolation is RESTRICTIVE, which narrows and never
     // grants — so a direct write silently affects nothing. The function names

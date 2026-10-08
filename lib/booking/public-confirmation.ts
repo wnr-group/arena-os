@@ -138,7 +138,7 @@ export async function getPublicBookingByToken(
 }
 
 /**
- * Just the deposit question, for polling (0107).
+ * Just the deposit question, for polling (0129).
  *
  * ── Why this exists ────────────────────────────────────────────────────────
  *

@@ -6,7 +6,7 @@ import { loadGoogleConnection } from './google-credentials'
 import type { FetchGoogleReviews } from './google-business-api'
 
 /**
- * Pull one tenant's Google reviews into the cache (0106).
+ * Pull one tenant's Google reviews into the cache (0128).
  *
  * ── The fetcher is INJECTED ────────────────────────────────────────────────
  *
@@ -45,7 +45,7 @@ export type SyncResult = {
   synced: number
   /**
    * Entries Google returned that this project could not store — reported by
-   * the fetcher, which is where the dropping happens (0107). Previously this
+   * the fetcher, which is where the dropping happens (0129). Previously this
    * was structurally always 0.
    */
   skipped: number
@@ -141,7 +141,7 @@ export async function syncGoogleReviewsForTenant(
  * One tenant's failure never stops the loop — that is the reason
  * syncGoogleReviewsForTenant records errors instead of throwing.
  *
- * ── Overlap is the CALLER's problem, deliberately (0107) ────────────────────
+ * ── Overlap is the CALLER's problem, deliberately (0129) ────────────────────
  *
  * Sequential also means this gets slower as venues connect, so once the sweep
  * outlasts the cron interval two runs overlap. The database survives that — the

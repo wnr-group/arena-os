@@ -12,7 +12,7 @@ import {
 
 /**
  * Connect a venue's own Google Business Profile, so its reviews can be shown on
- * its homepage (0106).
+ * its homepage (0128).
  *
  * Sits beside the Google review LINK on the same settings page, because an
  * owner thinks of both as "our Google stuff" — but they are two independent

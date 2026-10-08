@@ -57,7 +57,7 @@ export function dateInZone(iso: string | Date, timeZone: string): string {
 
 /**
  * An instant → a date WITH the year (dateWithYearInZone), and → a date with a time.
- * (Distinct from dateInZone() above, which words a date as 'Fri, 28 Aug'.) Both pinned (0107).
+ * (Distinct from dateInZone() above, which words a date as 'Fri, 28 Aug'.) Both pinned (0129).
  *
  * ── Why these exist ────────────────────────────────────────────────────────
  *

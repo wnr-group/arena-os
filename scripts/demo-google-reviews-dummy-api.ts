@@ -1,5 +1,5 @@
 /**
- * Drives the REAL Google fetcher against a DUMMY Google (0106).
+ * Drives the REAL Google fetcher against a DUMMY Google (0128).
  *
  * The one path scripts/test-google-business-reviews.ts cannot reach is the live
  * HTTP call: this project has no approved Business Profile quota and no verified
@@ -194,7 +194,7 @@ async function main() {
     check('no error recorded', r1.error === null, r1)
     // The malformed page-2 entry (no starRating) must be COUNTED, not just
     // silently dropped — SyncResult.skipped was structurally always 0 before
-    // the fetcher started reporting it (0107).
+    // the fetcher started reporting it (0129).
     check('the malformed entry is reported as skipped', r1.skipped === 1, r1.skipped)
     check('the real token exchange posted to /token', seen.some((s) => s.startsWith('POST /token')), seen)
     check('page 1 asked for the documented pageSize', seen.some((s) => s.includes('pageSize=50')), seen)
