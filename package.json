@@ -93,7 +93,8 @@
     "test:m16:grandfather": "tsx --import ./scripts/server-only-hook.mjs scripts/verify-grandfather-backfill.ts",
     "test:m16:createplan": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/verify-admin-create-plan.ts",
     "test:m16:period": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-assign-plan-period.ts",
-    "test:m16:payslip-downgrade": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-payslip-downgrade.ts"
+    "test:m16:payslip-downgrade": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-payslip-downgrade.ts",
+    "events:recurring": "tsx --import ./scripts/server-only-hook.mjs scripts/run-recurring-events.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
