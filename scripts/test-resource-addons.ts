@@ -161,7 +161,7 @@ async function main() {
   const names = pol.rows.map((r) => r.policyname)
   check(
     'S2 staff select + write + public select policies all shipped',
-    ['resource_type_addons_select', 'resource_type_addons_write', 'resource_type_addons_public_select'].every((n) => names.includes(n)),
+    ['resource_type_addons_select', 'resource_type_addons_write', 'resource_type_addons_lock', 'resource_type_addons_public_select'].every((n) => names.includes(n)),
   )
   const kindCheck = await q<{ def: string }>(
     `select pg_get_constraintdef(oid) as def from pg_constraint where conname='invoice_items_kind_check'`,
@@ -249,6 +249,49 @@ async function main() {
   await withUser(userId, (tx) => tx.execute(sql`update bookings set status='cancelled' where id=${bEdit.id}`))
   await expectReject('E5 edit refused on a cancelled booking', () => edit([{ addonId: camera, quantity: 1 }]), 'still open')
 
+  // ── non-manager roles: the FOR UPDATE catalog lock must work under RLS ────
+  const staffRoles = ['cashier', 'receptionist', 'floor_staff']
+  for (const [i, role] of staffRoles.entries()) {
+    const uid = (
+      await q<{ id: string }>(
+        `insert into users (email,password_hash) values ($1,'x') on conflict (email) do update set email=excluded.email returning id`,
+        [`${role}@${slug}.test`],
+      )
+    ).rows[0].id
+    const mid = (
+      await q<{ id: string }>(
+        `insert into memberships (tenant_id,user_id,role,status) values ($1,$2,$3,'active') returning id`,
+        [tenantId, uid, role],
+      )
+    ).rows[0].id
+    const tR = future(60 + i, 4)
+    let bId: string | null = null
+    try {
+      const b = await withUser(uid, (tx) =>
+        createBookingCore(tx, { tenantId, timezone: TZ, membershipId: mid }, {
+          branchId,
+          customerName: 'T',
+          customerPhone: '9876543210',
+          source: 'staff',
+          discount: 0,
+          deposit: 0,
+          slots: [{ resourceId: r1, startsAt: iso(tR), endsAt: iso(new Date(tR.getTime() + 2 * HOUR)), addons: [{ addonId: camera, quantity: 1 }] }],
+        }),
+      )
+      bId = b.id
+      check(`R1 ${role} can attach an add-on at booking creation`, (await bookingRow(b.id)).subtotal === '400.00')
+      const sId = (await q<{ id: string }>(`select id from booking_slots where booking_id=$1`, [b.id])).rows[0].id
+      await withUser(uid, (tx) =>
+        setSlotAddonsCore(tx, { tenantId, membershipId: mid }, { bookingId: b.id, bookingSlotId: sId, addons: [{ addonId: camera, quantity: 2 }] }),
+      )
+      check(`R2 ${role} can edit add-ons via the correction tool`, (await bookingRow(b.id)).subtotal === '600.00')
+    } catch (e) {
+      console.log('   (unexpected)', e)
+      check(`R1/R2 ${role} add-on attach/edit`, false)
+    }
+    if (bId) await withUser(uid, (tx) => tx.execute(sql`update bookings set status='cancelled' where id=${bId}`))
+  }
+
   // ── walk-in: hold, ends_at lockstep, checkout pricing ─────────────────────
   const wr = await mkResource('Walk Set')
   const startAt = new Date()
@@ -283,7 +326,7 @@ async function main() {
 
   // ── cleanup ───────────────────────────────────────────────────────────────
   await q(`delete from tenants where id=$1`, [tenantId])
-  await q(`delete from users where email=$1`, [`owner@${slug}.test`])
+  await q(`delete from users where email = any($1)`, [['owner', 'cashier', 'receptionist', 'floor_staff'].map((r) => `${r}@${slug}.test`)])
   await ownerPool.end()
   await appPool.end()
   console.log(`\n${pass} passed, ${fail} failed`)
