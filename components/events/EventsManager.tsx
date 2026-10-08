@@ -82,7 +82,7 @@ const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
 const label = 'text-sm font-medium text-muted-foreground'
 const btn =
-  'rounded-lg px-3.5 py-2.5 text-base font-medium uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-lg px-3.5 py-2.5 text-base font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
 
 /**
  * The statuses that HOLD resources — the client-side mirror of statusBlocks()
