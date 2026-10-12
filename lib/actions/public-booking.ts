@@ -119,7 +119,6 @@ export async function getPublicAvailability(
   const v = availabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
 
-  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
   await sweepTenantHolds(tenant.id)
 
@@ -167,7 +166,6 @@ export async function getPublicResourceAvailability(
   const v = resourceAvailabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
 
-  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
   await sweepTenantHolds(tenant.id)
 
@@ -218,7 +216,6 @@ export async function getPublicBookingDayRange(raw: z.input<typeof dayRangeInput
   const v = dayRangeInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
 
-  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
   await sweepTenantHolds(tenant.id)
 
@@ -298,7 +295,6 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
     return { error: 'That slot is no longer valid — please pick another.' }
   }
 
-  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
   await sweepTenantHolds(tenant.id)
 
@@ -471,7 +467,6 @@ export async function createPublicBooking(
       return { error: 'That slot is no longer valid — please pick another.' }
     }
 
-    // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
     await sweepTenantHolds(tenant.id)
 
@@ -744,7 +739,6 @@ export async function getPublicAddonAvailabilityForWindow(
     return { error: 'That slot is no longer valid — please pick another.' }
   }
 
-  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
 
   await sweepTenantHolds(tenant.id)
 

@@ -124,7 +124,7 @@ async function main() {
   console.log('\n── hold ──')
   const resA = await mkRes()
   const wA = slotFor(resA)
-  let a = await book(wA)
+  const a = await book(wA)
   let ra = await row(a.bookingId!)
   const holdMs = ra.payment_hold_expires_at ? ra.payment_hold_expires_at.getTime() - Date.now() : 0
   check('advance booking is pending_payment, not confirmed', a.awaitingOnlinePayment === true && ra.status === 'pending_payment', { a, ra })

@@ -99,7 +99,7 @@ async function main() {
   console.log('\n── POS: ₹500 advance on a ₹4,000 booking ──')
   const a = await makeBooking(10, { paid: '500.00' })
   const inv = await bill(a.bookingId)
-  let s = (await settlementOf(inv.invoiceId))!
+  const s = (await settlementOf(inv.invoiceId))!
   check('the bill is ₹4,000 with ₹500 already captured and ₹3,500 due', s.total === 4000 && s.paid === 500 && s.balance === 3500, s)
   check('…the advance is an already-captured ONLINE payment', s.payments.length === 1 && s.payments[0].method === 'online' && s.payments[0].status === 'captured')
   await withUser(userId, (tx) => completeBookingIfFullySettled(tx, tenantId, a.bookingId))

@@ -15,7 +15,7 @@
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-m36-qa.ts
  */
-import { createHmac, createHash, randomBytes, randomInt } from 'node:crypto'
+import { createHmac, randomBytes, randomInt } from 'node:crypto'
 import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
