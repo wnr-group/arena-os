@@ -10,6 +10,8 @@ import {
   getPublicAvailableStartsForType,
   getPublicAvailableStarts,
   getPublicDayRangeWindow,
+  getPublicAddonAvailability,
+  type PublicAddonAvailability,
 } from '@/lib/booking/public-availability'
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -520,4 +522,43 @@ export async function createBookingPaymentIntent(
   } catch (e) {
     return failBookingPayment(e)
   }
+}
+
+const addonAvailabilityInput = z.object({
+  resourceTypeId: z.string().uuid(),
+  startsAt: z.string().datetime({ offset: true }),
+  endsAt: z.string().datetime({ offset: true }),
+})
+
+/** Longest window the picker may ask about (a multi-day studio hire). */
+const ADDON_WINDOW_MAX_MS = 31 * 24 * 60 * 60_000
+
+export type PublicAddonAvailabilityResult = { addons: PublicAddonAvailability[] } | { error: string }
+
+/**
+ * M35 #2: live add-on stock for the chosen booking window — what the booking
+ * page's add-on picker renders. Anonymous and runs a stock query per call, so
+ * it has its own tighter rate-limit budget. Exposes only a capped
+ * `available` count, never total stock.
+ */
+export async function getPublicAddonAvailabilityForWindow(
+  raw: z.input<typeof addonAvailabilityInput>,
+): Promise<PublicAddonAvailabilityResult> {
+  if (!rateLimit(`addons:${await callerIp()}`, 30, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return tenant
+
+  const v = addonAvailabilityInput.safeParse(raw)
+  if (!v.success) return { error: 'Invalid request.' }
+  const startsAt = new Date(v.data.startsAt)
+  const endsAt = new Date(v.data.endsAt)
+  if (endsAt <= startsAt || endsAt.getTime() - startsAt.getTime() > ADDON_WINDOW_MAX_MS) {
+    return { error: 'That slot is no longer valid — please pick another.' }
+  }
+
+  const branch = await getPublicBranch(tenant.id)
+  if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
+
+  return { addons: await getPublicAddonAvailability(tenant.id, branch.id, [v.data.resourceTypeId], startsAt, endsAt) }
 }
