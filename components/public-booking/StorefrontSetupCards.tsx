@@ -56,7 +56,7 @@ function CardLink({ card, showType }: { card: Card; showType: boolean }) {
         <p className="line-clamp-1 text-lg font-bold text-foreground transition group-hover:text-primary">{card.title}</p>
         <p className="mt-1 line-clamp-1 text-sm font-medium text-muted-foreground">
           {card.setLabel}
-          {showType ? ` · ${card.typeName}` : ''}
+          {showType && card.typeName !== card.setLabel ? ` · ${card.typeName}` : ''}
         </p>
         {card.description ? (
           <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">{card.description}</p>
