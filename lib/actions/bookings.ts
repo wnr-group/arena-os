@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
-import { bookings, bookingSlots } from '@/db/schema'
+import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
@@ -798,6 +798,41 @@ export async function setBookingStatus<S extends BookingStatus>(
         if (row?.channel === 'walkin') {
           throw new BookingError('A walk-in cannot be marked no-show — it is already checked in.')
         }
+      }
+
+      // Cancel serialises with the Razorpay webhook on the booking row. The
+      // webhook takes this same FOR UPDATE before it settles an intent and moves
+      // pending_payment -> confirmed, so a cancel that raced it waits, then reads
+      // the COMMITTED status and intents below instead of overwriting `confirmed`
+      // with a stale view (paid intent + cancelled booking + no refund flag).
+      // bookings_rw lets every active member lock the row (FOR UPDATE needs the
+      // UPDATE policy). Already cancelled -> nothing to do: leave the original
+      // cancelled_at / reason / refund flag untouched.
+      if (status === 'cancelled') {
+        const [locked] = await tx
+          .select({ status: bookings.status })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .for('update')
+          .limit(1)
+        if (locked?.status === 'cancelled') return
+
+        // A paid online deposit is money the venue now owes back, whatever the
+        // industry or amount — same flag the customer portal cancel raises
+        // (lib/portal/cancel.ts). Over-flagging is safe; under-flagging is not.
+        const [paid] = await tx
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, ctx.tenant.id),
+              eq(paymentIntents.bookingId, id),
+              eq(paymentIntents.purpose, 'booking_deposit'),
+              eq(paymentIntents.status, 'paid'),
+            ),
+          )
+          .limit(1)
+        if (paid) set.depositReviewRequired = true
       }
 
       // M26 #6: mirror the online-deposit safety net (lib/portal/cancel.ts's
