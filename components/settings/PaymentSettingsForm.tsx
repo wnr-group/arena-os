@@ -100,6 +100,7 @@ export function PaymentSettingsForm({
       }
       setWebhookSecret('')
       setSaved(true)
+      setNotice(r.notice ?? null)
       router.refresh()
     })
   }

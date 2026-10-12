@@ -25,7 +25,7 @@ export function BookingPaymentCard({
   mode: Mode
   advanceType: AdvanceType | null
   advanceValue: number | null
-  /** Razorpay key id + secret are both stored. */
+  /** Razorpay key id, key secret and webhook secret are all stored. */
   credentialsReady: boolean
 }) {
   const router = useRouter()
@@ -94,7 +94,7 @@ export function BookingPaymentCard({
 
       {!credentialsReady && (
         <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700">
-          Collecting an advance or the full amount needs your Razorpay key ID and key secret.{' '}
+          Collecting an advance or the full amount needs your Razorpay key ID, key secret and webhook secret.{' '}
           <a href="#razorpayKeyId" className="font-medium underline">
             Add them above
           </a>{' '}

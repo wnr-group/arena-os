@@ -299,9 +299,15 @@ export async function saveBookingPaymentMode(
     hasWebhookSecret: false,
     ...DEFAULT_MODE_VIEW,
   }
-  if ((v.mode === 'advance' || v.mode === 'full') && !(before.razorpayKeyId && before.hasSecret)) {
+  // All three: key id + key secret open checkout, the webhook secret lets the signed
+  // payment.captured webhook be verified. Without it a customer could pay and the
+  // booking would never confirm.
+  if (
+    (v.mode === 'advance' || v.mode === 'full') &&
+    !(before.razorpayKeyId && before.hasSecret && before.hasWebhookSecret)
+  ) {
     throw new PaymentModeError(
-      'Save your Razorpay key ID and key secret first — online payment can’t be required without them.',
+      'Save your Razorpay key ID, key secret and webhook secret first — online payment can’t be required without them.',
     )
   }
   const advanceValue = v.advanceValue == null ? null : v.advanceValue.toFixed(2)
@@ -330,10 +336,35 @@ export async function saveBookingPaymentMode(
   })
 }
 
-/** Remove the stored webhook secret. Leaves the API key secret untouched. */
-export async function clearWebhookSecret(tx: Db, tenantId: string): Promise<void> {
+/**
+ * Remove the stored webhook secret. Leaves the API key secret untouched. Without it a
+ * payment can never be confirmed, so advance / full revert to "pay at venue" in the same
+ * statement (the DB CHECK would refuse anything else), with an audit row.
+ */
+export async function clearWebhookSecret(
+  tx: Db,
+  tenantId: string,
+  actorMembershipId?: string,
+): Promise<{ revertedToVenue: boolean }> {
+  const before = await loadPaymentSettingsView(tx, tenantId)
+  const revert = before?.onlinePaymentMode === 'advance' || before?.onlinePaymentMode === 'full'
   await tx
     .update(paymentSettings)
-    .set({ razorpayWebhookSecretEncrypted: null })
+    .set({
+      razorpayWebhookSecretEncrypted: null,
+      ...(revert ? { onlinePaymentMode: 'venue' as const, advanceType: null, advanceValue: null } : {}),
+    })
     .where(eq(paymentSettings.tenantId, tenantId))
+  if (revert && before) {
+    await tx.insert(auditLog).values({
+      tenantId,
+      actorMembershipId: actorMembershipId ?? null,
+      action: 'payment_settings.booking_mode_changed',
+      entityType: 'payment_settings',
+      entityId: tenantId,
+      before: modeSnapshot(before),
+      after: { mode: 'venue', advanceType: null, advanceValue: null, reason: 'razorpay_webhook_secret_removed' },
+    })
+  }
+  return { revertedToVenue: revert }
 }

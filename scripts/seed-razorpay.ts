@@ -12,11 +12,12 @@ export async function seedRazorpay(
 ): Promise<void> {
   const { encryptSecret } = await import('../lib/security/encryption')
   await query(
-    `insert into payment_settings (tenant_id, razorpay_key_id, razorpay_key_secret_encrypted, online_payment_mode, advance_type, advance_value)
-     values ($1,'rzp_test_seed',$2,$3,$4,$5)
+    `insert into payment_settings (tenant_id, razorpay_key_id, razorpay_key_secret_encrypted, razorpay_webhook_secret_encrypted, online_payment_mode, advance_type, advance_value)
+     values ($1,'rzp_test_seed',$2,$6,$3,$4,$5)
      on conflict (tenant_id) do update set razorpay_key_id=excluded.razorpay_key_id,
        razorpay_key_secret_encrypted=excluded.razorpay_key_secret_encrypted,
+       razorpay_webhook_secret_encrypted=coalesce(payment_settings.razorpay_webhook_secret_encrypted, excluded.razorpay_webhook_secret_encrypted),
        online_payment_mode=excluded.online_payment_mode, advance_type=excluded.advance_type, advance_value=excluded.advance_value`,
-    [tenantId, encryptSecret('seed-secret', tenantId), mode, advance?.type ?? null, advance?.value ?? null],
+    [tenantId, encryptSecret('seed-secret', tenantId), mode, advance?.type ?? null, advance?.value ?? null, encryptSecret('seed-webhook-secret', tenantId)],
   )
 }

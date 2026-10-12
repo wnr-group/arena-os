@@ -36,7 +36,7 @@ export default async function PaymentSettingsPage() {
         mode={settings.onlinePaymentMode}
         advanceType={settings.advanceType}
         advanceValue={settings.advanceValue}
-        credentialsReady={Boolean(settings.razorpayKeyId && settings.hasSecret)}
+        credentialsReady={Boolean(settings.razorpayKeyId && settings.hasSecret && settings.hasWebhookSecret)}
       />
     </div>
   )

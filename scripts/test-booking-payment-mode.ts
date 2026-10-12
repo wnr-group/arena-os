@@ -32,7 +32,7 @@ const check = (label: string, cond: boolean, got?: unknown) => {
 }
 
 async function main() {
-  const { saveBookingPaymentSettings, savePaymentSettings, clearRazorpaySecret } = await import('../lib/actions/payment-settings')
+  const { saveBookingPaymentSettings, savePaymentSettings, clearRazorpaySecret, clearRazorpayWebhookSecret } = await import('../lib/actions/payment-settings')
   const { getPaymentSettingsForClient } = await import('../lib/settings/payment-settings')
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -94,6 +94,12 @@ async function main() {
 
   const creds = await savePaymentSettings({ razorpayKeyId: 'rzp_test_abc123', razorpayKeySecret: 'secret-value-123' })
   check('manager saves Razorpay credentials', !creds.error, creds)
+  const noHook = await saveBookingPaymentSettings({ mode: 'full' })
+  check('key id + key secret alone are not enough: full is refused until the webhook secret is saved', Boolean(noHook.error) && /webhook secret/i.test(noHook.error ?? ''), noHook)
+  const rawNoHook = await owner.query(`update payment_settings set online_payment_mode='full' where tenant_id=$1`, [A.tenantId]).then(() => 'ok', (e) => String(e.code))
+  check('…and the DB CHECK refuses it too (23514)', rawNoHook === '23514', rawNoHook)
+  const hook = await savePaymentSettings({ razorpayKeyId: 'rzp_test_abc123', razorpayWebhookSecret: 'whsec-value-123' })
+  check('manager saves the webhook secret', !hook.error, hook)
 
   console.log('\n── validation ──')
   const bad: [string, Parameters<typeof saveBookingPaymentSettings>[0]][] = [
@@ -174,6 +180,20 @@ async function main() {
   check('full is refused again now the secret is gone', Boolean(again.error), again)
   const plain = await clearRazorpaySecret()
   check('clearing when in venue mode gives no notice', !plain.error && !plain.notice, plain)
+
+  console.log('── removing the webhook secret ──')
+  as(mgr, slugA)
+  await savePaymentSettings({ razorpayKeyId: 'rzp_test_abc123', razorpayKeySecret: 'secret-value-123' })
+  const full2 = await saveBookingPaymentSettings({ mode: 'full' })
+  check('with all three credentials, full saves again', !full2.error && (await row()).online_payment_mode === 'full', full2)
+  const clrHook = await clearRazorpayWebhookSecret()
+  check('removing the webhook secret while in full mode succeeds with a notice', !clrHook.error && /webhook secret/i.test(clrHook.notice ?? ''), clrHook)
+  rw = await row()
+  check('…and the mode reverted to venue', rw.online_payment_mode === 'venue' && rw.advance_type === null, rw)
+  const lastHook = (await audits()).at(-1)!
+  check('…audited as a revert', lastHook.before.mode === 'full' && lastHook.after.mode === 'venue', lastHook)
+  const clearRaw = await owner.query(`update payment_settings set online_payment_mode='advance', advance_type='fixed', advance_value=10 where tenant_id=$1`, [A.tenantId]).then(() => 'ok', (e) => String(e.code))
+  check('out-of-band advance without a webhook secret is refused by the DB (23514)', clearRaw === '23514', clearRaw)
 
   await q(`delete from audit_log where tenant_id = any($1)`, [[A.tenantId, B.tenantId]]).catch(() => undefined)
   for (const t of [A, B]) await q('delete from tenants where id=$1', [t.tenantId])

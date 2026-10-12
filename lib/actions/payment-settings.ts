@@ -135,9 +135,17 @@ export async function clearRazorpaySecret(): Promise<SaveResult> {
 export async function clearRazorpayWebhookSecret(): Promise<SaveResult> {
   try {
     const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) => clearWebhookSecret(tx, ctx.tenant.id))
+    const { revertedToVenue } = await withUser(ctx.user.id, (tx) =>
+      clearWebhookSecret(tx, ctx.tenant.id, ctx.membershipId),
+    )
     revalidatePath('/settings/payments')
-    return { success: true }
+    return revertedToVenue
+      ? {
+          success: true,
+          notice:
+            'Booking payments were switched back to “Pay at venue” because online payments need the webhook secret.',
+        }
+      : { success: true }
   } catch (e) {
     return fail(e, 'clear webhook secret')
   }
