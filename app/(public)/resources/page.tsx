@@ -2,13 +2,20 @@ import { notFound } from 'next/navigation'
 import { Building2, Boxes, Gamepad2, Glasses, Music4, Mic2, Radio, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
-import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
+import {
+  getPublicBranch,
+  getPublicResourceTypes,
+  getPublicStorefrontSetups,
+  getPublicTypeAddons,
+} from '@/lib/booking/public-availability'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
 import { SitePageShell } from '@/components/public-booking/SitePageShell'
 import { PublicFooter } from '@/components/public-booking/PublicFooter'
 import { ResourceTypeCard } from '@/components/public-booking/ResourceTypeCard'
+import { StorefrontSetupCards } from '@/components/public-booking/StorefrontSetupCards'
+import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 
 const INDUSTRY_LABELS: Record<string, string> = {
   gaming_cafe: 'Gaming Cafe',
@@ -44,6 +51,15 @@ export default async function ResourcesPage() {
 
   const branch = await getPublicBranch(tenant.id)
   const resourceTypes = branch ? await getPublicResourceTypes(tenant.id, branch.id) : []
+  // Studio industries browse by setup (M35); everyone else keeps the type grid.
+  const studio = industryHasStudioSetups(tenant.industry)
+  const [setups, addons] =
+    studio && branch
+      ? await Promise.all([
+          getPublicStorefrontSetups(tenant.id, branch.id, tenant.industry),
+          getPublicTypeAddons(tenant.id, branch.id, resourceTypes.map((t) => t.id)),
+        ])
+      : [[], []]
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
 
@@ -86,6 +102,8 @@ export default async function ResourcesPage() {
               <div className="py-16 text-center">
                 <p className="text-lg text-muted-foreground">Online booking isn&apos;t set up for this venue yet.</p>
               </div>
+            ) : studio ? (
+              <StorefrontSetupCards types={resourceTypes} setups={setups} addons={addons} currency={tenant.currency} />
             ) : (
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {resourceTypes.map((type) => (
