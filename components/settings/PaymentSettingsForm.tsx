@@ -48,6 +48,7 @@ export function PaymentSettingsForm({
   const [webhookSecret, setWebhookSecret] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
   function touch() {
@@ -120,6 +121,7 @@ export function PaymentSettingsForm({
       }
       setKeySecret('')
       setSaved(true)
+      setNotice(r.notice ?? null)
       router.refresh()
     })
   }
@@ -258,6 +260,12 @@ export function PaymentSettingsForm({
           </button>
         )}
       </div>
+
+      {notice && (
+        <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700">
+          {notice}
+        </p>
+      )}
 
       {error && (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

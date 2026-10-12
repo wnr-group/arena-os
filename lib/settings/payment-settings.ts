@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import type * as schema from '@/db/schema'
-import { paymentSettings } from '@/db/schema'
+import { auditLog, paymentSettings } from '@/db/schema'
 import { encryptSecret } from '@/lib/security/encryption'
 import type { ActiveContext } from '@/lib/tenant/context'
 
@@ -30,7 +30,62 @@ export type PaymentSettingsView = {
   hasSecret: boolean
   /** Whether a WEBHOOK secret is stored. Same rule — never leaves the server. */
   hasWebhookSecret: boolean
+  /** M36 #1 — what the storefront collects at booking time. */
+  onlinePaymentMode: OnlinePaymentMode
+  advanceType: 'fixed' | 'percent' | null
+  advanceValue: number | null
 }
+
+export const ONLINE_PAYMENT_MODES = ['optional_full', 'venue', 'advance', 'full'] as const
+export type OnlinePaymentMode = (typeof ONLINE_PAYMENT_MODES)[number]
+
+const DEFAULT_MODE_VIEW = {
+  onlinePaymentMode: 'optional_full' as OnlinePaymentMode,
+  advanceType: null,
+  advanceValue: null,
+}
+
+/**
+ * The booking-payment mode the owner picks (M36 #1). `optional_full` is the
+ * legacy state — it can be shown but never newly chosen, so it is not
+ * selectable here. Mirrors the DB CHECK: advance needs a type and a value
+ * (fixed > 0, percent in (0,100)); any other mode carries neither.
+ */
+export const bookingPaymentModeSchema = z
+  .object({
+    mode: z.enum(['venue', 'advance', 'full']),
+    advanceType: z.enum(['fixed', 'percent']).optional().nullable(),
+    advanceValue: z.number().finite().optional().nullable(),
+  })
+  .transform((v, ctx) => {
+    if (v.mode !== 'advance') return { mode: v.mode, advanceType: null, advanceValue: null }
+    const type = v.advanceType
+    const value = v.advanceValue == null ? null : Math.round(v.advanceValue * 100) / 100
+    if (!type || value == null) {
+      ctx.addIssue({ code: 'custom', message: 'Choose how much to collect as the advance.' })
+      return z.NEVER
+    }
+    if (value <= 0) {
+      ctx.addIssue({ code: 'custom', message: 'The advance must be greater than zero.' })
+      return z.NEVER
+    }
+    if (type === 'percent' && value >= 100) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'A percentage advance must be below 100% — choose "Collect full amount" instead.',
+      })
+      return z.NEVER
+    }
+    if (value > 9_999_999_999) {
+      ctx.addIssue({ code: 'custom', message: 'That advance is too large.' })
+      return z.NEVER
+    }
+    return { mode: v.mode, advanceType: type, advanceValue: value }
+  })
+
+export type BookingPaymentModeInput = z.input<typeof bookingPaymentModeSchema>
+
+export class PaymentModeError extends Error {}
 
 /**
  * Razorpay key ids look like `rzp_test_xxxxxxxxxxxxxx` / `rzp_live_…`, but the
@@ -91,7 +146,7 @@ export async function getPaymentSettingsForClient(
   const row = await withUser(ctx.user.id, (tx) =>
     loadPaymentSettingsView(tx, ctx.tenant.id),
   )
-  return row ?? { razorpayKeyId: null, hasSecret: false, hasWebhookSecret: false }
+  return row ?? { razorpayKeyId: null, hasSecret: false, hasWebhookSecret: false, ...DEFAULT_MODE_VIEW }
 }
 
 /** The same safe projection, against a caller-supplied transaction. */
@@ -99,9 +154,12 @@ export async function loadPaymentSettingsView(
   tx: Db,
   tenantId: string,
 ): Promise<PaymentSettingsView | null> {
-  const [row] = await tx
+  const [r] = await tx
     .select({
       razorpayKeyId: paymentSettings.razorpayKeyId,
+      onlinePaymentMode: paymentSettings.onlinePaymentMode,
+      advanceType: paymentSettings.advanceType,
+      advanceValue: paymentSettings.advanceValue,
       // Computed IN Postgres: the ciphertext never leaves the database.
       hasSecret: sql<boolean>`${paymentSettings.razorpayKeySecretEncrypted} is not null`,
       hasWebhookSecret: sql<boolean>`${paymentSettings.razorpayWebhookSecretEncrypted} is not null`,
@@ -109,7 +167,8 @@ export async function loadPaymentSettingsView(
     .from(paymentSettings)
     .where(eq(paymentSettings.tenantId, tenantId))
     .limit(1)
-  return row ?? null
+  if (!r) return null
+  return { ...r, advanceValue: r.advanceValue == null ? null : Number(r.advanceValue) }
 }
 
 /**
@@ -185,11 +244,90 @@ export async function upsertPaymentSettings(
  * Separate from the save path so that clearing a secret is always an explicit
  * act, never the side effect of an empty form field.
  */
-export async function clearPaymentSecret(tx: Db, tenantId: string): Promise<void> {
+export async function clearPaymentSecret(
+  tx: Db,
+  tenantId: string,
+  actorMembershipId?: string,
+): Promise<{ revertedToVenue: boolean }> {
+  const before = await loadPaymentSettingsView(tx, tenantId)
+  // Without a secret the storefront cannot take payment, so a mode that
+  // requires it must not outlive it: revert to "pay at venue" in the same
+  // statement (the DB CHECK would refuse anything else).
+  const revert = before?.onlinePaymentMode === 'advance' || before?.onlinePaymentMode === 'full'
   await tx
     .update(paymentSettings)
-    .set({ razorpayKeySecretEncrypted: null })
+    .set({
+      razorpayKeySecretEncrypted: null,
+      ...(revert ? { onlinePaymentMode: 'venue' as const, advanceType: null, advanceValue: null } : {}),
+    })
     .where(eq(paymentSettings.tenantId, tenantId))
+  if (revert && before) {
+    await tx.insert(auditLog).values({
+      tenantId,
+      actorMembershipId: actorMembershipId ?? null,
+      action: 'payment_settings.booking_mode_changed',
+      entityType: 'payment_settings',
+      entityId: tenantId,
+      before: modeSnapshot(before),
+      after: { mode: 'venue', advanceType: null, advanceValue: null, reason: 'razorpay_secret_removed' },
+    })
+  }
+  return { revertedToVenue: revert }
+}
+
+function modeSnapshot(v: Pick<PaymentSettingsView, 'onlinePaymentMode' | 'advanceType' | 'advanceValue'>) {
+  return { mode: v.onlinePaymentMode, advanceType: v.advanceType, advanceValue: v.advanceValue }
+}
+
+/**
+ * Set the booking-payment mode (M36 #1). Runs inside the caller's RLS
+ * transaction, so a non-manager's write is also refused by payment_settings_write.
+ * advance / full require a stored key id AND secret — checked here for a clear
+ * message and again by the payment_settings_online_mode_needs_credentials CHECK.
+ * Writes an audit row (who, old → new) in the same transaction.
+ */
+export async function saveBookingPaymentMode(
+  tx: Db,
+  tenantId: string,
+  actorMembershipId: string,
+  input: BookingPaymentModeInput,
+): Promise<void> {
+  const v = bookingPaymentModeSchema.parse(input)
+  const before = (await loadPaymentSettingsView(tx, tenantId)) ?? {
+    razorpayKeyId: null,
+    hasSecret: false,
+    hasWebhookSecret: false,
+    ...DEFAULT_MODE_VIEW,
+  }
+  if ((v.mode === 'advance' || v.mode === 'full') && !(before.razorpayKeyId && before.hasSecret)) {
+    throw new PaymentModeError(
+      'Save your Razorpay key ID and key secret first — online payment can’t be required without them.',
+    )
+  }
+  const advanceValue = v.advanceValue == null ? null : v.advanceValue.toFixed(2)
+  // UPDATE first: an INSERT ... ON CONFLICT checks the proposed row against the
+  // credentials CHECK before it ever reaches the conflict, so advance/full on an
+  // existing row would be refused. Only `venue` can reach the insert (no row yet
+  // means no credentials, which the guard above enforces).
+  const updated = await tx
+    .update(paymentSettings)
+    .set({ onlinePaymentMode: v.mode, advanceType: v.advanceType, advanceValue })
+    .where(eq(paymentSettings.tenantId, tenantId))
+    .returning({ tenantId: paymentSettings.tenantId })
+  if (updated.length === 0) {
+    await tx
+      .insert(paymentSettings)
+      .values({ tenantId, onlinePaymentMode: v.mode, advanceType: v.advanceType, advanceValue })
+  }
+  await tx.insert(auditLog).values({
+    tenantId,
+    actorMembershipId,
+    action: 'payment_settings.booking_mode_changed',
+    entityType: 'payment_settings',
+    entityId: tenantId,
+    before: modeSnapshot(before),
+    after: { mode: v.mode, advanceType: v.advanceType, advanceValue: v.advanceValue },
+  })
 }
 
 /** Remove the stored webhook secret. Leaves the API key secret untouched. */

@@ -9,7 +9,10 @@ import {
   clearPaymentSecret,
   clearWebhookSecret,
   loadPaymentSettingsView,
+  PaymentModeError,
   paymentSettingsSchema,
+  saveBookingPaymentMode,
+  type BookingPaymentModeInput,
   upsertPaymentSettings,
 } from '@/lib/settings/payment-settings'
 
@@ -25,11 +28,11 @@ import {
  * → database. It is never echoed back, never logged, and never stored.
  */
 
-type SaveResult = { error?: string; success?: true }
+type SaveResult = { error?: string; success?: true; notice?: string }
 
 /** Only safe text reaches the UI — no exception message is ever passed through. */
 function fail(e: unknown, op: string): SaveResult {
-  if (e instanceof AuthError) return { error: e.message }
+  if (e instanceof AuthError || e instanceof PaymentModeError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: e.issues[0]?.message ?? 'Check the values entered.' }
   if (e instanceof EncryptionConfigError) {
     // The message names the env var but never its value — safe to surface, and
@@ -105,9 +108,17 @@ export async function savePaymentSettings(
 export async function clearRazorpaySecret(): Promise<SaveResult> {
   try {
     const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) => clearPaymentSecret(tx, ctx.tenant.id))
+    const { revertedToVenue } = await withUser(ctx.user.id, (tx) =>
+      clearPaymentSecret(tx, ctx.tenant.id, ctx.membershipId),
+    )
     revalidatePath('/settings/payments')
-    return { success: true }
+    return revertedToVenue
+      ? {
+          success: true,
+          notice:
+            'Booking payments were switched back to “Pay at venue” because online payments need the key secret.',
+        }
+      : { success: true }
   } catch (e) {
     return fail(e, 'clear secret')
   }
@@ -129,5 +140,28 @@ export async function clearRazorpayWebhookSecret(): Promise<SaveResult> {
     return { success: true }
   } catch (e) {
     return fail(e, 'clear webhook secret')
+  }
+}
+
+/**
+ * Choose what the storefront collects at booking time (M36 #1).
+ *
+ * Manager-only at both layers (requireManager here, payment_settings_write RLS).
+ * Validation lives in bookingPaymentModeSchema and again in DB CHECKs, so a
+ * crafted call cannot store an invalid combination. advance / full are refused
+ * unless Razorpay credentials are stored.
+ */
+export async function saveBookingPaymentSettings(
+  input: BookingPaymentModeInput,
+): Promise<SaveResult> {
+  try {
+    const ctx = await requireManager()
+    await withUser(ctx.user.id, (tx) =>
+      saveBookingPaymentMode(tx, ctx.tenant.id, ctx.membershipId, input),
+    )
+    revalidatePath('/settings/payments')
+    return { success: true }
+  } catch (e) {
+    return fail(e, 'save booking mode')
   }
 }

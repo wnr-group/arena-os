@@ -29,6 +29,8 @@ import {
 } from 'drizzle-orm/pg-core'
 
 // ── enums ────────────────────────────────────────────────────────────────────
+export const onlinePaymentMode = pgEnum('online_payment_mode', ['optional_full', 'venue', 'advance', 'full'])
+export const advanceType = pgEnum('advance_type', ['fixed', 'percent'])
 export const tenantStatus = pgEnum('tenant_status', ['trial', 'active', 'suspended', 'cancelled'])
 export const tenantIndustry = pgEnum('tenant_industry', [
   'gaming_cafe',
@@ -1715,6 +1717,10 @@ export const paymentSettings = pgTable('payment_settings', {
    * AES-256-GCM storage contract; never selected into anything client-facing.
    */
   razorpayWebhookSecretEncrypted: text('razorpay_webhook_secret_encrypted'),
+  /** M36 #1 (migration 0114): what the storefront collects at booking time. */
+  onlinePaymentMode: onlinePaymentMode('online_payment_mode').notNull().default('optional_full'),
+  advanceType: advanceType('advance_type'),
+  advanceValue: numeric('advance_value', { precision: 12, scale: 2 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
