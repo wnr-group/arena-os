@@ -19,6 +19,7 @@ import {
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { resolveOnlineCharge, OnlineChargeError, PAYMENT_HOLD_MINUTES, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { loadOnlinePaymentPolicy } from '@/lib/settings/online-payment-policy'
 import { round2 } from '@/lib/billing/pricing'
 import { pgError } from '@/lib/utils/errors'
@@ -118,6 +119,10 @@ export async function getPublicAvailability(
   const v = availabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
 
+  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+  await sweepTenantHolds(tenant.id)
+
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
@@ -161,6 +166,10 @@ export async function getPublicResourceAvailability(
 
   const v = resourceAvailabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+
+  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -208,6 +217,10 @@ export async function getPublicBookingDayRange(raw: z.input<typeof dayRangeInput
 
   const v = dayRangeInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+
+  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -284,6 +297,10 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
   if (new Date(v.data.endsAt) <= new Date(v.data.startsAt)) {
     return { error: 'That slot is no longer valid — please pick another.' }
   }
+
+  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -453,6 +470,10 @@ export async function createPublicBooking(
     if (new Date(v.endsAt) <= new Date(v.startsAt)) {
       return { error: 'That slot is no longer valid — please pick another.' }
     }
+
+    // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+    await sweepTenantHolds(tenant.id)
 
     const branch = await getPublicBranch(tenant.id)
     if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -687,6 +708,10 @@ export async function getPublicAddonAvailabilityForWindow(
   if (endsAt <= startsAt || endsAt.getTime() - startsAt.getTime() > ADDON_WINDOW_MAX_MS) {
     return { error: 'That slot is no longer valid — please pick another.' }
   }
+
+  // M36 #4: an expired unpaid hold must never block a real customer, even if the scheduler is late.
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }

@@ -9,6 +9,7 @@ import {
   verifyWebhookSignature,
 } from '@/lib/payments/razorpay-webhook'
 import { applyVerifiedPaymentWebhook, logIgnoredEvent } from '@/lib/payments/webhook'
+import { sendBookingPaymentNotification } from '@/lib/notifications/booking-payment'
 import { tenantSlugFromHost } from '@/lib/tenant/subdomain'
 
 /**
@@ -161,6 +162,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       console.info(
         `[razorpay-webhook] ${outcome.purpose} captured for tenant ${tenant.tenantId}, intent ${outcome.intentId}`,
       )
+    }
+
+    // Tell the customer once, after commit (M36). 'unchanged' and every
+    // duplicate/ignored/rejected outcome sends nothing.
+    if (
+      outcome.kind === 'processed' &&
+      outcome.purpose === 'booking_deposit' &&
+      outcome.bookingOutcome !== 'unchanged'
+    ) {
+      await sendBookingPaymentNotification(tenant.tenantId, outcome.bookingId, outcome.bookingOutcome)
     }
 
     return ok(outcome.kind)

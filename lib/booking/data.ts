@@ -280,6 +280,7 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         total: bookings.total,
         deposit: bookings.deposit,
         paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
+        depositReviewRequired: bookings.depositReviewRequired,
         cancellationReason: bookings.cancellationReason,
         // M26 #5: cash collected before this booking existed (M26 #1/#4) —
         // '0.00' for every non-gaming_cafe tenant (server-refused at

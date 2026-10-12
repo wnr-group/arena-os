@@ -28,6 +28,7 @@
     "test:resource-setups-settings": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-resource-setups-settings.ts",
     "test:studio-setups-multi-set": "tsx --import ./scripts/server-only-hook.mjs scripts/test-studio-setups-multi-set.ts",
     "test:studio-setups-public": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-studio-setups-public.ts",
+    "bookings:release-holds": "tsx --import ./scripts/server-only-hook.mjs scripts/release-expired-holds.ts",
     "billing:dunning": "tsx --import ./scripts/server-only-hook.mjs scripts/run-dunning.ts",
     "_comment:m21": "Same both-hooks rule as M16 above — start/checkout/extend/combined-billing drive the real server actions (cookies()/revalidatePath()) so both hooks are required; revenue-channel-split only reads report functions, so it needs just the server-only stub.",
     "test:m21": "npm run test:elapsed-time-pricing && npm run test:per-head-pricing && npm run test:m21:start-walkin && npm run test:m21:checkout-walkin && npm run test:m21:extend-timed-walkin && npm run test:m21:combined-billing && npm run test:m21:revenue-channel-split",

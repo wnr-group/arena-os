@@ -65,6 +65,8 @@ type Slot = {
   deposit: string
   /** M36 #3: when an unpaid pending_payment hold lapses (ISO); null otherwise. */
   paymentHoldExpiresAt?: string | null
+  /** A payment is on record for a booking that no longer holds a slot — refund by hand. */
+  depositReviewRequired?: boolean
   /** M26 #5: this SLOT's own frozen total (booking_slots.slot_total) —
    *  summed across a booking's active slots to get its "known total" for
    *  the live, pre-bill "Part paid" indicator. Not the same figure as
@@ -799,6 +801,11 @@ export function BookingsView({
                             ? ` (expires ${timeInZone(b.representative.paymentHoldExpiresAt, timeZone)})`
                             : ''}
                         </span>
+                        {b.representative.depositReviewRequired && (
+                          <span className="ml-1.5 inline-flex items-center rounded-full bg-destructive/10 px-2 py-1 text-xs font-semibold text-destructive">
+                            Paid — refund required
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {(() => {
