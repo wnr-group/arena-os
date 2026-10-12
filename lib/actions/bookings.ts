@@ -759,6 +759,12 @@ export async function setBookingStatus<S extends BookingStatus>(
     }
 
     await withUser(ctx.user.id, async (tx) => {
+      // 'pending_payment' is owned by createBookingCore (create) and the Razorpay webhook
+      // (confirm); a staff action must never put a booking INTO it — it would have no
+      // hold expiry, so nothing would ever release or confirm it.
+      if ((status as string) === 'pending_payment') {
+        throw new BookingError('A booking cannot be put back into awaiting payment.')
+      }
       // M36 #3: an unpaid online booking is held, not confirmed — staff can
       // cancel it (to free the slot) but cannot check it in, complete it or
       // mark it no-show until the webhook confirms the payment.
