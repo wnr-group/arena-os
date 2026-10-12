@@ -144,7 +144,7 @@ export function BookingConfirmation({
           <SummaryRow icon={CheckCircle2} label="Paid online" value={formatMoney(booking.paidOnline, tenant.currency)} />
         )}
         {(booking.status === 'confirmed' || booking.status === 'checked_in') && (
-          <SummaryRow icon={Wallet} label="Balance due at venue" value={formatMoney(booking.balanceDue, tenant.currency)} />
+          <SummaryRow icon={Wallet} label="Balance due at venue (before tax)" value={formatMoney(booking.balanceDue, tenant.currency)} />
         )}
       </div>
 

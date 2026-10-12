@@ -186,7 +186,7 @@ async function main() {
   staffCtx()
   const ci2 = await setBookingStatus(a.bookingId!, 'checked_in')
   check('once confirmed, staff can check it in as usual', !ci2.error, ci2)
-  const back = await setBookingStatus(a.bookingId!, 'pending_payment' as never)
+  const back = await (setBookingStatus as unknown as (id: string, s: string) => Promise<{ error?: string }>)(a.bookingId!, 'pending_payment')
   check('staff cannot push a booking back INTO awaiting payment (no hold expiry would ever release it)', Boolean(back.error) && (await row(a.bookingId!)).status === 'checked_in', back)
 
   console.log('\n── cancel frees the slot ──')

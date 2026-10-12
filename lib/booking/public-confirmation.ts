@@ -22,7 +22,9 @@ export type PublicBookingConfirmation = {
   deposit: string
   /** Rupees actually received online (a verified, paid gateway intent), 2dp. */
   paidOnline: string
-  /** total − paidOnline, never below zero, 2dp: what is settled at the venue. */
+  /** bookings.total − paidOnline, never below zero, 2dp. bookings.total is the PRE-TAX
+   *  booking price, so this is the pre-tax remainder: the final bill adds any tax, and the
+   *  page labels it "before tax". */
   balanceDue: string
   /** The unpaid hold lapsed and the booking was released (M36 #4). */
   holdReleased: boolean

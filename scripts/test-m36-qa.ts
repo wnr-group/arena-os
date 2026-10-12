@@ -196,7 +196,7 @@ async function main() {
   check('no customer message while the booking is only held', (await notifications(n1.bookingId!)) === 0)
   await deliver(nInt.orderId, `pay_N${tag}`, nInt.amountPaise, `evt_n_${tag}`)
   const sent = await q<{ message_body: string }>(`select n.message_body from notifications n join bookings b on b.customer_phone = n.recipient_phone and b.tenant_id=n.tenant_id where b.id=$1`, [n1.bookingId])
-  check('exactly one message after payment, and it states the balance due', sent.rows.length === 1 && /confirmed/i.test(sent.rows[0].message_body) && /Balance of .* is due at the venue/.test(sent.rows[0].message_body), sent.rows)
+  check('exactly one message after payment, and it states the balance due', sent.rows.length === 1 && /confirmed/i.test(sent.rows[0].message_body) && /Balance of .* [(]before tax[)] is due at the venue/.test(sent.rows[0].message_body), sent.rows)
   await deliver(nInt.orderId, `pay_N${tag}`, nInt.amountPaise, `evt_n2_${tag}`)
   check('a redelivery sends nothing more', (await notifications(n1.bookingId!)) === 1)
   const wN2 = slotFor(await mkRes(), 31)

@@ -28,7 +28,7 @@ function body(
       text: `We received your payment for booking ${bookingNumber}, but the slot could not be held. A refund will follow and the venue will be in touch.`,
     }
   }
-  const owed = Number(balance.due) > 0 ? ` Balance of ${formatMoney(balance.due, balance.currency)} is due at the venue.` : ''
+  const owed = Number(balance.due) > 0 ? ` Balance of ${formatMoney(balance.due, balance.currency)} (before tax) is due at the venue.` : ''
   return { kind: 'booking_confirmed', text: `Your booking ${bookingNumber} is confirmed. Thank you for your payment.${owed}` }
 }
 
