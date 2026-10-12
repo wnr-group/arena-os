@@ -31,6 +31,10 @@ export type OnlineCharge = {
 /** Razorpay's smallest chargeable order is ₹1.00. */
 export const MIN_ONLINE_CHARGE = 1
 
+/** How long an unpaid advance/full booking holds its slot (M36 #3). Constant for v1;
+ *  #4 releases a hold that outlives it. */
+export const PAYMENT_HOLD_MINUTES = 15
+
 export class OnlineChargeError extends Error {}
 
 /**

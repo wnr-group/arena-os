@@ -63,6 +63,8 @@ type Slot = {
   total: string
   /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
   deposit: string
+  /** M36 #3: when an unpaid pending_payment hold lapses (ISO); null otherwise. */
+  paymentHoldExpiresAt?: string | null
   /** M26 #5: this SLOT's own frozen total (booking_slots.slot_total) —
    *  summed across a booking's active slots to get its "known total" for
    *  the live, pre-bill "Part paid" indicator. Not the same figure as
@@ -146,6 +148,7 @@ const STATUS_STYLE: Record<string, string> = {
 progress", not yet "completed" (that only happens once it's fully paid). */
 const BILLED_STYLE = 'bg-amber-500/85 text-white'
 const STATUS_BADGE: Record<string, string> = {
+  pending_payment: 'bg-amber-500/10 text-amber-600',
   confirmed: 'bg-blue-500/10 text-blue-600',
   checked_in: 'bg-emerald-500/10 text-emerald-600',
   completed: 'bg-muted text-muted-foreground',
@@ -153,6 +156,7 @@ const STATUS_BADGE: Record<string, string> = {
   no_show: 'bg-amber-500/10 text-amber-600',
 }
 const STATUS_LABELS: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Confirmed',
   checked_in: 'Checked in',
   completed: 'Completed',
@@ -791,6 +795,9 @@ export function BookingsView({
                           }`}
                         >
                           {STATUS_LABELS[b.status] ?? b.status}
+                          {b.status === 'pending_payment' && b.representative.paymentHoldExpiresAt
+                            ? ` (expires ${timeInZone(b.representative.paymentHoldExpiresAt, timeZone)})`
+                            : ''}
                         </span>
                       </td>
                       <td className="px-4 py-3">

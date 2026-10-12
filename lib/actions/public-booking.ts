@@ -18,7 +18,7 @@ import {
 } from '@/lib/booking/public-availability'
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
-import { resolveOnlineCharge, OnlineChargeError, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
+import { resolveOnlineCharge, OnlineChargeError, PAYMENT_HOLD_MINUTES, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
 import { loadOnlinePaymentPolicy } from '@/lib/settings/online-payment-policy'
 import { round2 } from '@/lib/billing/pricing'
 import { pgError } from '@/lib/utils/errors'
@@ -493,6 +493,10 @@ export async function createPublicBooking(
     const policy = await loadOnlinePaymentPolicy(tenant.id)
     let deposit = 0
     let awaitingOnlinePayment = false
+    // advance / full: the booking is held but NOT confirmed until the verified
+    // webhook says the money landed. Legacy optional_full + payNow keeps today's
+    // behaviour (confirmed immediately, deposit unpaid) — never silently changed.
+    let pendingPaymentUntil: Date | undefined
     if (policy.mode !== 'venue' && (policy.mode !== 'optional_full' || v.payNow)) {
       const priced = await withPublicTenant(tenant.id, (tx) =>
         priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, { branchId: branch.id, slots, headCount }),
@@ -531,6 +535,9 @@ export async function createPublicBooking(
         if (!credentials) return { error: 'Online payment is not available for this venue right now.' }
         deposit = charge.amount
         awaitingOnlinePayment = true
+        if (policy.mode === 'advance' || policy.mode === 'full') {
+          pendingPaymentUntil = new Date(Date.now() + PAYMENT_HOLD_MINUTES * 60_000)
+        }
       }
     }
 
@@ -549,6 +556,7 @@ export async function createPublicBooking(
           deposit,
           slots,
           headCount,
+          pendingPaymentUntil,
         },
       ),
     )

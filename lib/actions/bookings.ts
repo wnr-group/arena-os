@@ -721,7 +721,7 @@ export async function lookupCustomerByPhone(phone: string): Promise<CustomerLook
   }
 }
 
-type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
+type BookingStatus = 'pending_payment' | 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
 
 /**
  * Server action: transition a booking's status, gating 'completed' on a
@@ -759,6 +759,20 @@ export async function setBookingStatus<S extends BookingStatus>(
     }
 
     await withUser(ctx.user.id, async (tx) => {
+      // M36 #3: an unpaid online booking is held, not confirmed — staff can
+      // cancel it (to free the slot) but cannot check it in, complete it or
+      // mark it no-show until the webhook confirms the payment.
+      if (status !== 'cancelled') {
+        const [cur] = await tx
+          .select({ status: bookings.status })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (cur?.status === 'pending_payment') {
+          throw new BookingError('This booking is awaiting the customer’s online payment — it can only be cancelled until the payment arrives.')
+        }
+      }
+
       if (status === 'completed') {
         await assertBookingFullyPaid(tx, ctx.tenant.id, id)
       }

@@ -14,6 +14,8 @@ export type PublicBookingSlot = {
 export type PublicBookingConfirmation = {
   bookingNumber: string
   status: string
+  /** M36 #3: when an unpaid pending_payment hold lapses (ISO); null otherwise. */
+  paymentHoldExpiresAt: string | null
   customerName: string | null
   total: string
   createdAt: string
@@ -38,6 +40,7 @@ export async function getPublicBookingByToken(
         id: bookings.id,
         bookingNumber: bookings.bookingNumber,
         status: bookings.status,
+        paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
         customerName: bookings.customerName,
         total: bookings.total,
         createdAt: bookings.createdAt,
@@ -61,6 +64,7 @@ export async function getPublicBookingByToken(
     return {
       bookingNumber: booking.bookingNumber,
       status: booking.status,
+      paymentHoldExpiresAt: booking.paymentHoldExpiresAt?.toISOString() ?? null,
       customerName: booking.customerName,
       total: booking.total,
       createdAt: booking.createdAt.toISOString(),

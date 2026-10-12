@@ -139,6 +139,7 @@ export const memberships = pgTable(
 // ── booking module (migration 0003) ─────────────────────────────────────────
 export const resourceStatus = pgEnum('resource_status', ['available', 'maintenance', 'inactive'])
 export const bookingStatus = pgEnum('booking_status', [
+  'pending_payment',
   'confirmed',
   'checked_in',
   'completed',
@@ -365,6 +366,8 @@ export const bookings = pgTable(
     // booking taken without a phone, or one whose customer was later removed.
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     status: bookingStatus('status').notNull().default('confirmed'),
+    /** M36 #3 (0115): when an unpaid pending_payment hold lapses. */
+    paymentHoldExpiresAt: timestamp('payment_hold_expires_at', { withTimezone: true }),
     source: bookingSource('source').notNull().default('staff'),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
     discount: numeric('discount', { precision: 10, scale: 2 }).notNull().default('0'),

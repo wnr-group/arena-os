@@ -258,7 +258,7 @@ export async function getBookingMetrics(
           join public.bookings bk on bk.id = fs.booking_id and bk.tenant_id = ${tenantId}
           join public.branches b  on b.id = bk.branch_id
           join public.tenants  t  on t.id = bk.tenant_id
-         where bk.status not in ('cancelled','no_show')
+         where bk.status not in ('cancelled','no_show','pending_payment')
            ${branchFilter}
            ${channelFilter}
       )
@@ -285,7 +285,7 @@ export async function getBookingMetrics(
         join public.bookings bk on bk.id = s.booking_id and bk.tenant_id = ${tenantId}
        where s.tenant_id = ${tenantId}
          and s.active
-         and bk.status not in ('cancelled','no_show')
+         and bk.status not in ('cancelled','no_show','pending_payment')
          and ((s.starts_at at time zone coalesce(b.timezone, t.timezone))::date)
              between ${start}::date and ${end}::date
          ${branchFilter}
@@ -328,7 +328,7 @@ export async function getBookingMetrics(
          and s.starts_at < w.range_end
          and s.ends_at   > w.range_start
         join public.bookings bk on bk.id = s.booking_id and bk.tenant_id = ${tenantId}
-       where bk.status not in ('cancelled','no_show')
+       where bk.status not in ('cancelled','no_show','pending_payment')
          ${channelFilter}
        group by r.id, r.name, rt.name
        order by minutes desc, r.name

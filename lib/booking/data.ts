@@ -279,6 +279,7 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         source: bookings.source,
         total: bookings.total,
         deposit: bookings.deposit,
+        paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
         cancellationReason: bookings.cancellationReason,
         // M26 #5: cash collected before this booking existed (M26 #1/#4) —
         // '0.00' for every non-gaming_cafe tenant (server-refused at
@@ -335,6 +336,8 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
 
     return rows.map((r) => ({
       ...r,
+      // M36 #3: ISO string so it crosses the client boundary like the other times.
+      paymentHoldExpiresAt: r.paymentHoldExpiresAt?.toISOString() ?? null,
       // M26 #5: the booking's TRUE known total — sum of slot_total across
       // EVERY active slot of this booking, tenant-wide, not just the ones
       // overlapping the viewed day. This is what BookingsView's advance-gap

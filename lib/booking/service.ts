@@ -98,6 +98,11 @@ export type CreateBookingInput = {
    *  a client: every action's zod schema strips unknown keys, and the public
    *  path builds its own input object. */
   backdated?: boolean
+  /** M36 #3: set ONLY by createPublicBooking when the venue requires online
+   *  payment — the booking is created 'pending_payment' (slot held, not
+   *  confirmed) with this expiry, and flips to confirmed on the verified
+   *  webhook. Never accepted from a client; every other caller leaves it unset. */
+  pendingPaymentUntil?: Date
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -793,7 +798,8 @@ export async function createBookingCore(
       customerPhone: input.customerPhone || null,
       customerEmail: input.customerEmail || null,
       customerId,
-      status: 'confirmed',
+      status: input.pendingPaymentUntil ? 'pending_payment' : 'confirmed',
+      paymentHoldExpiresAt: input.pendingPaymentUntil ?? null,
       source: input.source,
       subtotal: bookingSubtotal.toFixed(2),
       discount: input.discount.toFixed(2),

@@ -109,7 +109,7 @@ async function main() {
       credentials: { keyId: 'k', keySecret: 's' } as never,
       createOrder: async (_c, o) => {
         gatewayPaise = o.amountPaise
-        return { id: 'order_pm', amount: o.amountPaise, currency: 'INR', status: 'created', receipt: o.receipt ?? null }
+        return { id: 'order_pm' + Math.random().toString(36).slice(2, 10), amount: o.amountPaise, currency: 'INR', status: 'created', receipt: o.receipt ?? null }
       },
       actor: { tenantId },
     },

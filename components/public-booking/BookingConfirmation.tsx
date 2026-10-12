@@ -20,6 +20,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 const CAN_ADD_FOOD_STATUSES = new Set(['confirmed', 'checked_in'])
 
 const STATUS_LABEL: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Booking confirmed',
   checked_in: "You're checked in!",
   completed: 'Visit completed',
@@ -28,6 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const STATUS_ICON: Record<string, LucideIcon> = {
+  pending_payment: Clock,
   confirmed: CheckCircle2,
   checked_in: CheckCircle2,
   completed: CheckCircle2,

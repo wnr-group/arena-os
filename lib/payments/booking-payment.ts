@@ -103,6 +103,7 @@ async function loadPayableBooking(tx: Db, tenantId: string, bookingId: string): 
       status: bookings.status,
       source: bookings.source,
       deposit: bookings.deposit,
+      holdExpiresAt: bookings.paymentHoldExpiresAt,
     })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
@@ -116,7 +117,13 @@ async function loadPayableBooking(tx: Db, tenantId: string, bookingId: string): 
   // this endpoint only ever opens a gateway order for one THIS customer
   // placed themselves online.
   if (booking.source !== 'online') throw new BookingPaymentError('This booking cannot be paid online.')
-  if (!isBillableBookingStatus(booking.status)) {
+  // A pending_payment booking is exactly the one that SHOULD be paid (M36 #3),
+  // as long as its hold has not lapsed; every other non-billable state cannot.
+  if (booking.status === 'pending_payment') {
+    if (booking.holdExpiresAt && booking.holdExpiresAt.getTime() <= Date.now()) {
+      throw new BookingPaymentError('The payment window for this booking has expired. Please book again.')
+    }
+  } else if (!isBillableBookingStatus(booking.status)) {
     throw new BookingPaymentError('This booking can no longer be paid online.')
   }
 

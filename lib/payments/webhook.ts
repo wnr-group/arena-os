@@ -365,6 +365,23 @@ export async function applyVerifiedPaymentWebhook(
         }
       }
 
+      // ── 7c. confirm a held booking (M36 #3) ──────────────────────────────
+      // An advance/full booking sits in 'pending_payment' (slot held) until the
+      // money is verified HERE — never on the browser callback. Same
+      // transaction as the intent settlement above, and conditional on the
+      // current status, so a replay (which never reaches this point anyway: the
+      // intent is no longer pending) or any other status is a no-op.
+      await tx
+        .update(bookings)
+        .set({ status: 'confirmed', paymentHoldExpiresAt: null })
+        .where(
+          and(
+            eq(bookings.id, booking!.id),
+            eq(bookings.tenantId, verifiedTenantId),
+            eq(bookings.status, 'pending_payment'),
+          ),
+        )
+
       return {
         kind: 'processed',
         purpose: 'booking_deposit',
