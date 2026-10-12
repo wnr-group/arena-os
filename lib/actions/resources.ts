@@ -17,7 +17,7 @@ import {
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
-import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { uploadImage, deleteImage, validateUpload, sniffImageMime, IMAGE_POLICY } from '@/lib/storage/s3'
 import { MAX_SETUP_IMAGES } from '@/lib/booking/setup-images'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
@@ -544,8 +544,15 @@ export async function uploadSetupImage(
     })
     if (existingCount >= MAX_SETUP_IMAGES) throw new SetupImageError(SETUP_IMAGES_FULL)
 
-    // validateUpload (inside uploadImage) enforces type/size/empty with the
-    // extension taken from the MIME table, never the filename.
+    // Type / size / empty first (extension comes from the MIME table, never the
+    // filename), then the content itself: the declared type is only what the
+    // browser guessed from the extension, so an HTML or script file renamed
+    // .jpg would otherwise be stored and served as an "image".
+    validateUpload(file, IMAGE_POLICY)
+    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+    if (sniffImageMime(head) !== file.type) {
+      throw new SetupImageError('That file is not a valid JPEG, PNG, WEBP or GIF image.')
+    }
     uploadedUrl = await uploadImage(file, `tenants/${ctx.tenant.id}/resource-setups/${id}`)
     const url = uploadedUrl
 

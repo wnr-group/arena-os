@@ -105,9 +105,20 @@ async function main() {
     g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': slug }
   }
   const slugA = `photos-a-${tag}`
+  // A file whose first bytes really are the declared image type (the action
+  // verifies content, not just the declared MIME).
+  const MAGIC: Record<string, number[]> = {
+    'image/jpeg': [0xff, 0xd8, 0xff, 0xe0],
+    'image/png': [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    'image/gif': [0x47, 0x49, 0x46, 0x38, 0x39, 0x61],
+    'image/webp': [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+  }
   const jpeg = (name = 'photo.jpg', size = 2048, type = 'image/jpeg') => {
+    const bytes = new Uint8Array(size).fill(7)
+    const magic = MAGIC[type] ?? []
+    bytes.set(magic.slice(0, size))
     const fd = new FormData()
-    fd.set('file', new File([new Uint8Array(size).fill(7)], name, { type }))
+    fd.set('file', new File([bytes], name, { type }))
     return fd
   }
   const rowsOf = async (setupId: string) =>
