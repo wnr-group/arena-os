@@ -57,17 +57,20 @@ export function PendingPaymentPanel({
   const retrying = useRef(false)
 
   const expired = holdReleased || (holdExpiresAt !== null && new Date(holdExpiresAt).getTime() <= now)
-  const waiting = justPaid && polls < MAX_POLLS
+  const pollingDone = polls >= MAX_POLLS
+  const waiting = justPaid && !pollingDone
 
-  // Poll the server for the webhook's verdict while we wait for the money.
+  // Poll the server for the webhook's verdict while we wait for the money, and STOP
+  // after MAX_POLLS: each refresh re-renders the whole server page, so an open tab
+  // whose webhook never arrives must not keep hitting it forever.
   useEffect(() => {
-    if (!justPaid) return
+    if (!justPaid || pollingDone) return
     const id = setInterval(() => {
       setPolls((p) => p + 1)
       router.refresh()
     }, POLL_MS)
     return () => clearInterval(id)
-  }, [justPaid, router])
+  }, [justPaid, pollingDone, router])
 
   // Tick so the countdown state flips to "expired" without a reload.
   useEffect(() => {
