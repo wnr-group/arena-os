@@ -23,7 +23,13 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
-import { attachAddonsToSlots, normalizeAddonRequests, sumBookingAddons, type AddonRequest } from './addons'
+import {
+  attachAddonsToSlots,
+  normalizeAddonRequests,
+  priceAddonRequests,
+  sumBookingAddons,
+  type AddonRequest,
+} from './addons'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -745,7 +751,21 @@ export async function createBookingCore(
     headCount: input.headCount,
   })
 
-  const total = Math.max(0, subtotal - input.discount)
+  // Add-ons are priced BEFORE the insert so the booking is created with the
+  // right subtotal/total in one write — a public (online) booking's role has
+  // no UPDATE policy on bookings, so a fix-up update afterwards would be a
+  // silent no-op. attachAddonsToSlots below still validates and locks; this
+  // only prices rows that exist and are active (an invalid one is refused
+  // there, rolling the whole transaction back).
+  let preAddonTotal = 0
+  for (const [i, s] of input.slots.entries()) {
+    const priced = slotRows[i]
+    if (!s.addons || s.addons.length === 0 || !priced?.endsAt) continue
+    preAddonTotal += (await priceAddonRequests(tx, ctx.tenantId, priced.startsAt, priced.endsAt, s.addons)).total
+  }
+  preAddonTotal = round2(preAddonTotal)
+  const bookingSubtotal = round2(subtotal + preAddonTotal)
+  const total = Math.max(0, bookingSubtotal - input.discount)
 
   // Attach the booking to the customer directory so it shows on their
   // profile. Same transaction as the booking, so the two commit together.
@@ -775,7 +795,7 @@ export async function createBookingCore(
       customerId,
       status: 'confirmed',
       source: input.source,
-      subtotal: subtotal.toFixed(2),
+      subtotal: bookingSubtotal.toFixed(2),
       discount: input.discount.toFixed(2),
       total: total.toFixed(2),
       deposit: input.deposit.toFixed(2),
@@ -831,7 +851,8 @@ export async function createBookingCore(
       targets,
       { priceNow: true },
     )
-    if (addonTotal > 0) {
+    if (addonTotal !== preAddonTotal) {
+      // Should be unreachable (same rows, same window) — kept as a safety net.
       const withAddons = subtotal + addonTotal
       await tx
         .update(bookings)

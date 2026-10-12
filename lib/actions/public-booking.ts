@@ -3,7 +3,10 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { z } from 'zod'
+import { and, eq } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
+import { resources } from '@/db/schema'
+import { priceAddonRequests, type PricedAddonLine } from '@/lib/booking/addons'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import {
   getPublicBranch,
@@ -34,6 +37,44 @@ const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again sh
 
 async function callerIp(): Promise<string> {
   return ipFromHeaders(await headers())
+}
+
+/** Add-on lines a customer picked, as the public pages send them. */
+const addonRequestsInput = z
+  .array(z.object({ addonId: z.string().uuid(), quantity: z.coerce.number().int().min(1).max(99) }))
+  .max(20)
+
+/**
+ * Price the add-ons for one resource's window and refuse any that aren't
+ * attachable to it (unknown / retired / other branch / other resource type) —
+ * the same rules attachAddonsToSlots enforces under the lock at booking time,
+ * checked up front so a quote and a pay-now deposit never include a line the
+ * booking would then refuse.
+ */
+async function priceResourceAddons(
+  tx: Parameters<Parameters<typeof withPublicTenant>[1]>[0],
+  tenantId: string,
+  branchId: string,
+  resourceId: string,
+  startsAt: Date,
+  endsAt: Date,
+  requests: { addonId: string; quantity: number }[],
+): Promise<{ lines: PricedAddonLine[]; total: number }> {
+  if (requests.length === 0) return { lines: [], total: 0 }
+  const [res] = await tx
+    .select({ resourceTypeId: resources.resourceTypeId })
+    .from(resources)
+    .where(and(eq(resources.id, resourceId), eq(resources.tenantId, tenantId)))
+  const priced = await priceAddonRequests(tx, tenantId, startsAt, endsAt, requests)
+  const distinct = new Set(requests.map((r) => r.addonId)).size
+  if (
+    !res ||
+    priced.lines.length !== distinct ||
+    priced.lines.some((l) => l.branchId !== branchId || l.resourceTypeId !== res.resourceTypeId)
+  ) {
+    throw new BookingError('An add-on you selected is no longer available.')
+  }
+  return priced
 }
 
 const availabilityInput = z.object({
@@ -190,9 +231,19 @@ const quoteInput = z.object({
   // re-validates it belongs to this resource/tenant and is active, same as
   // the staff quoteBooking (lib/actions/bookings.ts, M24 #2/#4).
   setupId: z.string().uuid().optional(),
+  // M35: optional add-ons — priced server-side so the total shown (and the
+  // pay-now amount) always includes exactly what the booking will.
+  addons: addonRequestsInput.optional(),
 })
 
-export type PublicBookingQuoteResult = { error?: string; total?: number }
+export type PublicBookingQuoteResult = {
+  error?: string
+  /** Everything payable: the room/setup price plus add-ons. */
+  total?: number
+  /** The room/setup part of `total` (equals `total` when no add-ons). */
+  slotTotal?: number
+  addons?: { addonId: string; name: string; quantity: number; rateUnit: 'hour' | 'day'; rate: string; units: number; lineTotal: number }[]
+}
 
 /**
  * Happy hours #3: read-only price quote for the SELECTED slot on the public
@@ -230,13 +281,36 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
   try {
     const result = await withPublicTenant(tenant.id, async (tx) => {
       const headCount = await resolvePublicHeadCount(tx, tenant.id, [v.data.resourceId])
-      return priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
+      const priced = await priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
         branchId: branch.id,
         slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt, setupId: v.data.setupId }],
         headCount,
       })
+      const addons = await priceResourceAddons(
+        tx,
+        tenant.id,
+        branch.id,
+        v.data.resourceId,
+        new Date(v.data.startsAt),
+        new Date(v.data.endsAt),
+        v.data.addons ?? [],
+      )
+      return { priced, addons }
     })
-    return { total: result.subtotal }
+    const slotTotal = result.priced.subtotal
+    return {
+      total: round2(slotTotal + result.addons.total),
+      slotTotal,
+      addons: result.addons.lines.map((l) => ({
+        addonId: l.addonId,
+        name: l.name,
+        quantity: l.quantity,
+        rateUnit: l.rateUnit,
+        rate: l.rate,
+        units: l.units,
+        lineTotal: l.lineTotal,
+      })),
+    }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
     return { error: 'Could not price this booking.' }
@@ -295,6 +369,9 @@ const bookingInput = z.object({
   // server-side (resource/tenant/active) by priceBookingSlots below, same
   // as quoteInput's setupId above — never trusted further than that.
   setupId: z.string().uuid().optional(),
+  /** M35: add-ons for this booking. Re-priced and stock-checked under the
+   *  catalog lock server-side; the pay-now deposit includes them. */
+  addons: addonRequestsInput.optional(),
   /** Honeypot: a real visitor never sees or fills this field (it's rendered
    * off-screen and excluded from the tab order — see HoneypotField). A
    * non-empty value means whatever submitted the form filled in every input
@@ -373,7 +450,9 @@ export async function createPublicBooking(
       return { error: 'Enter your name.' }
     }
 
-    const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }]
+    const slots = [
+      { resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId, addons: v.addons },
+    ]
 
     // M21 per-head #5: honor the player count the customer entered online for a
     // per_head resource, so the price AND the deposit reflect the real party
@@ -400,7 +479,18 @@ export async function createPublicBooking(
       const priced = await withPublicTenant(tenant.id, (tx) =>
         priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, { branchId: branch.id, slots, headCount }),
       )
-      const rupees = round2(priced.subtotal)
+      const addonPriced = await withPublicTenant(tenant.id, (tx) =>
+        priceResourceAddons(
+          tx,
+          tenant.id,
+          branch.id,
+          v.resourceId,
+          new Date(v.startsAt),
+          new Date(v.endsAt),
+          v.addons ?? [],
+        ),
+      )
+      const rupees = round2(priced.subtotal + addonPriced.total)
       const amountPaise = paise(rupees)
       if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
         return { error: 'This booking has nothing to pay for.' }

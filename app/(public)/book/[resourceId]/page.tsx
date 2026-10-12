@@ -2,7 +2,12 @@ import { notFound } from 'next/navigation'
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, type LucideIcon } from 'lucide-react'
 import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
-import { getPublicBranch, getPublicResource, getPublicResourceSetups } from '@/lib/booking/public-availability'
+import {
+  getPublicBranch,
+  getPublicResource,
+  getPublicResourceSetups,
+  getPublicTypeAddons,
+} from '@/lib/booking/public-availability'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { todayInZone } from '@/lib/booking/time'
 import { getPublicMenu } from '@/lib/menu/public'
@@ -40,8 +45,15 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
  * subdomain the same way app/page.tsx does, since app/(public)/layout.tsx
  * can't hand computed props down to a page.
  */
-export default async function ResourceBookPage({ params }: { params: Promise<{ resourceId: string }> }) {
+export default async function ResourceBookPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ resourceId: string }>
+  searchParams: Promise<{ setup?: string | string[] }>
+}) {
   const { resourceId } = await params
+  const { setup: setupParam } = await searchParams
   if (!UUID.test(resourceId)) notFound()
 
   const slug = await currentTenantSlug()
@@ -61,7 +73,19 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
     ? await getPublicResourceSetups(tenant.id, resource.id)
     : []
 
+  // M35 #4: a storefront card links here with ?setup=<id>. Only honoured when
+  // it is one of THIS resource's active setups — anything else (junk, retired,
+  // another set's) is ignored silently, no preselect.
+  const requestedSetup = typeof setupParam === 'string' ? setupParam : undefined
+  const initialSetupId = requestedSetup && setups.some((s) => s.id === requestedSetup) ? requestedSetup : null
+
   const branch = await getPublicBranch(tenant.id)
+  // Add-ons are a studio-industry feature (same gate as setups); the picker is
+  // fed the type's catalog and fetches live stock once a time is chosen.
+  const addonCatalog =
+    branch && industryHasStudioSetups(tenant.industry)
+      ? await getPublicTypeAddons(tenant.id, branch.id, [resource.resourceTypeId])
+      : []
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
   // Same proactive-disable pattern as app/(public)/checkout/page.tsx: whether
@@ -89,6 +113,8 @@ export default async function ResourceBookPage({ params }: { params: Promise<{ r
             tenant={tenant}
             resource={resource}
             setups={setups}
+            initialSetupId={initialSetupId}
+            addonCatalog={addonCatalog}
             today={todayInZone(tenant.timezone)}
             razorpayConfigured={razorpayCredentials !== null}
           />
