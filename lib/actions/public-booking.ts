@@ -18,7 +18,8 @@ import {
 } from '@/lib/booking/public-availability'
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
-import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
+import { resolveOnlineCharge, OnlineChargeError, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
+import { loadOnlinePaymentPolicy } from '@/lib/settings/online-payment-policy'
 import { round2 } from '@/lib/billing/pricing'
 import { pgError } from '@/lib/utils/errors'
 import {
@@ -242,6 +243,15 @@ export type PublicBookingQuoteResult = {
   total?: number
   /** The room/setup part of `total` (equals `total` when no add-ons). */
   slotTotal?: number
+  /** M36 #2: the venue's payment mode and the figures the server will actually
+   *  charge — render the payment step from these, never recompute client-side.
+   *  chargeNow is what is collected online if payment happens (for the legacy
+   *  optional_full mode: the full total, only if the customer opts in);
+   *  paymentRequired says whether the booking cannot be placed without it. */
+  mode?: OnlinePaymentPolicy['mode']
+  paymentRequired?: boolean
+  chargeNow?: number
+  balanceDue?: number
   addons?: { addonId: string; name: string; quantity: number; rateUnit: 'hour' | 'day'; rate: string; units: number; lineTotal: number }[]
 }
 
@@ -298,9 +308,16 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
       return { priced, addons }
     })
     const slotTotal = result.priced.subtotal
+    const total = round2(slotTotal + result.addons.total)
+    const policy = await loadOnlinePaymentPolicy(tenant.id)
+    const charge = resolveOnlineCharge(policy, total, { payNow: true })
     return {
-      total: round2(slotTotal + result.addons.total),
+      total,
       slotTotal,
+      mode: policy.mode,
+      paymentRequired: policy.mode !== 'optional_full' && charge.required,
+      chargeNow: charge.amount,
+      balanceDue: charge.balance,
       addons: result.addons.lines.map((l) => ({
         addonId: l.addonId,
         name: l.name,
@@ -468,14 +485,15 @@ export async function createPublicBooking(
     )
     const headCount = perHeadMin === undefined ? undefined : (v.players ?? perHeadMin)
 
-    // Pay-now: price the slot BEFORE creating the booking, so a total too
-    // large to take online refuses cleanly rather than leaving a booking
-    // behind that can never be paid through this path. Re-priced again
-    // inside createBookingCore itself moments later — this is a preview for
-    // the deposit figure, never the value actually written without a second,
-    // independent computation.
+    // Online payment (M36 #2). The VENUE's mode decides whether and how much to
+    // charge; the client's payNow only matters in the legacy optional_full mode.
+    // Priced BEFORE creating the booking so a total too large to take online, or
+    // a venue that cannot take payment, refuses cleanly rather than leaving an
+    // unpayable booking behind. createBookingCore re-prices independently.
+    const policy = await loadOnlinePaymentPolicy(tenant.id)
     let deposit = 0
-    if (v.payNow) {
+    let awaitingOnlinePayment = false
+    if (policy.mode !== 'venue' && (policy.mode !== 'optional_full' || v.payNow)) {
       const priced = await withPublicTenant(tenant.id, (tx) =>
         priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, { branchId: branch.id, slots, headCount }),
       )
@@ -491,14 +509,29 @@ export async function createPublicBooking(
         ),
       )
       const rupees = round2(priced.subtotal + addonPriced.total)
-      const amountPaise = paise(rupees)
-      if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+      // Legacy pay-now keeps refusing a zero total; in the new modes a free
+      // booking simply has nothing to collect.
+      if (policy.mode === 'optional_full' && !(rupees > 0)) {
         return { error: 'This booking has nothing to pay for.' }
       }
-      if (rupees > MAX_PAYMENT_AMOUNT) {
-        return { error: 'This booking total is too large to pay online.' }
+      let charge
+      try {
+        charge = resolveOnlineCharge(policy, rupees, { payNow: v.payNow })
+      } catch (e) {
+        if (e instanceof OnlineChargeError) return { error: e.message }
+        throw e
       }
-      deposit = rupees
+      if (charge.amount > 0) {
+        // Fail closed: never create a booking that owes money the venue cannot
+        // collect (credentials cleared out-of-band or no longer decryptable).
+        const credentials = await loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+          console.error('[public-booking] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
+          return null
+        })
+        if (!credentials) return { error: 'Online payment is not available for this venue right now.' }
+        deposit = charge.amount
+        awaitingOnlinePayment = true
+      }
     }
 
     const result = await withPublicTenant(tenant.id, (tx) =>
@@ -525,7 +558,7 @@ export async function createPublicBooking(
       bookingNumber: result.bookingNumber,
       confirmationToken: result.confirmationToken,
       bookingId: result.id,
-      awaitingOnlinePayment: Boolean(v.payNow),
+      awaitingOnlinePayment,
     }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }

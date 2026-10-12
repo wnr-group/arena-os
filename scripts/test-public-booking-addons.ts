@@ -50,6 +50,7 @@ async function main() {
   const lens = await mkAddon('Lens', '150.00', 'day', 5)
   const retired = await mkAddon('Retired', '10.00', 'hour', 5, { active: false })
   const wrongType = await mkAddon('Booth mic', '10.00', 'hour', 5, { type: otherTypeId })
+  await (await import('./seed-razorpay')).seedRazorpay(q, tenantId)
   for (let dow = 0; dow <= 6; dow++) {
     await q(`insert into working_hours (tenant_id,branch_id,day_of_week,open_time,close_time,is_closed) values ($1,$2,$3,'09:00','22:00',false)`, [tenantId, branchId, dow])
   }
