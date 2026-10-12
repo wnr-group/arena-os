@@ -194,6 +194,20 @@ export async function reservedAddonUnits(
   endsAt: Date | null,
   excludeBookingSlotId?: string,
 ): Promise<number> {
+  // Authorised callers (a tenant member, or the public tenant of an online
+  // booking) count through addon_reserved_units (0112): a public session cannot
+  // read booking_addons directly, so a plain sum would always be 0 there and
+  // the stock check would never refuse. NULL = not authorised for that tenant
+  // (e.g. a raw owner connection) -> fall through to the direct, RLS-governed sum.
+  const viaFn = await tx.execute<{ reserved: number | null }>(sql`
+    select public.addon_reserved_units(
+      ${tenantId}::uuid, ${addonId}::uuid, ${startsAt.toISOString()}::timestamptz,
+      ${endsAt ? endsAt.toISOString() : null}::timestamptz, ${excludeBookingSlotId ?? null}::uuid
+    ) as reserved
+  `)
+  const authorised = viaFn.rows[0]?.reserved
+  if (authorised !== null && authorised !== undefined) return Number(authorised)
+
   const rows = await tx.execute<{ reserved: string }>(sql`
     select coalesce(sum(ba.quantity), 0)::int as reserved
       from booking_addons ba

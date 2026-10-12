@@ -41,7 +41,7 @@ async function callerIp(): Promise<string> {
 
 /** Add-on lines a customer picked, as the public pages send them. */
 const addonRequestsInput = z
-  .array(z.object({ addonId: z.string().uuid(), quantity: z.coerce.number().int().min(1).max(99) }))
+  .array(z.object({ addonId: z.string().uuid(), quantity: z.coerce.number().int().min(1).max(20) }))
   .max(20)
 
 /**
