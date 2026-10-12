@@ -5,7 +5,7 @@ import { headers } from 'next/headers'
 import { z } from 'zod'
 import { and, eq } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { resources } from '@/db/schema'
+import { bookings, resources } from '@/db/schema'
 import { priceAddonRequests, type PricedAddonLine } from '@/lib/booking/addons'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import {
@@ -671,6 +671,41 @@ export async function createBookingPaymentIntent(
     })
 
     return { checkout }
+  } catch (e) {
+    return failBookingPayment(e)
+  }
+}
+
+const tokenIntentInput = z.object({ token: z.string().uuid() })
+
+/**
+ * Retry payment from the confirmation page (M36 #5). The browser only knows the
+ * booking's confirmation token (the unguessable /b/[token] handle), so the id is
+ * resolved server-side; everything after that is exactly createBookingPaymentIntent
+ * — which REUSES the booking's pending intent, so a retry never creates a second
+ * order or a second booking, and refuses once the hold has expired.
+ */
+export async function createBookingPaymentIntentByToken(
+  raw: z.input<typeof tokenIntentInput>,
+): Promise<CreateBookingPaymentIntentResult> {
+  try {
+    if (!rateLimit(`book-pay-retry:ip:${await callerIp()}`, 12, 10 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+    const v = tokenIntentInput.safeParse(raw)
+    if (!v.success) return { error: 'That booking link is not valid.' }
+    await sweepTenantHolds(tenant.id)
+    const found = await withPublicTenant(tenant.id, (tx) =>
+      tx
+        .select({ id: bookings.id })
+        .from(bookings)
+        .where(and(eq(bookings.tenantId, tenant.id), eq(bookings.confirmationToken, v.data.token)))
+        .limit(1),
+    )
+    if (!found[0]) return { error: 'Booking not found.' }
+    return await createBookingPaymentIntent({ bookingId: found[0].id })
   } catch (e) {
     return failBookingPayment(e)
   }
