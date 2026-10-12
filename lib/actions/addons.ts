@@ -7,6 +7,7 @@ import { withUser } from '@/db'
 import { branches, bookingAddons, resourceTypeAddons, resourceTypes, bookingSlots, resources } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { BookingError } from '@/lib/booking/booking-error'
 import { BillingError } from '@/lib/billing/invoice'
 import {
@@ -169,6 +170,9 @@ export async function listAddonsForResources(
   try {
     const ctx = await requireContext()
     const v = availabilityInput.parse(input)
+    // Lapsed unpaid online holds still reserve add-on units until swept; release
+    // them first so headroom is not understated (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
     const byResource = await withUser(ctx.user.id, async (tx) => {
       const rs = await tx
         .select({ id: resources.id, resourceTypeId: resources.resourceTypeId, branchId: resources.branchId })
@@ -213,6 +217,9 @@ export async function setBookingSlotAddons(input: z.input<typeof setAddonsInput>
       throw new AuthError('You do not have permission to change add-ons.')
     }
     const v = setAddonsInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
     await withUser(ctx.user.id, (tx) =>
       setSlotAddonsCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )

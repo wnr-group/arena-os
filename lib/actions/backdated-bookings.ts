@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { BookingError } from '@/lib/booking/service'
 import { recordBackdatedBookingCore, previewBackdatedBooking, type BackdatedPreview } from '@/lib/booking/backdated'
@@ -71,6 +72,9 @@ export async function recordBackdatedBooking(input: z.input<typeof recordBackdat
   try {
     const ctx = await requireManager()
     const v = recordBackdatedInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       recordBackdatedBookingCore(

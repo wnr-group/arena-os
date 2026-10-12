@@ -26,7 +26,8 @@ function authorised(request: NextRequest, secret: string): boolean {
 
 async function handle(request: NextRequest): Promise<NextResponse> {
   const secret = process.env.CRON_SECRET
-  if (!secret) {
+  // A whitespace-only value is as good as unset: refuse rather than fall open.
+  if (!secret?.trim()) {
     return NextResponse.json({ error: 'Cron is not configured.' }, { status: 503 })
   }
   if (!authorised(request, secret)) {

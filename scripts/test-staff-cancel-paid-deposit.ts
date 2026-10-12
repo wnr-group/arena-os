@@ -117,7 +117,7 @@ async function main() {
       [id],
     )).rows[0]
   const audits = async (id: string) =>
-    Number((await q<{ n: string }>(`select count(*) n from audit_log where entity_id=$1 and entity_type='booking' and action like '%cancel%'`, [id])).rows[0].n)
+    Number((await q<{ n: string }>(`select count(*) n from audit_log where entity_id=$1 and entity_type='booking'`, [id])).rows[0].n)
 
   // ══ 1. paid deposit -> flagged, for every role ═══════════════════════════
   console.log('\n── paid booking_deposit: flagged, any role ──')
@@ -171,13 +171,17 @@ async function main() {
     as(T, 'manager')
     await setBookingStatus(id, 'cancelled', 'first reason')
     const first = await row(id)
+    const auditsAfterFirst = await audits(id)
     await sleep(15)
     const again = await setBookingStatus(id, 'cancelled', 'second reason')
     const second = await row(id)
     check('second cancel returns no error', !again.error, again.error)
     check('reason and cancelled_at keep the first values', second.reason === 'first reason' && String(second.cancelled_at) === String(first.cancelled_at), second)
     check('flag still raised', second.review === true)
-    check('no second cancel audit row', (await audits(id)) <= 1, await audits(id))
+    // A staff cancel writes no audit_log row at all today (verified: zero rows after the
+    // first cancel), so this pins before/after equality rather than an exact count: the
+    // re-cancel must add nothing, and it keeps meaning if a cancel audit row is added later.
+    check('the re-cancel adds no audit row', (await audits(id)) === auditsAfterFirst, { before: auditsAfterFirst, after: await audits(id) })
   }
 
   // ══ 5. race: cancel vs the webhook's row lock ════════════════════════════

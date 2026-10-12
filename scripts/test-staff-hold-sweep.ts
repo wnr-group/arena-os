@@ -149,6 +149,12 @@ async function main() {
     res = await call('POST', 'Bearer ')
     check('secret empty -> 503, even with an "empty" bearer', res.status === 503, res.status)
     check('…and nothing was released', (await state(expiredHold)).status === 'pending_payment')
+    process.env.CRON_SECRET = ' '
+    res = await call('GET', 'Bearer  ')
+    check('secret whitespace-only -> 503 (GET), even with a matching bearer', res.status === 503, res.status)
+    res = await call('POST', 'Bearer  ')
+    check('secret whitespace-only -> 503 (POST)', res.status === 503, res.status)
+    check('…and nothing was released', (await state(expiredHold)).status === 'pending_payment')
 
     const SECRET = `cron_${randomBytes(12).toString('hex')}`
     process.env.CRON_SECRET = SECRET
@@ -174,6 +180,20 @@ async function main() {
   } finally {
     if (prevSecret === undefined) delete process.env.CRON_SECRET
     else process.env.CRON_SECRET = prevSecret
+  }
+
+  // ══ proxy: the cron exemption is scoped ═══════════════════════════════════
+  console.log('\n── proxy ──')
+  {
+    const { proxy } = await import('../proxy')
+    const HOST = `${S.slug}.${process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? 'lvh.me:3000'}`
+    const hit = (path: string, method = 'GET') =>
+      proxy(new NextRequest(`http://${HOST}${path}`, { method, headers: { host: HOST } }))
+    const toLogin = (res: Response) =>
+      res.status >= 300 && res.status < 400 && new URL(res.headers.get('location') ?? '', `http://${HOST}`).pathname === '/login'
+    check('a session-less /bookings on a tenant host is redirected to /login', toLogin(hit('/bookings')), hit('/bookings').status)
+    check('a session-less GET /api/cron/release-holds is NOT redirected to /login', !toLogin(hit('/api/cron/release-holds')), hit('/api/cron/release-holds').headers.get('location'))
+    check('…nor a POST', !toLogin(hit('/api/cron/release-holds', 'POST')))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

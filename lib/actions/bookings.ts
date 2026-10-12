@@ -289,6 +289,9 @@ export async function listWalkinResources(
     if (!canManageWalkins(ctx.role)) {
       throw new AuthError('You do not have permission to start a walk-in.')
     }
+    // Lapsed unpaid online holds still count as occupied until swept; release them
+    // first so the picker doesn't show a free station as busy (best-effort).
+    await sweepTenantHolds(ctx.tenant.id)
     const [resources, weekendDays] = await Promise.all([
       listWalkinResourcesForBranch(ctx, branchId),
       withUser(ctx.user.id, (tx) => loadWeekendDays(tx, ctx.tenant.id)),
@@ -434,6 +437,9 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
       throw new AuthError('You do not have permission to extend a walk-in.')
     }
     const v = extendWalkinInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) => extendWalkinCore(tx, { tenantId: ctx.tenant.id }, v))
 
@@ -475,6 +481,9 @@ export async function correctWalkinEndTime(
       throw new AuthError('You do not have permission to change a walk-in’s end time.')
     }
     const v = correctWalkinEndTimeInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       correctWalkinEndTimeCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
@@ -701,6 +710,9 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = splitTableInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
     const result = await withUser(ctx.user.id, (tx) =>
       splitTableCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
     )
