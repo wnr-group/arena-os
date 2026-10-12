@@ -9,6 +9,7 @@ import {
   XCircle,
   UserX,
   UtensilsCrossed,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
@@ -139,6 +140,12 @@ export function BookingConfirmation({
         )}
         {booking.customerName && <SummaryRow icon={User} label="Name" value={booking.customerName} />}
         <SummaryRow icon={Sparkles} label="Total" value={formatMoney(booking.total, tenant.currency)} />
+        {Number(booking.paidOnline) > 0 && (
+          <SummaryRow icon={CheckCircle2} label="Paid online" value={formatMoney(booking.paidOnline, tenant.currency)} />
+        )}
+        {(booking.status === 'confirmed' || booking.status === 'checked_in') && (
+          <SummaryRow icon={Wallet} label="Balance due at venue" value={formatMoney(booking.balanceDue, tenant.currency)} />
+        )}
       </div>
 
       {canAddFood && (

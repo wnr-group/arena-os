@@ -64,7 +64,7 @@ const METHODS = [
   { value: 'wallet', label: 'Wallet' },
 ] as const
 
-const METHOD_LABELS: Record<string, string> = { cash: 'Cash', card: 'Card', upi: 'UPI', online: 'Online', wallet: 'Wallet' }
+const METHOD_LABELS: Record<string, string> = { cash: 'Cash', card: 'Card', upi: 'UPI', online: 'Online advance', wallet: 'Wallet' }
 const inputCls =
   'w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60'
 

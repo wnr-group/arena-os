@@ -8,22 +8,28 @@
  * here it records one `notifications` row and never throws.
  */
 import 'server-only'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { ownerDb } from '@/db'
-import { bookings, notifications } from '@/db/schema'
+import { bookings, notifications, paymentIntents, tenants } from '@/db/schema'
+import { formatMoney } from '@/lib/format'
 import { getConfiguredProvider } from './provider'
 
 export type BookingPaymentOutcome = 'confirmed' | 'reinstated' | 'paid_after_release'
 
 // Copy to be reviewed before a real SMS provider is switched on.
-function body(outcome: BookingPaymentOutcome, bookingNumber: string): { kind: string; text: string } {
+function body(
+  outcome: BookingPaymentOutcome,
+  bookingNumber: string,
+  balance: { due: string; currency: string },
+): { kind: string; text: string } {
   if (outcome === 'paid_after_release') {
     return {
       kind: 'booking_refund_pending',
       text: `We received your payment for booking ${bookingNumber}, but the slot could not be held. A refund will follow and the venue will be in touch.`,
     }
   }
-  return { kind: 'booking_confirmed', text: `Your booking ${bookingNumber} is confirmed. Thank you for your payment.` }
+  const owed = Number(balance.due) > 0 ? ` Balance of ${formatMoney(balance.due, balance.currency)} is due at the venue.` : ''
+  return { kind: 'booking_confirmed', text: `Your booking ${bookingNumber} is confirmed. Thank you for your payment.${owed}` }
 }
 
 export async function sendBookingPaymentNotification(
@@ -37,12 +43,28 @@ export async function sendBookingPaymentNotification(
         bookingNumber: bookings.bookingNumber,
         customerId: bookings.customerId,
         customerPhone: bookings.customerPhone,
+        total: bookings.total,
+        currency: tenants.currency,
       })
       .from(bookings)
+      .innerJoin(tenants, eq(tenants.id, bookings.tenantId))
       .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
       .limit(1)
     if (!b) return
-    const { kind, text } = body(outcome, b.bookingNumber)
+    // The balance is what is still owed after every verified online payment on this booking.
+    const [paid] = await ownerDb
+      .select({ amount: sql<string>`coalesce(sum(${paymentIntents.amount}), 0)::text` })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.bookingId, bookingId),
+          eq(paymentIntents.purpose, 'booking_deposit'),
+          eq(paymentIntents.status, 'paid'),
+        ),
+      )
+    const due = Math.max(Number(b.total) - Number(paid?.amount ?? 0), 0).toFixed(2)
+    const { kind, text } = body(outcome, b.bookingNumber, { due, currency: b.currency })
     const provider = getConfiguredProvider()
     let status: 'sent' | 'skipped' | 'failed' = 'skipped'
     let skipReason: string | null = null

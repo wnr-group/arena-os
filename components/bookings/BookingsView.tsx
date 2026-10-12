@@ -924,13 +924,27 @@ export function BookingsView({
                 k="Total"
                 v={formatMoney(paymentStates[selected.bookingId]?.total ?? Math.max(Number(selected.total), Number(selected.bookingActiveSlotTotal)), currency)}
               />
-              {Number(selected.deposit) > 0 && (
-                <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
-              )}
+              {/* M36 #6: the ONLINE advance (Razorpay) — labelled apart from the cash
+                  "Collected upfront" below so the two are never confused. */}
+              {Number(selected.deposit) > 0 &&
+                (depositStates[selected.bookingId] === 'paid' ? (
+                  <>
+                    <Row k="Online advance paid" v={formatMoney(selected.deposit, currency)} />
+                    <Row
+                      k="Balance at the venue"
+                      v={formatMoney(Math.max(Number(selected.total) - Number(selected.deposit), 0), currency)}
+                    />
+                  </>
+                ) : (
+                  <Row
+                    k={selected.status === 'pending_payment' ? 'Online advance (awaiting payment)' : 'Online advance (unpaid)'}
+                    v={formatMoney(selected.deposit, currency)}
+                  />
+                ))}
               {/* M26 #5: cash collected upfront (M26 #1/#4) — 0 for every
                   non-gaming_cafe tenant, so this row is already a no-op there. */}
               {Number(selected.advancePaid) > 0 && (
-                <Row k="Collected upfront" v={formatMoney(selected.advancePaid, currency)} />
+                <Row k="Collected upfront (cash)" v={formatMoney(selected.advancePaid, currency)} />
               )}
               {/* Billed figures come off the invoice, not from the booking:
                   the bill is what was actually charged, discounts and all. */}

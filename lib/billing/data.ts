@@ -33,6 +33,7 @@ import {
 import { loyaltyTenderState, type LoyaltyRule } from './loyalty'
 import { getInvoiceSettlement, paise, type InvoiceSettlement } from './payments'
 import { walletTenderState } from './wallet-payments'
+import { summarizeOnlineAdvance } from '@/lib/payments/deposit-settlement'
 import { loadInvoiceReceipt, loadIssuedPricing, type InvoiceReceipt } from './receipt'
 import { priceBill, round2, type BillLine, type PricingResult, type ServiceChargeConfig } from './pricing'
 import { loadServiceChargeConfig } from '@/lib/settings/business-profile'
@@ -131,6 +132,9 @@ export type BillableBookingHeader = {
   bookingNumber: string
   status: string
   billable: boolean
+  /** M36 #6: the online (Razorpay) advance already paid for this booking, and the part of
+   *  it that is NOT on the bill (refund due) once a bill exists. */
+  onlineAdvance: { paid: number; unapplied: number }
   branchId: string
   branchName: string
   customerId: string | null
@@ -468,6 +472,8 @@ export async function getBillableForBooking(
     // on the answer.
     const taxDrift = existingInvoice ? [] : await loadTaxRateDrift(tx, ctx.tenant.id, row.id)
 
+    const onlineAdvance = await summarizeOnlineAdvance(tx, ctx.tenant.id, row.id)
+
     // Wallet state for the payment panel, once a bill exists to spend against.
     const wallet = existingInvoice
       ? await walletTenderState(tx, ctx.tenant.id, existingInvoice.id)
@@ -493,6 +499,11 @@ export async function getBillableForBooking(
         bookingNumber: row.bookingNumber,
         status: row.status,
         billable: isBillableBookingStatus(row.status),
+        onlineAdvance: {
+          paid: onlineAdvance.paid,
+          // Before a bill exists nothing can be "unapplied" yet — the advance is simply waiting to be carried over.
+          unapplied: existingInvoice ? onlineAdvance.unapplied : 0,
+        },
         channel: row.channel,
         headCount: row.headCount,
         pricingMode: perHeadSlot ? 'per_head' : null,
