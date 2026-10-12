@@ -39,6 +39,7 @@ const ORDER_STATUS_TONE: Record<CustomerOrderStatus, string> = {
 }
 
 const BOOKING_STATUS_LABEL: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Confirmed',
   checked_in: 'Checked in',
   completed: 'Completed',
@@ -47,6 +48,7 @@ const BOOKING_STATUS_LABEL: Record<string, string> = {
 }
 
 const BOOKING_STATUS_TONE: Record<string, string> = {
+  pending_payment: 'bg-amber-500/10 text-amber-600',
   confirmed: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
   checked_in: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   completed: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',

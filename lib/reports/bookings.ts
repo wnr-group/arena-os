@@ -229,7 +229,7 @@ export async function getBookingMetrics(
            and s.starts_at < c.closes_at
            and s.ends_at   > c.opens_at
           join public.bookings bk on bk.id = s.booking_id and bk.tenant_id = ${tenantId}
-         where true ${channelFilter}
+         where bk.status <> 'pending_payment' ${channelFilter}
          group by c.day
       )
       select d.day::text                                        as day,
