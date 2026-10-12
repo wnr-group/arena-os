@@ -930,10 +930,16 @@ export function BookingsView({
                 (depositStates[selected.bookingId] === 'paid' ? (
                   <>
                     <Row k="Online advance paid" v={formatMoney(selected.deposit, currency)} />
-                    <Row
-                      k="Balance at the venue"
-                      v={formatMoney(Math.max(Number(selected.total) - Number(selected.deposit), 0), currency)}
-                    />
+                    {/* Billed: the invoice's own balance (tax included). Not billed yet: the
+                        pre-tax booking total minus the advance — an estimate, labelled so. */}
+                    {paymentStates[selected.bookingId] ? (
+                      <Row k="Balance at the venue" v={formatMoney(paymentStates[selected.bookingId].balance, currency)} />
+                    ) : (
+                      <Row
+                        k="Balance at the venue (estimate, before tax)"
+                        v={formatMoney(Math.max(Number(selected.total) - Number(selected.deposit), 0), currency)}
+                      />
+                    )}
                   </>
                 ) : (
                   <Row
