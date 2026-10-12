@@ -264,6 +264,57 @@ async function main() {
   const afterCancel = await countedIntent(failedBk.bookingId!)
   check('…and so is one whose intents are failed/cancelled', afterCancel.checkout?.reused === false && afterCancel.orders === 1, afterCancel)
 
+  // Race: the webhook pays the booking AFTER the first validation but BEFORE
+  // the persist step. The persist-step re-check must refuse with the clean
+  // message (not the orphaned-order error), leave the one gateway order inert
+  // and write no intent row of its own.
+  const wRc = slotFor(await mkRes(), 53)
+  const raceBk = await book(wRc)
+  let raceOrders = 0
+  let raceOrderId = ''
+  const errLogs: string[] = []
+  const origErr = console.error
+  console.error = (...a: unknown[]) => { errLogs.push(a.map(String).join(' ')) }
+  const raced = await createBookingPaymentIntent(
+    { bookingId: raceBk.bookingId! },
+    {
+      runInTx: (fn) => withPublicTenant(tenantId, fn),
+      credentials: { keyId: 'k', keySecret: 's' } as never,
+      createOrder: async (_c, o) => {
+        raceOrders++
+        raceOrderId = `order_QA${randomBytes(6).toString('hex')}`
+        // While "creating the order", a parallel request's order is paid by the webhook.
+        const other = await startIntent(raceBk.bookingId!)
+        await deliver(other.orderId, `pay_RC${tag}`, other.amountPaise, `evt_rc_${tag}`)
+        return { id: raceOrderId, amount: o.amountPaise, currency: 'INR', status: 'created', receipt: o.receipt ?? null }
+      },
+      actor: { tenantId },
+    },
+  ).then(() => 'resolved', (e) => (e instanceof Error ? `${e.constructor.name}: ${e.message}` : String(e)))
+  console.error = origErr
+  check('a payment landing mid-request is refused with the clean already-paid error, not the orphaned one', raced === 'BookingPaymentError: This booking has already been paid.', raced)
+  check('…exactly one gateway order was created by the racing call and it was not stored', raceOrders === 1 && (await q(`select 1 from payment_intents where gateway_order_id=$1`, [raceOrderId])).rowCount === 0)
+  check('…only the paid intent exists for the booking and the booking is confirmed', (await intentRows(raceBk.bookingId!)) === 1 && (await row(raceBk.bookingId!)).status === 'confirmed')
+  check('…the unstored order id is logged exactly once for reconciliation', errLogs.filter((l) => l.includes(raceOrderId)).length === 1, errLogs)
+
+  // A paid intent for a DIFFERENT booking of the same tenant does not block this one.
+  const wD = slotFor(await mkRes(), 54)
+  const otherBk = await book(wD)
+  const unrelated = await countedIntent(otherBk.bookingId!)
+  check('a paid intent on another booking of the tenant does not block this booking', unrelated.checkout?.reused === false && unrelated.orders === 1 && (await intentRows(otherBk.bookingId!)) === 1, unrelated)
+
+  // A paid intent of another purpose (order_payment) on the SAME booking does
+  // not block a booking deposit — the guard is scoped to booking_deposit.
+  const wP2 = slotFor(await mkRes(), 55)
+  const opBk = await book(wP2)
+  await q(
+    `insert into payment_intents (tenant_id,branch_id,booking_id,purpose,gateway_order_id,amount,currency,status)
+     values ($1,$2,$3,'order_payment',$4,'1.00','INR','paid')`,
+    [tenantId, branchId, opBk.bookingId, `order_QAop${randomBytes(4).toString('hex')}`],
+  )
+  const afterOp = await countedIntent(opBk.bookingId!)
+  check('a paid order_payment intent on the same booking does not block a booking deposit', afterOp.checkout?.reused === false && afterOp.orders === 1 && (await intentRows(opBk.bookingId!)) === 2, afterOp)
+
   // ══ reports ═══════════════════════════════════════════════════════════════
   console.log('\n── reports ──')
   await setMode('full')

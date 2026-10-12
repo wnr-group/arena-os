@@ -195,14 +195,25 @@ function intentMatches(intent: { amount: string; currency: string }, amountPaise
 }
 
 /**
- * Run the persistence step, converting ANY failure into an
+ * Run the persistence step, converting any failure other than a
+ * BookingPaymentError (rethrown as-is, orphan logged) into an
  * OrphanedBookingPaymentError that carries the gateway order id — past the
  * gateway call the order exists at Razorpay whatever happens here.
  */
 async function persistIntent<T>(gatewayOrderId: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
-  } catch {
+  } catch (e) {
+    // A rule violation found on the re-check (e.g. the webhook paid the
+    // booking between the first validation and now) is the customer's answer
+    // as-is, not a storage failure. The gateway order is still an unpaid
+    // orphan, so log it here — the caller only logs Orphaned errors.
+    if (e instanceof BookingPaymentError) {
+      console.error(
+        `[booking-payment] gateway order ${gatewayOrderId} was created but not persisted (${e.message}) — unpaid orphan, no money taken`,
+      )
+      throw e
+    }
     throw new OrphanedBookingPaymentError(gatewayOrderId)
   }
 }
