@@ -17,7 +17,7 @@ const type = (id: string, name: string, resources: { id: string; name: string }[
 })
 const setup = (id: string, name: string, resourceId: string, resourceName: string, typeId: string, rate: string, unit: 'hour' | 'day') => ({
   setupId: id, setupName: name, rate, rateUnit: unit, resourceId, resourceName,
-  resourceTypeId: typeId, resourceTypeName: 'Studio', imageUrl: null, capacity: null, description: null,
+  resourceTypeId: typeId, resourceTypeName: 'Studio', imageUrl: null, images: [], capacity: null, description: null,
 })
 const render = (p: Parameters<typeof StorefrontSetupCards>[0]) => renderToStaticMarkup(<StorefrontSetupCards {...p} />)
 

@@ -8,6 +8,7 @@ import { resolveDayRate } from './rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { getActiveBookingForResource } from './attribution'
 import { industryHasStudioSetups } from './studio-setups'
+import { loadSetupImages } from './setup-images'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -597,7 +598,14 @@ export async function getPublicAvailableStartsForType(
   })
 }
 
-export type PublicResourceSetup = { id: string; name: string; rate: string; rateUnit: 'hour' | 'day' }
+export type PublicResourceSetup = {
+  id: string
+  name: string
+  rate: string
+  rateUnit: 'hour' | 'day'
+  /** M35 #7: up to 3 photo URLs, cover first (empty = none). */
+  images: string[]
+}
 
 /**
  * M24 #5: a resource's active named setups, for the public booking page's
@@ -611,8 +619,8 @@ export type PublicResourceSetup = { id: string; name: string; rate: string; rate
  * app/(public)/book/[resourceId]/page.tsx.
  */
 export async function getPublicResourceSetups(tenantId: string, resourceId: string): Promise<PublicResourceSetup[]> {
-  const rows = await withPublicTenant(tenantId, (tx) =>
-    tx
+  return withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
       .select({
         id: resourceSetups.id,
         name: resourceSetups.name,
@@ -634,9 +642,14 @@ export async function getPublicResourceSetups(tenantId: string, resourceId: stri
           eq(resources.status, 'available'),
         ),
       )
-      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
-  )
-  return rows.map((r) => ({ ...r, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) }))
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    const images = await loadSetupImages(tx, rows.map((r) => r.id))
+    return rows.map((r) => ({
+      ...r,
+      rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+      images: images.get(r.id) ?? [],
+    }))
+  })
 }
 
 export type PublicTypeUnit = { id: string; name: string; setups: PublicResourceSetup[] }
@@ -685,11 +698,18 @@ export async function getPublicTypeUnitsWithSetups(
         ),
       )
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    const images = await loadSetupImages(tx, rows.map((r) => r.id))
     return units.map((u) => ({
       ...u,
       setups: rows
         .filter((r) => r.resourceId === u.id)
-        .map((r) => ({ id: r.id, name: r.name, rate: r.rate, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) })),
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          rate: r.rate,
+          rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+          images: images.get(r.id) ?? [],
+        })),
     }))
   })
 }
@@ -705,6 +725,8 @@ export type PublicStorefrontSetup = {
   resourceTypeId: string
   resourceTypeName: string
   imageUrl: string | null
+  /** M35 #7: the setup's own photos, cover first (empty = none; imageUrl is the set/type fallback). */
+  images: string[]
   capacity: number | null
   description: string | null
 }
@@ -731,8 +753,8 @@ export async function getPublicStorefrontSetups(
   industry: string,
 ): Promise<PublicStorefrontSetup[]> {
   if (!industryHasStudioSetups(industry)) return []
-  const rows = await withPublicTenant(tenantId, (tx) =>
-    tx
+  const { rows, images } = await withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
       .select({
         setupId: resourceSetups.id,
         setupName: resourceSetups.name,
@@ -768,9 +790,12 @@ export async function getPublicStorefrontSetups(
         asc(resources.name),
         asc(resourceSetups.sortOrder),
         asc(resourceSetups.name),
-      ),
-  )
+      )
+    // M35 #7: photos (cover first) for every setup in one extra query.
+    return { rows, images: await loadSetupImages(tx, rows.map((r) => r.setupId)) }
+  })
   return rows.map((r) => ({
+    images: images.get(r.setupId) ?? [],
     setupId: r.setupId,
     setupName: r.setupName,
     rate: r.rate,

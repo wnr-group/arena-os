@@ -15,6 +15,7 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { addDays, zonedTimeToUtc } from './time'
+import { loadSetupImages } from './setup-images'
 
 // Re-exported so every existing `@/lib/booking/data` import site is unchanged.
 export { addDays }
@@ -93,8 +94,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
  * the client; ordering here just needs to be stable within a resource.
  */
 export function listResourceSetups(ctx: ActiveContext, branchId: string) {
-  return withUser(ctx.user.id, (tx) =>
-    tx
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
       .select({
         id: resourceSetups.id,
         resourceId: resourceSetups.resourceId,
@@ -107,8 +108,11 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
       .from(resourceSetups)
       .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
-      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
-  )
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    // M35 #7: photo URLs (cover first) — one batched query for every setup.
+    const images = await loadSetupImages(tx, rows.map((r) => r.id))
+    return rows.map((r) => ({ ...r, images: images.get(r.id) ?? [] }))
+  })
 }
 
 /**

@@ -258,6 +258,29 @@ export const resourceSetups = pgTable(
   ],
 )
 
+// M35 #7 (0113): up to 3 photos per setup. The cap is enforced by the database
+// — position CHECK (1..3, in the migration; Drizzle doesn't model CHECKs here)
+// plus the (setup_id, position) unique below. position 1 is the card cover.
+export const resourceSetupImages = pgTable(
+  'resource_setup_images',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    setupId: uuid('setup_id')
+      .notNull()
+      .references(() => resourceSetups.id, { onDelete: 'cascade' }),
+    url: text('url').notNull(),
+    position: smallint('position').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('resource_setup_images_setup_position_key').on(t.setupId, t.position),
+    index('idx_resource_setup_images_tenant').on(t.tenantId),
+  ],
+)
+
 // M27 #1 (0102): a resource type's fixed hourly rate on one literal calendar
 // date, overriding both weekendRate and the weekday base hourlyRate. Not
 // industry-gated, same as weekendRate — a sibling pricing axis on
