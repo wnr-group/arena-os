@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { Boxes, Users } from 'lucide-react'
 import type { PublicResourceType, PublicStorefrontSetup, PublicTypeAddon } from '@/lib/booking/public-availability'
 import { formatMoney } from '@/lib/format'
+import { FallbackImage } from './FallbackImage'
 
 /** "₹800" / "₹6,000" / "₹99.50" — whole amounts drop the ".00" the storefront cards don't need. */
 function price(amount: string, currency: string): string {
@@ -25,7 +26,10 @@ type Card = {
   title: string
   setLabel: string
   typeName: string
-  imageUrl: string | null
+  /** Image tiers, best first: the setup's cover photo, then the set/type image. A
+   *  failing or missing tier falls through; the placeholder icon is the last. */
+  imageSrcs: (string | null)[]
+  photoCount: number
   capacity: number | null
   description: string | null
   rateText: string
@@ -38,18 +42,20 @@ function CardLink({ card, showType }: { card: Card; showType: boolean }) {
       className="group flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition duration-300 hover:-translate-y-1 hover:border-primary/40 hover:shadow-lg"
     >
       <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-primary/5">
-        {card.imageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={card.imageUrl}
-            alt={card.title}
-            loading="lazy"
-            className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-primary/30">
-            <Boxes size={32} />
-          </div>
+        <FallbackImage
+          srcs={card.imageSrcs}
+          alt={card.title}
+          className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+          placeholder={
+            <div className="flex h-full w-full items-center justify-center text-primary/30">
+              <Boxes size={32} />
+            </div>
+          }
+        />
+        {card.photoCount > 1 && (
+          <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+            {card.photoCount} photos
+          </span>
         )}
       </div>
       <div className="flex flex-1 flex-col p-5">
@@ -109,7 +115,8 @@ export function StorefrontSetupCards({
               title: s.setupName,
               setLabel: s.resourceName,
               typeName: s.resourceTypeName,
-              imageUrl: s.imageUrl,
+              imageSrcs: [s.images[0] ?? null, s.imageUrl],
+              photoCount: s.images.length,
               capacity: s.capacity,
               description: s.description,
               rateText: `${price(s.rate, currency)} / ${s.rateUnit === 'day' ? 'day' : 'hr'}`,
@@ -122,7 +129,8 @@ export function StorefrontSetupCards({
             title: set.name,
             setLabel: type.name,
             typeName: type.name,
-            imageUrl: type.imageUrl,
+            imageSrcs: [type.imageUrl],
+            photoCount: 0,
             capacity: type.capacity,
             description: type.description,
             rateText: `${price(type.hourlyRate, currency)} / hr`,

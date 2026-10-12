@@ -38,6 +38,8 @@ import { formatMoney } from '@/lib/format'
 import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
 import { HoneypotField } from './HoneypotField'
 import { AddonPicker } from './AddonPicker'
+import { PhotoGallery } from './PhotoGallery'
+import { FallbackImage } from './FallbackImage'
 
 // 30-minute steps up to 4 hours, then hourly up to 24 hours. The list is long
 // but the Start-times column only ever offers a duration that actually fits
@@ -567,6 +569,13 @@ export function ResourceBookingPage({
               <div className="min-w-0 space-y-6">
                 <ResourceCard resource={resource} currency={tenant.currency} />
 
+                {/* M35 #10: the selected setup's photos (up to 3). "No setup", or a
+                    setup without photos, keeps the plain resource hero above. Keyed
+                    by setup so switching setups swaps the gallery cleanly. */}
+                {activeSetup && activeSetup.images.length > 0 && (
+                  <PhotoGallery key={activeSetup.id} images={activeSetup.images} name={activeSetup.name} />
+                )}
+
                 {setups.length > 0 && (
                   <section>
                     <SectionLabel icon={Layers}>Setup</SectionLabel>
@@ -597,8 +606,18 @@ export function ResourceBookingPage({
                               : 'border-border bg-card text-foreground hover:border-primary/30'
                           }`}
                         >
-                          <span>{s.name}</span>
-                          <span className="text-xs font-bold tabular-nums text-muted-foreground">
+                          <span className="flex min-w-0 items-center gap-2.5">
+                            {s.images[0] && (
+                              <FallbackImage
+                                srcs={[s.images[0]]}
+                                alt=""
+                                className="size-10 shrink-0 rounded-md object-cover"
+                                placeholder={null}
+                              />
+                            )}
+                            <span className="truncate">{s.name}</span>
+                          </span>
+                          <span className="shrink-0 text-xs font-bold tabular-nums text-muted-foreground">
                             {formatMoney(s.rate, tenant.currency)} / {s.rateUnit === 'day' ? 'day' : 'hr'}
                           </span>
                         </button>

@@ -308,9 +308,20 @@ async function main() {
       insertCode = errCode(e)
     }
     check('P6 anon INSERT into the catalog is refused (RLS 42501)', insertCode === '42501')
-    const upd = await anon(t.tenantId, (tx) => tx.execute(sql`update resource_type_addons set rate='0.00' where tenant_id=${t.tenantId}`))
+    // UPDATE: since migration 0110 the public role has a lock-only UPDATE policy
+    // (USING lets it SELECT ... FOR UPDATE its tenant's active rows for the stock
+    // lock; WITH CHECK (false) means no row can ever be written). So an anon
+    // UPDATE is now REFUSED by RLS (42501) instead of silently matching zero
+    // rows — either way nothing is written, which P7b then proves.
+    let updCode: string | undefined
+    let updRows = 0
+    try {
+      updRows = (await anon(t.tenantId, (tx) => tx.execute(sql`update resource_type_addons set rate='0.00' where tenant_id=${t.tenantId}`))).rowCount ?? 0
+    } catch (e) {
+      updCode = errCode(e)
+    }
     const del = await anon(t.tenantId, (tx) => tx.execute(sql`delete from resource_type_addons where tenant_id=${t.tenantId}`))
-    check('P7 anon UPDATE / DELETE affect zero catalog rows', (upd.rowCount ?? 0) === 0 && (del.rowCount ?? 0) === 0)
+    check('P7 anon UPDATE is refused (42501) or touches zero rows; DELETE touches zero rows', (updCode === '42501' || updRows === 0) && (del.rowCount ?? 0) === 0)
     const intact = (await q<{ n: string }>(`select count(*)::int as n from resource_type_addons where tenant_id=$1`, [t.tenantId])).rows[0].n
     check('P7b …and the catalog is untouched', Number(intact) === activeN + inactiveN && !(await q(`select 1 from resource_type_addons where rate='0.00' and tenant_id=$1`, [t.tenantId])).rowCount)
 
