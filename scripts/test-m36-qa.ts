@@ -37,7 +37,8 @@ const check = (label: string, cond: boolean, got?: unknown) => {
 async function main() {
   const { NextRequest } = await import('next/server')
   const { POST } = await import('../app/api/webhooks/razorpay/route')
-  const { createPublicBooking } = await import('../lib/actions/public-booking')
+  const { createPublicBooking, createBookingPaymentIntentByToken, createBookingPaymentIntent: createIntentAction } =
+    await import('../lib/actions/public-booking')
   const { createBookingPaymentIntent } = await import('../lib/payments/booking-payment')
   const { releaseExpiredHolds } = await import('../lib/booking/payment-hold')
   const { issueInvoiceForBooking } = await import('../lib/billing/invoice')
@@ -204,6 +205,64 @@ async function main() {
   await q(`update bookings set payment_hold_expires_at = now() - interval '1 minute' where id=$1`, [n2.bookingId])
   await releaseExpiredHolds({ tenantId })
   check('a hold released unpaid sends no message at all', (await row(n2.bookingId!)).status === 'cancelled' && (await notifications(n2.bookingId!)) === 0)
+
+  // ══ already paid ══════════════════════════════════════════════════════════
+  console.log('\n── a booking that is already paid online cannot be paid again ──')
+  await setMode('full')
+  const intentRows = async (bookingId: string) =>
+    Number((await q<{ n: string }>(`select count(*) n from payment_intents where booking_id=$1`, [bookingId])).rows[0].n)
+  /** createBookingPaymentIntent with a counting gateway, so a refused call is proven to have made no order. */
+  const countedIntent = async (bookingId: string) => {
+    let orders = 0
+    const r = await createBookingPaymentIntent(
+      { bookingId },
+      {
+        runInTx: (fn) => withPublicTenant(tenantId, fn),
+        credentials: { keyId: 'k', keySecret: 's' } as never,
+        createOrder: async (_c, o) => {
+          orders++
+          return { id: `order_QA${randomBytes(6).toString('hex')}`, amount: o.amountPaise, currency: 'INR', status: 'created', receipt: o.receipt ?? null }
+        },
+        actor: { tenantId },
+      },
+    ).then((checkout) => ({ checkout, error: null as string | null }), (e) => ({ checkout: null, error: e instanceof Error ? `${e.constructor.name}: ${e.message}` : String(e) }))
+    return { ...r, orders }
+  }
+  const wP = slotFor(await mkRes(), 50)
+  const paidBk = await book(wP)
+  const paidInt = await startIntent(paidBk.bookingId!)
+  check('a pending intent is reused on a second call and makes no new order', await (async () => {
+    const again = await countedIntent(paidBk.bookingId!)
+    return again.checkout?.reused === true && again.checkout.orderId === paidInt.orderId && again.orders === 0 && (await intentRows(paidBk.bookingId!)) === 1
+  })())
+  await deliver(paidInt.orderId, `pay_PD${tag}`, paidInt.amountPaise, `evt_pd_${tag}`)
+  check('the webhook confirmed and paid the booking', (await row(paidBk.bookingId!)).status === 'confirmed')
+  const again = await countedIntent(paidBk.bookingId!)
+  check('createBookingPaymentIntent refuses a paid booking with the customer-safe message', again.error === 'BookingPaymentError: This booking has already been paid.', again)
+  check('…no gateway order was created and no intent row was added', again.orders === 0 && (await intentRows(paidBk.bookingId!)) === 1, again)
+  const tok = (await q<{ confirmation_token: string }>(`select confirmation_token from bookings where id=$1`, [paidBk.bookingId])).rows[0].confirmation_token
+  publicCtx()
+  const byTok = await createBookingPaymentIntentByToken({ token: tok })
+  check('the by-token retry action returns the clean error, not a generic failure', 'error' in byTok && byTok.error === 'This booking has already been paid.', byTok)
+  publicCtx()
+  const byId = await createIntentAction({ bookingId: paidBk.bookingId! })
+  check('the by-id action returns the same clean error', 'error' in byId && byId.error === 'This booking has already been paid.', byId)
+  check('…and still no new intent row', (await intentRows(paidBk.bookingId!)) === 1)
+
+  // Not paid: still payable.
+  const wU = slotFor(await mkRes(), 51)
+  const unpaid = await book(wU)
+  const first = await countedIntent(unpaid.bookingId!)
+  check('an unpaid pending_payment booking still gets an intent', first.checkout?.reused === false && first.orders === 1 && (await intentRows(unpaid.bookingId!)) === 1, first)
+  const wF = slotFor(await mkRes(), 52)
+  const failedBk = await book(wF)
+  await startIntent(failedBk.bookingId!)
+  await q(`update payment_intents set status='failed' where booking_id=$1`, [failedBk.bookingId])
+  const afterFail = await countedIntent(failedBk.bookingId!)
+  check('a booking whose only intent failed is still payable (new order)', afterFail.checkout?.reused === false && afterFail.orders === 1 && (await intentRows(failedBk.bookingId!)) === 2, afterFail)
+  await q(`update payment_intents set status='cancelled' where booking_id=$1 and status='pending'`, [failedBk.bookingId])
+  const afterCancel = await countedIntent(failedBk.bookingId!)
+  check('…and so is one whose intents are failed/cancelled', afterCancel.checkout?.reused === false && afterCancel.orders === 1, afterCancel)
 
   // ══ reports ═══════════════════════════════════════════════════════════════
   console.log('\n── reports ──')

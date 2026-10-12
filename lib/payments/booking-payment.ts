@@ -127,6 +127,25 @@ async function loadPayableBooking(tx: Db, tenantId: string, bookingId: string): 
     throw new BookingPaymentError('This booking can no longer be paid online.')
   }
 
+  // Already paid: a paid booking_deposit intent (any amount) means the money is
+  // in, so a second gateway order must never open — a stale tab or the
+  // confirmation page's Retry could otherwise take the customer's money twice.
+  // Read here, not in the callers, so the re-check inside the persist step (a
+  // concurrent request) enforces it too.
+  const [paid] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.bookingId, booking.id),
+        eq(paymentIntents.purpose, PURPOSE),
+        eq(paymentIntents.status, 'paid'),
+      ),
+    )
+    .limit(1)
+  if (paid) throw new BookingPaymentError('This booking has already been paid.')
+
   return {
     id: booking.id,
     branchId: booking.branchId,
