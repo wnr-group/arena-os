@@ -7,6 +7,7 @@ import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
@@ -118,6 +119,9 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
   try {
     const ctx = await requireContext()
     const v = createInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       createBookingCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
@@ -243,6 +247,9 @@ export async function startWalkin(input: z.input<typeof startWalkinInput>): Prom
       throw new AuthError('You do not have permission to start a walk-in.')
     }
     const v = startWalkinInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       startWalkinCore(
@@ -584,6 +591,9 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = seatTableInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       seatTableSessionCore(

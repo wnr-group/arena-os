@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { canManageIncomingOrders, canManageKitchen, canManageWalkins, isManager } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
@@ -25,6 +26,8 @@ export default async function BookingsPage({
 }) {
   const ctx = await getActiveContext()
   if (!ctx) return null
+  // Release lapsed unpaid online holds so the calendar/availability never shows a dead slot as taken.
+  await sweepTenantHolds(ctx.tenant.id)
   const tz = ctx.tenant.timezone
   const sp = await searchParams
   const date = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? '') ? sp.date! : todayInZone(tz)

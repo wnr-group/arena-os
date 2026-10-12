@@ -149,10 +149,27 @@ asked to pay for.
 
 **Scheduling.** `npm run billing:dunning` (`scripts/run-dunning.ts`), run hourly
 by the host scheduler — the same tsx-script pattern as `reports:refresh` and
-`expenses:recurring`, since this project has no cron route, job table or queue.
+`expenses:recurring`, since this project has no job table or queue and only one cron route (payment-hold release, below).
 One transaction per subscription; every transition guarded by the status it
 moves from; reminders claimed by a unique index before they are sent. Safe to
 run twice, safe to interrupt.
+
+**Releasing expired payment holds.** An unpaid online booking (`pending_payment`)
+keeps its slot until `payment_hold_expires_at` passes; `releaseExpiredHolds()`
+(`lib/booking/payment-hold.ts`) then cancels it. Three things run it: the public
+booking actions and the staff booking/availability/walk-in paths and calendar
+pages (`sweepTenantHolds(tenantId)`, per tenant, best-effort), and a scheduler
+for tenants nobody is touching. The scheduler is either `npm run
+bookings:release-holds` from a host crontab, or on Vercel the route
+`/api/cron/release-holds` (GET or POST, all tenants, returns `{ released }`). The
+route requires `Authorization: Bearer $CRON_SECRET` (what Vercel Cron sends when
+the `CRON_SECRET` env var is set), compares in constant time, and answers 503
+when `CRON_SECRET` is unset so it can never run unauthenticated. `vercel.json`
+deliberately declares no cron: the frequency a plan allows differs, so the owner
+adds `{ "crons": [{ "path": "/api/cron/release-holds", "schedule": "* * * * *" }] }`
+(or a slower schedule) once they have chosen. The proxy lets `/api/cron/*`
+through without a session, as it does `/api/webhooks/*`; the route's own secret
+is the gate.
 
 **Notifications.** There is no email or SMS provider in this project, so nothing
 is duplicated and nothing is invented. `platform_dunning_notices` records what
