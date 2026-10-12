@@ -7,6 +7,7 @@ import { weekdayInZone, zonedTimeToUtc } from './time'
 import { resolveDayRate } from './rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { getActiveBookingForResource } from './attribution'
+import { industryHasStudioSetups } from './studio-setups'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -693,7 +694,98 @@ export async function getPublicTypeUnitsWithSetups(
   })
 }
 
-export type PublicDayRangeWindow = { startsAt: string; endsAt: string; conflict: boolean } | { error: string }
+export type PublicStorefrontSetup = {
+  setupId: string
+  setupName: string
+  rate: string
+  rateUnit: 'hour' | 'day'
+  /** The physical set this setup reserves (booking one blocks the whole set). */
+  resourceId: string
+  resourceName: string
+  resourceTypeId: string
+  resourceTypeName: string
+  imageUrl: string | null
+  capacity: number | null
+  description: string | null
+}
+
+/**
+ * M35 #1: every active setup across all available sets of every active
+ * resource type at the branch, as one flat list for the storefront first page
+ * (a studio with 4 setups shows 4 cards, not type -> set -> setup drilling).
+ * A set with no active setups yields no rows here — it stays reachable via
+ * the existing /book-type flow.
+ *
+ * `industry` is a parameter because the tenants table has no public RLS
+ * policy (see 0022) — the caller already resolved the tenant by slug. Non-
+ * studio industries get [] so their flows are untouched.
+ *
+ * Same visibility rules as getPublicResourceSetups: setup is_active (also
+ * enforced by resource_setups_public_select, 0100 — no new policy needed),
+ * resources.status = 'available', tenant + branch scoped. Single joined
+ * query; image/description fall back set -> type since setups have neither.
+ */
+export async function getPublicStorefrontSetups(
+  tenantId: string,
+  branchId: string,
+  industry: string,
+): Promise<PublicStorefrontSetup[]> {
+  if (!industryHasStudioSetups(industry)) return []
+  const rows = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        setupId: resourceSetups.id,
+        setupName: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+        resourceId: resources.id,
+        resourceName: resources.name,
+        resourceTypeId: resourceTypes.id,
+        resourceTypeName: resourceTypes.name,
+        resourceImageUrl: resources.imageUrl,
+        typeImageUrl: resourceTypes.imageUrl,
+        resourceDescription: resources.description,
+        typeDescription: resourceTypes.description,
+        capacity: resourceTypes.capacity,
+      })
+      .from(resourceSetups)
+      .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resourceSetups.tenantId, tenantId),
+          eq(resourceSetups.isActive, true),
+          eq(resources.tenantId, tenantId),
+          eq(resources.branchId, branchId),
+          eq(resources.status, 'available'),
+          eq(resourceTypes.tenantId, tenantId),
+          eq(resourceTypes.isActive, true),
+        ),
+      )
+      .orderBy(
+        asc(resourceTypes.name),
+        asc(resources.sortOrder),
+        asc(resources.name),
+        asc(resourceSetups.sortOrder),
+        asc(resourceSetups.name),
+      ),
+  )
+  return rows.map((r) => ({
+    setupId: r.setupId,
+    setupName: r.setupName,
+    rate: r.rate,
+    rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+    resourceId: r.resourceId,
+    resourceName: r.resourceName,
+    resourceTypeId: r.resourceTypeId,
+    resourceTypeName: r.resourceTypeName,
+    imageUrl: r.resourceImageUrl ?? r.typeImageUrl,
+    capacity: r.capacity,
+    description: r.resourceDescription ?? r.typeDescription,
+  }))
+}
+
+export type PublicDayRangeWindow ={ startsAt: string; endsAt: string; conflict: boolean } | { error: string }
 
 /**
  * M24 #5: the public mirror of the staff getDayRangeWindow
