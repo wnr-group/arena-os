@@ -46,6 +46,7 @@ export default async function ResourcesUnitsPage() {
       rateUnit: s.rateUnit === 'day' ? 'day' : 'hour',
       isActive: s.isActive,
       sortOrder: s.sortOrder,
+      photos: s.photos,
     })
   }
 

@@ -15,7 +15,7 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { addDays, zonedTimeToUtc } from './time'
-import { loadSetupImages } from './setup-images'
+import { loadSetupPhotos } from './setup-images'
 
 // Re-exported so every existing `@/lib/booking/data` import site is unchanged.
 export { addDays }
@@ -109,9 +109,14 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
       .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
-    // M35 #7: photo URLs (cover first) — one batched query for every setup.
-    const images = await loadSetupImages(tx, rows.map((r) => r.id))
-    return rows.map((r) => ({ ...r, images: images.get(r.id) ?? [] }))
+    // M35 #7/#9: photos (cover first) — one batched query for every setup.
+    // `photos` carries the row ids the settings editor needs to remove/reorder;
+    // `images` stays the plain URL list the other readers use.
+    const photos = await loadSetupPhotos(tx, rows.map((r) => r.id))
+    return rows.map((r) => {
+      const list = photos.get(r.id) ?? []
+      return { ...r, images: list.map((p) => p.url), photos: list }
+    })
   })
 }
 

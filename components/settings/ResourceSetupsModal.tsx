@@ -8,6 +8,7 @@ import { upsertResourceSetup, deleteResourceSetup } from '@/lib/actions/resource
 import { formatMoney } from '@/lib/format'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { SetupPhotoStrip, type SetupPhotoItem } from './SetupPhotoStrip'
 
 export type ResourceSetupRow = {
   id: string
@@ -17,6 +18,8 @@ export type ResourceSetupRow = {
   rateUnit: 'hour' | 'day'
   isActive: boolean
   sortOrder: number
+  /** M35 #9: this setup's photos (id + URL), cover first — empty when none. */
+  photos: SetupPhotoItem[]
 }
 
 type Draft = { name: string; rate: string; rateUnit: 'hour' | 'day'; isActive: boolean; sortOrder: string }
@@ -130,7 +133,8 @@ export function ResourceSetupsModal({
   async function handleDelete(row: ResourceSetupRow) {
     await confirm({
       title: `Delete setup "${row.name}"?`,
-      description: 'This cannot be undone. Past bookings keep their own frozen record of this setup.',
+      description:
+        'This cannot be undone. Its photos are deleted too. Past bookings keep their own frozen record of this setup.',
       confirmText: 'Delete',
       onConfirm: async () => {
         setDeletingId(row.id)
@@ -190,6 +194,7 @@ export function ResourceSetupsModal({
                 pending={pending}
                 onCancel={cancelForm}
                 onSubmit={() => submit(row.id)}
+                photoStrip={<SetupPhotoStrip setupId={row.id} setupName={row.name} photos={row.photos} />}
               />
             ) : (
               <SetupRowView
@@ -213,6 +218,7 @@ export function ResourceSetupsModal({
               pending={pending}
               onCancel={cancelForm}
               onSubmit={() => submit()}
+              photoStrip={<SetupPhotoStrip setupId={null} setupName={draft.name || 'New setup'} photos={[]} />}
             />
           )}
         </div>
@@ -256,7 +262,8 @@ function SetupRowView({
   onDelete: () => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/60 px-3 py-2.5">
+    <div className="rounded-lg border border-border bg-background/60 px-3 py-2.5">
+    <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{row.name}</span>
@@ -291,6 +298,8 @@ function SetupRowView({
         </button>
       </div>
     </div>
+    <SetupPhotoStrip setupId={row.id} setupName={row.name} photos={row.photos} />
+    </div>
   )
 }
 
@@ -302,6 +311,7 @@ function SetupRowForm({
   pending,
   onCancel,
   onSubmit,
+  photoStrip,
 }: {
   draft: Draft
   setDraft: (d: Draft) => void
@@ -310,6 +320,8 @@ function SetupRowForm({
   pending: boolean
   onCancel: () => void
   onSubmit: () => void
+  /** The photo manager for this setup (disabled until the setup is saved). */
+  photoStrip?: React.ReactNode
 }) {
   return (
     <div className="space-y-2.5 rounded-lg border border-primary/40 bg-primary/[0.03] p-3">
@@ -374,6 +386,8 @@ function SetupRowForm({
           />
         </div>
       </div>
+
+      {photoStrip}
 
       <div className="flex justify-end gap-2 pt-0.5">
         <button
