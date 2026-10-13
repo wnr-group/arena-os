@@ -98,6 +98,10 @@ export type CreateBookingInput = {
    *  a client: every action's zod schema strips unknown keys, and the public
    *  path builds its own input object. */
   backdated?: boolean
+  /** Past-booking entry only (requires `backdated`): the session charge, before
+   *  tax, the manager wants billed instead of the computed one — a discount or
+   *  an increase. Absent = the computed price. Ignored for a normal booking. */
+  sessionCharge?: number
   /** M36 #3: set ONLY by createPublicBooking when the venue requires online
    *  payment — the booking is created 'pending_payment' (slot held, not
    *  confirmed) with this expiry, and flips to confirmed on the verified
@@ -747,14 +751,42 @@ export async function createBookingCore(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId: string | null },
   input: CreateBookingInput,
-): Promise<CreatedBooking> {
+): Promise<CreatedBooking & {
+  /** The app's own session charge, before any past-booking `sessionCharge` override. */
+  computedSubtotal: number
+}> {
   const advance = await validateAdvanceTenders(tx, ctx.tenantId, input.advanceTenders)
 
-  const { subtotal, slots: slotRows } = await priceBookingSlots(tx, ctx, {
+  const priced = await priceBookingSlots(tx, ctx, {
     branchId: input.branchId,
     slots: input.slots,
     headCount: input.headCount,
   })
+  const computedSubtotal = priced.subtotal
+  let subtotal = priced.subtotal
+  const slotRows = priced.slots
+
+  // Past-booking entry: the manager's figure replaces the computed charge. It is
+  // spread over the slots in proportion to their computed totals (the last one
+  // takes the rounding remainder) so the slot totals still sum to it exactly.
+  if (input.backdated && input.sessionCharge !== undefined) {
+    const target = round2(input.sessionCharge)
+    if (!Number.isFinite(target) || target < 0) throw new BookingError('Enter a valid session charge.')
+    let left = target
+    slotRows.forEach((row, i) => {
+      const isLast = i === slotRows.length - 1
+      const share = isLast
+        ? left
+        : computedSubtotal > 0
+          ? round2((target * Number(row.slotTotal)) / computedSubtotal)
+          : i === 0
+            ? target
+            : 0
+      row.slotTotal = share.toFixed(2)
+      left = round2(left - share)
+    })
+    subtotal = target
+  }
 
   // Add-ons are priced BEFORE the insert so the booking is created with the
   // right subtotal/total in one write — a public (online) booking's role has
@@ -764,9 +796,9 @@ export async function createBookingCore(
   // there, rolling the whole transaction back).
   let preAddonTotal = 0
   for (const [i, s] of input.slots.entries()) {
-    const priced = slotRows[i]
-    if (!s.addons || s.addons.length === 0 || !priced?.endsAt) continue
-    preAddonTotal += (await priceAddonRequests(tx, ctx.tenantId, priced.startsAt, priced.endsAt, s.addons)).total
+    const pricedSlot = slotRows[i]
+    if (!s.addons || s.addons.length === 0 || !pricedSlot?.endsAt) continue
+    preAddonTotal += (await priceAddonRequests(tx, ctx.tenantId, pricedSlot.startsAt, pricedSlot.endsAt, s.addons)).total
   }
   preAddonTotal = round2(preAddonTotal)
   const bookingSubtotal = round2(subtotal + preAddonTotal)
@@ -820,6 +852,7 @@ export async function createBookingCore(
         tenantId: ctx.tenantId,
         bookingId: booking.id,
         ...s,
+        backdated: input.backdated ?? false,
       })),
     )
     .returning({ id: bookingSlots.id, resourceId: bookingSlots.resourceId, startsAt: bookingSlots.startsAt })
@@ -837,16 +870,16 @@ export async function createBookingCore(
     // Input order is preserved by INSERT … RETURNING in practice, but match on
     // (resource, start) rather than trusting row order for money-adjacent code.
     const targets = input.slots.map((s, i) => {
-      const priced = slotRows[i]
+      const pricedSlot = slotRows[i]
       const row = insertedSlots.find(
-        (r) => r.resourceId === priced.resourceId && r.startsAt.getTime() === priced.startsAt.getTime(),
+        (r) => r.resourceId === pricedSlot.resourceId && r.startsAt.getTime() === pricedSlot.startsAt.getTime(),
       )
       if (!row) throw new BookingError('Could not attach add-ons to the booking.')
       return {
         slotId: row.id,
         resourceTypeId: typeByResource.get(s.resourceId)!,
-        startsAt: priced.startsAt,
-        endsAt: priced.endsAt,
+        startsAt: pricedSlot.startsAt,
+        endsAt: pricedSlot.endsAt,
         addons: normalizeAddonRequests(s.addons),
       }
     })
@@ -872,7 +905,7 @@ export async function createBookingCore(
 
   await recordAdvanceTenders(tx, ctx, { bookingId: booking.id, branchId: input.branchId }, advance.tenders)
 
-  return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken }
+  return { id: booking.id, bookingNumber, confirmationToken: booking.confirmationToken, computedSubtotal }
 }
 
 export type UpdateBookingHeadCountInput = { bookingId: string; headCount: number }

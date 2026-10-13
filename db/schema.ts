@@ -512,6 +512,10 @@ export const bookingSlots = pgTable(
     resourceName: text('resource_name').notNull(),
     resourceTypeName: text('resource_type_name').notNull(),
     active: boolean('active').notNull().default(true),
+    // 0121: slot of a past-booking entry (M28). Exempt from the no-overlap
+    // exclusion constraint and billed as one flat charge (slot_total), since a
+    // manager may have adjusted it.
+    backdated: boolean('backdated').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

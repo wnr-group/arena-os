@@ -10,7 +10,7 @@ import { recordBackdatedBookingCore, previewBackdatedBooking, type BackdatedPrev
 import { BillingError } from '@/lib/billing/invoice'
 import { PaymentError, POS_PAYMENT_METHODS, MAX_PAYMENT_AMOUNT } from '@/lib/billing/payments'
 import { isValidPhone } from '@/lib/customers/phone'
-import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { zodErrorMessage } from '@/lib/utils/errors'
 
 type RecordResult = {
   error?: string
@@ -42,6 +42,12 @@ const recordBackdatedInput = z.object({
     )
     .min(1, 'Add at least one resource slot'),
   headCount: z.coerce.number().int().min(1).max(1000).optional(),
+  sessionCharge: z.coerce
+    .number({ invalid_type_error: 'Enter a valid session charge.' })
+    .finite('Enter a valid session charge.')
+    .min(0, 'Session charge must be zero or more.')
+    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.')
+    .optional(),
   amountCollected: z.coerce
     .number({ invalid_type_error: 'Enter a valid amount.' })
     .finite('Enter a valid amount.')
@@ -56,17 +62,15 @@ function fail(e: unknown): RecordResult {
     return { error: e.message }
   }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  // 23P01 = exclusion_violation: the slot overlaps an existing booking.
-  if (pgError(e)?.code === '23P01') {
-    return { error: 'That time was just taken for one of the selected resources. Please pick another slot.' }
-  }
   return { error: e instanceof Error ? e.message : 'Something went wrong.' }
 }
 
 /**
  * Owner/manager back-fill of a session that already happened (up to 7 days
  * back): creates, bills and settles the booking in one transaction. The window
- * is enforced server-side inside recordBackdatedBookingCore.
+ * is enforced server-side inside recordBackdatedBookingCore. Overlap with other
+ * bookings is deliberately NOT checked (the slots are exempt from the exclusion
+ * constraint, 0121), and the manager may override the session charge.
  */
 export async function recordBackdatedBooking(input: z.input<typeof recordBackdatedInput>): Promise<RecordResult> {
   try {
@@ -94,7 +98,7 @@ export async function recordBackdatedBooking(input: z.input<typeof recordBackdat
 // The customer is optional for a preview (the form previews before it is
 // filled in); a valid phone is still passed so any membership benefit prices in.
 const previewBackdatedInput = recordBackdatedInput
-  .pick({ branchId: true, slots: true, headCount: true })
+  .pick({ branchId: true, slots: true, headCount: true, sessionCharge: true })
   .extend({ customerPhone: z.string().trim().optional() })
 
 /**

@@ -14,8 +14,10 @@
  *   - a restaurant backdated booking lands completed, while the shared
  *     completeBookingIfFullySettled still returns false for a settled
  *     restaurant booking (real-time path unchanged)
- *   - the GiST constraint refuses an overlapping historical slot (23P01) and
- *     rolls the whole transaction back
+ *   - overlap is NOT validated for a past entry (0121), while ordinary bookings
+ *     still hit the GiST constraint (23P01)
+ *   - the manager can discount or increase the session charge (preview, invoice,
+ *     audit, zero, negative)
  *   - an audit_log row records the actor and claimed times
  *   - the manager gate, via the REAL actions behind the REAL requireManager()
  *     (cashier / floor_staff / signed-out refused; manager / owner succeed)
@@ -264,19 +266,85 @@ async function main() {
     check('invoice stays issued (part paid)', inv.status === 'issued', inv)
   }
 
-  // ══ 6. overlap refused by the exclusion constraint, all rolled back ══════
-  console.log('\n── overlap ──')
+  // ══ 6. overlap is NOT validated for a past entry (0121) ═══════════════════
+  console.log('\n── overlap allowed ──')
   {
     const before = Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [A.tenantId])).rows[0].count)
+    // yesterday 11:00-13:00 overlaps the earlier yesterday entries on this resource.
+    const r = await record(base(ps5.resourceId, localAt(yesterday, '11:00'), localAt(yesterday, '13:00')))
+    check('an overlapping historical slot is accepted', !!r.bookingId, r)
+    const after = Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [A.tenantId])).rows[0].count)
+    check('...and recorded', after === before + 1, [before, after])
+    const sl = (await owner.query(`select active, backdated from booking_slots where booking_id=$1`, [r.bookingId])).rows
+    check('...slots stay active (invoiced) and flagged backdated', sl.length === 1 && sl[0].active === true && sl[0].backdated === true, sl)
+    const overlapping = Number(
+      (await owner.query(
+        `select count(*) from booking_slots a join booking_slots b on a.resource_id=b.resource_id and a.id<b.id
+          and tstzrange(a.starts_at,a.ends_at) && tstzrange(b.starts_at,b.ends_at) where a.tenant_id=$1 and a.active and b.active`,
+        [A.tenantId],
+      )).rows[0].count,
+    )
+    check('...genuinely overlapping other active slots', overlapping > 0, overlapping)
+
+    // The constraint still guards ordinary bookings.
+    const start = new Date(now.getTime() + 5 * DAY)
+    const slot = { resourceId: ps5.resourceId, startsAt: start.toISOString(), endsAt: new Date(start.getTime() + 3600_000).toISOString() }
+    const mk = () => withUser(A.userId, (tx) => createBookingCore(tx, ctxA, { branchId: A.branchId, source: 'staff', discount: 0, deposit: 0, slots: [slot] }))
+    await mk()
     let code = ''
     try {
-      await record(base(ps5.resourceId, localAt(yesterday, '11:00'), localAt(yesterday, '13:00')))
+      await mk()
     } catch (e) {
       code = (e as { code?: string; cause?: { code?: string } }).code ?? (e as { cause?: { code?: string } }).cause?.code ?? ''
     }
-    check('overlapping historical slot is refused with 23P01', code === '23P01', code)
-    const after = Number((await owner.query(`select count(*) from bookings where tenant_id=$1`, [A.tenantId])).rows[0].count)
-    check('nothing left behind by the failed transaction', after === before, [before, after])
+    check('two ordinary overlapping bookings are still refused (23P01)', code === '23P01', code)
+  }
+
+  // ══ 6b. the manager may discount or increase the session charge ══════════
+  console.log('\n── session charge override ──')
+  {
+    const d = addDays(todayInZone(TZ, now), -3)
+    const input = base(ps5.resourceId, localAt(d, '14:00'), localAt(d, '16:00'))
+    const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
+    const calc = pv.computedSubtotal
+    check('preview reports the calculated charge', calc > 0 && pv.subtotal === calc, pv)
+
+    const lowIn = { ...input, sessionCharge: Math.round(calc / 2) }
+    const lowPv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, lowIn)
+    check('preview with a lower charge bills it and keeps the calculated one', lowPv.subtotal === lowIn.sessionCharge && lowPv.computedSubtotal === calc, lowPv)
+    const low = await record({ ...lowIn, amountCollected: lowPv.total })
+    const lowInv = (await owner.query(`select subtotal,total from invoices where id=$1`, [low.invoiceId])).rows[0]
+    check('discounted: invoice subtotal is the manager figure', Number(lowInv.subtotal) === lowIn.sessionCharge, lowInv)
+    check('...invoice total equals the previewed total and settles', Number(lowInv.total) === lowPv.total && low.completed === true, [lowInv, lowPv])
+    const lowItem = (await owner.query(`select qty,unit_price from invoice_items where invoice_id=$1 and kind='booking'`, [low.invoiceId])).rows
+    check('...single flat line = manager figure', lowItem.length === 1 && Number(lowItem[0].qty) * Number(lowItem[0].unit_price) === lowIn.sessionCharge, lowItem)
+    const lowBk = (await owner.query(`select subtotal,total from bookings where id=$1`, [low.bookingId])).rows[0]
+    check('...booking row matches', Number(lowBk.subtotal) === lowIn.sessionCharge, lowBk)
+
+    const highIn = { ...input, sessionCharge: calc + 250 }
+    const highPv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, highIn)
+    const high = await record({ ...highIn, amountCollected: highPv.total })
+    const highInv = (await owner.query(`select subtotal,total from invoices where id=$1`, [high.invoiceId])).rows[0]
+    check('increased: invoice subtotal is higher than calculated', Number(highInv.subtotal) === calc + 250, [calc, highInv])
+    check('...and settles', high.completed === true && Number(highInv.total) === highPv.total, [highInv, highPv])
+
+    const zero = await record({ ...input, sessionCharge: 0, amountCollected: 0 })
+    check('a zero charge records a free session', !!zero.bookingId && zero.completed === true, zero)
+
+    let msg = ''
+    try {
+      await record({ ...input, sessionCharge: -5, amountCollected: 0 })
+    } catch (e) {
+      msg = (e as Error).message
+    }
+    check('a negative charge is refused', /zero or more/i.test(msg), msg)
+
+    const aud = (await owner.query(`select after from audit_log where entity_id=$1 and action='booking.backdated_entry'`, [high.bookingId])).rows[0]?.after
+    check('audit records the calculated and the billed charge', aud?.computedSessionCharge === calc && aud?.sessionCharge === calc + 250, aud)
+
+    const plain = await record({ ...input, amountCollected: pv.total })
+    const plainInv = (await owner.query(`select subtotal from invoices where id=$1`, [plain.invoiceId])).rows[0]
+    check('no override: billed at the calculated price', Number(plainInv.subtotal) === calc, plainInv)
   }
 
   // ══ 7. ordinary bookings unaffected ══════════════════════════════════════
@@ -447,7 +515,7 @@ async function main() {
 
     signedInAs('owner')
     const overlap = await recordBackdatedBooking(input(localAt(yesterday, '10:30'), localAt(yesterday, '11:30')))
-    check('overlap is refused with the standard friendly message', /just taken/i.test(overlap.error ?? ''), overlap)
+    check('action: an overlapping past entry is accepted', !overlap.error && !!overlap.bookingId, overlap)
     const ok2 = await recordBackdatedBooking(input(localAt(yesterday, '12:00'), localAt(yesterday, '13:00')))
     check('owner: a valid backdated booking succeeds too', !ok2.error && ok2.completed === true, ok2)
 
