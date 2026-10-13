@@ -23,7 +23,7 @@ export type BackdatedResource = {
   setups: { id: string; name: string }[]
 }
 
-type Preview = { subtotal: number; discount: number; tax: number; total: number }
+type Preview = { subtotal: number; discount: number; tax: number; total: number; computedSubtotal: number }
 
 const MAX_DAYS_BACK = 7
 
@@ -63,6 +63,9 @@ export function BackdatedBookingForm({
   const [method, setMethod] = useState<'cash' | 'card' | 'upi'>('cash')
   // null = follow the preview total until the manager types their own figure.
   const [amountText, setAmountText] = useState<string | null>(null)
+  // null = bill the app's computed session charge; otherwise the manager's own
+  // figure (lower = a discount, higher = an increase).
+  const [chargeText, setChargeText] = useState<string | null>(null)
 
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -98,6 +101,16 @@ export function BackdatedBookingForm({
     [resource, window, setupId],
   )
 
+  const chargeNum = chargeText === null || chargeText.trim() === '' ? undefined : Number(chargeText)
+  const chargeValid = chargeNum === undefined || (Number.isFinite(chargeNum) && chargeNum >= 0)
+  const sessionCharge = chargeNum !== undefined && chargeValid ? chargeNum : undefined
+
+  // A different session means a different computed price: drop the old override.
+  useEffect(() => {
+    setChargeText(null)
+    setAmountText(null)
+  }, [slots, headCount])
+
   // Live, server-computed price: the real create + invoice path, rolled back —
   // so weekend/holiday/happy-hour/per-head/GST all match what is charged.
   useEffect(() => {
@@ -114,6 +127,7 @@ export function BackdatedBookingForm({
         branchId,
         slots,
         headCount: takesPlayers ? headCount : undefined,
+        sessionCharge,
         customerPhone: isValidPhone(customerPhone) ? customerPhone : undefined,
       })
         .then((r) => {
@@ -137,7 +151,7 @@ export function BackdatedBookingForm({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [branchId, slots, takesPlayers, headCount, customerPhone])
+  }, [branchId, slots, takesPlayers, headCount, customerPhone, sessionCharge])
 
   const amount = amountText ?? (preview ? String(preview.total) : '')
   const amountNum = Number(amount)
@@ -145,6 +159,7 @@ export function BackdatedBookingForm({
     !!slots &&
     !!preview &&
     !previewLoading &&
+    chargeValid &&
     customerName.trim() !== '' &&
     isValidPhone(customerPhone) &&
     amount !== '' &&
@@ -163,6 +178,7 @@ export function BackdatedBookingForm({
         notes: notes || undefined,
         slots,
         headCount: takesPlayers ? headCount : undefined,
+        sessionCharge,
         amountCollected: amountNum,
         paymentMethod: method,
         idempotencyKey,
@@ -188,7 +204,8 @@ export function BackdatedBookingForm({
       <h1 className="mt-3 text-2xl font-semibold">Record a past booking</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         For a session that already happened but was never logged (up to {MAX_DAYS_BACK} days back). It is saved as
-        completed, billed and paid in one step, and marked as entered late.
+        completed, billed and paid in one step, and marked as entered late. It may overlap other bookings, and you can
+        change the charge.
       </p>
 
       <div className="mt-6 space-y-5">
@@ -306,6 +323,35 @@ export function BackdatedBookingForm({
             </label>
             <input id="bd-notes" className={`${wizardInput} mt-1`} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
+        </div>
+
+        <div>
+          <label htmlFor="bd-charge" className={wizardLabel}>
+            Session charge (before tax)
+          </label>
+          <input
+            id="bd-charge"
+            type="number"
+            min={0}
+            step="0.01"
+            className={`${wizardInput} mt-1`}
+            value={chargeText ?? (preview ? String(preview.computedSubtotal) : '')}
+            onChange={(e) => {
+              setChargeText(e.target.value)
+              setAmountText(null)
+            }}
+          />
+          {preview && sessionCharge !== undefined && sessionCharge !== preview.computedSubtotal ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {sessionCharge < preview.computedSubtotal ? 'Discounted' : 'Increased'} from{' '}
+              {formatMoney(preview.computedSubtotal, currency)} (the calculated price).{' '}
+              <button type="button" className="underline" onClick={() => setChargeText(null)}>
+                Reset
+              </button>
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground">Calculated from the rates on that day. Edit to charge a different amount.</p>
+          )}
         </div>
 
         {/* live price */}

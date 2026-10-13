@@ -34,6 +34,9 @@ export type RecordBackdatedInput = {
   notes?: string
   slots: CreateBookingSlotInput[]
   headCount?: number
+  /** The session charge (before tax) to bill instead of the computed one —
+   *  a discount or an increase the manager decided. Absent = computed price. */
+  sessionCharge?: number
   /** What was actually collected. 0 is allowed only when the bill is ₹0. */
   amountCollected: number
   paymentMethod: PosPaymentMethod
@@ -91,6 +94,7 @@ async function createAndBill(
     slots: input.slots,
     headCount: input.headCount,
     backdated: true,
+    sessionCharge: input.sessionCharge,
   })
 
   const invoice = await issueInvoiceForBooking(tx, { id: ctx.tenantId, timezone: ctx.timezone }, { bookingId: created.id })
@@ -105,11 +109,13 @@ export async function recordBackdatedBookingCore(
   const now = new Date()
   const amount = input.amountCollected
   if (!Number.isFinite(amount) || amount < 0) throw new BookingError('Amount collected must be zero or more.')
+  if (input.sessionCharge !== undefined && (!Number.isFinite(input.sessionCharge) || input.sessionCharge < 0)) {
+    throw new BookingError('Session charge must be zero or more.')
+  }
 
   // Idempotent on the client's key: a double-click or a retry after a commit
   // whose response was lost must return the booking already recorded, not
-  // collide with its own slot (23P01) and invite a duplicate on another
-  // resource. The advisory lock makes a concurrent second call wait for the
+  // create a duplicate booking and invoice. The advisory lock makes a concurrent second call wait for the
   // first to commit, then find it here.
   const key = input.idempotencyKey
   if (key) {
@@ -190,6 +196,9 @@ export async function recordBackdatedBookingCore(
       slots: input.slots.map((s) => ({ resourceId: s.resourceId, startsAt: s.startsAt, endsAt: s.endsAt })),
       invoiceId: invoice.invoiceId,
       invoiceNumber: invoice.invoiceNumber,
+      // Money audit: the app's own price vs the figure the manager billed.
+      computedSessionCharge: created.computedSubtotal,
+      sessionCharge: input.sessionCharge ?? null,
       amountCollected: amount,
       paymentMethod: input.paymentMethod,
       completed,
@@ -205,7 +214,14 @@ export async function recordBackdatedBookingCore(
   }
 }
 
-export type BackdatedPreview = { subtotal: number; discount: number; tax: number; total: number }
+export type BackdatedPreview = {
+  subtotal: number
+  discount: number
+  tax: number
+  total: number
+  /** The app's own session charge, before any override — what the field defaults to. */
+  computedSubtotal: number
+}
 
 /** Thrown to abort the preview's transaction — nothing it wrote survives. */
 class PreviewRollback extends Error {
@@ -229,9 +245,15 @@ export async function previewBackdatedBooking(
 ): Promise<BackdatedPreview> {
   try {
     await run(async (tx) => {
-      const { invoice } = await createAndBill(tx, ctx, input, new Date())
+      const { created, invoice } = await createAndBill(tx, ctx, input, new Date())
       const p = invoice.pricing
-      throw new PreviewRollback({ subtotal: p.subtotal, discount: p.discount, tax: p.taxTotal, total: p.total })
+      throw new PreviewRollback({
+        subtotal: p.subtotal,
+        discount: p.discount,
+        tax: p.taxTotal,
+        total: p.total,
+        computedSubtotal: created.computedSubtotal,
+      })
     })
   } catch (e) {
     if (e instanceof PreviewRollback) return e.preview

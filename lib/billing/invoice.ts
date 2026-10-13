@@ -232,6 +232,8 @@ export async function loadBookingLines(
       // M29 #3 — see the holiday + surcharge case in the line shape below.
       holidayRateApplied: bookingSlots.holidayRateApplied,
       extraPlayerRateApplied: bookingSlots.extraPlayerRateApplied,
+      // 0121: a past-booking entry's slot_total may be the manager's own figure.
+      backdated: bookingSlots.backdated,
     })
     .from(bookingSlots)
     .where(
@@ -261,7 +263,11 @@ export async function loadBookingLines(
       description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
-      ...(s.rateUnit === 'day'
+      ...(s.backdated
+        ? // Past-booking entry: slot_total is final (possibly the manager's own
+          // figure), so it bills as the one computed charge whatever the rate shape.
+          { qty: 1, unitPrice: Number(s.slotTotal) }
+        : s.rateUnit === 'day'
         ? // M24 #2: a per-day setup bills qty=days, unitPrice=the day rate —
           // reconstructs slot_total exactly (days × rate), the same way an
           // hourly slot reconstructs as hours × rate below. Never a setup +
