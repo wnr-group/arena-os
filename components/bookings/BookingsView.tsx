@@ -63,6 +63,10 @@ type Slot = {
   total: string
   /** Rupees, 2dp — DISPLAY ONLY. The server re-reads this to charge. */
   deposit: string
+  /** M36 #3: when an unpaid pending_payment hold lapses (ISO); null otherwise. */
+  paymentHoldExpiresAt?: string | null
+  /** A payment is on record for a booking that no longer holds a slot — refund by hand. */
+  depositReviewRequired?: boolean
   /** M26 #5: this SLOT's own frozen total (booking_slots.slot_total) —
    *  summed across a booking's active slots to get its "known total" for
    *  the live, pre-bill "Part paid" indicator. Not the same figure as
@@ -146,6 +150,7 @@ const STATUS_STYLE: Record<string, string> = {
 progress", not yet "completed" (that only happens once it's fully paid). */
 const BILLED_STYLE = 'bg-amber-500/85 text-white'
 const STATUS_BADGE: Record<string, string> = {
+  pending_payment: 'bg-amber-500/10 text-amber-600',
   confirmed: 'bg-blue-500/10 text-blue-600',
   checked_in: 'bg-emerald-500/10 text-emerald-600',
   completed: 'bg-muted text-muted-foreground',
@@ -153,6 +158,7 @@ const STATUS_BADGE: Record<string, string> = {
   no_show: 'bg-amber-500/10 text-amber-600',
 }
 const STATUS_LABELS: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Confirmed',
   checked_in: 'Checked in',
   completed: 'Completed',
@@ -791,7 +797,15 @@ export function BookingsView({
                           }`}
                         >
                           {STATUS_LABELS[b.status] ?? b.status}
+                          {b.status === 'pending_payment' && b.representative.paymentHoldExpiresAt
+                            ? ` (expires ${timeInZone(b.representative.paymentHoldExpiresAt, timeZone)})`
+                            : ''}
                         </span>
+                        {b.representative.depositReviewRequired && (
+                          <span className="ml-1.5 inline-flex items-center rounded-full bg-destructive/10 px-2 py-1 text-xs font-semibold text-destructive">
+                            Paid — refund required
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {(() => {
@@ -910,13 +924,33 @@ export function BookingsView({
                 k="Total"
                 v={formatMoney(paymentStates[selected.bookingId]?.total ?? Math.max(Number(selected.total), Number(selected.bookingActiveSlotTotal)), currency)}
               />
-              {Number(selected.deposit) > 0 && (
-                <Row k="Deposit" v={formatMoney(selected.deposit, currency)} />
-              )}
+              {/* M36 #6: the ONLINE advance (Razorpay) — labelled apart from the cash
+                  "Collected upfront" below so the two are never confused. */}
+              {Number(selected.deposit) > 0 &&
+                (depositStates[selected.bookingId] === 'paid' ? (
+                  <>
+                    <Row k="Online advance paid" v={formatMoney(selected.deposit, currency)} />
+                    {/* Billed: the invoice's own balance (tax included). Not billed yet: the
+                        pre-tax booking total minus the advance — an estimate, labelled so. */}
+                    {paymentStates[selected.bookingId] ? (
+                      <Row k="Balance at the venue" v={formatMoney(paymentStates[selected.bookingId].balance, currency)} />
+                    ) : (
+                      <Row
+                        k="Balance at the venue (estimate, before tax)"
+                        v={formatMoney(Math.max(Number(selected.total) - Number(selected.deposit), 0), currency)}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <Row
+                    k={selected.status === 'pending_payment' ? 'Online advance (awaiting payment)' : 'Online advance (unpaid)'}
+                    v={formatMoney(selected.deposit, currency)}
+                  />
+                ))}
               {/* M26 #5: cash collected upfront (M26 #1/#4) — 0 for every
                   non-gaming_cafe tenant, so this row is already a no-op there. */}
               {Number(selected.advancePaid) > 0 && (
-                <Row k="Collected upfront" v={formatMoney(selected.advancePaid, currency)} />
+                <Row k="Collected upfront (cash)" v={formatMoney(selected.advancePaid, currency)} />
               )}
               {/* Billed figures come off the invoice, not from the booking:
                   the bill is what was actually charged, discounts and all. */}

@@ -1,8 +1,10 @@
 import 'server-only'
-import { and, eq } from 'drizzle-orm'
-import { withPublicTenant } from '@/db'
-import { bookings, bookingSlots } from '@/db/schema'
+import { and, eq, sql } from 'drizzle-orm'
+import { ownerDb, withPublicTenant } from '@/db'
+import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
+import { round2 } from '@/lib/billing/pricing'
 import { ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
+import { HOLD_RELEASE_REASON } from '@/lib/booking/payment-hold'
 
 export type PublicBookingSlot = {
   resourceName: string
@@ -14,6 +16,18 @@ export type PublicBookingSlot = {
 export type PublicBookingConfirmation = {
   bookingNumber: string
   status: string
+  /** M36 #3: when an unpaid pending_payment hold lapses (ISO); null otherwise. */
+  paymentHoldExpiresAt: string | null
+  /** Rupees owed online for this booking (bookings.deposit), 2dp. */
+  deposit: string
+  /** Rupees actually received online (a verified, paid gateway intent), 2dp. */
+  paidOnline: string
+  /** bookings.total − paidOnline, never below zero, 2dp. bookings.total is the PRE-TAX
+   *  booking price, so this is the pre-tax remainder: the final bill adds any tax, and the
+   *  page labels it "before tax". */
+  balanceDue: string
+  /** The unpaid hold lapsed and the booking was released (M36 #4). */
+  holdReleased: boolean
   customerName: string | null
   total: string
   createdAt: string
@@ -38,6 +52,9 @@ export async function getPublicBookingByToken(
         id: bookings.id,
         bookingNumber: bookings.bookingNumber,
         status: bookings.status,
+        paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
+        deposit: bookings.deposit,
+        cancellationReason: bookings.cancellationReason,
         customerName: bookings.customerName,
         total: bookings.total,
         createdAt: bookings.createdAt,
@@ -46,6 +63,23 @@ export async function getPublicBookingByToken(
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
       .limit(1)
     if (!booking) return null
+
+    // Only the SUM of verified payments leaves this function — no intent or gateway
+    // ids. Read on the owner connection (the public role cannot see payment_intents),
+    // but only after the unguessable token has already matched this one booking.
+    const [paidRow] = await ownerDb
+      .select({ amount: sql<string>`coalesce(sum(${paymentIntents.amount}), 0)::text` })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.bookingId, booking.id),
+          eq(paymentIntents.purpose, 'booking_deposit'),
+          eq(paymentIntents.status, 'paid'),
+        ),
+      )
+    const paidOnline = round2(Number(paidRow?.amount ?? 0)).toFixed(2)
+    const balanceDue = Math.max(round2(Number(booking.total) - Number(paidOnline)), 0).toFixed(2)
 
     const slots = await tx
       .select({
@@ -61,6 +95,11 @@ export async function getPublicBookingByToken(
     return {
       bookingNumber: booking.bookingNumber,
       status: booking.status,
+      paymentHoldExpiresAt: booking.paymentHoldExpiresAt?.toISOString() ?? null,
+      deposit: booking.deposit,
+      paidOnline,
+      balanceDue,
+      holdReleased: booking.status === 'cancelled' && booking.cancellationReason === HOLD_RELEASE_REASON,
       customerName: booking.customerName,
       total: booking.total,
       createdAt: booking.createdAt.toISOString(),

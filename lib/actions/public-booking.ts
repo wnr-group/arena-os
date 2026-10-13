@@ -3,17 +3,24 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { z } from 'zod'
+import { and, eq } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
+import { bookings, resources } from '@/db/schema'
+import { priceAddonRequests, type PricedAddonLine } from '@/lib/booking/addons'
 import { resolvePublicTenant } from '@/lib/tenant/public'
 import {
   getPublicBranch,
   getPublicAvailableStartsForType,
   getPublicAvailableStarts,
   getPublicDayRangeWindow,
+  getPublicAddonAvailability,
+  type PublicAddonAvailability,
 } from '@/lib/booking/public-availability'
 import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
-import { MAX_PAYMENT_AMOUNT, paise } from '@/lib/billing/payments'
+import { resolveOnlineCharge, OnlineChargeError, PAYMENT_HOLD_MINUTES, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
+import { loadOnlinePaymentPolicy } from '@/lib/settings/online-payment-policy'
 import { round2 } from '@/lib/billing/pricing'
 import { pgError } from '@/lib/utils/errors'
 import {
@@ -32,6 +39,44 @@ const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again sh
 
 async function callerIp(): Promise<string> {
   return ipFromHeaders(await headers())
+}
+
+/** Add-on lines a customer picked, as the public pages send them. */
+const addonRequestsInput = z
+  .array(z.object({ addonId: z.string().uuid(), quantity: z.coerce.number().int().min(1).max(20) }))
+  .max(20)
+
+/**
+ * Price the add-ons for one resource's window and refuse any that aren't
+ * attachable to it (unknown / retired / other branch / other resource type) —
+ * the same rules attachAddonsToSlots enforces under the lock at booking time,
+ * checked up front so a quote and a pay-now deposit never include a line the
+ * booking would then refuse.
+ */
+async function priceResourceAddons(
+  tx: Parameters<Parameters<typeof withPublicTenant>[1]>[0],
+  tenantId: string,
+  branchId: string,
+  resourceId: string,
+  startsAt: Date,
+  endsAt: Date,
+  requests: { addonId: string; quantity: number }[],
+): Promise<{ lines: PricedAddonLine[]; total: number }> {
+  if (requests.length === 0) return { lines: [], total: 0 }
+  const [res] = await tx
+    .select({ resourceTypeId: resources.resourceTypeId })
+    .from(resources)
+    .where(and(eq(resources.id, resourceId), eq(resources.tenantId, tenantId)))
+  const priced = await priceAddonRequests(tx, tenantId, startsAt, endsAt, requests)
+  const distinct = new Set(requests.map((r) => r.addonId)).size
+  if (
+    !res ||
+    priced.lines.length !== distinct ||
+    priced.lines.some((l) => l.branchId !== branchId || l.resourceTypeId !== res.resourceTypeId)
+  ) {
+    throw new BookingError('An add-on you selected is no longer available.')
+  }
+  return priced
 }
 
 const availabilityInput = z.object({
@@ -73,6 +118,9 @@ export async function getPublicAvailability(
 
   const v = availabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -117,6 +165,9 @@ export async function getPublicResourceAvailability(
 
   const v = resourceAvailabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+
+
+  await sweepTenantHolds(tenant.id)
 
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
@@ -165,6 +216,9 @@ export async function getPublicBookingDayRange(raw: z.input<typeof dayRangeInput
   const v = dayRangeInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
 
+
+  await sweepTenantHolds(tenant.id)
+
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
@@ -188,9 +242,28 @@ const quoteInput = z.object({
   // re-validates it belongs to this resource/tenant and is active, same as
   // the staff quoteBooking (lib/actions/bookings.ts, M24 #2/#4).
   setupId: z.string().uuid().optional(),
+  // M35: optional add-ons — priced server-side so the total shown (and the
+  // pay-now amount) always includes exactly what the booking will.
+  addons: addonRequestsInput.optional(),
 })
 
-export type PublicBookingQuoteResult = { error?: string; total?: number }
+export type PublicBookingQuoteResult = {
+  error?: string
+  /** Everything payable: the room/setup price plus add-ons. */
+  total?: number
+  /** The room/setup part of `total` (equals `total` when no add-ons). */
+  slotTotal?: number
+  /** M36 #2: the venue's payment mode and the figures the server will actually
+   *  charge — render the payment step from these, never recompute client-side.
+   *  chargeNow is what is collected online if payment happens (for the legacy
+   *  optional_full mode: the full total, only if the customer opts in);
+   *  paymentRequired says whether the booking cannot be placed without it. */
+  mode?: OnlinePaymentPolicy['mode']
+  paymentRequired?: boolean
+  chargeNow?: number
+  balanceDue?: number
+  addons?: { addonId: string; name: string; quantity: number; rateUnit: 'hour' | 'day'; rate: string; units: number; lineTotal: number }[]
+}
 
 /**
  * Happy hours #3: read-only price quote for the SELECTED slot on the public
@@ -222,19 +295,52 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
     return { error: 'That slot is no longer valid — please pick another.' }
   }
 
+
+  await sweepTenantHolds(tenant.id)
+
   const branch = await getPublicBranch(tenant.id)
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
   try {
     const result = await withPublicTenant(tenant.id, async (tx) => {
       const headCount = await resolvePublicHeadCount(tx, tenant.id, [v.data.resourceId])
-      return priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
+      const priced = await priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, {
         branchId: branch.id,
         slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt, setupId: v.data.setupId }],
         headCount,
       })
+      const addons = await priceResourceAddons(
+        tx,
+        tenant.id,
+        branch.id,
+        v.data.resourceId,
+        new Date(v.data.startsAt),
+        new Date(v.data.endsAt),
+        v.data.addons ?? [],
+      )
+      return { priced, addons }
     })
-    return { total: result.subtotal }
+    const slotTotal = result.priced.subtotal
+    const total = round2(slotTotal + result.addons.total)
+    const policy = await loadOnlinePaymentPolicy(tenant.id)
+    const charge = resolveOnlineCharge(policy, total, { payNow: true })
+    return {
+      total,
+      slotTotal,
+      mode: policy.mode,
+      paymentRequired: policy.mode !== 'optional_full' && charge.required,
+      chargeNow: charge.amount,
+      balanceDue: charge.balance,
+      addons: result.addons.lines.map((l) => ({
+        addonId: l.addonId,
+        name: l.name,
+        quantity: l.quantity,
+        rateUnit: l.rateUnit,
+        rate: l.rate,
+        units: l.units,
+        lineTotal: l.lineTotal,
+      })),
+    }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
     return { error: 'Could not price this booking.' }
@@ -293,6 +399,9 @@ const bookingInput = z.object({
   // server-side (resource/tenant/active) by priceBookingSlots below, same
   // as quoteInput's setupId above — never trusted further than that.
   setupId: z.string().uuid().optional(),
+  /** M35: add-ons for this booking. Re-priced and stock-checked under the
+   *  catalog lock server-side; the pay-now deposit includes them. */
+  addons: addonRequestsInput.optional(),
   /** Honeypot: a real visitor never sees or fills this field (it's rendered
    * off-screen and excluded from the tab order — see HoneypotField). A
    * non-empty value means whatever submitted the form filled in every input
@@ -358,6 +467,9 @@ export async function createPublicBooking(
       return { error: 'That slot is no longer valid — please pick another.' }
     }
 
+
+    await sweepTenantHolds(tenant.id)
+
     const branch = await getPublicBranch(tenant.id)
     if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
@@ -371,7 +483,9 @@ export async function createPublicBooking(
       return { error: 'Enter your name.' }
     }
 
-    const slots = [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }]
+    const slots = [
+      { resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId, addons: v.addons },
+    ]
 
     // M21 per-head #5: honor the player count the customer entered online for a
     // per_head resource, so the price AND the deposit reflect the real party
@@ -387,26 +501,60 @@ export async function createPublicBooking(
     )
     const headCount = perHeadMin === undefined ? undefined : (v.players ?? perHeadMin)
 
-    // Pay-now: price the slot BEFORE creating the booking, so a total too
-    // large to take online refuses cleanly rather than leaving a booking
-    // behind that can never be paid through this path. Re-priced again
-    // inside createBookingCore itself moments later — this is a preview for
-    // the deposit figure, never the value actually written without a second,
-    // independent computation.
+    // Online payment (M36 #2). The VENUE's mode decides whether and how much to
+    // charge; the client's payNow only matters in the legacy optional_full mode.
+    // Priced BEFORE creating the booking so a total too large to take online, or
+    // a venue that cannot take payment, refuses cleanly rather than leaving an
+    // unpayable booking behind. createBookingCore re-prices independently.
+    const policy = await loadOnlinePaymentPolicy(tenant.id)
     let deposit = 0
-    if (v.payNow) {
+    let awaitingOnlinePayment = false
+    // advance / full: the booking is held but NOT confirmed until the verified
+    // webhook says the money landed. Legacy optional_full + payNow keeps today's
+    // behaviour (confirmed immediately, deposit unpaid) — never silently changed.
+    let pendingPaymentUntil: Date | undefined
+    if (policy.mode !== 'venue' && (policy.mode !== 'optional_full' || v.payNow)) {
       const priced = await withPublicTenant(tenant.id, (tx) =>
         priceBookingSlots(tx, { tenantId: tenant.id, timezone: tenant.timezone }, { branchId: branch.id, slots, headCount }),
       )
-      const rupees = round2(priced.subtotal)
-      const amountPaise = paise(rupees)
-      if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+      const addonPriced = await withPublicTenant(tenant.id, (tx) =>
+        priceResourceAddons(
+          tx,
+          tenant.id,
+          branch.id,
+          v.resourceId,
+          new Date(v.startsAt),
+          new Date(v.endsAt),
+          v.addons ?? [],
+        ),
+      )
+      const rupees = round2(priced.subtotal + addonPriced.total)
+      // Legacy pay-now keeps refusing a zero total; in the new modes a free
+      // booking simply has nothing to collect.
+      if (policy.mode === 'optional_full' && !(rupees > 0)) {
         return { error: 'This booking has nothing to pay for.' }
       }
-      if (rupees > MAX_PAYMENT_AMOUNT) {
-        return { error: 'This booking total is too large to pay online.' }
+      let charge
+      try {
+        charge = resolveOnlineCharge(policy, rupees, { payNow: v.payNow })
+      } catch (e) {
+        if (e instanceof OnlineChargeError) return { error: e.message }
+        throw e
       }
-      deposit = rupees
+      if (charge.amount > 0) {
+        // Fail closed: never create a booking that owes money the venue cannot
+        // collect (credentials cleared out-of-band or no longer decryptable).
+        const credentials = await loadRazorpayCredentialsForTenant(tenant.id).catch((e) => {
+          console.error('[public-booking] loadRazorpayCredentialsForTenant failed:', e instanceof Error ? e.name : 'unknown')
+          return null
+        })
+        if (!credentials) return { error: 'Online payment is not available for this venue right now.' }
+        deposit = charge.amount
+        awaitingOnlinePayment = true
+        if (policy.mode === 'advance' || policy.mode === 'full') {
+          pendingPaymentUntil = new Date(Date.now() + PAYMENT_HOLD_MINUTES * 60_000)
+        }
+      }
     }
 
     const result = await withPublicTenant(tenant.id, (tx) =>
@@ -424,6 +572,7 @@ export async function createPublicBooking(
           deposit,
           slots,
           headCount,
+          pendingPaymentUntil,
         },
       ),
     )
@@ -433,7 +582,7 @@ export async function createPublicBooking(
       bookingNumber: result.bookingNumber,
       confirmationToken: result.confirmationToken,
       bookingId: result.id,
-      awaitingOnlinePayment: Boolean(v.payNow),
+      awaitingOnlinePayment,
     }
   } catch (e) {
     if (e instanceof BookingError) return { error: e.message }
@@ -520,4 +669,81 @@ export async function createBookingPaymentIntent(
   } catch (e) {
     return failBookingPayment(e)
   }
+}
+
+const tokenIntentInput = z.object({ token: z.string().uuid() })
+
+/**
+ * Retry payment from the confirmation page (M36 #5). The browser only knows the
+ * booking's confirmation token (the unguessable /b/[token] handle), so the id is
+ * resolved server-side; everything after that is exactly createBookingPaymentIntent
+ * — which REUSES the booking's pending intent, so a retry never creates a second
+ * order or a second booking, and refuses once the hold has expired.
+ */
+export async function createBookingPaymentIntentByToken(
+  raw: z.input<typeof tokenIntentInput>,
+): Promise<CreateBookingPaymentIntentResult> {
+  try {
+    if (!rateLimit(`book-pay-retry:ip:${await callerIp()}`, 12, 10 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+    const v = tokenIntentInput.safeParse(raw)
+    if (!v.success) return { error: 'That booking link is not valid.' }
+    await sweepTenantHolds(tenant.id)
+    const found = await withPublicTenant(tenant.id, (tx) =>
+      tx
+        .select({ id: bookings.id })
+        .from(bookings)
+        .where(and(eq(bookings.tenantId, tenant.id), eq(bookings.confirmationToken, v.data.token)))
+        .limit(1),
+    )
+    if (!found[0]) return { error: 'Booking not found.' }
+    return await createBookingPaymentIntent({ bookingId: found[0].id })
+  } catch (e) {
+    return failBookingPayment(e)
+  }
+}
+
+const addonAvailabilityInput = z.object({
+  resourceTypeId: z.string().uuid(),
+  startsAt: z.string().datetime({ offset: true }),
+  endsAt: z.string().datetime({ offset: true }),
+})
+
+/** Longest window the picker may ask about (a multi-day studio hire). */
+const ADDON_WINDOW_MAX_MS = 31 * 24 * 60 * 60_000
+
+export type PublicAddonAvailabilityResult = { addons: PublicAddonAvailability[] } | { error: string }
+
+/**
+ * M35 #2: live add-on stock for the chosen booking window — what the booking
+ * page's add-on picker renders. Anonymous and runs a stock query per call, so
+ * it has its own tighter rate-limit budget. Exposes only a capped
+ * `available` count, never total stock.
+ */
+export async function getPublicAddonAvailabilityForWindow(
+  raw: z.input<typeof addonAvailabilityInput>,
+): Promise<PublicAddonAvailabilityResult> {
+  if (!rateLimit(`addons:${await callerIp()}`, 30, 60_000).ok) return { error: RATE_LIMIT_MESSAGE }
+
+  const tenant = await resolvePublicTenant()
+  if ('error' in tenant) return tenant
+
+  const v = addonAvailabilityInput.safeParse(raw)
+  if (!v.success) return { error: 'Invalid request.' }
+  const startsAt = new Date(v.data.startsAt)
+  const endsAt = new Date(v.data.endsAt)
+  if (endsAt <= startsAt || endsAt.getTime() - startsAt.getTime() > ADDON_WINDOW_MAX_MS) {
+    return { error: 'That slot is no longer valid — please pick another.' }
+  }
+
+
+  await sweepTenantHolds(tenant.id)
+
+  const branch = await getPublicBranch(tenant.id)
+  if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
+
+  return { addons: await getPublicAddonAvailability(tenant.id, branch.id, [v.data.resourceTypeId], startsAt, endsAt) }
 }

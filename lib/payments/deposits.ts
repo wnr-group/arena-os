@@ -129,6 +129,7 @@ async function loadPayableBooking(
   // Reuses the billing module's status rule rather than inventing one:
   // 'confirmed' and 'checked_in' are the states that can still owe money.
   if (!isBillableBookingStatus(booking.status)) {
+    if (booking.status === 'pending_payment') throw new DepositError('This booking is awaiting the customer’s online payment.')
     if (booking.status === 'cancelled') throw new DepositError('This booking has been cancelled.')
     if (booking.status === 'no_show') throw new DepositError('This booking was marked a no-show.')
     if (booking.status === 'completed') throw new DepositError('This booking is already completed.')

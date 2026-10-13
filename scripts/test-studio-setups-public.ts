@@ -82,6 +82,7 @@ async function main() {
     [tenantId, resourceId],
   )
   const royalId = royal.rows[0].id
+  await (await import('./seed-razorpay')).seedRazorpay((t, p) => owner.query(t, p), tenantId)
   for (let dow = 0; dow <= 6; dow++) {
     await owner.query(
       `insert into working_hours (tenant_id,branch_id,day_of_week,open_time,close_time,is_closed) values ($1,$2,$3,'09:00','22:00',false)`,

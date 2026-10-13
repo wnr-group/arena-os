@@ -7,6 +7,7 @@ import { bookings, invoices, orders, paymentIntents, tenants, webhookEvents } fr
 import { issueInvoiceForOrder } from '@/lib/billing/invoice'
 import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
 import { completeBookingIfFullySettled } from '@/lib/booking/service'
+import { handleLatePayment } from '@/lib/booking/payment-hold'
 import { applyPaidDepositsToInvoice, backfillDepositOrderIds } from './deposit-settlement'
 import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
@@ -59,6 +60,11 @@ export type WebhookOutcome =
       intentId: string
       bookingId: string
       invoicePaymentId: string | null
+      /** M36: what happened to the BOOKING — 'confirmed' (held booking paid in
+       *  time), 'reinstated' (paid after the hold was released, slot still free),
+       *  'paid_after_release' (paid but the slot is gone: cancelled + refund
+       *  review), or 'unchanged' (already confirmed / not a held booking). */
+      bookingOutcome: 'confirmed' | 'reinstated' | 'paid_after_release' | 'unchanged'
     }
   /** A standalone order's pay-now, applied for the first time. */
   | {
@@ -260,20 +266,30 @@ export async function applyVerifiedPaymentWebhook(
     // Branches on `intent.purpose`: an intent is for exactly one of the two
     // (payment_intents_exactly_one_target, migration 0058), so exactly one of
     // `booking`/`order` below is ever looked up.
-    let booking: { id: string } | null = null
+    let booking: { id: string; status: string; cancellationReason: string | null } | null = null
     let order: { id: string; branchId: string; customerId: string | null; orderNumber: string; status: string; acceptanceStatus: string } | null = null
 
     if (intent.purpose === 'booking_deposit') {
       const [row] = await tx
-        .select({ id: bookings.id, tenantId: bookings.tenantId })
+        .select({
+          id: bookings.id,
+          tenantId: bookings.tenantId,
+          status: bookings.status,
+          cancellationReason: bookings.cancellationReason,
+        })
         .from(bookings)
         .where(and(eq(bookings.id, intent.bookingId!), eq(bookings.tenantId, verifiedTenantId)))
+        // M36 #4: the SAME row lock the hold-release sweep takes (it uses SKIP
+        // LOCKED), so for one booking exactly one of {confirm, release} runs; if
+        // release won, the status read here is already 'cancelled' and the
+        // late-payment path below decides the outcome.
+        .for('update')
         .limit(1)
       if (!row) {
         await noteOutcome(tx, eventId, 'rejected')
         return { kind: 'rejected', reason: 'booking not found for this tenant' }
       }
-      booking = { id: row.id }
+      booking = { id: row.id, status: row.status, cancellationReason: row.cancellationReason }
     } else {
       const [row] = await tx
         .select({
@@ -365,12 +381,39 @@ export async function applyVerifiedPaymentWebhook(
         }
       }
 
+      // ── 7c. confirm a held booking (M36 #3) ──────────────────────────────
+      // An advance/full booking sits in 'pending_payment' (slot held) until the
+      // money is verified HERE — never on the browser callback. Same
+      // transaction as the intent settlement above, and conditional on the
+      // current status, so a replay (which never reaches this point anyway: the
+      // intent is no longer pending) or any other status is a no-op.
+      //
+      // The booking row is locked (step 5), so the status read there is current.
+      // A cancelled booking means the money arrived after the hold was released
+      // (or staff cancelled): reinstate it if the slot is still free, otherwise
+      // flag it for a refund — the payment itself stays recorded either way.
+      let bookingOutcome: 'confirmed' | 'reinstated' | 'paid_after_release' | 'unchanged' = 'unchanged'
+      if (booking!.status === 'pending_payment') {
+        await tx
+          .update(bookings)
+          .set({ status: 'confirmed', paymentHoldExpiresAt: null })
+          .where(and(eq(bookings.id, booking!.id), eq(bookings.tenantId, verifiedTenantId)))
+        bookingOutcome = 'confirmed'
+      } else if (booking!.status === 'cancelled') {
+        bookingOutcome = await handleLatePayment(
+          tx,
+          { id: booking!.id, tenantId: verifiedTenantId, cancellationReason: booking!.cancellationReason },
+          intent.amount,
+        )
+      }
+
       return {
         kind: 'processed',
         purpose: 'booking_deposit',
         intentId: intent.id,
         bookingId: booking!.id,
         invoicePaymentId,
+        bookingOutcome,
       }
     }
 

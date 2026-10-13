@@ -1,5 +1,5 @@
 import 'server-only'
-import { asc, desc, eq, inArray, notInArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { withCustomer, type DB } from '@/db'
 import { bookings, bookingSlots } from '@/db/schema'
 import { requireCustomer } from '@/lib/auth/customer-guard'
@@ -289,7 +289,9 @@ export async function readPortalBookings(
   // read these SAME expressions, so a page can never be counted by one rule and
   // listed by another — which would show "page 2 of 3" over an empty section.
   const upcomingHaving = notFinished
-  const pastHaving = or(notInArray(bookings.status, [...LIVE_STATUSES]), finished)
+  // An unpaid pending_payment booking is neither upcoming (not confirmed) nor
+  // past (nothing happened) — it stays out of both lists until paid or released.
+  const pastHaving = and(ne(bookings.status, 'pending_payment'), or(notInArray(bookings.status, [...LIVE_STATUSES]), finished))
 
   /**
    * How many bookings the section holds in total.

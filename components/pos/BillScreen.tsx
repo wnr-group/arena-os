@@ -22,6 +22,7 @@ type BookingHeader = {
   bookingNumber: string
   status: string
   billable: boolean
+  onlineAdvance: { paid: number; unapplied: number }
   branchName: string
   customerName: string | null
   customerPhone: string | null
@@ -475,6 +476,17 @@ export function BillScreen({
           {booking.status.replace('_', ' ')}
         </span>
       </div>
+
+      {/* ── M36 #6: online advance that the bill could not absorb → refund due ── */}
+      {booking.onlineAdvance.unapplied > 0 && (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          Refund due: the customer paid a {formatMoney(booking.onlineAdvance.unapplied, currency)} online advance that this bill
+          could not absorb (the bill is smaller than the advance). Refund it to the customer by hand.
+        </p>
+      )}
 
       {/* ── players (M21 per-head #4) ── */}
       {booking.hasEditablePlayerCount && (

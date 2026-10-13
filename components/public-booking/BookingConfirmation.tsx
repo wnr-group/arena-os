@@ -9,9 +9,11 @@ import {
   XCircle,
   UserX,
   UtensilsCrossed,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
+import { PendingPaymentPanel } from './PendingPaymentPanel'
 import type { PublicBookingConfirmation } from '@/lib/booking/public-confirmation'
 import type { PublicTenant } from '@/lib/tenant/public'
 
@@ -20,6 +22,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 const CAN_ADD_FOOD_STATUSES = new Set(['confirmed', 'checked_in'])
 
 const STATUS_LABEL: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Booking confirmed',
   checked_in: "You're checked in!",
   completed: 'Visit completed',
@@ -28,6 +31,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const STATUS_ICON: Record<string, LucideIcon> = {
+  pending_payment: Clock,
   confirmed: CheckCircle2,
   checked_in: CheckCircle2,
   completed: CheckCircle2,
@@ -63,6 +67,7 @@ export function BookingConfirmation({
   tenant,
   qrSvg,
   hasMenu,
+  justPaid = false,
 }: {
   booking: PublicBookingConfirmation
   /** The booking's own confirmation_token (the /b/[token] route param) —
@@ -76,10 +81,13 @@ export function BookingConfirmation({
   /** Whether this venue sells food online at all — gates the "Add food to
    *  your visit" CTA the same way SitePageShell gates the cart button. */
   hasMenu: boolean
+  /** Arrived from the payment window's success callback (?paid=1): wait for the webhook. */
+  justPaid?: boolean
 }) {
   const slot = booking.slots[0] ?? null
   const StatusIcon = STATUS_ICON[booking.status] ?? CheckCircle2
-  const statusLabel = STATUS_LABEL[booking.status] ?? booking.status
+  const awaitingPayment = booking.status === 'pending_payment' || booking.holdReleased
+  const statusLabel = booking.holdReleased ? 'Hold expired' : (STATUS_LABEL[booking.status] ?? booking.status)
   const showQr = booking.status === 'confirmed' || booking.status === 'checked_in'
   const canAddFood = hasMenu && CAN_ADD_FOOD_STATUSES.has(booking.status)
 
@@ -94,6 +102,21 @@ export function BookingConfirmation({
           Booking #{booking.bookingNumber}
         </p>
       </div>
+
+      {awaitingPayment && (
+        <PendingPaymentPanel
+          token={confirmationToken}
+          bookingNumber={booking.bookingNumber}
+          deposit={booking.deposit}
+          holdExpiresAt={booking.paymentHoldExpiresAt}
+          holdReleased={booking.holdReleased}
+          justPaid={justPaid}
+          tenantName={tenant.name}
+          timeZone={tenant.timezone}
+          currency={tenant.currency}
+          customerName={booking.customerName}
+        />
+      )}
 
       {showQr && (
         <div className="mt-8 flex flex-col items-center rounded-2xl border border-border bg-card p-6 shadow-sm">
@@ -117,6 +140,12 @@ export function BookingConfirmation({
         )}
         {booking.customerName && <SummaryRow icon={User} label="Name" value={booking.customerName} />}
         <SummaryRow icon={Sparkles} label="Total" value={formatMoney(booking.total, tenant.currency)} />
+        {Number(booking.paidOnline) > 0 && (
+          <SummaryRow icon={CheckCircle2} label="Paid online" value={formatMoney(booking.paidOnline, tenant.currency)} />
+        )}
+        {(booking.status === 'confirmed' || booking.status === 'checked_in') && (
+          <SummaryRow icon={Wallet} label="Balance due at venue (before tax)" value={formatMoney(booking.balanceDue, tenant.currency)} />
+        )}
       </div>
 
       {canAddFood && (

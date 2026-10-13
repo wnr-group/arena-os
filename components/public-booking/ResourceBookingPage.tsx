@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -9,7 +9,6 @@ import {
   Boxes,
   CalendarDays,
   Clock,
-  CreditCard,
   ImageOff,
   Layers,
   Loader2,
@@ -20,22 +19,26 @@ import {
   Sparkles,
   User,
   Users,
-  Wallet,
 } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
-import type { PublicResource, PublicResourceSetup } from '@/lib/booking/public-availability'
+import type { PublicResource, PublicResourceSetup, PublicTypeAddon } from '@/lib/booking/public-availability'
 import { daysInRange } from '@/lib/booking/availability'
 import {
   getPublicResourceAvailability,
   getPublicBookingQuote,
   getPublicBookingDayRange,
+  getPublicAddonAvailabilityForWindow,
   createPublicBooking,
   createBookingPaymentIntent,
   lookupPublicCustomerByPhone,
 } from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
-import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
+import { openBookingCheckout } from './booking-checkout'
+import { BookingPaymentSummary, paymentFlow, type QuotePayment } from './BookingPaymentSummary'
 import { HoneypotField } from './HoneypotField'
+import { AddonPicker } from './AddonPicker'
+import { PhotoGallery } from './PhotoGallery'
+import { FallbackImage } from './FallbackImage'
 
 // 30-minute steps up to 4 hours, then hourly up to 24 hours. The list is long
 // but the Start-times column only ever offers a duration that actually fits
@@ -52,6 +55,14 @@ export const DATE_WINDOW_DAYS = 7
 export const SLOT_MINUTES = 30
 
 type Slot = { startsAt: string; available: boolean }
+type QuoteAddonLine = {
+  addonId: string
+  name: string
+  quantity: number
+  rateUnit: 'hour' | 'day'
+  units: number
+  lineTotal: number
+}
 type Step = 'select' | 'details'
 
 export function addDays(dateStr: string, days: number): string {
@@ -108,6 +119,8 @@ export function ResourceBookingPage({
   tenant,
   resource,
   setups,
+  initialSetupId = null,
+  addonCatalog = [],
   today,
   razorpayConfigured,
 }: {
@@ -118,6 +131,11 @@ export function ResourceBookingPage({
    *  app/(public)/book/[resourceId]/page.tsx), which keeps this whole
    *  component's new behaviour completely inert for them. */
   setups: PublicResourceSetup[]
+  /** M35 #4: setup from the storefront card's ?setup= link, already validated
+   *  server-side against this resource's active setups. */
+  initialSetupId?: string | null
+  /** M35 #4: the resource type's active add-ons (empty = no add-on section). */
+  addonCatalog?: PublicTypeAddon[]
   today: string
   /** Gates the "pay online now" choice — read server-side from the same
    *  credential loader createBookingPaymentIntent uses, so the choice is
@@ -147,12 +165,15 @@ export function ResourceBookingPage({
   })
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [payOnline, setPayOnline] = useState(false)
+  // The server's payment figures for the current quote (mode, charge now, balance). Kept
+  // (not cleared) while a refreshed quote loads so the summary does not jump.
+  const [payment, setPayment] = useState<QuotePayment | null>(null)
   const [pending, startTransition] = useTransition()
 
   // M24 #5: chosen setup, if any — null means "no setup, base rate", the
   // only option that existed before M24. Mirrors the staff FutureWizard's
   // own setupId/activeSetup/isDayRateSetup shape (M24 #4).
-  const [setupId, setSetupId] = useState<string | null>(null)
+  const [setupId, setSetupId] = useState<string | null>(initialSetupId)
   const activeSetup = setups.find((s) => s.id === setupId) ?? null
   const isDayRateSetup = activeSetup?.rateUnit === 'day'
 
@@ -245,7 +266,25 @@ export function ResourceBookingPage({
   // slower in-flight request for a slot the customer has since changed away
   // from can never be mistaken for the current slot's price (the previous
   // slot's total no longer bleeds through while a new quote loads).
-  const [quote, setQuote] = useState<{ key: string; total: number } | null>(null)
+  const [quote, setQuote] = useState<{
+    key: string
+    total: number
+    slotTotal: number
+    addons: QuoteAddonLine[]
+  } | null>(null)
+
+  // M35 #4: chosen add-ons (addonId -> quantity) and live per-window stock.
+  const [addonQty, setAddonQty] = useState<Record<string, number>>({})
+  const [addonAvail, setAddonAvail] = useState<{ key: string; available: Record<string, number> } | null>(null)
+  const [addonNotice, setAddonNotice] = useState<string | null>(null)
+  const [addonError, setAddonError] = useState<string | null>(null)
+  const qtyRef = useRef(addonQty)
+  qtyRef.current = addonQty
+  const addonRequests = Object.entries(addonQty)
+    .filter(([, q]) => q > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([addonId, quantity]) => ({ addonId, quantity }))
+  const addonsKey = addonRequests.map((r) => `${r.addonId}:${r.quantity}`).join(',')
   const [quoteLoadingKey, setQuoteLoadingKey] = useState<string | null>(null)
 
   // M24 #5: the resource+window a quote/booking will actually price — either
@@ -259,7 +298,7 @@ export function ResourceBookingPage({
     : startsAt && endsAt
       ? { startsAt, endsAt }
       : null
-  const quoteKey = quoteWindow ? `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}` : null
+  const quoteKey = quoteWindow ? `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}|${addonsKey}` : null
   const quoteLoading = quoteKey !== null && quoteLoadingKey === quoteKey
   // M22 follow-up (cosmetic, no money impact): once a slot/range is picked,
   // ONLY the real quote may stand in for the total — never the flat,
@@ -289,7 +328,7 @@ export function ResourceBookingPage({
       setQuoteLoadingKey(null)
       return
     }
-    const key = `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}`
+    const key = `${resource.id}|${quoteWindow.startsAt}|${quoteWindow.endsAt}|${setupId ?? ''}|${addonsKey}`
     let cancelled = false
     setQuoteLoadingKey(key)
     getPublicBookingQuote({
@@ -297,19 +336,66 @@ export function ResourceBookingPage({
       startsAt: quoteWindow.startsAt,
       endsAt: quoteWindow.endsAt,
       setupId: setupId ?? undefined,
+      addons: addonRequests.length > 0 ? addonRequests : undefined,
     }).then((r) => {
       if (cancelled) return
       setQuoteLoadingKey((k) => (k === key ? null : k))
       if (r.error || r.total === undefined) {
         return
       }
-      setQuote({ key, total: r.total })
+      if (r.mode !== undefined && r.chargeNow !== undefined && r.balanceDue !== undefined) {
+        setPayment({ mode: r.mode, paymentRequired: Boolean(r.paymentRequired), chargeNow: r.chargeNow, balanceDue: r.balanceDue })
+      }
+      setQuote({ key, total: r.total, slotTotal: r.slotTotal ?? r.total, addons: r.addons ?? [] })
     })
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resource.id, quoteWindow?.startsAt, quoteWindow?.endsAt, setupId, isDayRateSetup, rangeConflict])
+  }, [resource.id, quoteWindow?.startsAt, quoteWindow?.endsAt, setupId, isDayRateSetup, rangeConflict, addonsKey])
+
+  // M35 #4: live add-on stock for the chosen window. Re-runs whenever the
+  // window changes (date / time / duration / setup); selections that no longer
+  // fit are clamped or dropped WITH a visible notice — never silently fewer.
+  const addonWindowKey =
+    quoteWindow && !(isDayRateSetup && rangeConflict) ? `${quoteWindow.startsAt}|${quoteWindow.endsAt}` : null
+  useEffect(() => {
+    if (addonCatalog.length === 0 || !addonWindowKey) {
+      setAddonAvail(null)
+      return
+    }
+    const [from, to] = addonWindowKey.split('|')
+    let cancelled = false
+    setAddonAvail(null)
+    setAddonError(null)
+    getPublicAddonAvailabilityForWindow({ resourceTypeId: resource.resourceTypeId, startsAt: from, endsAt: to }).then((r) => {
+      if (cancelled) return
+      if ('error' in r) {
+        setAddonError(r.error)
+        return
+      }
+      const available = Object.fromEntries(r.addons.map((a) => [a.id, a.available]))
+      const next: Record<string, number> = {}
+      const changes: string[] = []
+      for (const [id, qty] of Object.entries(qtyRef.current)) {
+        if (qty <= 0) continue
+        const cap = available[id] ?? 0
+        const name = addonCatalog.find((a) => a.id === id)?.name ?? 'An add-on'
+        if (cap <= 0) changes.push(`${name} is no longer available for this time and was removed`)
+        else if (qty > cap) changes.push(`${name} reduced from ${qty} to ${cap} (all that is left for this time)`)
+        if (cap > 0) next[id] = Math.min(qty, cap)
+      }
+      if (changes.length > 0) {
+        setAddonQty(next)
+        setAddonNotice(`${changes.join('; ')}.`)
+      }
+      setAddonAvail({ key: addonWindowKey, available })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addonWindowKey, resource.resourceTypeId, addonCatalog.length])
 
   // Slots already in the past (only relevant for today) are dropped rather
   // than shown disabled — there's nothing useful for the customer to do with
@@ -377,56 +463,57 @@ export function ResourceBookingPage({
    * (booking creation and payment are two separate steps, same as pay-now
    * orders) — every exit routes to the confirmation page.
    */
-  async function payForBooking(bookingId: string, token: string, bookingNumberValue: string) {
+  async function payForBooking(bookingId: string, token: string, bookingNumberValue: string, legacy: boolean) {
+    // advance / full: the booking is held (pending payment), so every failure
+    // path lands on the confirmation page, whose panel offers Retry (reusing
+    // this booking's pending order) or Start over. Legacy optional_full keeps
+    // today's "already confirmed" toasts.
+    const toConfirmation = (paid: boolean) => router.push(paid && !legacy ? `/b/${token}?paid=1` : `/b/${token}`)
     const res = await createBookingPaymentIntent({ bookingId })
     if (res.error || !res.checkout) {
-      toast.error(`Booking #${bookingNumberValue} is confirmed, but online payment could not be started.`, {
-        description: res.error ?? 'Please contact the venue to arrange payment.',
-      })
-      router.push(`/b/${token}`)
-      return
-    }
-    const { orderId: gatewayOrderId, amount, currency, keyId } = res.checkout
-
-    let Razorpay: RazorpayCtor
-    try {
-      Razorpay = await loadCheckoutScript()
-    } catch {
-      toast.error(`Booking #${bookingNumberValue} is confirmed, but the payment window could not load.`, {
-        description: 'Please contact the venue to arrange payment.',
-      })
-      router.push(`/b/${token}`)
-      return
-    }
-
-    const checkout = new Razorpay({
-      key: keyId,
-      order_id: gatewayOrderId,
-      amount,
-      currency,
-      name: tenant.name,
-      description: `Booking #${bookingNumberValue}`,
-      prefill: {
-        ...(name ? { name } : {}),
-        ...(phone ? { contact: phone } : {}),
-      },
-      handler: () => {
-        toast.success('Payment submitted — confirming with the venue.', {
-          description: "We'll have everything ready for your visit.",
+      if (legacy) {
+        toast.error(`Booking #${bookingNumberValue} is confirmed, but online payment could not be started.`, {
+          description: res.error ?? 'Please contact the venue to arrange payment.',
         })
-        router.push(`/b/${token}`)
+      }
+      toConfirmation(false)
+      return
+    }
+    const opened = await openBookingCheckout({
+      checkout: res.checkout,
+      tenantName: tenant.name,
+      bookingNumber: bookingNumberValue,
+      name,
+      phone,
+      onSubmitted: () => {
+        if (legacy) {
+          toast.success('Payment submitted — confirming with the venue.', {
+            description: "We'll have everything ready for your visit.",
+          })
+        }
+        toConfirmation(true)
       },
-      modal: {
-        ondismiss: () => {
+      onDismissed: () => {
+        if (legacy) {
           toast(`Booking #${bookingNumberValue} is confirmed but not yet paid.`, {
             description: 'Contact the venue if you’d like to complete payment another way.',
           })
-          router.push(`/b/${token}`)
-        },
+        }
+        toConfirmation(false)
       },
     })
-    checkout.open()
+    if (!opened.ok) {
+      if (legacy) {
+        toast.error(`Booking #${bookingNumberValue} is confirmed, but the payment window could not load.`, {
+          description: 'Please contact the venue to arrange payment.',
+        })
+      }
+      toConfirmation(false)
+    }
   }
+
+  // What the final step does, from the venue mode in the server quote.
+  const flow = paymentFlow(payment, { razorpayConfigured, payOnline, total, currency: tenant.currency })
 
   function confirm() {
     if (!quoteWindow || total === null || (isDayRateSetup && rangeConflict)) return
@@ -445,8 +532,9 @@ export function ResourceBookingPage({
         // suggest it changes the price, when the real player count is fixed
         // online and only ever adjusted by staff at check-in (Per-head #4).
         players: resource.capacity != null && !isPerHead ? players : undefined,
-        payNow: razorpayConfigured && payOnline && total > 0,
+        payNow: flow.paysOnline,
         setupId: setupId ?? undefined,
+        addons: addonRequests.length > 0 ? addonRequests : undefined,
         website,
       })
       if (r.error || !r.confirmationToken) {
@@ -454,7 +542,7 @@ export function ResourceBookingPage({
         return
       }
       if (r.awaitingOnlinePayment && r.bookingId) {
-        await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '')
+        await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '', payment?.mode === 'optional_full')
         return
       }
       router.push(`/b/${r.confirmationToken}`)
@@ -487,6 +575,13 @@ export function ResourceBookingPage({
               <div className="min-w-0 space-y-6">
                 <ResourceCard resource={resource} currency={tenant.currency} />
 
+                {/* M35 #10: the selected setup's photos (up to 3). "No setup", or a
+                    setup without photos, keeps the plain resource hero above. Keyed
+                    by setup so switching setups swaps the gallery cleanly. */}
+                {activeSetup && activeSetup.images.length > 0 && (
+                  <PhotoGallery key={activeSetup.id} images={activeSetup.images} name={activeSetup.name} />
+                )}
+
                 {setups.length > 0 && (
                   <section>
                     <SectionLabel icon={Layers}>Setup</SectionLabel>
@@ -517,8 +612,18 @@ export function ResourceBookingPage({
                               : 'border-border bg-card text-foreground hover:border-primary/30'
                           }`}
                         >
-                          <span>{s.name}</span>
-                          <span className="text-xs font-bold tabular-nums text-muted-foreground">
+                          <span className="flex min-w-0 items-center gap-2.5">
+                            {s.images[0] && (
+                              <FallbackImage
+                                srcs={[s.images[0]]}
+                                alt=""
+                                className="size-10 shrink-0 rounded-md object-cover"
+                                placeholder={null}
+                              />
+                            )}
+                            <span className="truncate">{s.name}</span>
+                          </span>
+                          <span className="shrink-0 text-xs font-bold tabular-nums text-muted-foreground">
                             {formatMoney(s.rate, tenant.currency)} / {s.rateUnit === 'day' ? 'day' : 'hr'}
                           </span>
                         </button>
@@ -687,6 +792,21 @@ export function ResourceBookingPage({
                 </div>
                 </>
                 )}
+
+                {addonCatalog.length > 0 && quoteWindow && !(isDayRateSetup && rangeConflict) && (
+                  <AddonPicker
+                    catalog={addonCatalog}
+                    currency={tenant.currency}
+                    quantities={addonQty}
+                    available={addonAvail && addonAvail.key === addonWindowKey ? addonAvail.available : null}
+                    notice={addonNotice}
+                    error={addonError}
+                    onChange={(id, qty) => {
+                      setAddonNotice(null)
+                      setAddonQty((prev) => ({ ...prev, [id]: qty }))
+                    }}
+                  />
+                )}
               </div>
 
               <SummaryPanel
@@ -709,6 +829,7 @@ export function ResourceBookingPage({
                 total={total}
                 totalLoading={quoteLoading}
                 hourlyRate={hourlyRate}
+                quoteBreakdown={quote && quote.key === quoteKey ? quote : null}
                 onContinue={() => setStep('details')}
               />
             </div>
@@ -823,6 +944,7 @@ export function ResourceBookingPage({
                     </>
                   )}
                   {isPerHead && !activeSetup && <SummaryRow icon={Users} label="Players" value={String(headCount)} />}
+                  <AddonBreakdown breakdown={quote && quote.key === quoteKey ? quote : null} currency={tenant.currency} />
                   <div className="flex items-center justify-between border-t border-border pt-2 text-base font-extrabold text-foreground">
                     <span>Total</span>
                     <span className="flex items-center gap-1.5 tabular-nums text-primary">
@@ -838,35 +960,15 @@ export function ResourceBookingPage({
                   </p>
                 )}
 
-                {razorpayConfigured && (total ?? 0) > 0 && (
-                  <div className="mt-6">
-                    <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPayOnline(false)}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
-                          !payOnline
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-border text-muted-foreground hover:border-primary/40'
-                        }`}
-                      >
-                        <Wallet size={15} /> Pay at venue
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPayOnline(true)}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
-                          payOnline
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-border text-muted-foreground hover:border-primary/40'
-                        }`}
-                      >
-                        <CreditCard size={15} /> Pay online now
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <BookingPaymentSummary
+                  payment={payment}
+                  total={total}
+                  currency={tenant.currency}
+                  loading={quoteLoading}
+                  razorpayConfigured={razorpayConfigured}
+                  payOnline={payOnline}
+                  onPayOnline={setPayOnline}
+                />
 
                 <button
                   onClick={confirm}
@@ -880,13 +982,44 @@ export function ResourceBookingPage({
                   className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
                 >
                   {pending && <Loader2 size={16} className="animate-spin" />}
-                  {razorpayConfigured && payOnline ? 'Confirm & pay' : 'Confirm booking'}
+                  {flow.label}
                 </button>
               </div>
             </div>
           )}
         </div>
       </div>
+  )
+}
+
+/** Room price + one line per priced add-on ("Camera × 2 · 2 hrs"), straight from the server quote. */
+function AddonBreakdown({
+  breakdown,
+  currency,
+}: {
+  breakdown: { slotTotal: number; addons: QuoteAddonLine[] } | null
+  currency: string
+}) {
+  if (!breakdown || breakdown.addons.length === 0) return null
+  return (
+    <>
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>Room / setup</span>
+        <span className="tabular-nums">{formatMoney(breakdown.slotTotal, currency)}</span>
+      </div>
+      {breakdown.addons.map((a) => (
+        <div key={a.addonId} className="flex items-start justify-between gap-3 text-sm text-muted-foreground">
+          <span className="min-w-0">
+            {a.name} × {a.quantity}
+            <span className="text-xs">
+              {' '}
+              · {Number(a.units.toFixed(2))} {a.rateUnit === 'day' ? (a.units === 1 ? 'day' : 'days') : a.units === 1 ? 'hr' : 'hrs'}
+            </span>
+          </span>
+          <span className="shrink-0 tabular-nums">{formatMoney(a.lineTotal, currency)}</span>
+        </div>
+      ))}
+    </>
   )
 }
 
@@ -967,6 +1100,7 @@ function SummaryPanel({
   total,
   totalLoading,
   hourlyRate,
+  quoteBreakdown,
   onContinue,
 }: {
   resource: PublicResource
@@ -990,6 +1124,9 @@ function SummaryPanel({
   total: number | null
   totalLoading?: boolean
   hourlyRate: number
+  /** Server quote for exactly this pick (null while it loads): the room part
+   *  plus each priced add-on line. */
+  quoteBreakdown: { slotTotal: number; addons: QuoteAddonLine[] } | null
   onContinue: () => void
 }) {
   // M22 follow-up: a pick alone isn't enough — the real quote must have
@@ -1071,6 +1208,7 @@ function SummaryPanel({
               : `${formatMoney(hourlyRate, currency)} / ${resource.pricingMode === 'per_head' ? 'player / hr' : 'hr'}`}
           </span>
         </div>
+        <AddonBreakdown breakdown={quoteBreakdown} currency={currency} />
         <div className="flex items-center justify-between text-base font-extrabold text-foreground">
           <span>Total payable</span>
           <span className="flex items-center gap-1.5 tabular-nums text-primary">

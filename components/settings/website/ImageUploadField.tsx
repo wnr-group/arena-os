@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { Loader2, FileImage, UploadCloud } from 'lucide-react'
+import { FileImage, UploadCloud } from 'lucide-react'
 import { uploadWebsiteImage } from '@/lib/actions/website'
+import { ImageDropzone } from '../ImageDropzone'
 
 function fileNameFromUrl(url: string): string {
   try {
@@ -14,7 +15,8 @@ function fileNameFromUrl(url: string): string {
 
 /** Same upload-widget shape as components/settings/MenuItemsManager.tsx, shared
  *  here since section images, logo, and hero image all need the identical
- *  upload/replace/remove flow. */
+ *  upload/replace/remove flow. The dashed drop target itself is the shared
+ *  ImageDropzone (also used by the setup photo strip). */
 export function ImageUploadField({
   label,
   value,
@@ -30,9 +32,8 @@ export function ImageUploadField({
   const [error, setError] = useState<string | null>(null)
   const fileName = value ? fileNameFromUrl(value) : null
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
+  async function handleFile(files: File[]) {
+    const file = files[0]
     if (!file) return
     setError(null)
     setUploading(true)
@@ -47,17 +48,8 @@ export function ImageUploadField({
   return (
     <div>
       <label className="text-sm font-medium text-muted-foreground">{label}</label>
-      <label
-        className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-5 text-center transition ${
-          uploading ? 'cursor-not-allowed border-border opacity-60' : 'border-border hover:border-primary/50 hover:bg-muted/30'
-        }`}
-      >
-        {uploading ? (
-          <>
-            <Loader2 size={20} className="animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Uploading…</span>
-          </>
-        ) : fileName ? (
+      <ImageDropzone uploading={uploading} onFiles={handleFile} ariaLabel={label}>
+        {fileName ? (
           <>
             <FileImage size={20} className="text-primary" />
             <span className="max-w-full truncate text-sm font-medium">{fileName}</span>
@@ -70,14 +62,7 @@ export function ImageUploadField({
             <span className="text-xs text-muted-foreground">{hint ?? 'JPEG, PNG, WEBP or GIF · up to 5MB'}</span>
           </>
         )}
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp,image/gif"
-          className="hidden"
-          disabled={uploading}
-          onChange={handleFile}
-        />
-      </label>
+      </ImageDropzone>
       {error && <p className="mt-1 text-sm text-destructive">{error}</p>}
       {fileName && !uploading && (
         <button

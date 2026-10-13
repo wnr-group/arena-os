@@ -4,6 +4,7 @@ import { isManager } from '@/lib/auth/roles'
 import { rootDomain } from '@/lib/tenant/subdomain'
 import { getPaymentSettingsForClient } from '@/lib/settings/payment-settings'
 import { PaymentSettingsForm } from '@/components/settings/PaymentSettingsForm'
+import { BookingPaymentCard } from '@/components/settings/BookingPaymentCard'
 
 export default async function PaymentSettingsPage() {
   const ctx = await getActiveContext()
@@ -30,6 +31,12 @@ export default async function PaymentSettingsPage() {
         // Built from the tenant's own subdomain — the host is what tells the
         // webhook route which tenant's signing secret to verify against.
         webhookUrl={`https://${ctx.tenant.slug}.${rootDomain()}/api/webhooks/razorpay`}
+      />
+      <BookingPaymentCard
+        mode={settings.onlinePaymentMode}
+        advanceType={settings.advanceType}
+        advanceValue={settings.advanceValue}
+        credentialsReady={Boolean(settings.razorpayKeyId && settings.hasSecret && settings.hasWebhookSecret)}
       />
     </div>
   )

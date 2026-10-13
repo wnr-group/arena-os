@@ -23,7 +23,13 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
-import { attachAddonsToSlots, normalizeAddonRequests, sumBookingAddons, type AddonRequest } from './addons'
+import {
+  attachAddonsToSlots,
+  normalizeAddonRequests,
+  priceAddonRequests,
+  sumBookingAddons,
+  type AddonRequest,
+} from './addons'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -92,6 +98,11 @@ export type CreateBookingInput = {
    *  a client: every action's zod schema strips unknown keys, and the public
    *  path builds its own input object. */
   backdated?: boolean
+  /** M36 #3: set ONLY by createPublicBooking when the venue requires online
+   *  payment — the booking is created 'pending_payment' (slot held, not
+   *  confirmed) with this expiry, and flips to confirmed on the verified
+   *  webhook. Never accepted from a client; every other caller leaves it unset. */
+  pendingPaymentUntil?: Date
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -745,7 +756,21 @@ export async function createBookingCore(
     headCount: input.headCount,
   })
 
-  const total = Math.max(0, subtotal - input.discount)
+  // Add-ons are priced BEFORE the insert so the booking is created with the
+  // right subtotal/total in one write — a public (online) booking's role has
+  // no UPDATE policy on bookings, so a fix-up update afterwards would be a
+  // silent no-op. attachAddonsToSlots below still validates and locks; this
+  // only prices rows that exist and are active (an invalid one is refused
+  // there, rolling the whole transaction back).
+  let preAddonTotal = 0
+  for (const [i, s] of input.slots.entries()) {
+    const priced = slotRows[i]
+    if (!s.addons || s.addons.length === 0 || !priced?.endsAt) continue
+    preAddonTotal += (await priceAddonRequests(tx, ctx.tenantId, priced.startsAt, priced.endsAt, s.addons)).total
+  }
+  preAddonTotal = round2(preAddonTotal)
+  const bookingSubtotal = round2(subtotal + preAddonTotal)
+  const total = Math.max(0, bookingSubtotal - input.discount)
 
   // Attach the booking to the customer directory so it shows on their
   // profile. Same transaction as the booking, so the two commit together.
@@ -773,9 +798,10 @@ export async function createBookingCore(
       customerPhone: input.customerPhone || null,
       customerEmail: input.customerEmail || null,
       customerId,
-      status: 'confirmed',
+      status: input.pendingPaymentUntil ? 'pending_payment' : 'confirmed',
+      paymentHoldExpiresAt: input.pendingPaymentUntil ?? null,
       source: input.source,
-      subtotal: subtotal.toFixed(2),
+      subtotal: bookingSubtotal.toFixed(2),
       discount: input.discount.toFixed(2),
       total: total.toFixed(2),
       deposit: input.deposit.toFixed(2),
@@ -831,7 +857,8 @@ export async function createBookingCore(
       targets,
       { priceNow: true },
     )
-    if (addonTotal > 0) {
+    if (addonTotal !== preAddonTotal) {
+      // Should be unreachable (same rows, same window) — kept as a safety net.
       const withAddons = subtotal + addonTotal
       await tx
         .update(bookings)

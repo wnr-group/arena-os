@@ -9,7 +9,6 @@ import {
   Boxes,
   CalendarDays,
   Clock,
-  CreditCard,
   ImageOff,
   Loader2,
   Mail,
@@ -19,7 +18,6 @@ import {
   Sparkles,
   User,
   Users,
-  Wallet,
 } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail } from '@/lib/booking/public-availability'
@@ -32,7 +30,8 @@ import {
   type PublicSlotOption,
 } from '@/lib/actions/public-booking'
 import { formatMoney } from '@/lib/format'
-import { loadCheckoutScript, type RazorpayCtor } from '@/lib/payments/checkout-script'
+import { openBookingCheckout } from './booking-checkout'
+import { BookingPaymentSummary, paymentFlow, type QuotePayment } from './BookingPaymentSummary'
 import { HoneypotField } from './HoneypotField'
 import {
   DURATIONS,
@@ -116,6 +115,9 @@ export function ResourceTypeBookingPage({
   })
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [payOnline, setPayOnline] = useState(false)
+  // The server's payment figures for the current quote (mode, charge now, balance). Kept
+  // (not cleared) while a refreshed quote loads so the summary does not jump.
+  const [payment, setPayment] = useState<QuotePayment | null>(null)
   const [pending, startTransition] = useTransition()
 
   // M22 #4: starts at the type's flat rate (the same figure the browse
@@ -179,6 +181,9 @@ export function ResourceTypeBookingPage({
       setQuoteLoadingKey((k) => (k === key ? null : k))
       if (r.error || r.total === undefined) {
         return
+      }
+      if (r.mode !== undefined && r.chargeNow !== undefined && r.balanceDue !== undefined) {
+        setPayment({ mode: r.mode, paymentRequired: Boolean(r.paymentRequired), chargeNow: r.chargeNow, balanceDue: r.balanceDue })
       }
       setQuote({ key, total: r.total })
     })
@@ -258,56 +263,57 @@ export function ResourceTypeBookingPage({
    * The booking itself is already confirmed regardless of how this resolves —
    * every exit routes to the confirmation page.
    */
-  async function payForBooking(bookingId: string, token: string, bookingNumberValue: string) {
+  async function payForBooking(bookingId: string, token: string, bookingNumberValue: string, legacy: boolean) {
+    // advance / full: the booking is held (pending payment), so every failure
+    // path lands on the confirmation page, whose panel offers Retry (reusing
+    // this booking's pending order) or Start over. Legacy optional_full keeps
+    // today's "already confirmed" toasts.
+    const toConfirmation = (paid: boolean) => router.push(paid && !legacy ? `/b/${token}?paid=1` : `/b/${token}`)
     const res = await createBookingPaymentIntent({ bookingId })
     if (res.error || !res.checkout) {
-      toast.error(`Booking #${bookingNumberValue} is confirmed, but online payment could not be started.`, {
-        description: res.error ?? 'Please contact the venue to arrange payment.',
-      })
-      router.push(`/b/${token}`)
-      return
-    }
-    const { orderId: gatewayOrderId, amount, currency, keyId } = res.checkout
-
-    let Razorpay: RazorpayCtor
-    try {
-      Razorpay = await loadCheckoutScript()
-    } catch {
-      toast.error(`Booking #${bookingNumberValue} is confirmed, but the payment window could not load.`, {
-        description: 'Please contact the venue to arrange payment.',
-      })
-      router.push(`/b/${token}`)
-      return
-    }
-
-    const checkout = new Razorpay({
-      key: keyId,
-      order_id: gatewayOrderId,
-      amount,
-      currency,
-      name: tenant.name,
-      description: `Booking #${bookingNumberValue}`,
-      prefill: {
-        ...(name ? { name } : {}),
-        ...(phone ? { contact: phone } : {}),
-      },
-      handler: () => {
-        toast.success('Payment submitted — confirming with the venue.', {
-          description: "We'll have everything ready for your visit.",
+      if (legacy) {
+        toast.error(`Booking #${bookingNumberValue} is confirmed, but online payment could not be started.`, {
+          description: res.error ?? 'Please contact the venue to arrange payment.',
         })
-        router.push(`/b/${token}`)
+      }
+      toConfirmation(false)
+      return
+    }
+    const opened = await openBookingCheckout({
+      checkout: res.checkout,
+      tenantName: tenant.name,
+      bookingNumber: bookingNumberValue,
+      name,
+      phone,
+      onSubmitted: () => {
+        if (legacy) {
+          toast.success('Payment submitted — confirming with the venue.', {
+            description: "We'll have everything ready for your visit.",
+          })
+        }
+        toConfirmation(true)
       },
-      modal: {
-        ondismiss: () => {
+      onDismissed: () => {
+        if (legacy) {
           toast(`Booking #${bookingNumberValue} is confirmed but not yet paid.`, {
             description: 'Contact the venue if you’d like to complete payment another way.',
           })
-          router.push(`/b/${token}`)
-        },
+        }
+        toConfirmation(false)
       },
     })
-    checkout.open()
+    if (!opened.ok) {
+      if (legacy) {
+        toast.error(`Booking #${bookingNumberValue} is confirmed, but the payment window could not load.`, {
+          description: 'Please contact the venue to arrange payment.',
+        })
+      }
+      toConfirmation(false)
+    }
   }
+
+  // What the final step does, from the venue mode in the server quote.
+  const flow = paymentFlow(payment, { razorpayConfigured, payOnline, total, currency: tenant.currency })
 
   function confirm() {
     if (!selectedSlot || !endsAt || total === null) return
@@ -326,7 +332,7 @@ export function ResourceTypeBookingPage({
         // changes the price, when the real player count is fixed online and
         // only ever adjusted by staff at check-in (Per-head #4).
         players: resourceType.capacity != null && !isPerHead ? players : undefined,
-        payNow: razorpayConfigured && payOnline && total > 0,
+        payNow: flow.paysOnline,
         website,
       })
       if (r.error || !r.confirmationToken) {
@@ -334,7 +340,7 @@ export function ResourceTypeBookingPage({
         return
       }
       if (r.awaitingOnlinePayment && r.bookingId) {
-        await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '')
+        await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '', payment?.mode === 'optional_full')
         return
       }
       router.push(`/b/${r.confirmationToken}`)
@@ -668,35 +674,15 @@ export function ResourceTypeBookingPage({
                 </p>
               )}
 
-              {razorpayConfigured && (total ?? 0) > 0 && (
-                <div className="mt-6">
-                  <span className="mb-2 block text-sm font-semibold text-muted-foreground">How would you like to pay?</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPayOnline(false)}
-                      className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
-                        !payOnline
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-muted-foreground hover:border-primary/40'
-                      }`}
-                    >
-                      <Wallet size={15} /> Pay at venue
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPayOnline(true)}
-                      className={`flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
-                        payOnline
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-muted-foreground hover:border-primary/40'
-                      }`}
-                    >
-                      <CreditCard size={15} /> Pay online now
-                    </button>
-                  </div>
-                </div>
-              )}
+              <BookingPaymentSummary
+                payment={payment}
+                total={total}
+                currency={tenant.currency}
+                loading={quoteLoading}
+                razorpayConfigured={razorpayConfigured}
+                payOnline={payOnline}
+                onPayOnline={setPayOnline}
+              />
 
               <button
                 onClick={confirm}
@@ -710,7 +696,7 @@ export function ResourceTypeBookingPage({
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-primary-foreground shadow-md shadow-primary/20 transition-all duration-300 hover:bg-primary-hover hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-md"
               >
                 {pending && <Loader2 size={16} className="animate-spin" />}
-                {razorpayConfigured && payOnline ? 'Confirm & pay' : 'Confirm booking'}
+                {flow.label}
               </button>
             </div>
           </div>

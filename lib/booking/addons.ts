@@ -81,6 +81,65 @@ export function normalizeAddonRequests(requests: AddonRequest[] | undefined): Ad
   return [...merged.entries()].map(([addonId, quantity]) => ({ addonId, quantity }))
 }
 
+export type PricedAddonLine = {
+  addonId: string
+  resourceTypeId: string
+  branchId: string
+  name: string
+  rateUnit: AddonRateUnit
+  rate: string
+  quantity: number
+  /** Billable units over the window (hours, or days) — see addonBillableUnits. */
+  units: number
+  lineTotal: number
+}
+
+/**
+ * Unlocked, read-only pricing of add-on requests over one window — the lines a
+ * customer is quoted and the total a booking is created with. Only ACTIVE
+ * catalog rows of the tenant are priced; an unknown / retired id is simply
+ * absent from `lines` (callers that must refuse check for it; the commit path
+ * re-validates under the catalog lock in attachAddonsToSlots regardless).
+ */
+export async function priceAddonRequests(
+  tx: Db,
+  tenantId: string,
+  startsAt: Date,
+  endsAt: Date,
+  requests: AddonRequest[],
+): Promise<{ lines: PricedAddonLine[]; total: number }> {
+  const wanted = normalizeAddonRequests(requests)
+  if (wanted.length === 0) return { lines: [], total: 0 }
+  const rows = await tx
+    .select()
+    .from(resourceTypeAddons)
+    .where(
+      and(
+        eq(resourceTypeAddons.tenantId, tenantId),
+        eq(resourceTypeAddons.isActive, true),
+        inArray(resourceTypeAddons.id, wanted.map((w) => w.addonId)),
+      ),
+    )
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const lines: PricedAddonLine[] = []
+  for (const w of wanted) {
+    const r = byId.get(w.addonId)
+    if (!r) continue
+    lines.push({
+      addonId: r.id,
+      resourceTypeId: r.resourceTypeId,
+      branchId: r.branchId,
+      name: r.name,
+      rateUnit: r.rateUnit,
+      rate: r.rate,
+      quantity: w.quantity,
+      units: addonBillableUnits(r.rateUnit, startsAt, endsAt),
+      lineTotal: addonLineTotal(r.rateUnit, Number(r.rate), w.quantity, startsAt, endsAt),
+    })
+  }
+  return { lines, total: round2(lines.reduce((sum, l) => sum + l.lineTotal, 0)) }
+}
+
 /*
  * ════════════════════════════════════════════════════════════════════════════
  *  STOCK CHECK — READ THIS BEFORE TOUCHING booking_addons
@@ -135,6 +194,20 @@ export async function reservedAddonUnits(
   endsAt: Date | null,
   excludeBookingSlotId?: string,
 ): Promise<number> {
+  // Authorised callers (a tenant member, or the public tenant of an online
+  // booking) count through addon_reserved_units (0112): a public session cannot
+  // read booking_addons directly, so a plain sum would always be 0 there and
+  // the stock check would never refuse. NULL = not authorised for that tenant
+  // (e.g. a raw owner connection) -> fall through to the direct, RLS-governed sum.
+  const viaFn = await tx.execute<{ reserved: number | null }>(sql`
+    select public.addon_reserved_units(
+      ${tenantId}::uuid, ${addonId}::uuid, ${startsAt.toISOString()}::timestamptz,
+      ${endsAt ? endsAt.toISOString() : null}::timestamptz, ${excludeBookingSlotId ?? null}::uuid
+    ) as reserved
+  `)
+  const authorised = viaFn.rows[0]?.reserved
+  if (authorised !== null && authorised !== undefined) return Number(authorised)
+
   const rows = await tx.execute<{ reserved: string }>(sql`
     select coalesce(sum(ba.quantity), 0)::int as reserved
       from booking_addons ba

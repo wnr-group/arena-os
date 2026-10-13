@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { resources, resourceTypes, holidayRates, workingHours, bookingSlots } from '@/db/schema'
 import { requireContext } from '@/lib/auth/guard'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { availableStartTimes, dayWindow, type Interval } from '@/lib/booking/availability'
 import { weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
 import { resolveDayRate } from '@/lib/booking/rate'
@@ -52,6 +53,8 @@ export async function getAvailableStarts(
 ): Promise<AvailabilityResponse> {
   try {
     const ctx = await requireContext()
+    // An expired unpaid online hold still shows the slot as taken; release it first.
+    await sweepTenantHolds(ctx.tenant.id)
     const v = input.parse(raw)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
@@ -217,6 +220,8 @@ export async function getAvailableStartsForType(
 ): Promise<TypeAvailabilityResponse> {
   try {
     const ctx = await requireContext()
+    // An expired unpaid online hold still shows the slot as taken; release it first.
+    await sweepTenantHolds(ctx.tenant.id)
     const v = typeInput.parse(raw)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
@@ -397,6 +402,8 @@ export type DayRangeWindowResponse = {
 export async function getDayRangeWindow(raw: z.input<typeof dayRangeInput>): Promise<DayRangeWindowResponse> {
   try {
     const ctx = await requireContext()
+    // An expired unpaid online hold still shows the slot as taken; release it first.
+    await sweepTenantHolds(ctx.tenant.id)
     const v = dayRangeInput.parse(raw)
     if (v.endDate < v.startDate) return { error: 'End date must be on or after the start date.' }
     const tz = ctx.tenant.timezone

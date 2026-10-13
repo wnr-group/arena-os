@@ -1,14 +1,24 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { resourceTypes, resources, resourceSetups, holidayRates, workingHours, taxRates, businessProfiles } from '@/db/schema'
+import {
+  resourceTypes,
+  resources,
+  resourceSetups,
+  resourceSetupImages,
+  holidayRates,
+  workingHours,
+  taxRates,
+  businessProfiles,
+} from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, checkLimitIn } from '@/lib/platform/entitlement-guard'
 import { countResources, lockTenantUsage } from '@/lib/platform/usage'
-import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { uploadImage, deleteImage, validateUpload, sniffImageMime, IMAGE_POLICY } from '@/lib/storage/s3'
+import { MAX_SETUP_IMAGES } from '@/lib/booking/setup-images'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 
@@ -328,10 +338,20 @@ export async function deleteResource(id: string): Promise<Result> {
         .from(resources)
         .where(and(eq(resources.id, id), eq(resources.tenantId, ctx.tenant.id)))
         .limit(1)
+      // M35 #8: the setups' photo rows cascade away with the resource, so
+      // their storage objects must be collected BEFORE the delete.
+      const setupImages = await tx
+        .select({ url: resourceSetupImages.url })
+        .from(resourceSetupImages)
+        .innerJoin(resourceSetups, eq(resourceSetups.id, resourceSetupImages.setupId))
+        .where(and(eq(resourceSetups.resourceId, id), eq(resourceSetupImages.tenantId, ctx.tenant.id)))
       await tx.delete(resources).where(and(eq(resources.id, id), eq(resources.tenantId, ctx.tenant.id)))
-      return existing
+      return existing.map((r) => ({ ...r, setupImageUrls: setupImages.map((i) => i.url) }))
     })
-    if (row) void deleteImage(row.imageUrl)
+    if (row) {
+      void deleteImage(row.imageUrl)
+      await deleteImages(row.setupImageUrls)
+    }
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
@@ -427,14 +447,226 @@ export async function upsertResourceSetup(input: z.input<typeof resourceSetupInp
 export async function deleteResourceSetup(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
-    await withUser(ctx.user.id, (tx) =>
-      tx.delete(resourceSetups).where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id))),
-    )
+    // M35 #8: photo rows cascade with the setup; collect their storage URLs
+    // first and remove the objects only after the DB delete has succeeded.
+    const urls = await withUser(ctx.user.id, async (tx) => {
+      const images = await tx
+        .select({ url: resourceSetupImages.url })
+        .from(resourceSetupImages)
+        .where(and(eq(resourceSetupImages.setupId, id), eq(resourceSetupImages.tenantId, ctx.tenant.id)))
+      await tx.delete(resourceSetups).where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id)))
+      return images.map((i) => i.url)
+    })
+    await deleteImages(urls)
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
+    revalidateSetupPages()
     return {}
   } catch (e) {
     return fail(e)
+  }
+}
+
+// ── setup photos (M35 #8) ────────────────────────────────────────────────────
+// Up to MAX_SETUP_IMAGES per setup; the cap is ALSO enforced by the database
+// (CHECK position 1..3 + UNIQUE (setup_id, position), migration 0113), so the
+// checks here are for friendly messages, never the only guard. Position 1 is
+// the cover; positions are kept packed (1..n) so the cover is deterministic.
+
+const SETUP_IMAGES_FULL = `A setup can have at most ${MAX_SETUP_IMAGES} photos. Remove one first.`
+
+class SetupImageError extends Error {}
+
+/** Best-effort removal of storage objects; deleteImage itself never throws and
+ *  only ever deletes URLs that pass objectKeyFromUrl (our own bucket/base). */
+async function deleteImages(urls: string[]): Promise<void> {
+  await Promise.all(urls.map((u) => deleteImage(u)))
+}
+
+function revalidateSetupPages() {
+  revalidatePath('/resources')
+  revalidatePath('/book/[resourceId]', 'page')
+}
+
+function failImage(e: unknown): Result {
+  if (e instanceof SetupImageError) return { error: e.message }
+  // Backstop: the race where two uploads both pass the app-level check.
+  const { code } = pgError(e)
+  if (code === '23505' || code === '23514') return { error: SETUP_IMAGES_FULL }
+  // validateUpload's messages are user-safe by design (type / empty / size).
+  if (e instanceof Error && /^(Only .* are allowed|The selected file is empty|Image must be smaller)/.test(e.message)) {
+    return { error: e.message }
+  }
+  return fail(e)
+}
+
+/** The setup, tenant-scoped, locked FOR UPDATE: every photo write on one setup
+ *  serialises here, so position assignment and the cap can't race. */
+async function lockSetup(tx: Parameters<Parameters<typeof withUser>[1]>[0], tenantId: string, setupId: string) {
+  const [setup] = await tx
+    .select({ id: resourceSetups.id })
+    .from(resourceSetups)
+    .where(and(eq(resourceSetups.id, setupId), eq(resourceSetups.tenantId, tenantId)))
+    .for('update')
+  if (!setup) throw new SetupImageError('Setup not found.')
+}
+
+function requireStudio(industry: string) {
+  if (!industryHasStudioSetups(industry)) throw new AuthError('Setups are not available for this type of business.')
+}
+
+export async function uploadSetupImage(
+  setupId: string,
+  formData: FormData,
+): Promise<Result & { id?: string; url?: string; position?: number }> {
+  let uploadedUrl: string | null = null
+  try {
+    const ctx = await requireManager()
+    requireStudio(ctx.tenant.industry)
+    const id = z.string().uuid().parse(setupId)
+    const file = formData.get('file')
+    if (!(file instanceof File)) throw new SetupImageError('Choose an image to upload.')
+
+    // Cheap pre-checks BEFORE touching storage: the setup is this tenant's and
+    // there is room for another photo — no object is written for a doomed upload.
+    const existingCount = await withUser(ctx.user.id, async (tx) => {
+      const [setup] = await tx
+        .select({ id: resourceSetups.id })
+        .from(resourceSetups)
+        .where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!setup) throw new SetupImageError('Setup not found.')
+      const rows = await tx
+        .select({ id: resourceSetupImages.id })
+        .from(resourceSetupImages)
+        .where(eq(resourceSetupImages.setupId, id))
+      return rows.length
+    })
+    if (existingCount >= MAX_SETUP_IMAGES) throw new SetupImageError(SETUP_IMAGES_FULL)
+
+    // Type / size / empty first (extension comes from the MIME table, never the
+    // filename), then the content itself: the declared type is only what the
+    // browser guessed from the extension, so an HTML or script file renamed
+    // .jpg would otherwise be stored and served as an "image".
+    validateUpload(file, IMAGE_POLICY)
+    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+    if (sniffImageMime(head) !== file.type) {
+      throw new SetupImageError('That file is not a valid JPEG, PNG, WEBP or GIF image.')
+    }
+    uploadedUrl = await uploadImage(file, `tenants/${ctx.tenant.id}/resource-setups/${id}`)
+    const url = uploadedUrl
+
+    const saved = await withUser(ctx.user.id, async (tx) => {
+      await lockSetup(tx, ctx.tenant.id, id)
+      const taken = new Set(
+        (
+          await tx
+            .select({ position: resourceSetupImages.position })
+            .from(resourceSetupImages)
+            .where(eq(resourceSetupImages.setupId, id))
+        ).map((r) => r.position),
+      )
+      let position = 0
+      for (let p = 1; p <= MAX_SETUP_IMAGES; p++) {
+        if (!taken.has(p)) {
+          position = p
+          break
+        }
+      }
+      if (position === 0) throw new SetupImageError(SETUP_IMAGES_FULL)
+      const [row] = await tx
+        .insert(resourceSetupImages)
+        .values({ tenantId: ctx.tenant.id, setupId: id, url, position })
+        .returning({ id: resourceSetupImages.id, position: resourceSetupImages.position })
+      return row
+    })
+    uploadedUrl = null // persisted — no longer an orphan candidate
+    revalidatePath('/settings/resources')
+    revalidateSetupPages()
+    return { id: saved.id, url, position: saved.position }
+  } catch (e) {
+    // Rejected after the object was written (cap race, bad setup): don't leave an orphan.
+    if (uploadedUrl) await deleteImages([uploadedUrl])
+    return failImage(e)
+  }
+}
+
+export async function removeSetupImage(imageId: string): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    requireStudio(ctx.tenant.industry)
+    const id = z.string().uuid().parse(imageId)
+    const removedUrl = await withUser(ctx.user.id, async (tx) => {
+      const [img] = await tx
+        .select({ setupId: resourceSetupImages.setupId, url: resourceSetupImages.url })
+        .from(resourceSetupImages)
+        .where(and(eq(resourceSetupImages.id, id), eq(resourceSetupImages.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!img) throw new SetupImageError('Photo not found.')
+      await lockSetup(tx, ctx.tenant.id, img.setupId)
+      await tx
+        .delete(resourceSetupImages)
+        .where(and(eq(resourceSetupImages.id, id), eq(resourceSetupImages.tenantId, ctx.tenant.id)))
+      // Re-pack to 1..n, lowest first: each target position was just freed by
+      // the previous step, so the unique (setup_id, position) never trips and
+      // position 1 is always the cover.
+      const rest = await tx
+        .select({ id: resourceSetupImages.id, position: resourceSetupImages.position })
+        .from(resourceSetupImages)
+        .where(eq(resourceSetupImages.setupId, img.setupId))
+        .orderBy(asc(resourceSetupImages.position))
+      for (const [i, r] of rest.entries()) {
+        if (r.position !== i + 1) {
+          await tx.update(resourceSetupImages).set({ position: i + 1 }).where(eq(resourceSetupImages.id, r.id))
+        }
+      }
+      return img.url
+    })
+    await deleteImages([removedUrl])
+    revalidatePath('/settings/resources')
+    revalidateSetupPages()
+    return {}
+  } catch (e) {
+    return failImage(e)
+  }
+}
+
+const reorderInput = z.object({
+  setupId: z.string().uuid(),
+  orderedImageIds: z.array(z.string().uuid()).min(1).max(MAX_SETUP_IMAGES),
+})
+
+/** `orderedImageIds` must be EXACTLY this setup's photos, cover first. */
+export async function reorderSetupImages(setupId: string, orderedImageIds: string[]): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    requireStudio(ctx.tenant.industry)
+    const v = reorderInput.parse({ setupId, orderedImageIds })
+    await withUser(ctx.user.id, async (tx) => {
+      await lockSetup(tx, ctx.tenant.id, v.setupId)
+      const current = await tx
+        .select()
+        .from(resourceSetupImages)
+        .where(and(eq(resourceSetupImages.setupId, v.setupId), eq(resourceSetupImages.tenantId, ctx.tenant.id)))
+      const byId = new Map(current.map((r) => [r.id, r]))
+      const sameSet =
+        new Set(v.orderedImageIds).size === v.orderedImageIds.length &&
+        v.orderedImageIds.length === current.length &&
+        v.orderedImageIds.every((i) => byId.has(i))
+      if (!sameSet) throw new SetupImageError('That photo list is out of date. Refresh and try again.')
+      // UNIQUE (setup_id, position) is not deferrable, so moving rows between
+      // positions in place would trip it. Rewrite the (at most 3) rows instead —
+      // same ids, urls and timestamps, just new positions — in one transaction.
+      await tx.delete(resourceSetupImages).where(inArray(resourceSetupImages.id, v.orderedImageIds))
+      await tx
+        .insert(resourceSetupImages)
+        .values(v.orderedImageIds.map((imageId, i) => ({ ...byId.get(imageId)!, position: i + 1 })))
+    })
+    revalidatePath('/settings/resources')
+    revalidateSetupPages()
+    return {}
+  } catch (e) {
+    return failImage(e)
   }
 }
 

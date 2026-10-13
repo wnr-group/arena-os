@@ -103,6 +103,7 @@ async function loadPayableBooking(tx: Db, tenantId: string, bookingId: string): 
       status: bookings.status,
       source: bookings.source,
       deposit: bookings.deposit,
+      holdExpiresAt: bookings.paymentHoldExpiresAt,
     })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
@@ -116,9 +117,34 @@ async function loadPayableBooking(tx: Db, tenantId: string, bookingId: string): 
   // this endpoint only ever opens a gateway order for one THIS customer
   // placed themselves online.
   if (booking.source !== 'online') throw new BookingPaymentError('This booking cannot be paid online.')
-  if (!isBillableBookingStatus(booking.status)) {
+  // A pending_payment booking is exactly the one that SHOULD be paid (M36 #3),
+  // as long as its hold has not lapsed; every other non-billable state cannot.
+  if (booking.status === 'pending_payment') {
+    if (booking.holdExpiresAt && booking.holdExpiresAt.getTime() <= Date.now()) {
+      throw new BookingPaymentError('The payment window for this booking has expired. Please book again.')
+    }
+  } else if (!isBillableBookingStatus(booking.status)) {
     throw new BookingPaymentError('This booking can no longer be paid online.')
   }
+
+  // Already paid: a paid booking_deposit intent (any amount) means the money is
+  // in, so a second gateway order must never open — a stale tab or the
+  // confirmation page's Retry could otherwise take the customer's money twice.
+  // Read here, not in the callers, so the re-check inside the persist step (a
+  // concurrent request) enforces it too.
+  const [paid] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.bookingId, booking.id),
+        eq(paymentIntents.purpose, PURPOSE),
+        eq(paymentIntents.status, 'paid'),
+      ),
+    )
+    .limit(1)
+  if (paid) throw new BookingPaymentError('This booking has already been paid.')
 
   return {
     id: booking.id,
@@ -169,14 +195,25 @@ function intentMatches(intent: { amount: string; currency: string }, amountPaise
 }
 
 /**
- * Run the persistence step, converting ANY failure into an
+ * Run the persistence step, converting any failure other than a
+ * BookingPaymentError (rethrown as-is, orphan logged) into an
  * OrphanedBookingPaymentError that carries the gateway order id — past the
  * gateway call the order exists at Razorpay whatever happens here.
  */
 async function persistIntent<T>(gatewayOrderId: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
-  } catch {
+  } catch (e) {
+    // A rule violation found on the re-check (e.g. the webhook paid the
+    // booking between the first validation and now) is the customer's answer
+    // as-is, not a storage failure. The gateway order is still an unpaid
+    // orphan, so log it here — the caller only logs Orphaned errors.
+    if (e instanceof BookingPaymentError) {
+      console.error(
+        `[booking-payment] gateway order ${gatewayOrderId} was created but not persisted (${e.message}) — unpaid orphan, no money taken`,
+      )
+      throw e
+    }
     throw new OrphanedBookingPaymentError(gatewayOrderId)
   }
 }

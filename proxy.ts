@@ -89,6 +89,10 @@ export function proxy(request: NextRequest) {
    * which tenant's signing secret to verify against.
    */
   const isWebhook = pathname.startsWith('/api/webhooks/')
+  // Scheduler-invoked routes (Vercel Cron) carry no cookie either. They
+  // authenticate with a bearer CRON_SECRET inside the route (app/api/cron/*),
+  // which refuses to run at all when the secret is unset.
+  const isCron = pathname.startsWith('/api/cron/')
 
   // ── customer gate ─────────────────────────────────────────────────────────
   // Checked BEFORE the staff gate, and covering the /account tree exclusively.
@@ -133,6 +137,7 @@ export function proxy(request: NextRequest) {
     !isAuthRoute &&
     !isPublicRoute &&
     !isWebhook &&
+    !isCron &&
     !isPortalRoute
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()

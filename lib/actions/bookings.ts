@@ -5,8 +5,9 @@ import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { withUser } from '@/db'
-import { bookings, bookingSlots } from '@/db/schema'
+import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
@@ -118,6 +119,9 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
   try {
     const ctx = await requireContext()
     const v = createInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       createBookingCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
@@ -243,6 +247,9 @@ export async function startWalkin(input: z.input<typeof startWalkinInput>): Prom
       throw new AuthError('You do not have permission to start a walk-in.')
     }
     const v = startWalkinInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       startWalkinCore(
@@ -282,6 +289,9 @@ export async function listWalkinResources(
     if (!canManageWalkins(ctx.role)) {
       throw new AuthError('You do not have permission to start a walk-in.')
     }
+    // Lapsed unpaid online holds still count as occupied until swept; release them
+    // first so the picker doesn't show a free station as busy (best-effort).
+    await sweepTenantHolds(ctx.tenant.id)
     const [resources, weekendDays] = await Promise.all([
       listWalkinResourcesForBranch(ctx, branchId),
       withUser(ctx.user.id, (tx) => loadWeekendDays(tx, ctx.tenant.id)),
@@ -427,6 +437,9 @@ export async function extendWalkin(input: z.input<typeof extendWalkinInput>): Pr
       throw new AuthError('You do not have permission to extend a walk-in.')
     }
     const v = extendWalkinInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) => extendWalkinCore(tx, { tenantId: ctx.tenant.id }, v))
 
@@ -468,6 +481,9 @@ export async function correctWalkinEndTime(
       throw new AuthError('You do not have permission to change a walk-in’s end time.')
     }
     const v = correctWalkinEndTimeInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       correctWalkinEndTimeCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
@@ -584,6 +600,9 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = seatTableInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
 
     const result = await withUser(ctx.user.id, (tx) =>
       seatTableSessionCore(
@@ -691,6 +710,9 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = splitTableInput.parse(input)
+    // An expired unpaid online hold still occupies its slot until swept; release it
+    // here so a lapsed hold never blocks staff (best-effort, never throws).
+    await sweepTenantHolds(ctx.tenant.id)
     const result = await withUser(ctx.user.id, (tx) =>
       splitTableCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
     )
@@ -721,7 +743,7 @@ export async function lookupCustomerByPhone(phone: string): Promise<CustomerLook
   }
 }
 
-type BookingStatus = 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
+type BookingStatus = 'pending_payment' | 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'
 
 /**
  * Server action: transition a booking's status, gating 'completed' on a
@@ -759,6 +781,26 @@ export async function setBookingStatus<S extends BookingStatus>(
     }
 
     await withUser(ctx.user.id, async (tx) => {
+      // 'pending_payment' is owned by createBookingCore (create) and the Razorpay webhook
+      // (confirm); a staff action must never put a booking INTO it — it would have no
+      // hold expiry, so nothing would ever release or confirm it.
+      if ((status as string) === 'pending_payment') {
+        throw new BookingError('A booking cannot be put back into awaiting payment.')
+      }
+      // M36 #3: an unpaid online booking is held, not confirmed — staff can
+      // cancel it (to free the slot) but cannot check it in, complete it or
+      // mark it no-show until the webhook confirms the payment.
+      if (status !== 'cancelled') {
+        const [cur] = await tx
+          .select({ status: bookings.status })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (cur?.status === 'pending_payment') {
+          throw new BookingError('This booking is awaiting the customer’s online payment — it can only be cancelled until the payment arrives.')
+        }
+      }
+
       if (status === 'completed') {
         await assertBookingFullyPaid(tx, ctx.tenant.id, id)
       }
@@ -778,6 +820,41 @@ export async function setBookingStatus<S extends BookingStatus>(
         if (row?.channel === 'walkin') {
           throw new BookingError('A walk-in cannot be marked no-show — it is already checked in.')
         }
+      }
+
+      // Cancel serialises with the Razorpay webhook on the booking row. The
+      // webhook takes this same FOR UPDATE before it settles an intent and moves
+      // pending_payment -> confirmed, so a cancel that raced it waits, then reads
+      // the COMMITTED status and intents below instead of overwriting `confirmed`
+      // with a stale view (paid intent + cancelled booking + no refund flag).
+      // bookings_rw lets every active member lock the row (FOR UPDATE needs the
+      // UPDATE policy). Already cancelled -> nothing to do: leave the original
+      // cancelled_at / reason / refund flag untouched.
+      if (status === 'cancelled') {
+        const [locked] = await tx
+          .select({ status: bookings.status })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .for('update')
+          .limit(1)
+        if (locked?.status === 'cancelled') return
+
+        // A paid online deposit is money the venue now owes back, whatever the
+        // industry or amount — same flag the customer portal cancel raises
+        // (lib/portal/cancel.ts). Over-flagging is safe; under-flagging is not.
+        const [paid] = await tx
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, ctx.tenant.id),
+              eq(paymentIntents.bookingId, id),
+              eq(paymentIntents.purpose, 'booking_deposit'),
+              eq(paymentIntents.status, 'paid'),
+            ),
+          )
+          .limit(1)
+        if (paid) set.depositReviewRequired = true
       }
 
       // M26 #6: mirror the online-deposit safety net (lib/portal/cancel.ts's

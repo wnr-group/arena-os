@@ -4,6 +4,7 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingByToken } from '@/lib/booking/public-confirmation'
+import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { publicTenantUrl } from '@/lib/tenant/subdomain'
 import { generateQrSvg } from '@/lib/utils/qr'
 import { getPublicMenu } from '@/lib/menu/public'
@@ -43,8 +44,15 @@ const INDUSTRY_ICONS: Record<string, LucideIcon> = {
  * for check-in, though the scan itself posts to a staff-only action
  * (checkInBookingByToken) rather than this page doing anything on load.
  */
-export default async function BookingConfirmationPage({ params }: { params: Promise<{ token: string }> }) {
+export default async function BookingConfirmationPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ token: string }>
+  searchParams: Promise<{ paid?: string }>
+}) {
   const { token } = await params
+  const { paid } = await searchParams
   if (!UUID.test(token)) notFound()
 
   const slug = await currentTenantSlug()
@@ -52,6 +60,8 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
   const tenant = await getPublicTenantBySlug(slug)
   if (!tenant) notFound()
 
+  // M36 #4: an expired unpaid hold must read as expired right now, not after the next sweep.
+  await sweepTenantHolds(tenant.id)
   const booking = await getPublicBookingByToken(tenant.id, token)
   if (!booking) notFound()
 
@@ -79,6 +89,7 @@ export default async function BookingConfirmationPage({ params }: { params: Prom
             tenant={tenant}
             qrSvg={qrSvg}
             hasMenu={hasMenu}
+            justPaid={paid === '1'}
           />
         </main>
 

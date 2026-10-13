@@ -118,6 +118,32 @@ export async function listPaidDeposits(
 }
 
 /**
+ * The online advance for one booking, split into what is on the bill and what
+ * is NOT (M36 #6). `unapplied` is money the venue holds that no payment row
+ * accounts for — e.g. the advance outgrew a bill that was corrected downwards —
+ * so the POS can show a refund-due note instead of the money silently vanishing.
+ */
+export async function summarizeOnlineAdvance(
+  tx: Db,
+  tenantId: string,
+  bookingId: string,
+): Promise<{ paid: number; unapplied: number }> {
+  const deposits = await listPaidDeposits(tx, tenantId, bookingId)
+  let paidTotal = 0
+  let unapplied = 0
+  for (const d of deposits) {
+    paidTotal += d.amount
+    const [onBill] = await tx
+      .select({ id: payments.id })
+      .from(payments)
+      .where(and(eq(payments.tenantId, tenantId), eq(payments.gatewayPaymentId, d.gatewayPaymentId)))
+      .limit(1)
+    if (!onBill) unapplied += d.amount
+  }
+  return { paid: round2(paidTotal), unapplied: round2(unapplied) }
+}
+
+/**
  * Carry every paid, not-yet-applied deposit for a booking onto an invoice.
  *
  * Runs entirely in the caller's transaction, so the invoice, its items and the

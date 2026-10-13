@@ -3,6 +3,7 @@ import { ArrowRight, Layers } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResourceTypeDetail, PublicTypeUnit } from '@/lib/booking/public-availability'
 import { formatMoney } from '@/lib/format'
+import { FallbackImage } from './FallbackImage'
 
 /**
  * Studio types (recording/podcast/dance studio, VR centre): each unit is a
@@ -46,8 +47,18 @@ export function ResourceUnitPicker({
               <ul className="space-y-1.5">
                 {u.setups.map((s) => (
                   <li key={s.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="font-medium text-foreground">{s.name}</span>
-                    <span className="tabular-nums text-primary">
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      {s.images[0] && (
+                        <FallbackImage
+                          srcs={[s.images[0]]}
+                          alt=""
+                          className="size-10 shrink-0 rounded-md object-cover"
+                          placeholder={null}
+                        />
+                      )}
+                      <span className="truncate font-medium text-foreground">{s.name}</span>
+                    </span>
+                    <span className="shrink-0 tabular-nums text-primary">
                       {formatMoney(Number(s.rate), tenant.currency)} / {s.rateUnit === 'day' ? 'day' : 'hr'}
                     </span>
                   </li>

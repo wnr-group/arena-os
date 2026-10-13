@@ -101,6 +101,24 @@ export function validateUpload(
 }
 
 /**
+ * The image MIME a file's leading bytes actually describe, or null when they
+ * are not a JPEG / PNG / GIF / WEBP. The declared type and the filename are
+ * attacker-controlled — a browser derives the type from the EXTENSION, so an
+ * HTML or script file renamed to .jpg arrives as `image/jpeg` and passes
+ * validateUpload. Callers that want content verification compare this against
+ * the declared type. (Not used by every upload path yet — see setup photos.)
+ */
+export function sniffImageMime(head: Uint8Array): string | null {
+  const at = (i: number) => head[i]
+  const ascii = (from: number, text: string) => [...text].every((c, i) => at(from + i) === c.charCodeAt(0))
+  if (at(0) === 0xff && at(1) === 0xd8 && at(2) === 0xff) return 'image/jpeg'
+  if (at(0) === 0x89 && ascii(1, 'PNG') && at(4) === 0x0d && at(5) === 0x0a && at(6) === 0x1a && at(7) === 0x0a) return 'image/png'
+  if (ascii(0, 'GIF87a') || ascii(0, 'GIF89a')) return 'image/gif'
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp'
+  return null
+}
+
+/**
  * Upload one file under `keyPrefix` and return its public URL.
  *
  * The object key is `${keyPrefix}/${uuid}.${ext}` — a random name, so the

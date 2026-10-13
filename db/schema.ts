@@ -29,6 +29,8 @@ import {
 } from 'drizzle-orm/pg-core'
 
 // ── enums ────────────────────────────────────────────────────────────────────
+export const onlinePaymentMode = pgEnum('online_payment_mode', ['optional_full', 'venue', 'advance', 'full'])
+export const advanceType = pgEnum('advance_type', ['fixed', 'percent'])
 export const tenantStatus = pgEnum('tenant_status', ['trial', 'active', 'suspended', 'cancelled'])
 export const tenantIndustry = pgEnum('tenant_industry', [
   'gaming_cafe',
@@ -137,6 +139,7 @@ export const memberships = pgTable(
 // ── booking module (migration 0003) ─────────────────────────────────────────
 export const resourceStatus = pgEnum('resource_status', ['available', 'maintenance', 'inactive'])
 export const bookingStatus = pgEnum('booking_status', [
+  'pending_payment',
   'confirmed',
   'checked_in',
   'completed',
@@ -258,6 +261,29 @@ export const resourceSetups = pgTable(
   ],
 )
 
+// M35 #7 (0113): up to 3 photos per setup. The cap is enforced by the database
+// — position CHECK (1..3, in the migration; Drizzle doesn't model CHECKs here)
+// plus the (setup_id, position) unique below. position 1 is the card cover.
+export const resourceSetupImages = pgTable(
+  'resource_setup_images',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    setupId: uuid('setup_id')
+      .notNull()
+      .references(() => resourceSetups.id, { onDelete: 'cascade' }),
+    url: text('url').notNull(),
+    position: smallint('position').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('resource_setup_images_setup_position_key').on(t.setupId, t.position),
+    index('idx_resource_setup_images_tenant').on(t.tenantId),
+  ],
+)
+
 // M27 #1 (0102): a resource type's fixed hourly rate on one literal calendar
 // date, overriding both weekendRate and the weekday base hourlyRate. Not
 // industry-gated, same as weekendRate — a sibling pricing axis on
@@ -340,6 +366,8 @@ export const bookings = pgTable(
     // booking taken without a phone, or one whose customer was later removed.
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     status: bookingStatus('status').notNull().default('confirmed'),
+    /** M36 #3 (0115): when an unpaid pending_payment hold lapses. */
+    paymentHoldExpiresAt: timestamp('payment_hold_expires_at', { withTimezone: true }),
     source: bookingSource('source').notNull().default('staff'),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
     discount: numeric('discount', { precision: 10, scale: 2 }).notNull().default('0'),
@@ -1692,6 +1720,10 @@ export const paymentSettings = pgTable('payment_settings', {
    * AES-256-GCM storage contract; never selected into anything client-facing.
    */
   razorpayWebhookSecretEncrypted: text('razorpay_webhook_secret_encrypted'),
+  /** M36 #1 (migration 0114): what the storefront collects at booking time. */
+  onlinePaymentMode: onlinePaymentMode('online_payment_mode').notNull().default('optional_full'),
+  advanceType: advanceType('advance_type'),
+  advanceValue: numeric('advance_value', { precision: 12, scale: 2 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

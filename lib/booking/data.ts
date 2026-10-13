@@ -15,6 +15,7 @@ import {
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { addDays, zonedTimeToUtc } from './time'
+import { loadSetupPhotos } from './setup-images'
 
 // Re-exported so every existing `@/lib/booking/data` import site is unchanged.
 export { addDays }
@@ -93,8 +94,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
  * the client; ordering here just needs to be stable within a resource.
  */
 export function listResourceSetups(ctx: ActiveContext, branchId: string) {
-  return withUser(ctx.user.id, (tx) =>
-    tx
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
       .select({
         id: resourceSetups.id,
         resourceId: resourceSetups.resourceId,
@@ -107,8 +108,16 @@ export function listResourceSetups(ctx: ActiveContext, branchId: string) {
       .from(resourceSetups)
       .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
       .where(and(eq(resourceSetups.tenantId, ctx.tenant.id), eq(resources.branchId, branchId)))
-      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
-  )
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    // M35 #7/#9: photos (cover first) — one batched query for every setup.
+    // `photos` carries the row ids the settings editor needs to remove/reorder;
+    // `images` stays the plain URL list the other readers use.
+    const photos = await loadSetupPhotos(tx, rows.map((r) => r.id))
+    return rows.map((r) => {
+      const list = photos.get(r.id) ?? []
+      return { ...r, images: list.map((p) => p.url), photos: list }
+    })
+  })
 }
 
 /**
@@ -270,6 +279,8 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
         source: bookings.source,
         total: bookings.total,
         deposit: bookings.deposit,
+        paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
+        depositReviewRequired: bookings.depositReviewRequired,
         cancellationReason: bookings.cancellationReason,
         // M26 #5: cash collected before this booking existed (M26 #1/#4) —
         // '0.00' for every non-gaming_cafe tenant (server-refused at
@@ -326,6 +337,8 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
 
     return rows.map((r) => ({
       ...r,
+      // M36 #3: ISO string so it crosses the client boundary like the other times.
+      paymentHoldExpiresAt: r.paymentHoldExpiresAt?.toISOString() ?? null,
       // M26 #5: the booking's TRUE known total — sum of slot_total across
       // EVERY active slot of this booking, tenant-wide, not just the ones
       // overlapping the viewed day. This is what BookingsView's advance-gap

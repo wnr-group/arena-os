@@ -1,12 +1,14 @@
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
-import { branches, resourceTypes, resources, resourceSetups, holidayRates, workingHours, bookingSlots } from '@/db/schema'
+import { branches, resourceTypes, resources, resourceSetups, holidayRates, workingHours, bookingSlots, resourceTypeAddons } from '@/db/schema'
 import { availableStartTimes, dayWindow, type Interval } from './availability'
 import { weekdayInZone, zonedTimeToUtc } from './time'
 import { resolveDayRate } from './rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { getActiveBookingForResource } from './attribution'
+import { industryHasStudioSetups } from './studio-setups'
+import { loadSetupImages } from './setup-images'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -596,7 +598,14 @@ export async function getPublicAvailableStartsForType(
   })
 }
 
-export type PublicResourceSetup = { id: string; name: string; rate: string; rateUnit: 'hour' | 'day' }
+export type PublicResourceSetup = {
+  id: string
+  name: string
+  rate: string
+  rateUnit: 'hour' | 'day'
+  /** M35 #7: up to 3 photo URLs, cover first (empty = none). */
+  images: string[]
+}
 
 /**
  * M24 #5: a resource's active named setups, for the public booking page's
@@ -610,8 +619,8 @@ export type PublicResourceSetup = { id: string; name: string; rate: string; rate
  * app/(public)/book/[resourceId]/page.tsx.
  */
 export async function getPublicResourceSetups(tenantId: string, resourceId: string): Promise<PublicResourceSetup[]> {
-  const rows = await withPublicTenant(tenantId, (tx) =>
-    tx
+  return withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
       .select({
         id: resourceSetups.id,
         name: resourceSetups.name,
@@ -633,9 +642,14 @@ export async function getPublicResourceSetups(tenantId: string, resourceId: stri
           eq(resources.status, 'available'),
         ),
       )
-      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name)),
-  )
-  return rows.map((r) => ({ ...r, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) }))
+      .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    const images = await loadSetupImages(tx, rows.map((r) => r.id))
+    return rows.map((r) => ({
+      ...r,
+      rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+      images: images.get(r.id) ?? [],
+    }))
+  })
 }
 
 export type PublicTypeUnit = { id: string; name: string; setups: PublicResourceSetup[] }
@@ -684,16 +698,119 @@ export async function getPublicTypeUnitsWithSetups(
         ),
       )
       .orderBy(asc(resourceSetups.sortOrder), asc(resourceSetups.name))
+    const images = await loadSetupImages(tx, rows.map((r) => r.id))
     return units.map((u) => ({
       ...u,
       setups: rows
         .filter((r) => r.resourceId === u.id)
-        .map((r) => ({ id: r.id, name: r.name, rate: r.rate, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) })),
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          rate: r.rate,
+          rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+          images: images.get(r.id) ?? [],
+        })),
     }))
   })
 }
 
-export type PublicDayRangeWindow = { startsAt: string; endsAt: string; conflict: boolean } | { error: string }
+export type PublicStorefrontSetup = {
+  setupId: string
+  setupName: string
+  rate: string
+  rateUnit: 'hour' | 'day'
+  /** The physical set this setup reserves (booking one blocks the whole set). */
+  resourceId: string
+  resourceName: string
+  resourceTypeId: string
+  resourceTypeName: string
+  imageUrl: string | null
+  /** M35 #7: the setup's own photos, cover first (empty = none; imageUrl is the set/type fallback). */
+  images: string[]
+  capacity: number | null
+  description: string | null
+}
+
+/**
+ * M35 #1: every active setup across all available sets of every active
+ * resource type at the branch, as one flat list for the storefront first page
+ * (a studio with 4 setups shows 4 cards, not type -> set -> setup drilling).
+ * A set with no active setups yields no rows here — it stays reachable via
+ * the existing /book-type flow.
+ *
+ * `industry` is a parameter because the tenants table has no public RLS
+ * policy (see 0022) — the caller already resolved the tenant by slug. Non-
+ * studio industries get [] so their flows are untouched.
+ *
+ * Same visibility rules as getPublicResourceSetups: setup is_active (also
+ * enforced by resource_setups_public_select, 0100 — no new policy needed),
+ * resources.status = 'available', tenant + branch scoped. Single joined
+ * query; image/description fall back set -> type since setups have neither.
+ */
+export async function getPublicStorefrontSetups(
+  tenantId: string,
+  branchId: string,
+  industry: string,
+): Promise<PublicStorefrontSetup[]> {
+  if (!industryHasStudioSetups(industry)) return []
+  const { rows, images } = await withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        setupId: resourceSetups.id,
+        setupName: resourceSetups.name,
+        rate: resourceSetups.rate,
+        rateUnit: resourceSetups.rateUnit,
+        resourceId: resources.id,
+        resourceName: resources.name,
+        resourceTypeId: resourceTypes.id,
+        resourceTypeName: resourceTypes.name,
+        resourceImageUrl: resources.imageUrl,
+        typeImageUrl: resourceTypes.imageUrl,
+        resourceDescription: resources.description,
+        typeDescription: resourceTypes.description,
+        capacity: resourceTypes.capacity,
+      })
+      .from(resourceSetups)
+      .innerJoin(resources, eq(resources.id, resourceSetups.resourceId))
+      .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
+      .where(
+        and(
+          eq(resourceSetups.tenantId, tenantId),
+          eq(resourceSetups.isActive, true),
+          eq(resources.tenantId, tenantId),
+          eq(resources.branchId, branchId),
+          eq(resources.status, 'available'),
+          eq(resourceTypes.tenantId, tenantId),
+          eq(resourceTypes.isActive, true),
+        ),
+      )
+      .orderBy(
+        asc(resourceTypes.name),
+        asc(resources.sortOrder),
+        asc(resources.name),
+        asc(resourceSetups.sortOrder),
+        asc(resourceSetups.name),
+      )
+    // M35 #7: photos (cover first) for every setup in one extra query.
+    return { rows, images: await loadSetupImages(tx, rows.map((r) => r.setupId)) }
+  })
+  return rows.map((r) => ({
+    images: images.get(r.setupId) ?? [],
+    setupId: r.setupId,
+    setupName: r.setupName,
+    rate: r.rate,
+    rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+    resourceId: r.resourceId,
+    resourceName: r.resourceName,
+    resourceTypeId: r.resourceTypeId,
+    resourceTypeName: r.resourceTypeName,
+    imageUrl: r.resourceImageUrl ?? r.typeImageUrl,
+    capacity: r.capacity,
+    description: r.resourceDescription ?? r.typeDescription,
+  }))
+}
+
+export type PublicDayRangeWindow ={ startsAt: string; endsAt: string; conflict: boolean } | { error: string }
 
 /**
  * M24 #5: the public mirror of the staff getDayRangeWindow
@@ -758,5 +875,100 @@ export async function getPublicDayRangeWindow(
       .limit(1)
 
     return { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(), conflict: conflictRows.length > 0 }
+  })
+}
+
+export type PublicTypeAddon = {
+  id: string
+  resourceTypeId: string
+  name: string
+  rateUnit: 'hour' | 'day'
+  rate: string
+}
+
+/**
+ * M35 #2: the "also available" add-on catalog for the storefront first page —
+ * active add-ons of the given types at the branch. No stock: it is
+ * time-dependent, so it is only ever shown (as a count) once a window is
+ * chosen, via getPublicAddonAvailability.
+ */
+export async function getPublicTypeAddons(
+  tenantId: string,
+  branchId: string,
+  resourceTypeIds: string[],
+): Promise<PublicTypeAddon[]> {
+  if (resourceTypeIds.length === 0) return []
+  const rows = await withPublicTenant(tenantId, (tx) =>
+    tx
+      .select({
+        id: resourceTypeAddons.id,
+        resourceTypeId: resourceTypeAddons.resourceTypeId,
+        name: resourceTypeAddons.name,
+        rateUnit: resourceTypeAddons.rateUnit,
+        rate: resourceTypeAddons.rate,
+      })
+      .from(resourceTypeAddons)
+      .where(
+        and(
+          eq(resourceTypeAddons.tenantId, tenantId),
+          eq(resourceTypeAddons.branchId, branchId),
+          eq(resourceTypeAddons.isActive, true),
+          inArray(resourceTypeAddons.resourceTypeId, resourceTypeIds),
+        ),
+      )
+      .orderBy(asc(resourceTypeAddons.sortOrder), asc(resourceTypeAddons.name)),
+  )
+  return rows.map((r) => ({ ...r, rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const) }))
+}
+
+/** Most units of one add-on the picker will ever offer; total stock stays private. */
+export const PUBLIC_ADDON_DISPLAY_MAX = 10
+
+export type PublicAddonAvailability = PublicTypeAddon & { available: number }
+
+/**
+ * Add-ons for the given types with how many units are free over
+ * [startsAt, endsAt), capped at PUBLIC_ADDON_DISPLAY_MAX; 0 = unavailable.
+ * Mirrors listAvailableAddons (lib/booking/addons.ts) but counts reservations
+ * through public_addon_reserved_units (0110), because booking_addons is not
+ * publicly readable. Advisory only — the booking itself re-checks under the
+ * catalog lock.
+ */
+export async function getPublicAddonAvailability(
+  tenantId: string,
+  branchId: string,
+  resourceTypeIds: string[],
+  startsAt: Date,
+  endsAt: Date,
+): Promise<PublicAddonAvailability[]> {
+  if (resourceTypeIds.length === 0) return []
+  return withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select()
+      .from(resourceTypeAddons)
+      .where(
+        and(
+          eq(resourceTypeAddons.tenantId, tenantId),
+          eq(resourceTypeAddons.branchId, branchId),
+          eq(resourceTypeAddons.isActive, true),
+          inArray(resourceTypeAddons.resourceTypeId, resourceTypeIds),
+        ),
+      )
+      .orderBy(asc(resourceTypeAddons.sortOrder), asc(resourceTypeAddons.name))
+    if (rows.length === 0) return []
+    const reserved = await tx.execute<{ addon_id: string; reserved: number }>(
+      sql`select addon_id, reserved from public.public_addon_reserved_units(
+        ${sql`array[${sql.join(rows.map((r) => sql`${r.id}`), sql`, `)}]::uuid[]`},
+        ${startsAt.toISOString()}::timestamptz, ${endsAt.toISOString()}::timestamptz)`,
+    )
+    const byAddon = new Map(reserved.rows.map((r) => [r.addon_id, Number(r.reserved)]))
+    return rows.map((r) => ({
+      id: r.id,
+      resourceTypeId: r.resourceTypeId,
+      name: r.name,
+      rateUnit: r.rateUnit === 'day' ? ('day' as const) : ('hour' as const),
+      rate: r.rate,
+      available: Math.min(PUBLIC_ADDON_DISPLAY_MAX, Math.max(0, r.stockQuantity - (byAddon.get(r.id) ?? 0))),
+    }))
   })
 }
