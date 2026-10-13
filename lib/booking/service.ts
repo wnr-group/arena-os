@@ -772,18 +772,22 @@ export async function createBookingCore(
   if (input.backdated && input.sessionCharge !== undefined) {
     const target = round2(input.sessionCharge)
     if (!Number.isFinite(target) || target < 0) throw new BookingError('Enter a valid session charge.')
-    let left = target
+    // Whole paise, rounded DOWN for every slot but the last, so the remainder the
+    // last slot takes can never be negative.
+    const targetPaise = Math.round(target * 100)
+    const computedPaise = slotRows.reduce((n, row) => n + Math.round(Number(row.slotTotal) * 100), 0)
+    let leftPaise = targetPaise
     slotRows.forEach((row, i) => {
       const isLast = i === slotRows.length - 1
-      const share = isLast
-        ? left
-        : computedSubtotal > 0
-          ? round2((target * Number(row.slotTotal)) / computedSubtotal)
+      const sharePaise = isLast
+        ? leftPaise
+        : computedPaise > 0
+          ? Math.floor((targetPaise * Math.round(Number(row.slotTotal) * 100)) / computedPaise)
           : i === 0
-            ? target
+            ? targetPaise
             : 0
-      row.slotTotal = share.toFixed(2)
-      left = round2(left - share)
+      row.slotTotal = (sharePaise / 100).toFixed(2)
+      leftPaise -= sharePaise
     })
     subtotal = target
   }

@@ -115,8 +115,7 @@ export async function recordBackdatedBookingCore(
 
   // Idempotent on the client's key: a double-click or a retry after a commit
   // whose response was lost must return the booking already recorded, not
-  // collide with its own slot (23P01) and invite a duplicate on another
-  // resource. The advisory lock makes a concurrent second call wait for the
+  // create a duplicate booking and invoice. The advisory lock makes a concurrent second call wait for the
   // first to commit, then find it here.
   const key = input.idempotencyKey
   if (key) {

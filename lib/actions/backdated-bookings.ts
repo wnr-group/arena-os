@@ -42,12 +42,16 @@ const recordBackdatedInput = z.object({
     )
     .min(1, 'Add at least one resource slot'),
   headCount: z.coerce.number().int().min(1).max(1000).optional(),
-  sessionCharge: z.coerce
-    .number({ invalid_type_error: 'Enter a valid session charge.' })
-    .finite('Enter a valid session charge.')
-    .min(0, 'Session charge must be zero or more.')
-    .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.')
-    .optional(),
+  // null / '' mean "no override", never a free session (z.coerce would make them 0).
+  sessionCharge: z.preprocess(
+    (v) => (v === null || (typeof v === 'string' && v.trim() === '') ? undefined : v),
+    z.coerce
+      .number({ invalid_type_error: 'Enter a valid session charge.' })
+      .finite('Enter a valid session charge.')
+      .min(0, 'Session charge must be zero or more.')
+      .max(MAX_PAYMENT_AMOUNT, 'That amount is too large.')
+      .optional(),
+  ),
   amountCollected: z.coerce
     .number({ invalid_type_error: 'Enter a valid amount.' })
     .finite('Enter a valid amount.')

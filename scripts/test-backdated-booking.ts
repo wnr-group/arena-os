@@ -121,6 +121,7 @@ async function main() {
     slots: [{ resourceId, startsAt: start.toISOString(), endsAt: end.toISOString() }],
     amountCollected: 200,
     paymentMethod: 'cash' as const,
+    sessionCharge: undefined as number | undefined,
     ...over,
   })
   const record = (input: ReturnType<typeof base>) =>
@@ -303,6 +304,7 @@ async function main() {
   // ══ 6b. the manager may discount or increase the session charge ══════════
   console.log('\n── session charge override ──')
   {
+    const ps5C2 = await makeResource(A, 'PS5 Backdated4', '100.00')
     const d = addDays(todayInZone(TZ, now), -3)
     const input = base(ps5.resourceId, localAt(d, '14:00'), localAt(d, '16:00'))
     const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
@@ -341,6 +343,20 @@ async function main() {
 
     const aud = (await owner.query(`select after from audit_log where entity_id=$1 and action='booking.backdated_entry'`, [high.bookingId])).rows[0]?.after
     check('audit records the calculated and the billed charge', aud?.computedSessionCharge === calc && aud?.sessionCharge === calc + 250, aud)
+
+    // Multi-slot split: shares are whole paise, never negative, and sum exactly.
+    const multi = await record({
+      ...input,
+      slots: [
+        { resourceId: ps5.resourceId, startsAt: input.slots[0].startsAt, endsAt: input.slots[0].endsAt },
+        { resourceId: ps5B.resourceId, startsAt: input.slots[0].startsAt, endsAt: input.slots[0].endsAt },
+        { resourceId: ps5C2.resourceId, startsAt: input.slots[0].startsAt, endsAt: input.slots[0].endsAt },
+      ],
+      sessionCharge: 0.05,
+      amountCollected: 0.05,
+    })
+    const shares = (await owner.query(`select slot_total from booking_slots where booking_id=$1`, [multi.bookingId])).rows.map((r) => Number(r.slot_total))
+    check('tiny charge over 3 slots: no negative share, sums exactly', shares.every((x) => x >= 0) && Math.round(shares.reduce((a, b) => a + b, 0) * 100) === 5, shares)
 
     const plain = await record({ ...input, amountCollected: pv.total })
     const plainInv = (await owner.query(`select subtotal from invoices where id=$1`, [plain.invoiceId])).rows[0]
@@ -505,6 +521,11 @@ async function main() {
     const fut = await recordBackdatedBooking(input(new Date(now.getTime() - 3600_000), new Date(now.getTime() + 3600_000)))
     check('manager: a session that ends in the future is refused', /already ended/.test(fut.error ?? ''), fut)
     check('...refusals wrote nothing', (await bookingCount()) === 0)
+
+    const nullCharge = await recordBackdatedBooking({ ...good(), sessionCharge: null as unknown as undefined })
+    const emptyCharge = await recordBackdatedBooking({ ...good(), sessionCharge: '' as unknown as undefined })
+    const nullRows = (await owner.query(`select i.subtotal from invoices i where i.id = any($1)`, [[nullCharge.invoiceId, emptyCharge.invoiceId]])).rows
+    check('null / empty sessionCharge means no override, not a free session', nullRows.length === 2 && nullRows.every((r) => Number(r.subtotal) > 0), [nullCharge, emptyCharge, nullRows])
 
     const ok = await recordBackdatedBooking(good())
     check('manager: a valid backdated booking succeeds and lands completed', !ok.error && ok.completed === true, ok)
