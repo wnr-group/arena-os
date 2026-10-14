@@ -4,7 +4,7 @@
  */
 export default function BookingsLoading() {
   return (
-    <div className="px-6 py-6" aria-busy="true" aria-label="Loading bookings">
+    <div className="px-6 py-6" aria-busy="true" aria-label="Loading bookings" role="status">
       <div className="h-8 w-40 animate-pulse rounded-md bg-muted" />
       <div className="mt-2 h-4 w-64 animate-pulse rounded bg-muted" />
 

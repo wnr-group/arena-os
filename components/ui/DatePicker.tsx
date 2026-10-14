@@ -253,6 +253,7 @@ function LongPicker({
       {open && (
         <CalendarPopover
           id={`${uid}-cal`}
+          triggerRef={triggerRef}
           first={first}
           last={last}
           value={value}
@@ -275,6 +276,7 @@ function LongPicker({
 
 function CalendarPopover({
   id,
+  triggerRef,
   first,
   last,
   value,
@@ -284,6 +286,8 @@ function CalendarPopover({
   onClose,
 }: {
   id: string
+  /** The button that opened the popover; its clicks must not count as "outside". */
+  triggerRef: React.RefObject<HTMLButtonElement | null>
   first: string
   last: string
   value: string
@@ -323,11 +327,12 @@ function CalendarPopover({
   // Click outside closes.
   useEffect(() => {
     function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      const target = e.target as Node
+      if (ref.current && !ref.current.contains(target) && !triggerRef.current?.contains(target)) onClose()
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [onClose])
+  }, [onClose, triggerRef])
 
   function focusDate(d: string) {
     if (!inWindow(d)) return
