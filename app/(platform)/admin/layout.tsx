@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { ShieldCheck } from 'lucide-react'
+import { ArenaLogo } from '@/components/ui/ArenaLogo'
+import { ArenaWordmark } from '@/components/marketing/ui/ArenaWordmark'
 import { getCurrentUser } from '@/lib/auth/session'
 import { signOut } from '@/lib/actions/auth'
 
@@ -30,9 +31,10 @@ export default async function PlatformLayout({ children }: { children: React.Rea
     <div className="min-h-screen">
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <Link href="/admin" className="flex items-center gap-2 font-semibold">
-            <ShieldCheck size={18} className="text-primary" />
-            Arena OS <span className="text-muted-foreground">· Platform Admin</span>
+          <Link href="/admin" className="group flex min-w-0 items-center gap-2.5">
+            <ArenaLogo className="h-9 w-auto shrink-0" />
+            <ArenaWordmark />
+            <span className="text-sm font-semibold text-muted-foreground">· Platform Admin</span>
           </Link>
           <div className="flex items-center gap-4 text-sm">
             <Link href="/admin" className="text-muted-foreground transition-colors hover:text-foreground">
