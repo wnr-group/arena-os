@@ -43,32 +43,64 @@ function subtractMonths(dateStr: string, months: number): string {
   return `${ny}-${pad(nm)}-${pad(Math.min(d, daysInMonth(ny, nm)))}`
 }
 
-export function resolveRange(preset: RangePreset, todayStr: string, tz: string): ResolvedRange {
-  let fromDate: string
-  let toDate: string
+/**
+ * The presets the report date filters offer: the bookings set plus "Last 30
+ * days" (the reports' implicit default). `last30` is deliberately NOT in
+ * RANGE_PRESETS, so the bookings page's ?range= contract and chips are unchanged.
+ */
+export const REPORT_PRESETS = ['yesterday', 'last7', 'last30', 'month', 'last3m', 'lastyear'] as const
+export type ReportPreset = (typeof REPORT_PRESETS)[number]
+
+export const RANGE_LABELS: Record<ReportPreset, string> = {
+  yesterday: 'Yesterday',
+  last7: 'Last 7 days',
+  last30: 'Last 30 days',
+  month: 'This month',
+  last3m: 'Last 3 months',
+  lastyear: 'Last year',
+}
+
+/**
+ * Inclusive local-date bounds of a preset for a given local "today". Needs no
+ * timezone: callers pass the tenant's today (todayInZone), which is where the
+ * zone enters. Shared by the bookings resolver below and the report filters, so
+ * there is exactly one definition of every preset.
+ */
+export function resolvePresetDates(preset: ReportPreset, todayStr: string): { fromDate: string; toDate: string } {
   switch (preset) {
-    case 'yesterday':
-      fromDate = toDate = addDays(todayStr, -1)
-      break
+    case 'yesterday': {
+      const d = addDays(todayStr, -1)
+      return { fromDate: d, toDate: d }
+    }
     case 'last7':
-      fromDate = addDays(todayStr, -6)
-      toDate = todayStr
-      break
+      return { fromDate: addDays(todayStr, -6), toDate: todayStr }
+    case 'last30':
+      // Counts today itself, like resolveDateRange's default: 30 rows, not 31.
+      return { fromDate: addDays(todayStr, -29), toDate: todayStr }
     case 'month':
-      fromDate = `${todayStr.slice(0, 7)}-01`
-      toDate = todayStr
-      break
+      return { fromDate: `${todayStr.slice(0, 7)}-01`, toDate: todayStr }
     case 'last3m':
-      fromDate = subtractMonths(todayStr, 3)
-      toDate = todayStr
-      break
+      return { fromDate: subtractMonths(todayStr, 3), toDate: todayStr }
     case 'lastyear': {
       const y = Number(todayStr.slice(0, 4)) - 1
-      fromDate = `${y}-01-01`
-      toDate = `${y}-12-31`
-      break
+      return { fromDate: `${y}-01-01`, toDate: `${y}-12-31` }
     }
   }
+}
+
+/**
+ * Presets whose range is exactly [from, to] for this local "today" — what the
+ * report filters highlight. Usually zero (a custom range) or one.
+ */
+export function matchingReportPresets(from: string, to: string, todayStr: string): ReportPreset[] {
+  return REPORT_PRESETS.filter((p) => {
+    const r = resolvePresetDates(p, todayStr)
+    return r.fromDate === from && r.toDate === to
+  })
+}
+
+export function resolveRange(preset: RangePreset, todayStr: string, tz: string): ResolvedRange {
+  const { fromDate, toDate } = resolvePresetDates(preset, todayStr)
   return {
     preset,
     fromDate,

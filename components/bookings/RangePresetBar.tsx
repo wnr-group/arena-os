@@ -1,13 +1,5 @@
 import Link from 'next/link'
-import { RANGE_PRESETS, type RangePreset, type ResolvedRange } from '@/lib/booking/ranges'
-
-export const RANGE_LABELS: Record<RangePreset, string> = {
-  yesterday: 'Yesterday',
-  last7: 'Last 7 days',
-  month: 'This month',
-  last3m: 'Last 3 months',
-  lastyear: 'Last year',
-}
+import { RANGE_LABELS, RANGE_PRESETS, type RangePreset, type ResolvedRange } from '@/lib/booking/ranges'
 
 function shortDate(dateStr: string, withYear: boolean): string {
   const [y, m, d] = dateStr.split('-').map(Number)
