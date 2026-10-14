@@ -6,6 +6,7 @@ import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listResources, getWorkingHours, listDayBookings, addDays } from '@/lib/booking/data'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
+import { parseRangePreset, resolveRange } from '@/lib/booking/ranges'
 import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
 import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
 import { listDepositStates } from '@/lib/payments/data'
@@ -13,16 +14,25 @@ import { listBookingPaymentStates } from '@/lib/billing/data'
 import { listHappyHours } from '@/lib/happy-hours/data'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
+import { BookingsRangeView } from '@/components/bookings/BookingsRangeView'
+import { rangeSummary } from '@/components/bookings/RangePresetBar'
 
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number)
   return h * 60 + m
 }
 
+function isRealDate(raw: unknown): raw is string {
+  if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false
+  const [y, m, d] = raw.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, d))
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d
+}
+
 export default async function BookingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string }>
+  searchParams: Promise<{ date?: string; range?: string }>
 }) {
   const ctx = await getActiveContext()
   if (!ctx) return null
@@ -30,7 +40,13 @@ export default async function BookingsPage({
   await sweepTenantHolds(ctx.tenant.id)
   const tz = ctx.tenant.timezone
   const sp = await searchParams
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? '') ? sp.date! : todayInZone(tz)
+  const today = todayInZone(tz)
+  // Precedence: valid ?date= (single-day timeline) -> valid ?range= -> today.
+  const validDate = isRealDate(sp.date) ? sp.date : null
+  const preset = validDate ? null : parseRangePreset(sp.range)
+  const range = preset ? resolveRange(preset, today, tz) : null
+  // Yesterday is one day: same timeline as ?date=<yesterday>, canonical ?range=yesterday.
+  const date = validDate ?? (range?.isSingleDay ? range.fromDate : today)
 
   const [branch] = await withUser(ctx.user.id, (tx) =>
     tx
@@ -40,6 +56,12 @@ export default async function BookingsPage({
       .limit(1),
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
+
+  // Multi-day presets skip the single-day loaders below (orders, deposits,
+  // payment states, menu); the list view (#4) loads what it needs itself.
+  if (range && !range.isSingleDay) {
+    return <BookingsRangeView branchName={branch.name} preset={range.preset} summary={rangeSummary(range)} />
+  }
 
   // Void/comp (M17 #6) and modifiers (M17 #8) are restaurant-only — every
   // other industry gets neither the request button nor a modifier picker on
@@ -166,7 +188,9 @@ export default async function BookingsPage({
       date={date}
       prevDate={addDays(date, -1)}
       nextDate={addDays(date, 1)}
-      today={todayInZone(tz)}
+      today={today}
+      activeRange={range?.preset ?? null}
+      hasExplicitDate={validDate !== null}
       closed={closed}
       openMin={openMin}
       closeMin={closeMin}

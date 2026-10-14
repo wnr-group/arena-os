@@ -34,6 +34,8 @@ import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
 import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
 import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
+import { RangePresetBar } from './RangePresetBar'
+import type { RangePreset } from '@/lib/booking/ranges'
 import { lateEntryLabel } from '@/lib/booking/late-entry'
 import { zonedTimeToUtc } from '@/lib/booking/time'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
@@ -203,6 +205,8 @@ export function BookingsView({
   canToggle86,
   showFoodOrdering,
   canRecordBackdated = false,
+  activeRange = null,
+  hasExplicitDate = false,
   canEditAddons = false,
 }: {
   branchId: string
@@ -261,6 +265,10 @@ export function BookingsView({
   showFoodOrdering: boolean
   /** Owner/manager only (M28) — shows the "Record past booking" entry point. The action itself re-checks the role. */
   canRecordBackdated?: boolean
+  /** Preset that produced this single-day view (yesterday), if any. */
+  activeRange?: RangePreset | null
+  /** True when the URL carried a valid ?date= (no chip is highlighted). */
+  hasExplicitDate?: boolean
   /** M33 — shows the "Add-ons" correction button. setBookingSlotAddons re-checks the role server-side. */
   canEditAddons?: boolean
 }) {
@@ -556,6 +564,8 @@ export function BookingsView({
           )}
         </div>
       </div>
+
+      <RangePresetBar active={activeRange} todayActive={!activeRange && !hasExplicitDate && date === today} />
 
       {/* view tabs */}
       <div className="mt-5 flex gap-5 border-b border-border">
