@@ -5,14 +5,10 @@ import { isManager, ROLE_LABELS, type MemberRole } from '@/lib/auth/roles'
 import { getEmployeeAnalytics } from '@/lib/reports/employees'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
-import { addDays } from '@/lib/booking/data'
+import { resolveDateRange } from '@/lib/reports/date-range'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
 
 type Search = { from?: string; to?: string }
-
-function isValidDate(s: string | undefined): s is string {
-  return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s)
-}
 
 export default async function EmployeeReportPage({ searchParams }: { searchParams: Promise<Search> }) {
   const ctx = await getActiveContext()
@@ -28,9 +24,7 @@ export default async function EmployeeReportPage({ searchParams }: { searchParam
   const tz = ctx.tenant.timezone
   const sp = await searchParams
   const today = todayInZone(tz)
-  const to = isValidDate(sp.to) ? sp.to : today
-  let from = isValidDate(sp.from) ? sp.from : addDays(to, -29)
-  if (from > to) from = to
+  const { start: from, end: to } = resolveDateRange({ start: sp.from, end: sp.to }, { timeZone: tz })
 
   const rows = await getEmployeeAnalytics(ctx, from, to)
 
