@@ -16,7 +16,6 @@ import { advanceWindowLabel } from '@/lib/booking/settings'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { daysInRange } from '@/lib/booking/availability'
 import {
-  dateCardParts,
   durationLabel,
   time12,
   SectionLabel,

@@ -275,7 +275,6 @@ async function main() {
     try {
       await withUser(T.userId, async (tx) => {
         const r = await (tx as never as { execute: (q: unknown) => Promise<{ rowCount: number | null }> }).execute(
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
           (await import('drizzle-orm')).sql`update bookings set status='cancelled' where id=${still.rows[0].id}`,
         )
         cancelled = (r.rowCount ?? 0) === 1
