@@ -5,7 +5,9 @@ import { isManager } from '@/lib/auth/roles'
 import { getWorkingHours } from '@/lib/booking/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
+import { getBookingSettings } from '@/lib/booking/settings-server'
 import { WorkingHoursForm } from '@/components/settings/WorkingHoursForm'
+import { BookingWindowForm } from '@/components/settings/BookingWindowForm'
 
 export default async function HoursSettingsPage() {
   const ctx = await getActiveContext()
@@ -21,6 +23,7 @@ export default async function HoursSettingsPage() {
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
+  const bookingSettings = await getBookingSettings(ctx)
   const existing = await getWorkingHours(ctx, branch.id)
   const byDay = new Map(existing.map((h) => [h.dayOfWeek, h]))
 
@@ -43,6 +46,7 @@ export default async function HoursSettingsPage() {
         computed from these ({ctx.tenant.timezone}).
       </p>
       <WorkingHoursForm branchId={branch.id} initialDays={days} />
+      <BookingWindowForm initialDays={bookingSettings.maxAdvanceDays} />
     </div>
   )
 }
