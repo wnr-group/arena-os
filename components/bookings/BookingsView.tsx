@@ -4,7 +4,6 @@ import { useMemo, useState, useTransition, type ComponentType } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
-  Ban,
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
@@ -12,29 +11,27 @@ import {
   Clock,
   Eye,
   History,
-  Loader2,
-  Minus,
   Plus,
   RefreshCw,
   Search,
   ShoppingBag,
-  Trash2,
   UserCheck,
   ReceiptText,
-  X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { DepositButton } from './DepositButton'
-import { CancelBookingDialog } from './CancelBookingDialog'
-import { BookingAddonsDialog } from './BookingAddonsDialog'
 import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/components/orders/TakeOrderDialog'
-import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { STAT_TINT_CLASSES, type StatTint } from '@/lib/ui/statTint'
-import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
-import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
 import { formatMoney, timeInZone, prettyDate } from '@/lib/format'
 import { RangePresetBar } from './RangePresetBar'
+import { BookingDetailPanel, advanceGapOf, type OrderSummary } from './BookingDetailPanel'
+import {
+  PAYMENT_BADGE,
+  PAYMENT_LABELS,
+  SOURCE_BADGE,
+  SOURCE_LABELS,
+  STATUS_BADGE,
+  STATUS_LABELS,
+} from './bookingBadges'
 import type { RangePreset } from '@/lib/booking/ranges'
 import { lateEntryLabel } from '@/lib/booking/late-entry'
 import { zonedTimeToUtc } from '@/lib/booking/time'
@@ -99,49 +96,7 @@ type Slot = {
   /** When the booking row was actually created (ISO) — the "recorded" half of a late entry. */
   bookingCreatedAt: string
 }
-export type OrderItemLine = {
-  itemId: string
-  itemName: string
-  unitPrice: string
-  qty: number
-  specialInstructions: string | null
-  /** Set only when a happy-hour rule discounted this line at order time. */
-  happyHourName: string | null
-  originalUnitPrice: string | null
-  happyHourDiscountType: 'percentage' | 'fixed' | null
-  happyHourDiscountValue: string | null
-  /** M17 #6 — 'active' unless voided/comped (only ever reached via an
-   *  approved request — see pendingVoidMode below). */
-  voidStatus: 'active' | 'voided' | 'comped'
-  voidReason: string | null
-  /** Set while a void/comp request on this line awaits manager approval. */
-  pendingVoidMode: 'void' | 'comp' | null
-  /** Chosen modifier option names (M17 #8) — e.g. ["Large", "Extra cheese"]. */
-  modifiers: string[]
-}
-export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
-
-/**
- * Payment badges. "Unbilled" is the absence of an invoice rather than a state
- * of one, so it is styled quietly — it is the normal condition of a booking
- * that has not reached the till yet, not something to chase.
- */
-const PAYMENT_BADGE: Record<string, string> = {
-  paid: 'bg-emerald-600 text-white',
-  partially_paid: 'bg-amber-500 text-white',
-  issued: 'bg-rose-600 text-white',
-  partially_refunded: 'bg-orange-500 text-white',
-  refunded: 'bg-zinc-600 text-white',
-  unbilled: 'bg-muted text-muted-foreground',
-}
-const PAYMENT_LABELS: Record<string, string> = {
-  paid: 'Paid',
-  partially_paid: 'Part paid',
-  issued: 'Unpaid',
-  partially_refunded: 'Part refunded',
-  refunded: 'Refunded',
-  unbilled: 'Unbilled',
-}
+export type { OrderItemLine, OrderSummary } from './BookingDetailPanel'
 
 const STATUS_STYLE: Record<string, string> = {
   confirmed: 'bg-blue-500/85 text-white',
@@ -151,32 +106,6 @@ const STATUS_STYLE: Record<string, string> = {
 /** Checked in, but a bill has been raised and is still owed — no longer "in
 progress", not yet "completed" (that only happens once it's fully paid). */
 const BILLED_STYLE = 'bg-amber-500/85 text-white'
-const STATUS_BADGE: Record<string, string> = {
-  pending_payment: 'bg-amber-500/10 text-amber-600',
-  confirmed: 'bg-blue-500/10 text-blue-600',
-  checked_in: 'bg-emerald-500/10 text-emerald-600',
-  completed: 'bg-muted text-muted-foreground',
-  cancelled: 'bg-destructive/10 text-destructive',
-  no_show: 'bg-amber-500/10 text-amber-600',
-}
-const STATUS_LABELS: Record<string, string> = {
-  pending_payment: 'Awaiting payment',
-  confirmed: 'Confirmed',
-  checked_in: 'Checked in',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-  no_show: 'No-show',
-}
-const SOURCE_BADGE: Record<string, string> = {
-  online: 'bg-accent text-primary',
-  walk_in: 'bg-muted text-muted-foreground',
-  staff: 'bg-muted text-muted-foreground',
-}
-const SOURCE_LABELS: Record<string, string> = {
-  online: 'Online',
-  walk_in: 'Walk-in',
-  staff: 'Staff',
-}
 type View = 'timeline' | 'bookings'
 
 export function BookingsView({
@@ -275,51 +204,10 @@ export function BookingsView({
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
   const [selected, setSelected] = useState<Slot | null>(null)
-  const [cancelTarget, setCancelTarget] = useState<Slot | null>(null)
-  // M33: the unbilled-booking add-ons correction dialog.
-  const [addonsTarget, setAddonsTarget] = useState<Slot | null>(null)
   const [orderDialog, setOrderDialog] = useState<{ bookingId?: string; bookingLabel?: string } | null>(null)
-  const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | string>('all')
-  const [pending, start] = useTransition()
-  const [actingAction, setActingAction] = useState<string | null>(null)
-  // Separate from `pending` above (which tracks status-change/cancel actions)
-  // so refreshing the list never shows a spinner on an unrelated row button.
   const [refreshing, startRefresh] = useTransition()
-  // M25 #3: separate again from both of the above — editing/removing an
-  // order line must not disable (or spinner) the booking's own action bar,
-  // and must NOT close the drawer the way act() does on success.
-  const [lineActionId, setLineActionId] = useState<string | null>(null)
-  const [linePending, startLine] = useTransition()
-  const confirm = useConfirm()
-
-  function editQty(itemId: string, newQty: number) {
-    setLineActionId(itemId)
-    startLine(async () => {
-      const r = await editOrderItemQuantity({ orderItemId: itemId, newQty })
-      setLineActionId(null)
-      if (r.error) toast.error(r.error)
-      else router.refresh()
-    })
-  }
-
-  async function removeLine(itemId: string, itemName: string) {
-    await confirm({
-      title: `Remove ${itemName}?`,
-      description: 'This line was never served or billed — it will be removed outright, not voided.',
-      confirmText: 'Remove',
-      onConfirm: async () => {
-        setLineActionId(itemId)
-        startLine(async () => {
-          const r = await removeOrderItem(itemId)
-          setLineActionId(null)
-          if (r.error) toast.error(r.error)
-          else router.refresh()
-        })
-      },
-    })
-  }
 
   // One row per booking (a booking can span multiple resource slots).
   const bookingsList = useMemo(() => {
@@ -384,17 +272,10 @@ export function BookingsView({
   // invoice (paymentStates absent) — see its one call site below, which
   // defers entirely to the real ledger-driven badge otherwise.
   const advanceGapByBooking = useMemo(() => {
-    const knownTotal = new Map<string, number>()
-    const advancePaid = new Map<string, number>()
-    for (const s of slots) {
-      knownTotal.set(s.bookingId, Number(s.bookingActiveSlotTotal))
-      advancePaid.set(s.bookingId, Number(s.advancePaid))
-    }
     const gaps: Record<string, number> = {}
-    for (const [bookingId, advance] of advancePaid) {
-      if (advance <= 0) continue
-      const gap = (knownTotal.get(bookingId) ?? 0) - advance
-      if (gap > 0.004) gaps[bookingId] = gap
+    for (const s of slots) {
+      const gap = advanceGapOf(s)
+      if (gap !== undefined) gaps[s.bookingId] = gap
     }
     return gaps
   }, [slots])
@@ -459,19 +340,6 @@ export function BookingsView({
   const lastHour = Math.ceil(closeMin / 60)
   const hourTicks: number[] = []
   for (let h = firstHour; h <= lastHour; h++) hourTicks.push(h)
-
-  function act(action: string, fn: () => Promise<{ error?: string }>) {
-    setActingAction(action)
-    start(async () => {
-      const r = await fn()
-      if (r.error) toast.error(r.error)
-      else {
-        setSelected(null)
-        router.refresh()
-      }
-      setActingAction(null)
-    })
-  }
 
   /**
    * The full-page booking wizard (M21 #3) replaces what used to be an
@@ -898,363 +766,23 @@ export function BookingsView({
         </div>
       )}
 
-      {/* booking detail */}
-      {selected && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSelected(null)}>
-          <div
-            className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-lg border bg-card p-5 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold">{selected.bookingNumber}</h2>
-              <button onClick={() => setSelected(null)} aria-label="Close" className="text-muted-foreground hover:text-foreground">
-                <X size={18} />
-              </button>
-            </div>
-            <dl className="mt-3 space-y-1.5 text-sm">
-              <Row k="Customer" v={selected.customerName || 'Walk-in'} />
-              {selected.customerPhone && <Row k="Phone" v={selected.customerPhone} />}
-              <Row k="Source" v={SOURCE_LABELS[selected.source] ?? selected.source} />
-              {selected.backdated && (
-                <div>
-                  <span className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white">
-                    Entered late
-                  </span>
-                  <p className="mt-1 text-muted-foreground">
-                    {lateEntryLabel(selected.bookingCreatedAt, selected.startsAt, timeZone)}
-                  </p>
-                </div>
-              )}
-              <Row
-                k="Time"
-                v={`${timeInZone(selected.startsAt, timeZone)}–${selected.endsAt ? timeInZone(selected.endsAt, timeZone) : 'Ongoing'}`}
-              />
-              <Row k="Status" v={selected.status.replace('_', ' ')} />
-              <Row
-                k="Total"
-                v={formatMoney(paymentStates[selected.bookingId]?.total ?? Math.max(Number(selected.total), Number(selected.bookingActiveSlotTotal)), currency)}
-              />
-              {/* M36 #6: the ONLINE advance (Razorpay) — labelled apart from the cash
-                  "Collected upfront" below so the two are never confused. */}
-              {Number(selected.deposit) > 0 &&
-                (depositStates[selected.bookingId] === 'paid' ? (
-                  <>
-                    <Row k="Online advance paid" v={formatMoney(selected.deposit, currency)} />
-                    {/* Billed: the invoice's own balance (tax included). Not billed yet: the
-                        pre-tax booking total minus the advance — an estimate, labelled so. */}
-                    {paymentStates[selected.bookingId] ? (
-                      <Row k="Balance at the venue" v={formatMoney(paymentStates[selected.bookingId].balance, currency)} />
-                    ) : (
-                      <Row
-                        k="Balance at the venue (estimate, before tax)"
-                        v={formatMoney(Math.max(Number(selected.total) - Number(selected.deposit), 0), currency)}
-                      />
-                    )}
-                  </>
-                ) : (
-                  <Row
-                    k={selected.status === 'pending_payment' ? 'Online advance (awaiting payment)' : 'Online advance (unpaid)'}
-                    v={formatMoney(selected.deposit, currency)}
-                  />
-                ))}
-              {/* M26 #5: cash collected upfront (M26 #1/#4) — 0 for every
-                  non-gaming_cafe tenant, so this row is already a no-op there. */}
-              {Number(selected.advancePaid) > 0 && (
-                <Row k="Collected upfront (cash)" v={formatMoney(selected.advancePaid, currency)} />
-              )}
-              {/* Billed figures come off the invoice, not from the booking:
-                  the bill is what was actually charged, discounts and all. */}
-              <Row
-                k="Payment"
-                v={
-                  PAYMENT_LABELS[
-                    paymentStates[selected.bookingId]?.status ??
-                      (advanceGapByBooking[selected.bookingId] ? 'partially_paid' : 'unbilled')
-                  ]
-                }
-              />
-              {paymentStates[selected.bookingId] ? (
-                <>
-                  <Row
-                    k="Billed"
-                    v={formatMoney(paymentStates[selected.bookingId].total, currency)}
-                  />
-                  <Row
-                    k="Paid"
-                    v={formatMoney(paymentStates[selected.bookingId].paid, currency)}
-                  />
-                  {paymentStates[selected.bookingId].refunded > 0 && (
-                    <Row
-                      k="Refunded"
-                      v={formatMoney(paymentStates[selected.bookingId].refunded, currency)}
-                    />
-                  )}
-                  {paymentStates[selected.bookingId].balance > 0 && (
-                    <Row
-                      k="Balance due"
-                      v={formatMoney(paymentStates[selected.bookingId].balance, currency)}
-                    />
-                  )}
-                </>
-              ) : (
-                advanceGapByBooking[selected.bookingId] && (
-                  <Row k="Estimated balance due" v={formatMoney(advanceGapByBooking[selected.bookingId], currency)} />
-                )
-              )}
-            </dl>
-
-            {/* Online deposit. The button sends only a booking id — the amount
-                shown above is a label, and the server prices the order itself. */}
-            {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-              <div className="mt-3">
-                <DepositButton
-                  bookingId={selected.bookingId}
-                  bookingNumber={selected.bookingNumber}
-                  depositAmount={selected.deposit}
-                  currency={currency}
-                  venueName={venueName}
-                  customerName={selected.customerName}
-                  customerPhone={selected.customerPhone}
-                  depositStatus={depositStates[selected.bookingId] ?? 'none'}
-                />
-              </div>
-            )}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {/* Once a bill exists its receipt is the authority on what was
-                  charged and what is still owed, so link straight to it. */}
-              {paymentStates[selected.bookingId] && (
-                <Link
-                  href={`/invoices/${paymentStates[selected.bookingId].invoiceId}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
-                >
-                  <ReceiptText size={15} />{' '}
-                  {paymentStates[selected.bookingId].invoiceNumber}
-                </Link>
-              )}
-              {/* M25 #4: discoverability for the existing refund -> void ->
-                  re-raise correction, right from the booking a wrong bill
-                  was raised against — not a new capability, and the invoice
-                  page itself still hides Refund/Void for a non-manager. */}
-              {paymentStates[selected.bookingId] && (
-                <Link
-                  href={`/invoices/${paymentStates[selected.bookingId].invoiceId}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive"
-                >
-                  Wrong bill? Correct it
-                </Link>
-              )}
-              {/* Only the statuses lib/billing/invoice.ts will actually bill.
-                  The action re-checks — hiding a link is not authorization. */}
-              {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                <Link
-                  href={`/pos/${selected.bookingId}`}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                >
-                  <ReceiptText size={15} /> Bill
-                </Link>
-              )}
-              {/* M33: add-ons are editable only while the booking is open AND
-                  unbilled (no live invoice -> paymentStates absent). The action
-                  re-checks both server-side. */}
-              {canEditAddons &&
-                (selected.status === 'confirmed' || selected.status === 'checked_in') &&
-                !paymentStates[selected.bookingId] && (
-                  <ActBtn label="Add-ons" variant="muted" onClick={() => setAddonsTarget(selected)} pending={pending} />
-                )}
-              {selected.status === 'confirmed' && (
-                <ActBtn
-                  label="Check in"
-                  onClick={() => act('check_in', () => setBookingStatus(selected.bookingId, 'checked_in'))}
-                  pending={pending}
-                  loading={actingAction === 'check_in'}
-                />
-              )}
-              {/* M25 #1: reverts an accidental check-in. Hidden once a bill
-                  exists (paymentStates absence means no live invoice, same
-                  signal the receipt link above already uses) — the action
-                  re-checks server-side regardless, this just keeps staff
-                  from hitting that error needlessly. */}
-              {selected.status === 'checked_in' && !paymentStates[selected.bookingId] && (
-                <ActBtn
-                  label="Undo check-in"
-                  variant="muted"
-                  onClick={() => act('undo_check_in', () => undoCheckIn(selected.bookingId))}
-                  pending={pending}
-                  loading={actingAction === 'undo_check_in'}
-                />
-              )}
-              {/* No standalone "Complete" here: a booking now completes only as
-                  part of settling its bill (recordPayment auto-completes once
-                  every check is fully paid — lib/booking/service.ts
-                  completeBookingIfFullySettled). Completing an unbilled booking
-                  by hand used to strand it (unbillable afterward), so that path
-                  is gone; staff go to "Bill" and collect payment instead. */}
-              {selected.status === 'confirmed' && (
-                <ActBtn
-                  label="No-show"
-                  variant="muted"
-                  onClick={() => act('no_show', () => setBookingStatus(selected.bookingId, 'no_show'))}
-                  pending={pending}
-                  loading={actingAction === 'no_show'}
-                />
-              )}
-              {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                <ActBtn label="Cancel" variant="danger" onClick={() => setCancelTarget(selected)} pending={pending} />
-              )}
-            </div>
-
-            {selected.status === 'cancelled' && selected.cancellationReason && (
-              <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
-                <p className="font-medium text-destructive">Cancellation reason</p>
-                <p className="mt-0.5 text-muted-foreground">{selected.cancellationReason}</p>
-              </div>
-            )}
-
-            {showFoodOrdering && (
-            <div className="mt-4 border-t pt-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-muted-foreground">Food orders</h3>
-                {/* Only while the booking is still active — createOrderCore
-                    (lib/orders/service.ts) enforces the same rule server-side,
-                    this just keeps staff from hitting that error needlessly
-                    on a booking that's already completed/cancelled/no-show. */}
-                {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
-                  <button
-                    onClick={() =>
-                      setOrderDialog({ bookingId: selected.bookingId, bookingLabel: selected.bookingNumber })
-                    }
-                    disabled={menuItems.length === 0}
-                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
-                  >
-                    <Plus size={14} /> Add order
-                  </button>
-                )}
-              </div>
-              {(ordersByBooking[selected.bookingId] ?? []).length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground">No food orders yet.</p>
-              ) : (
-                <div className="mt-2 space-y-2">
-                  {(ordersByBooking[selected.bookingId] ?? []).map((o) => (
-                    <div key={o.orderId} className="rounded-md border p-2.5 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">{o.orderNumber}</span>
-                        <span className="text-xs capitalize text-muted-foreground">{o.status}</span>
-                      </div>
-                      <ul className="mt-1 space-y-0.5">
-                        {o.items.map((it) => (
-                          <li
-                            key={it.itemId}
-                            className={`flex justify-between gap-2 text-muted-foreground ${it.voidStatus !== 'active' ? 'opacity-50' : ''}`}
-                          >
-                            <span className="truncate">
-                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
-                                {it.qty}× {it.itemName}
-                              </span>
-                              {it.modifiers.length > 0 && (
-                                <span className="ml-1 text-xs text-primary">— {it.modifiers.join(', ')}</span>
-                              )}
-                              {it.specialInstructions ? ` — ${it.specialInstructions}` : ''}
-                              {it.happyHourName && (
-                                <span className="ml-1.5 inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">
-                                  {it.happyHourName}
-                                </span>
-                              )}
-                              {it.voidStatus !== 'active' && (
-                                <span
-                                  className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                                    it.voidStatus === 'comped'
-                                      ? 'bg-accent text-primary'
-                                      : 'bg-destructive/10 text-destructive'
-                                  }`}
-                                  title={it.voidReason ?? undefined}
-                                >
-                                  {it.voidStatus === 'comped' ? 'Comped' : 'Voided'}
-                                </span>
-                              )}
-                              {it.voidStatus === 'active' && it.pendingVoidMode && (
-                                <span
-                                  className="ml-1.5 inline-flex items-center rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600"
-                                  title="Awaiting manager approval"
-                                >
-                                  {it.pendingVoidMode === 'comp' ? 'Comp requested' : 'Void requested'}
-                                </span>
-                              )}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1.5 text-right">
-                              {it.originalUnitPrice && Number(it.originalUnitPrice) !== Number(it.unitPrice) && (
-                                <span className="line-through opacity-60">
-                                  {formatMoney(Number(it.originalUnitPrice) * it.qty, currency)}
-                                </span>
-                              )}
-                              <span className={it.voidStatus !== 'active' ? 'line-through' : undefined}>
-                                {formatMoney(Number(it.unitPrice) * it.qty, currency)}
-                              </span>
-                              {/* M25 #3: in-place quantity correction — every
-                                  industry, no manager gate (unlike the
-                                  void/comp button below, which stays
-                                  restaurant-only). editOrderItemQuantity/
-                                  removeOrderItem re-check server-side that
-                                  the order is still 'open' regardless of
-                                  this UI gate. */}
-                              {it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
-                                <span className="flex items-center gap-0.5">
-                                  <button
-                                    type="button"
-                                    disabled={linePending && lineActionId === it.itemId}
-                                    onClick={() => editQty(it.itemId, it.qty - 1)}
-                                    title={it.qty <= 1 ? 'Remove (quantity would drop to 0)' : 'Decrease quantity'}
-                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <Minus size={12} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={linePending && lineActionId === it.itemId}
-                                    onClick={() => editQty(it.itemId, it.qty + 1)}
-                                    title="Increase quantity"
-                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <Plus size={12} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={linePending && lineActionId === it.itemId}
-                                    onClick={() => removeLine(it.itemId, it.itemName)}
-                                    title="Remove this line"
-                                    className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {linePending && lineActionId === it.itemId ? (
-                                      <Loader2 size={12} className="animate-spin" />
-                                    ) : (
-                                      <Trash2 size={12} />
-                                    )}
-                                  </button>
-                                </span>
-                              )}
-                              {canRequestVoidComp && it.voidStatus === 'active' && !it.pendingVoidMode && o.status === 'open' && (
-                                <button
-                                  type="button"
-                                  onClick={() => setVoidTarget({ itemId: it.itemId, itemName: it.itemName, qty: it.qty })}
-                                  title="Void or comp this item"
-                                  className="rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
-                                >
-                                  <Ban size={13} />
-                                </button>
-                              )}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            )}
-          </div>
-        </div>
-      )}
+      <BookingDetailPanel
+        booking={selected}
+        timeZone={timeZone}
+        currency={currency}
+        venueName={venueName}
+        depositStates={depositStates}
+        paymentStates={paymentStates}
+        ordersByBooking={ordersByBooking}
+        canRequestVoidComp={canRequestVoidComp}
+        canEditAddons={canEditAddons}
+        showFoodOrdering={showFoodOrdering}
+        addOrder={{
+          disabled: menuItems.length === 0,
+          onClick: (b) => setOrderDialog(b),
+        }}
+        onClose={() => setSelected(null)}
+      />
 
       {/* take order (walk-in or attached to the selected booking) */}
       {orderDialog && (
@@ -1274,50 +802,6 @@ export function BookingsView({
             setOrderDialog(null)
             toast.success(`Order ${num} created.`)
             router.refresh()
-          }}
-        />
-      )}
-
-      {voidTarget && (
-        <VoidCompDialog
-          item={voidTarget}
-          onClose={() => setVoidTarget(null)}
-          onDone={(mode, status) => {
-            setVoidTarget(null)
-            if (status === 'pending') {
-              toast.success('Sent for manager approval.')
-            } else {
-              toast.success(mode === 'comp' ? 'Item comped.' : 'Item voided.')
-            }
-            router.refresh()
-          }}
-        />
-      )}
-
-      {addonsTarget && (
-        <BookingAddonsDialog
-          bookingId={addonsTarget.bookingId}
-          bookingLabel={`${addonsTarget.bookingNumber} · ${addonsTarget.customerName || 'Walk-in'}`}
-          currency={currency}
-          onClose={() => setAddonsTarget(null)}
-          onSaved={() => {
-            setAddonsTarget(null)
-            router.refresh()
-          }}
-        />
-      )}
-
-      {cancelTarget && (
-        <CancelBookingDialog
-          bookingId={cancelTarget.bookingId}
-          title={`Cancel booking ${cancelTarget.bookingNumber}?`}
-          description={`This will cancel ${cancelTarget.customerName || 'this walk-in'}'s booking. This cannot be undone.`}
-          onClose={() => setCancelTarget(null)}
-          onDone={() => {
-            setCancelTarget(null)
-            setSelected(null)
-            router.refresh()
-            toast.success(`Booking ${cancelTarget.bookingNumber} cancelled.`)
           }}
         />
       )}
@@ -1378,46 +862,6 @@ function StatusPill({ active, onClick, children }: { active: boolean; onClick: (
       }`}
     >
       {children}
-    </button>
-  )
-}
-
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex justify-between gap-4">
-      <dt className="text-muted-foreground">{k}</dt>
-      <dd className="text-right font-medium capitalize">{v}</dd>
-    </div>
-  )
-}
-
-function ActBtn({
-  label,
-  onClick,
-  pending,
-  loading = false,
-  variant = 'primary',
-}: {
-  label: string
-  onClick: () => void
-  pending: boolean
-  loading?: boolean
-  variant?: 'primary' | 'danger' | 'muted'
-}) {
-  const cls =
-    variant === 'danger'
-      ? 'border border-destructive/40 text-destructive hover:bg-destructive/10'
-      : variant === 'muted'
-        ? 'border hover:bg-muted'
-        : 'bg-primary text-primary-foreground hover:opacity-90'
-  return (
-    <button
-      onClick={onClick}
-      disabled={pending}
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${cls}`}
-    >
-      {loading && <Loader2 size={14} className="animate-spin" />}
-      {label}
     </button>
   )
 }

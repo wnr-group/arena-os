@@ -17,6 +17,8 @@ import {
   RANGE_PRESETS,
   type RangePreset,
 } from '../lib/booking/ranges'
+import { zonedTimeToUtc } from '../lib/booking/time'
+import { groupByDay, rangeDayKey } from '../lib/booking/range-groups'
 
 let pass = 0,
   fail = 0
@@ -162,6 +164,26 @@ for (const b of bad) {
   }
   check(`parse ${JSON.stringify(b)} → null`, out === null)
 }
+// ── M34 #4: day grouping (tenant tz, one row per booking, clamped to range) ──
+{
+  const at = (d: string, t: string) => zonedTimeToUtc(d, t, IST).toISOString()
+  check('22:30 IST groups under its IST day', rangeDayKey(at('2026-10-10', '22:30'), '2026-10-05', IST) === '2026-10-10')
+  check('00:15 IST (previous UTC day) groups under the IST day', rangeDayKey(at('2026-10-11', '00:15'), '2026-10-05', IST) === '2026-10-11')
+  check('carried-in booking clamps to the range start', rangeDayKey(at('2026-10-03', '22:00'), '2026-10-05', IST) === '2026-10-05')
+  const rows = [
+    { id: 'a', firstStartsAt: at('2026-10-12', '18:00') },
+    { id: 'b', firstStartsAt: at('2026-10-12', '09:00') },
+    { id: 'c', firstStartsAt: at('2026-10-10', '23:00') },
+    { id: 'd', firstStartsAt: at('2026-10-03', '22:00') },
+    { id: 'e', firstStartsAt: at('2026-10-05', '08:00') },
+  ]
+  const g = groupByDay(rows, '2026-10-05', IST)
+  check('days newest first, carried-in merges into first day', g.map((x) => x.date).join() === '2026-10-12,2026-10-10,2026-10-05')
+  check('each booking appears exactly once', g.flatMap((x) => x.rows).length === rows.length)
+  check('order inside a day is preserved', g[0].rows.map((r) => r.id).join() === 'a,b')
+  check('empty input → no groups', groupByDay([], '2026-10-05', IST).length === 0)
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

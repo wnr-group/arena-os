@@ -19,13 +19,16 @@ function shortDate(dateStr: string, withYear: boolean): string {
   }).format(new Date(Date.UTC(y, m - 1, d)))
 }
 
-/** "Last 7 days · 6 Oct – 12 Oct 2026" (local dates in the tenant zone). */
+/** "6 Oct – 12 Oct 2026" (local dates in the tenant zone). */
+export function rangeSpan(range: Pick<ResolvedRange, 'fromDate' | 'toDate'>): string {
+  return range.fromDate === range.toDate
+    ? shortDate(range.fromDate, true)
+    : `${shortDate(range.fromDate, false)} – ${shortDate(range.toDate, true)}`
+}
+
+/** "Last 7 days · 6 Oct – 12 Oct 2026" */
 export function rangeSummary(range: Pick<ResolvedRange, 'preset' | 'fromDate' | 'toDate'>): string {
-  const span =
-    range.fromDate === range.toDate
-      ? shortDate(range.fromDate, true)
-      : `${shortDate(range.fromDate, false)} – ${shortDate(range.toDate, true)}`
-  return `${RANGE_LABELS[range.preset]} · ${span}`
+  return `${RANGE_LABELS[range.preset]} · ${rangeSpan(range)}`
 }
 
 const chipBase = 'inline-block shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm font-medium transition'
