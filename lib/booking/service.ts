@@ -23,6 +23,8 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
+import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
+import { getBookingSettingsCore } from './settings'
 import {
   attachAddonsToSlots,
   normalizeAddonRequests,
@@ -347,6 +349,11 @@ export async function priceBookingSlots(
       const endsAt = new Date(s.endsAt)
       const startDateStr = todayInZone(ctx.timezone, startsAt)
       const endDateStr = todayInZone(ctx.timezone, new Date(endsAt.getTime() - 1))
+      // M37 #2: a per-day booking spans at most MAX_DAY_RANGE_DAYS calendar days.
+      const rangeDays = calendarDaysInRange(startDateStr, endDateStr)
+      if (rangeDays > MAX_DAY_RANGE_DAYS) {
+        throw new BookingError(`A day-rate booking can span at most ${MAX_DAY_RANGE_DAYS} days (you picked ${rangeDays}).`)
+      }
       const startHours = hoursByDow.get(weekdayInZone(startDateStr, ctx.timezone)) ?? DEFAULT_HOURS
       const endHours = hoursByDow.get(weekdayInZone(endDateStr, ctx.timezone)) ?? DEFAULT_HOURS
       if (startHours.isClosed || endHours.isClosed) {
@@ -746,6 +753,31 @@ export async function recordAdvanceTenders(
   })
 }
 
+/**
+ * M37 #2: refuse slots beyond the venue's advance-booking window. Reads the
+ * setting through `tx`, so it works for staff (withUser) and the anonymous
+ * storefront (withPublicTenant) alike; a venue with no row is held to 7 days.
+ *
+ * A slot is judged by its START date, except a per-day (rateUnit 'day') slot,
+ * whose END date must also be inside the window. Upper bound only — the past is
+ * governed by the backdated / late-checkout rules, which never call this.
+ */
+export async function assertWithinAdvanceWindow(
+  tx: Db,
+  ctx: { tenantId: string; timezone: string },
+  slots: { startsAt: Date; endsAt: Date | null; rateUnit?: string | null }[],
+  now: Date = horizonNow(),
+): Promise<void> {
+  const { maxAdvanceDays } = await getBookingSettingsCore(tx, ctx.tenantId)
+  const today = todayInZone(ctx.timezone, now)
+  for (const s of slots) {
+    const ends = s.rateUnit === 'day' ? s.endsAt : null
+    if (!isWithinHorizon(s.startsAt, ends, today, ctx.timezone, maxAdvanceDays)) {
+      throw new BookingError(horizonMessage(today, maxAdvanceDays))
+    }
+  }
+}
+
 /** Transactional core of creating a booking: validates the slots, locks for conflicts, and inserts the booking + its slots. */
 export async function createBookingCore(
   tx: Db,
@@ -765,6 +797,11 @@ export async function createBookingCore(
   const computedSubtotal = priced.subtotal
   let subtotal = priced.subtotal
   const slotRows = priced.slots
+
+  // M37 #2: the advance-booking horizon applies to future reservations only.
+  // Backdated entry (M28) is a past booking and is explicitly exempt; walk-ins
+  // (startWalkin) and table seating never reach this function.
+  if (!input.backdated) await assertWithinAdvanceWindow(tx, ctx, slotRows)
 
   // Past-booking entry: the manager's figure replaces the computed charge. It is
   // spread over the slots in proportion to their computed totals (the last one

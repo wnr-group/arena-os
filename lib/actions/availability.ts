@@ -7,7 +7,10 @@ import { resources, resourceTypes, holidayRates, workingHours, bookingSlots } fr
 import { requireContext } from '@/lib/auth/guard'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { availableStartTimes, dayWindow, type Interval } from '@/lib/booking/availability'
-import { weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
+import { todayInZone, weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
+import { dayRangeError, horizonMessage, horizonNow, isDateWithinHorizon } from '@/lib/booking/horizon'
+import { maxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import type { ActiveContext } from '@/lib/tenant/context'
 import { resolveDayRate } from '@/lib/booking/rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 
@@ -46,6 +49,13 @@ export type AvailabilityResponse = {
   extraRate?: string
 }
 
+/** M37 #2: refuse a date beyond the venue's advance window (fails closed to 7 days). */
+async function staffHorizonError(ctx: ActiveContext, dateStr: string): Promise<string | null> {
+  const max = await maxAdvanceDaysOrDefault(ctx)
+  const today = todayInZone(ctx.tenant.timezone, horizonNow())
+  return isDateWithinHorizon(dateStr, today, max) ? null : horizonMessage(today, max)
+}
+
 const DEFAULT_HOURS = { openTime: '10:00', closeTime: '22:00', isClosed: false, open24h: false }
 
 export async function getAvailableStarts(
@@ -53,6 +63,8 @@ export async function getAvailableStarts(
 ): Promise<AvailabilityResponse> {
   try {
     const ctx = await requireContext()
+    const beyond = await staffHorizonError(ctx, input.parse(raw).date)
+    if (beyond) return { error: beyond }
     // An expired unpaid online hold still shows the slot as taken; release it first.
     await sweepTenantHolds(ctx.tenant.id)
     const v = input.parse(raw)
@@ -220,6 +232,8 @@ export async function getAvailableStartsForType(
 ): Promise<TypeAvailabilityResponse> {
   try {
     const ctx = await requireContext()
+    const beyond = await staffHorizonError(ctx, typeInput.parse(raw).date)
+    if (beyond) return { error: beyond }
     // An expired unpaid online hold still shows the slot as taken; release it first.
     await sweepTenantHolds(ctx.tenant.id)
     const v = typeInput.parse(raw)
@@ -405,8 +419,10 @@ export async function getDayRangeWindow(raw: z.input<typeof dayRangeInput>): Pro
     // An expired unpaid online hold still shows the slot as taken; release it first.
     await sweepTenantHolds(ctx.tenant.id)
     const v = dayRangeInput.parse(raw)
-    if (v.endDate < v.startDate) return { error: 'End date must be on or after the start date.' }
     const tz = ctx.tenant.timezone
+    // M37 #2: ordered, at most 31 days, and ending inside the advance window.
+    const badRange = dayRangeError(v.startDate, v.endDate, todayInZone(tz, horizonNow()), await maxAdvanceDaysOrDefault(ctx))
+    if (badRange) return { error: badRange }
 
     return await withUser(ctx.user.id, async (tx) => {
       const [res] = await tx

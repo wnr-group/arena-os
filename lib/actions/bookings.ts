@@ -13,6 +13,7 @@ import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
   priceBookingSlots,
+  assertWithinAdvanceWindow,
   seatTableSessionCore,
   requestBillCore,
   transferTableCore,
@@ -171,13 +172,16 @@ export async function quoteBooking(
     const ctx = await requireContext()
     const v = quoteBookingInput.parse(input)
 
-    const result = await withUser(ctx.user.id, (tx) =>
-      priceBookingSlots(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, {
+    const result = await withUser(ctx.user.id, async (tx) => {
+      const priced = await priceBookingSlots(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, {
         branchId: v.branchId,
         slots: [{ resourceId: v.resourceId, startsAt: v.startsAt, endsAt: v.endsAt, setupId: v.setupId }],
         headCount: v.headCount,
-      }),
-    )
+      })
+      // M37 #2: the quote refuses what createBooking would refuse.
+      await assertWithinAdvanceWindow(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone }, priced.slots)
+      return priced
+    })
     return { total: result.subtotal }
   } catch (e) {
     return fail(e)

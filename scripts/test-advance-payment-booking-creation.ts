@@ -24,6 +24,7 @@ import { Pool } from 'pg'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
+import { allowFarBookings } from './booking-window-fixture'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -40,6 +41,8 @@ const TZ = 'Asia/Kolkata'
 async function main() {
   const { loadEnv } = await import('./env')
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_TEST_NOW = '2047-02-01T00:00:00Z'
   const { createBookingCore, BookingError } = await import('../lib/booking/service')
   const { startWalkinCore } = await import('../lib/booking/walkin')
 
@@ -61,6 +64,7 @@ async function main() {
       [slug, `${slug} co`, TZ, industry],
     )
     const tenantId = t.rows[0].id
+    await allowFarBookings((t, p) => ownerPool.query(t, p), tenantId)
     const b = await ownerPool.query<{ id: string }>(
       `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
        on conflict (tenant_id,name) do update set is_primary=true returning id`,

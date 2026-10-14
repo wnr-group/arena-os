@@ -39,6 +39,7 @@ import { priceBill, round2 } from '../lib/billing/pricing'
 import { priceElapsedTime, priceTimeRangeSegments } from '../lib/billing/elapsed-time'
 import type { HappyHourRule } from '../lib/happy-hours/apply'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -138,6 +139,8 @@ function testPureSegments() {
 // ── 2. priceBookingSlots / createBookingCore / loadBookingLines — real DB ───
 async function testReservedBookingsHappyHours() {
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })
   const app = drizzle(appPool, { schema })
@@ -156,6 +159,7 @@ async function testReservedBookingsHappyHours() {
     [slug, `${slug} co`, TZ],
   )
   const tenantId = t.rows[0].id
+  await allowFarBookings((t, p) => ownerPool.query(t, p), tenantId)
   const b = await ownerPool.query<{ id: string }>(
     `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
      on conflict (tenant_id,name) do update set is_primary=true returning id`,

@@ -23,6 +23,7 @@
  */
 import { Pool } from 'pg'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 let pass = 0,
   fail = 0
@@ -36,6 +37,8 @@ const TZ = 'Asia/Kolkata'
 
 async function main() {
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   const { createBookingCore, resolvePublicHeadCount } = await import('../lib/booking/service')
   const { loadBookingLines } = await import('../lib/billing/invoice')
   const { priceBill, round2 } = await import('../lib/billing/pricing')
@@ -50,6 +53,7 @@ async function main() {
     [slug, `${slug} co`, TZ],
   )
   const tenantId = t.rows[0].id
+  await allowFarBookings((t, p) => owner.query(t, p), tenantId)
   const b = await owner.query<{ id: string }>(
     `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`,
     [tenantId],

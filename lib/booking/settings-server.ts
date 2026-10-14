@@ -1,7 +1,7 @@
 import 'server-only'
 import { withPublicTenant, withUser } from '@/db'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { getBookingSettingsCore, type BookingSettings } from './settings'
+import { DEFAULT_MAX_ADVANCE_DAYS, getBookingSettingsCore, type BookingSettings } from './settings'
 
 /** Staff path: the tenant context of a logged-in user. */
 export function getBookingSettings(ctx: ActiveContext): Promise<BookingSettings> {
@@ -11,4 +11,26 @@ export function getBookingSettings(ctx: ActiveContext): Promise<BookingSettings>
 /** Anonymous storefront path: readable through the public-select policy. */
 export function getPublicBookingSettings(tenantId: string): Promise<BookingSettings> {
   return withPublicTenant(tenantId, (tx) => getBookingSettingsCore(tx, tenantId))
+}
+
+/**
+ * Enforcement-path readers: a failed read must never open the window, so they
+ * fall back to the default 7 days instead of throwing or returning nothing.
+ */
+export async function maxAdvanceDaysOrDefault(ctx: ActiveContext): Promise<number> {
+  try {
+    return (await getBookingSettings(ctx)).maxAdvanceDays
+  } catch (e) {
+    console.error('[booking-settings] read failed, using default window:', e instanceof Error ? e.name : 'unknown')
+    return DEFAULT_MAX_ADVANCE_DAYS
+  }
+}
+
+export async function publicMaxAdvanceDaysOrDefault(tenantId: string): Promise<number> {
+  try {
+    return (await getPublicBookingSettings(tenantId)).maxAdvanceDays
+  } catch (e) {
+    console.error('[booking-settings] public read failed, using default window:', e instanceof Error ? e.name : 'unknown')
+    return DEFAULT_MAX_ADVANCE_DAYS
+  }
 }

@@ -19,6 +19,7 @@ import { Pool } from 'pg'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import * as schema from '../db/schema'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 loadEnv()
 
@@ -60,6 +61,7 @@ async function main() {
         [s],
       )
     ).rows[0].id
+    await allowFarBookings((t, p) => q(t, p), tenantId)
     const branchId = (await q<{ id: string }>(`insert into branches (tenant_id,name,is_primary,status) values ($1,'Main',true,'active') returning id`, [tenantId])).rows[0].id
     const typeId = (await q<{ id: string }>(`insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Studio Set','500.00') returning id`, [tenantId])).rows[0].id
     return { tenantId, branchId, typeId }

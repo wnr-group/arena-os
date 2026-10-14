@@ -14,6 +14,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 loadEnv()
 type Db = NodePgDatabase<typeof schema>
@@ -40,6 +41,7 @@ async function main() {
   const nextPhone = () => `9${String(base * 100 + ++seq).padStart(9, '0')}`
 
   const tenantId = (await q<{ id: string }>(`insert into tenants (slug,name,status,timezone,industry) values ($1,'Race QA','active','Asia/Kolkata','recording_studio') returning id`, [slug])).rows[0].id
+  await allowFarBookings((t, p) => q(t, p), tenantId)
   const branchId = (await q<{ id: string }>(`insert into branches (tenant_id,name,is_primary,status) values ($1,'Main',true,'active') returning id`, [tenantId])).rows[0].id
   const typeId = (await q<{ id: string }>(`insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Studio','500.00') returning id`, [tenantId])).rows[0].id
   const userId = (await q<{ id: string }>(`insert into users (email,password_hash) values ($1,'x') on conflict (email) do update set email=excluded.email returning id`, [`owner@${slug}.test`])).rows[0].id
