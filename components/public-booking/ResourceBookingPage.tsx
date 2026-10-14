@@ -24,7 +24,7 @@ import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResource, PublicResourceSetup, PublicTypeAddon } from '@/lib/booking/public-availability'
 import { daysInRange } from '@/lib/booking/availability'
 import { clampDateToWindow, dateOptions, dayRangeError, lastBookableDate } from '@/lib/booking/horizon'
-import { DatePicker } from './DatePicker'
+import { DatePicker } from '@/components/ui/DatePicker'
 import {
   getPublicResourceAvailability,
   getPublicBookingQuote,

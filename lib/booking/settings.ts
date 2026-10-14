@@ -29,6 +29,11 @@ export function isAdvanceWindowPreset(n: unknown): n is number {
   return typeof n === 'number' && ADVANCE_WINDOW_DAYS.includes(n)
 }
 
+/** "3 months", "7 days" ... for a stored day count; an unlisted value reads as plain days. */
+export function advanceWindowLabel(days: number): string {
+  return ADVANCE_WINDOW_PRESETS.find((p) => p.days === days)?.label ?? `${days} days`
+}
+
 export type BookingSettings = { maxAdvanceDays: number }
 
 /** One cheap read per page load. Missing row ⇒ 7. */

@@ -44,7 +44,7 @@ import {
   SummaryRow,
 } from './ResourceBookingPage'
 import { clampDateToWindow, dateOptions } from '@/lib/booking/horizon'
-import { DatePicker } from './DatePicker'
+import { DatePicker } from '@/components/ui/DatePicker'
 
 type Step = 'select' | 'details'
 

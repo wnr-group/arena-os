@@ -13,15 +13,21 @@
  *   - clampDateToWindow: in-window kept; beyond → last bookable; past / junk →
  *     today
  *
+ * M37 #4 (staff wizard) shares the same component: the "staff" variant keeps the
+ * wizard's denser chip strip, the long picker is identical, the duplicated
+ * DATE_WINDOW_DAYS constant is gone, and the wizard's windows come from the
+ * server.
+ *
  * Keyboard behaviour and 360px layout need a real browser and are not covered here.
  *
  *   npx tsx scripts/test-storefront-date-picker.tsx
  */
 import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { DatePicker } from '../components/public-booking/DatePicker'
+import { DatePicker } from '../components/ui/DatePicker'
 import { CHIP_STRIP_MAX_DAYS, clampDateToWindow, dateOptions, lastBookableDate } from '../lib/booking/horizon'
 import { addDays } from '../lib/booking/time'
+import { advanceWindowLabel } from '../lib/booking/settings'
 
 let pass = 0,
   fail = 0
@@ -83,7 +89,7 @@ console.log('\n── closed days (30-day venue, Sundays closed) ──')
 // ── the picker never fetches ─────────────────────────────────────────────────
 console.log('\n── no per-day availability fetch ──')
 {
-  const src = readFileSync('components/public-booking/DatePicker.tsx', 'utf8')
+  const src = readFileSync('components/ui/DatePicker.tsx', 'utf8')
   check('DatePicker imports no server action and calls no fetch', !/lib\/actions|fetch\(|getPublic/.test(src))
 }
 
@@ -100,6 +106,45 @@ console.log('\n── clampDateToWindow ──')
   check('a past date clamps to today', c('2045-04-01').date === TODAY && c('2045-04-01').clamped)
   check('junk / impossible dates clamp to today', c('nope').date === TODAY && c('2045-02-30').date === TODAY && c('2045-02-30').clamped)
   check('with a 7-day window the same date clamps tighter', c('2045-05-01', 7).date === '2045-04-26')
+}
+
+// ── staff wizard (M37 #4): same component, staff styling ─────────────────────
+console.log('\n── staff variant ──')
+{
+  const staff = (n: number, closed: number[] = []) =>
+    renderToStaticMarkup(
+      <DatePicker variant="staff" dates={dateOptions(TODAY, n)} value={TODAY} onChange={() => {}} closedWeekdays={closed} />,
+    )
+  const h7 = staff(7)
+  check('7-day staff strip keeps the wizard styling (gap-1.5, rounded-xl chips)', h7.includes('grid grid-cols-7 gap-1.5 sm:gap-2') && h7.includes('rounded-xl') && h7.includes('text-base'), h7)
+  check('7-day staff strip has 7 pressed-state buttons and no long-picker controls', count(h7, '<button') === 7 && !h7.includes('Jump to'))
+  check('public variant is unchanged by the staff variant (still rounded-2xl)', render(7).includes('rounded-2xl') && !render(7).includes('rounded-xl border'))
+  for (const n of [30, 90, 180]) {
+    const h = staff(n, [0])
+    const last = lastBookableDate(TODAY, n)
+    check(`staff ${n}-day: strip + calendar, last bookable date enabled, nothing beyond`,
+      h.includes('Jump to') && h.includes('Calendar') && count(h, /data-date="/g) === n &&
+        new RegExp(`data-date="${last}"(?![^>]*disabled)`).test(h) && !h.includes(`data-date="${addDays(last, 1)}"`))
+  }
+  check('long staff picker markup is identical to the public one', staff(30, [0]) === render(30, [0]))
+}
+
+console.log('\n── one shared component, no duplicate constants ──')
+{
+  const wizard = readFileSync('components/bookings/new/FutureWizard.tsx', 'utf8')
+  const pub1 = readFileSync('components/public-booking/ResourceBookingPage.tsx', 'utf8')
+  const pub2 = readFileSync('components/public-booking/ResourceTypeBookingPage.tsx', 'utf8')
+  check('FutureWizard no longer defines DATE_WINDOW_DAYS', !wizard.includes('DATE_WINDOW_DAYS'))
+  check('no storefront page defines or uses DATE_WINDOW_DAYS', !pub1.includes('DATE_WINDOW_DAYS') && !pub2.includes('DATE_WINDOW_DAYS'))
+  check('all three import the one DatePicker from components/ui', [wizard, pub1, pub2].every((f) => f.includes("from '@/components/ui/DatePicker'")))
+  check('the wizard takes its window from the server (maxAdvanceDays prop)', wizard.includes('maxAdvanceDays') && wizard.includes('windowDates(today, maxAdvanceDays)'))
+  const page = readFileSync('app/(app)/bookings/new/page.tsx', 'utf8')
+  check('the page reads the setting via the staff context and fails closed', page.includes('maxAdvanceDaysOrDefault(ctx)'))
+  const walkin = readFileSync('components/bookings/new/WalkinWizard.tsx', 'utf8')
+  check('the walk-in wizard gains no horizon', !/maxAdvanceDays|horizon|DatePicker/.test(walkin))
+  check('the hint reads "up to <label> ahead" and links managers to Settings -> Hours',
+    wizard.includes('advanceWindowLabel(maxAdvanceDays)') && wizard.includes('href="/settings/hours"') && wizard.includes('canChangeSettings'))
+  check('advanceWindowLabel: presets and unlisted values', advanceWindowLabel(90) === '3 months' && advanceWindowLabel(7) === '7 days' && advanceWindowLabel(45) === '45 days')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

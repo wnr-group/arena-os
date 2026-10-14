@@ -39,7 +39,9 @@ const chipOn = 'border-primary bg-primary text-primary-foreground shadow-md shad
 const chipOff = 'border-border bg-card text-foreground hover:border-primary/40'
 
 /**
- * The storefront date picker (M37 #3).
+ * The shared date picker for the storefront and the staff future-booking
+ * wizard (M37 #3 / #4) - one component, not two. variant="staff" only
+ * changes the chip-strip styling to the wizard's denser look.
  *
  * `dates` is the bookable window from the server (dateOptions in
  * lib/booking/horizon.ts). Up to CHIP_STRIP_MAX_DAYS days it is the familiar
@@ -58,15 +60,18 @@ export function DatePicker({
   value,
   onChange,
   closedWeekdays = [],
+  variant = 'public',
 }: {
   dates: string[]
   value: string
   onChange: (d: string) => void
   closedWeekdays?: number[]
+  variant?: 'public' | 'staff'
 }) {
   if (dates.length <= CHIP_STRIP_MAX_DAYS) {
+    const staff = variant === 'staff'
     return (
-      <div className="mt-3 grid grid-cols-7 gap-2">
+      <div className={staff ? 'mt-3 grid grid-cols-7 gap-1.5 sm:gap-2' : 'mt-3 grid grid-cols-7 gap-2'}>
         {dates.map((d) => {
           const p = parts(d)
           const isSelected = d === value
@@ -76,13 +81,21 @@ export function DatePicker({
               type="button"
               aria-pressed={isSelected}
               onClick={() => onChange(d)}
-              className={`${chipBase} ${isSelected ? chipOn : chipOff}`}
+              className={
+                staff
+                  ? `flex flex-col items-center gap-0.5 rounded-xl border px-1 py-2.5 transition-all duration-200 active:scale-95 ${
+                      isSelected
+                        ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                        : 'border-border bg-card text-foreground hover:border-primary/40'
+                    }`
+                  : `${chipBase} ${isSelected ? chipOn : chipOff}`
+              }
             >
-              <span className={`text-[11px] font-semibold uppercase tracking-wide ${isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
+              <span className={`${staff ? 'text-[10px]' : 'text-[11px]'} font-semibold uppercase tracking-wide ${isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
                 {p.weekday}
               </span>
-              <span className="text-lg font-bold tabular-nums">{p.day}</span>
-              <span className={`text-[11px] font-semibold uppercase tracking-wide ${isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
+              <span className={`${staff ? 'text-base' : 'text-lg'} font-bold tabular-nums`}>{p.day}</span>
+              <span className={`${staff ? 'text-[10px]' : 'text-[11px]'} font-semibold uppercase tracking-wide ${isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
                 {p.month}
               </span>
             </button>
