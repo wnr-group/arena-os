@@ -23,6 +23,8 @@ import {
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResource, PublicResourceSetup, PublicTypeAddon } from '@/lib/booking/public-availability'
 import { daysInRange } from '@/lib/booking/availability'
+import { clampDateToWindow, dateOptions, dayRangeError, lastBookableDate } from '@/lib/booking/horizon'
+import { DatePicker } from './DatePicker'
 import {
   getPublicResourceAvailability,
   getPublicBookingQuote,
@@ -50,7 +52,6 @@ export const DURATIONS = [
   ...Array.from({ length: 8 }, (_, i) => (i + 1) * 30), // 30m … 4h
   ...Array.from({ length: 20 }, (_, i) => (i + 5) * 60), // 5h … 24h
 ]
-export const DATE_WINDOW_DAYS = 7
 /** Grid step for candidate start times — matches the server's slotMinutes (see availableStartTimes). */
 export const SLOT_MINUTES = 30
 
@@ -122,6 +123,9 @@ export function ResourceBookingPage({
   initialSetupId = null,
   addonCatalog = [],
   today,
+  maxAdvanceDays,
+  closedWeekdays = [],
+  initialDate,
   razorpayConfigured,
 }: {
   tenant: PublicTenant
@@ -137,16 +141,27 @@ export function ResourceBookingPage({
   /** M35 #4: the resource type's active add-ons (empty = no add-on section). */
   addonCatalog?: PublicTypeAddon[]
   today: string
+  /** M37 #3: the venue's advance-booking window — bookable dates are today … today + N − 1. */
+  maxAdvanceDays: number
+  /** Weekdays (0 = Sunday) the venue is closed, from its working hours. */
+  closedWeekdays?: number[]
+  /** A prefilled date (?date=); clamped into the window with a notice when it falls outside. */
+  initialDate?: string
   /** Gates the "pay online now" choice — read server-side from the same
    *  credential loader createBookingPaymentIntent uses, so the choice is
    *  hidden rather than offered and then failing (M14 #8). */
   razorpayConfigured: boolean
 }) {
   const router = useRouter()
-  const dates = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
+  const dates = useMemo(() => dateOptions(today, maxAdvanceDays), [today, maxAdvanceDays])
+  const lastDate = lastBookableDate(today, maxAdvanceDays)
+  const initial = useMemo(() => clampDateToWindow(initialDate, today, maxAdvanceDays), [initialDate, today, maxAdvanceDays])
 
   const [step, setStep] = useState<Step>('select')
-  const [date, setDate] = useState(today)
+  const [date, setDate] = useState(initial.date)
+  const [dateNotice, setDateNotice] = useState<string | null>(
+    initial.clamped ? `That date is outside the booking window, so we've picked ${prettyDateLong(initial.date)} instead.` : null,
+  )
   const [duration, setDuration] = useState(60)
   const [slots, setSlots] = useState<Slot[] | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
@@ -207,9 +222,12 @@ export function ResourceBookingPage({
       setRangeLoading(false)
       return
     }
-    if (rangeEnd < rangeStart) {
+    // Reversed, longer than 31 days, or past the booking window: say so here
+    // rather than asking the server (which would refuse with the same words).
+    const badRange = dayRangeError(rangeStart, rangeEnd, today, maxAdvanceDays)
+    if (badRange) {
       setRangeWindow(null)
-      setRangeError('End date must be on or after the start date.')
+      setRangeError(badRange)
       setRangeConflict(false)
       setRangeLoading(false)
       return
@@ -232,7 +250,7 @@ export function ResourceBookingPage({
     return () => {
       cancelled = true
     }
-  }, [isDayRateSetup, resource.id, rangeStart, rangeEnd])
+  }, [isDayRateSetup, resource.id, rangeStart, rangeEnd, today, maxAdvanceDays])
 
   // M22 #4: starts at the resource's flat rate (weekday rate / override —
   // the same figure the header quotes before any date is picked), then
@@ -649,6 +667,7 @@ export function ResourceBookingPage({
                 {isDayRateSetup ? (
                   <DateRangeSection
                     today={today}
+                    lastDate={lastDate}
                     rangeStart={rangeStart}
                     setRangeStart={setRangeStart}
                     rangeEnd={rangeEnd}
@@ -665,39 +684,20 @@ export function ResourceBookingPage({
                 <>
                 <section>
                   <SectionLabel icon={CalendarDays}>Date</SectionLabel>
-                  <div className="mt-3 grid grid-cols-7 gap-2">
-                    {dates.map((d) => {
-                      const parts = dateCardParts(d)
-                      const isSelected = d === date
-                      return (
-                        <button
-                          key={d}
-                          onClick={() => setDate(d)}
-                          className={`flex flex-col items-center gap-0.5 rounded-2xl border px-2 py-3 transition-all duration-200 active:scale-95 ${
-                            isSelected
-                              ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                              : 'border-border bg-card text-foreground hover:border-primary/40'
-                          }`}
-                        >
-                          <span
-                            className={`text-[11px] font-semibold uppercase tracking-wide ${
-                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                            }`}
-                          >
-                            {parts.weekday}
-                          </span>
-                          <span className="text-lg font-bold tabular-nums">{parts.day}</span>
-                          <span
-                            className={`text-[11px] font-semibold uppercase tracking-wide ${
-                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                            }`}
-                          >
-                            {parts.month}
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
+                  <DatePicker
+                    dates={dates}
+                    value={date}
+                    onChange={(d) => {
+                      setDate(d)
+                      setDateNotice(null)
+                    }}
+                    closedWeekdays={closedWeekdays}
+                  />
+                  {dateNotice && (
+                    <p role="status" className="mt-2 text-sm text-muted-foreground">
+                      {dateNotice}
+                    </p>
+                  )}
                 </section>
 
                 <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
@@ -1249,6 +1249,7 @@ function SummaryPanel({
  */
 function DateRangeSection({
   today,
+  lastDate,
   rangeStart,
   setRangeStart,
   rangeEnd,
@@ -1262,6 +1263,7 @@ function DateRangeSection({
   currency,
 }: {
   today: string
+  lastDate: string
   rangeStart: string
   setRangeStart: (d: string) => void
   rangeEnd: string
@@ -1284,7 +1286,7 @@ function DateRangeSection({
             type="date"
             value={rangeStart}
             min={today}
-            max={rangeEnd}
+            max={rangeEnd < lastDate ? rangeEnd : lastDate}
             onChange={(e) => setRangeStart(e.target.value)}
             className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
           />
@@ -1295,6 +1297,7 @@ function DateRangeSection({
             type="date"
             value={rangeEnd}
             min={rangeStart}
+            max={lastDate}
             onChange={(e) => setRangeEnd(e.target.value)}
             className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
           />

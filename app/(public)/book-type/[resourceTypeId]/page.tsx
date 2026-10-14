@@ -4,6 +4,9 @@ import { currentTenantSlug } from '@/lib/tenant/context'
 import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch, getPublicResourceType, getPublicTypeUnitsWithSetups } from '@/lib/booking/public-availability'
 import { todayInZone } from '@/lib/booking/time'
+import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { closedWeekdaysOf } from '@/lib/booking/closed-days'
+import { CHIP_STRIP_MAX_DAYS } from '@/lib/booking/horizon'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
@@ -66,7 +69,7 @@ export default async function ResourceTypeBookPage({
    * anybody — no ids, no phone — and the page behaves exactly as before when
    * they are absent.
    */
-  searchParams: Promise<{ duration?: string; players?: string }>
+  searchParams: Promise<{ duration?: string; players?: string; date?: string }>
 }) {
   const { resourceTypeId } = await params
   if (!UUID.test(resourceTypeId)) notFound()
@@ -81,6 +84,8 @@ export default async function ResourceTypeBookPage({
 
   const prefill = await searchParams
   const branch = await getPublicBranch(tenant.id)
+  const maxAdvanceDays = await publicMaxAdvanceDaysOrDefault(tenant.id)
+  const closedWeekdays = branch && maxAdvanceDays > CHIP_STRIP_MAX_DAYS ? await closedWeekdaysOf(tenant.id, branch.id) : []
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
   // Same proactive-disable pattern as app/(public)/checkout/page.tsx and
@@ -117,6 +122,9 @@ export default async function ResourceTypeBookPage({
             tenant={tenant}
             resourceType={resourceType}
             today={todayInZone(tenant.timezone)}
+            maxAdvanceDays={maxAdvanceDays}
+            closedWeekdays={closedWeekdays}
+            initialDate={prefill.date}
             razorpayConfigured={razorpayCredentials !== null}
             initialDuration={clampPrefill(prefill.duration, 30, 240, 60)}
             initialPlayers={clampPrefill(prefill.players, 1, 100, 1)}

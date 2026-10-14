@@ -114,3 +114,29 @@ export function horizonNow(): Date {
   }
   return new Date()
 }
+
+/**
+ * Pull a requested date (e.g. a prefilled or rebook link) into the bookable
+ * window instead of erroring: past or malformed → today, beyond → the last
+ * bookable date. `clamped` says whether it had to move, so the UI can explain.
+ */
+export function clampDateToWindow(
+  requested: string | undefined | null,
+  todayStr: string,
+  maxAdvanceDays: number,
+): { date: string; clamped: boolean } {
+  if (!requested) return { date: todayStr, clamped: false }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) return { date: todayStr, clamped: true }
+  const [y, m, d] = requested.split('-').map(Number)
+  const real = new Date(Date.UTC(y, m - 1, d))
+  if (real.getUTCFullYear() !== y || real.getUTCMonth() !== m - 1 || real.getUTCDate() !== d) {
+    return { date: todayStr, clamped: true }
+  }
+  if (requested < todayStr) return { date: todayStr, clamped: true }
+  const last = lastBookableDate(todayStr, maxAdvanceDays)
+  if (requested > last) return { date: last, clamped: true }
+  return { date: requested, clamped: false }
+}
+
+/** A window this short keeps the original chip strip on the storefront, so 7-day venues look exactly as before. */
+export const CHIP_STRIP_MAX_DAYS = 14
