@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { BookingDetailPanel, advanceGapOf, type OrderSummary, type PanelPaymentState } from './BookingDetailPanel'
-import { PAYMENT_BADGE, PAYMENT_LABELS, SOURCE_BADGE, SOURCE_LABELS, STATUS_BADGE, STATUS_LABELS } from './bookingBadges'
+import { PAYMENT_LABELS, SOURCE_BADGE, SOURCE_LABELS, STATUS_BADGE, STATUS_LABELS } from './bookingBadges'
 import { dateInZone, formatMoney, prettyDate, timeInZone } from '@/lib/format'
 import { groupByDay } from '@/lib/booking/range-groups'
 import { todayInZone } from '@/lib/booking/time'
@@ -30,6 +30,26 @@ export type RangeRow = {
   /** Sum of slot_total over EVERY slot of the booking. */
   slotsTotal: string
   advancePaid: string
+}
+
+// Shared by the column header and every row so the columns line up.
+const COLS = 'sm:grid-cols-[8rem_minmax(0,1.6fr)_minmax(0,1fr)_9.5rem_7.5rem]'
+
+const STATUS_DOT: Record<string, string> = {
+  pending_payment: 'bg-amber-500',
+  confirmed: 'bg-blue-500',
+  checked_in: 'bg-emerald-500',
+  completed: 'bg-zinc-400',
+  cancelled: 'bg-rose-500',
+  no_show: 'bg-amber-500',
+}
+const PAYMENT_DOT: Record<string, string> = {
+  paid: 'bg-emerald-500',
+  partially_paid: 'bg-amber-500',
+  issued: 'bg-rose-500',
+  partially_refunded: 'bg-orange-500',
+  refunded: 'bg-zinc-500',
+  unbilled: 'bg-zinc-300 dark:bg-zinc-600',
 }
 
 // Summary strip order; statuses not listed here (none today) are appended.
@@ -86,33 +106,52 @@ export function BookingsRangeList({
 
   return (
     <div className="mt-5">
-      <div className="flex flex-wrap items-center gap-2" aria-label="Range summary">
-        <span className="mr-1 text-base font-semibold">
-          {summary.bookings} {summary.bookings === 1 ? 'booking' : 'bookings'}
-        </span>
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" aria-label="Range summary">
+        <div className="col-span-2 rounded-lg border bg-card px-4 py-2.5 sm:col-span-1 sm:min-w-[8.5rem]">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total</p>
+          <p className="text-2xl font-semibold tabular-nums leading-tight">
+            {summary.bookings}
+            <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+              {summary.bookings === 1 ? 'booking' : 'bookings'}
+            </span>
+          </p>
+        </div>
         {statuses.map((s) => (
-          <span
-            key={s}
-            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[s] ?? 'bg-muted text-muted-foreground'}`}
-          >
-            {STATUS_LABELS[s] ?? s}
-            <span className="tabular-nums">{summary.byStatus[s]}</span>
-          </span>
+          <div key={s} className="rounded-lg border bg-card px-4 py-2.5 sm:min-w-[7.5rem]">
+            <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <span className={`h-2 w-2 rounded-full ${STATUS_DOT[s] ?? 'bg-zinc-400'}`} aria-hidden />
+              {STATUS_LABELS[s] ?? s}
+            </p>
+            <p className="text-2xl font-semibold tabular-nums leading-tight">{summary.byStatus[s]}</p>
+          </div>
         ))}
       </div>
 
       {rows.length === 0 ? (
-        <p className="mt-6 rounded-lg border px-4 py-10 text-center text-base text-muted-foreground">
+        <p className="mt-6 rounded-xl border bg-card px-4 py-12 text-center text-base text-muted-foreground">
           No bookings between {rangeLabel}
         </p>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border">
+        <div className="mt-4 overflow-hidden rounded-xl border bg-card shadow-sm">
+          <div
+            className={`hidden gap-4 border-b bg-muted/50 px-5 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground sm:grid ${COLS}`}
+            aria-hidden
+          >
+            <span>Time</span>
+            <span>Customer</span>
+            <span>Resource</span>
+            <span>Status</span>
+            <span className="text-right">Amount</span>
+          </div>
           {groups.map((g) => (
-            <section key={g.date} aria-label={prettyDate(g.date)}>
-              <h2 className="border-b bg-muted/40 px-4 py-2 text-sm font-semibold text-muted-foreground">
-                {prettyDate(g.date)}
+            <section key={g.date} aria-label={prettyDate(g.date)} className="border-b last:border-b-0">
+              <h2 className="flex items-baseline justify-between gap-3 border-b bg-muted/30 px-5 py-2">
+                <span className="text-sm font-semibold">{prettyDate(g.date)}</span>
+                <span className="text-xs text-muted-foreground">
+                  {g.rows.length} {g.rows.length === 1 ? 'booking' : 'bookings'}
+                </span>
               </h2>
-              <ul className="divide-y divide-border">
+              <ul className="divide-y divide-border/70">
                 {g.rows.map((r) => (
                   <li key={r.bookingId}>
                     <BookingRow
@@ -204,79 +243,97 @@ function BookingRow({
         : advanceGap
           ? `${formatMoney(advanceGap, currency)} due (est.)`
           : null
+  const time = timeParts(r, groupDate, timeZone)
 
   return (
     <button
       type="button"
       onClick={onOpen}
       aria-label={`View booking ${r.bookingNumber}`}
-      className="flex w-full flex-col gap-2 px-4 py-3 text-left transition hover:bg-muted/20 sm:grid sm:grid-cols-[8.5rem_minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] sm:items-center sm:gap-4"
+      className={`grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 px-5 py-4 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 sm:items-center ${COLS}`}
     >
-      <div className="text-sm tabular-nums text-muted-foreground">
-        <span className={cancelled ? 'line-through' : undefined}>{timeLabel(r, groupDate, timeZone)}</span>
-        <span className="ml-2 font-medium text-foreground sm:ml-0 sm:block">{r.bookingNumber}</span>
-      </div>
+      {/* Time + booking number */}
+      <span className="order-1 block min-w-0 sm:order-none">
+        <span className={`block text-sm font-semibold tabular-nums ${cancelled ? 'text-muted-foreground line-through' : ''}`}>
+          {time.main}
+        </span>
+        {time.note && (
+          <span className="mt-0.5 inline-block rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">
+            {time.note}
+          </span>
+        )}
+        <span className="mt-0.5 block text-xs text-muted-foreground">{r.bookingNumber}</span>
+      </span>
 
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className={`truncate font-medium ${cancelled ? 'text-muted-foreground line-through' : ''}`}>
-            {r.customerName || 'Walk-in'}
-          </p>
+      {/* Customer */}
+      <span className="order-3 col-span-2 block min-w-0 sm:order-none sm:col-span-1">
+        <span className={`block truncate text-[15px] font-semibold ${cancelled ? 'text-muted-foreground' : ''}`}>
+          {r.customerName || 'Walk-in'}
+        </span>
+        <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span
-            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SOURCE_BADGE[r.source] ?? 'bg-muted text-muted-foreground'}`}
+            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${SOURCE_BADGE[r.source] ?? 'bg-muted text-muted-foreground'}`}
           >
             {SOURCE_LABELS[r.source] ?? r.source}
           </span>
+          {r.customerPhone && <span className="tabular-nums">{r.customerPhone}</span>}
           {r.backdated && (
             <span
               title={lateEntryLabel(r.bookingCreatedAt, r.firstStartsAt, timeZone)}
-              className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white"
+              className="inline-flex items-center rounded bg-violet-600 px-1.5 py-0.5 text-[11px] font-medium text-white"
             >
               Entered late
             </span>
           )}
-        </div>
-        {r.customerPhone && <p className="text-sm text-muted-foreground">{r.customerPhone}</p>}
+        </span>
         {cancelled && r.cancellationReason && (
-          <p className="mt-0.5 text-sm text-destructive">Reason: {r.cancellationReason}</p>
+          <span className="mt-1.5 block rounded-md bg-destructive/5 px-2 py-1 text-xs text-destructive">
+            <span className="font-semibold">Reason:</span> {r.cancellationReason}
+          </span>
         )}
-      </div>
+      </span>
 
-      <p className="min-w-0 break-words text-sm text-muted-foreground">{r.resourceNames.join(', ')}</p>
+      {/* Resource */}
+      <span className="order-4 col-span-2 block min-w-0 break-words text-sm text-muted-foreground sm:order-none sm:col-span-1">
+        <span className="font-medium text-muted-foreground/70 sm:hidden">Resource · </span>
+        {r.resourceNames.join(', ')}
+      </span>
 
-      <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:items-start sm:gap-1">
+      {/* Status + payment */}
+      <span className="order-5 col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:order-none sm:col-span-1 sm:flex-col sm:items-start sm:gap-1.5">
         <span
-          className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${STATUS_BADGE[r.status] ?? 'bg-muted text-muted-foreground'}`}
+          className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${STATUS_BADGE[r.status] ?? 'bg-muted text-muted-foreground'}`}
         >
           {STATUS_LABELS[r.status] ?? r.status}
         </span>
-        <span
-          className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${PAYMENT_BADGE[payKey]}`}
-        >
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <span className={`h-1.5 w-1.5 rounded-full ${PAYMENT_DOT[payKey] ?? 'bg-zinc-300'}`} aria-hidden />
           {PAYMENT_LABELS[payKey]}
         </span>
-      </div>
+      </span>
 
-      <div className="flex items-baseline justify-between gap-2 sm:flex-col sm:items-end sm:justify-start sm:gap-0">
-        {/* Once billed the invoice's total is the real figure; bookings.total
-            stays 0.00 for a walk-in until checkout (same rule as the day table). */}
-        <span className="font-medium tabular-nums">{formatMoney(payment?.total ?? Number(r.total), currency)}</span>
-        {dueText && <span className="text-xs text-muted-foreground">{dueText}</span>}
-      </div>
+      {/* Amount. Once billed the invoice's total is the real figure;
+          bookings.total stays 0.00 for a walk-in until checkout (same rule as the day table). */}
+      <span className="order-2 block text-right sm:order-none">
+        <span className={`block text-[15px] font-semibold tabular-nums ${cancelled ? 'text-muted-foreground' : ''}`}>
+          {formatMoney(payment?.total ?? Number(r.total), currency)}
+        </span>
+        {dueText && <span className="mt-0.5 block text-xs font-medium text-amber-600">{dueText}</span>}
+      </span>
     </button>
   )
 }
 
 /**
- * "10:00–12:00", "open tab" when no end is set. Adds the date when the booking
- * began before the day it is listed under (carried in from before the range),
- * or ends on a later local day than it starts.
+ * Time column: "10:00–12:00", or the start with an "Open tab" note when no end
+ * is set. Adds the date when the booking began before the day it is listed
+ * under (carried in from before the range), or ends on a later local day.
  */
-function timeLabel(r: RangeRow, groupDate: string, tz: string): string {
+function timeParts(r: RangeRow, groupDate: string, tz: string): { main: string; note: string | null } {
   const startDay = todayInZone(tz, new Date(r.firstStartsAt))
   const start = `${startDay !== groupDate ? `${dateInZone(r.firstStartsAt, tz)} ` : ''}${timeInZone(r.firstStartsAt, tz)}`
-  if (r.isOpen || !r.lastEndsAt) return `${start} · open tab`
+  if (r.isOpen || !r.lastEndsAt) return { main: start, note: 'Open tab' }
   const endDay = todayInZone(tz, new Date(r.lastEndsAt))
   const end = `${endDay !== startDay ? `${dateInZone(r.lastEndsAt, tz)} ` : ''}${timeInZone(r.lastEndsAt, tz)}`
-  return `${start}–${end}`
+  return { main: `${start}–${end}`, note: null }
 }

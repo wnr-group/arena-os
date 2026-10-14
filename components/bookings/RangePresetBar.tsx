@@ -31,7 +31,7 @@ export function rangeSummary(range: Pick<ResolvedRange, 'preset' | 'fromDate' | 
   return `${RANGE_LABELS[range.preset]} · ${rangeSpan(range)}`
 }
 
-const chipBase = 'inline-block shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm font-medium transition'
+const chipBase = 'inline-block shrink-0 whitespace-nowrap rounded-md border px-3.5 py-1.5 text-sm font-medium transition'
 const chipOn = 'border-primary bg-primary text-primary-foreground'
 const chipOff = 'border-border bg-background hover:bg-muted'
 
