@@ -1,13 +1,9 @@
 'use client'
 
 import { useId, useState, useTransition, type FormEvent } from 'react'
-import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { RANGE_LABELS, REPORT_PRESETS, matchingReportPresets, resolvePresetDates } from '@/lib/booking/ranges'
-
-const chipBase = 'inline-block whitespace-nowrap rounded-md border px-3 py-1.5 text-sm font-medium transition'
-const chipOn = 'border-primary bg-primary text-primary-foreground'
-const chipOff = 'border-border bg-background hover:bg-muted'
+import { RangeChips } from './RangeChips'
 
 /**
  * Date-range filter shared by the reports pages: quick-range chips plus custom
@@ -69,25 +65,17 @@ export function DateRangeFilter({
 
   return (
     <form onSubmit={apply} className="mt-6 rounded-2xl border border-border bg-card p-4 shadow-sm">
-      <nav aria-label="Quick date range">
-        <ul className="flex flex-wrap gap-2">
-          {REPORT_PRESETS.map((p) => {
-            const r = resolvePresetDates(p, today)
-            const active = activePresets.includes(p)
-            return (
-              <li key={p}>
-                <Link
-                  href={hrefFor(r.fromDate, r.toDate)}
-                  aria-current={active ? 'page' : undefined}
-                  className={`${chipBase} ${active ? chipOn : chipOff}`}
-                >
-                  {RANGE_LABELS[p]}
-                </Link>
-              </li>
-            )
-          })}
-        </ul>
-      </nav>
+      <RangeChips
+        chips={REPORT_PRESETS.map((p) => {
+          const r = resolvePresetDates(p, today)
+          return {
+            key: p,
+            label: RANGE_LABELS[p],
+            href: hrefFor(r.fromDate, r.toDate),
+            active: activePresets.includes(p),
+          }
+        })}
+      />
 
       <div className="mt-4 flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">

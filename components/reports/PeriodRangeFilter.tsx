@@ -1,7 +1,7 @@
-'use client'
+"use client";
 
-import { useState, useTransition, type FormEvent } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useTransition, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 
 /** Month-range filter — the payroll report's sibling of DateRangeFilter, pushing ?from=&to= ('YYYY-MM' each) via the router. */
 export function PeriodRangeFilter({
@@ -10,27 +10,33 @@ export function PeriodRangeFilter({
   to,
   maxPeriod,
 }: {
-  basePath: string
-  from: string
-  to: string
-  maxPeriod: string
+  basePath: string;
+  from: string;
+  to: string;
+  maxPeriod: string;
 }) {
-  const router = useRouter()
-  const [fromVal, setFromVal] = useState(from)
-  const [toVal, setToVal] = useState(to)
-  const [pending, startTransition] = useTransition()
+  const router = useRouter();
+  const [fromVal, setFromVal] = useState(from);
+  const [toVal, setToVal] = useState(to);
+  const [pending, startTransition] = useTransition();
 
   function apply(e: FormEvent) {
-    e.preventDefault()
+    e.preventDefault();
     startTransition(() => {
-      router.push(`${basePath}?from=${fromVal}&to=${toVal}`)
-    })
+      router.push(`${basePath}?from=${fromVal}&to=${toVal}`);
+    });
   }
 
   return (
-    <form onSubmit={apply} className="mt-6 flex flex-wrap items-end gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm">
+    <form
+      onSubmit={apply}
+      className="mt-6 flex flex-wrap items-end gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm"
+    >
       <div className="flex flex-col gap-1">
-        <label htmlFor="from" className="text-xs font-medium text-muted-foreground">
+        <label
+          htmlFor="from"
+          className="text-xs font-medium text-muted-foreground"
+        >
           From
         </label>
         <input
@@ -43,7 +49,10 @@ export function PeriodRangeFilter({
         />
       </div>
       <div className="flex flex-col gap-1">
-        <label htmlFor="to" className="text-xs font-medium text-muted-foreground">
+        <label
+          htmlFor="to"
+          className="text-xs font-medium text-muted-foreground"
+        >
           To
         </label>
         <input
@@ -60,8 +69,8 @@ export function PeriodRangeFilter({
         disabled={pending}
         className="rounded-lg bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60"
       >
-        {pending ? 'Applying…' : 'Apply'}
+        {pending ? "Applying…" : "Apply"}
       </button>
     </form>
-  )
+  );
 }

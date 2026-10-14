@@ -24,6 +24,7 @@
     "test:range-bookings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-range-bookings.ts",
     "test:m34-qa": "tsx --import ./scripts/server-only-hook.mjs scripts/test-m34-qa.ts",
     "test:employee-analytics": "tsx --import ./scripts/server-only-hook.mjs scripts/test-employee-analytics.ts",
+    "test:payroll-presets": "tsx --import ./scripts/server-only-hook.mjs scripts/test-payroll-presets.ts",
     "test:report-presets": "tsx --import ./scripts/server-only-hook.mjs scripts/test-report-presets.ts",
     "test:per-head-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-per-head-pricing.ts",
     "test:weekend-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-weekend-pricing.ts",
