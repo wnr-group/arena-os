@@ -30,6 +30,7 @@
     "test:booking-horizon": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-horizon.ts",
     "test:booking-horizon-enforcement": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-booking-horizon-enforcement.ts",
     "test:storefront-date-picker": "tsx scripts/test-storefront-date-picker.tsx",
+    "test:m37-qa": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-m37-qa.ts",
     "test:report-presets": "tsx --import ./scripts/server-only-hook.mjs scripts/test-report-presets.ts",
     "test:per-head-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-per-head-pricing.ts",
     "test:weekend-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-weekend-pricing.ts",
