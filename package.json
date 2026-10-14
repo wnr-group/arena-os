@@ -21,6 +21,7 @@
     "reports:refresh": "tsx scripts/refresh-reports.ts",
     "test:elapsed-time-pricing": "tsx scripts/test-elapsed-time-pricing.ts",
     "test:booking-ranges": "tsx scripts/test-booking-ranges.ts",
+    "test:range-bookings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-range-bookings.ts",
     "test:per-head-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-per-head-pricing.ts",
     "test:weekend-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-weekend-pricing.ts",
     "test:happy-hours-reserved-bookings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-happy-hours-reserved-bookings.ts",

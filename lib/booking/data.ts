@@ -348,3 +348,132 @@ export async function listDayBookings(ctx: ActiveContext, branchId: string, date
     }))
   })
 }
+
+export const RANGE_PAGE_SIZE = 50
+const RANGE_PAGE_SIZE_MAX = 200
+
+const clampInt = (n: unknown, min: number, max: number, fallback: number) =>
+  typeof n === 'number' && Number.isFinite(n) ? Math.min(max, Math.max(min, Math.floor(n))) : fallback
+
+/**
+ * Booking-level feed for a multi-day range (M34 #2) — the range counterpart of
+ * listDayBookings, which it does not replace (that one stays slot-level for the
+ * timeline).
+ *
+ * Same overlap predicate as the day query — slot.startsAt < endUtc AND
+ * (endsAt IS NULL OR endsAt > startUtc) — so a booking crossing either edge of
+ * the range, and an open-tab walk-in, are included. Cancelled / no-show
+ * bookings are included too (their slots are `active = false`, which is not
+ * filtered on; see listDayBookings). Runs inside withUser, so RLS applies.
+ *
+ * Slots collapse to one row per booking. `firstStartsAt` is the earliest
+ * overlapping slot start (it can precede `startUtc` for a carried-in booking —
+ * clamp for day grouping). Rows are newest-first with the booking id as a
+ * stable tie-break, and paged with LIMIT/OFFSET. `slotsTotal` sums EVERY slot
+ * of the booking, including ones outside the range.
+ *
+ * `summary` counts the whole range (not just the page) per booking status.
+ * Revenue is deliberately not derived here.
+ */
+export async function listRangeBookings(
+  ctx: ActiveContext,
+  branchId: string,
+  startUtc: Date,
+  endUtc: Date,
+  opts: { page?: number; pageSize?: number } = {},
+) {
+  const pageSize = clampInt(opts.pageSize, 1, RANGE_PAGE_SIZE_MAX, RANGE_PAGE_SIZE)
+  const requestedPage = clampInt(opts.page, 1, 1_000_000, 1)
+
+  return withUser(ctx.user.id, async (tx) => {
+    const inRange = tx
+      .select({
+        bookingId: bookingSlots.bookingId,
+        firstStartsAt: sql<Date>`min(${bookingSlots.startsAt})`.mapWith(bookingSlots.startsAt).as('first_starts_at'),
+        lastEndsAt: sql<Date | null>`max(${bookingSlots.endsAt})`.mapWith(bookingSlots.endsAt).as('last_ends_at'),
+        isOpen: sql<boolean>`bool_or(${bookingSlots.endsAt} is null)`.as('is_open'),
+        resourceNames: sql<string[]>`array_agg(distinct ${bookingSlots.resourceName})`.as('resource_names'),
+      })
+      .from(bookingSlots)
+      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .where(
+        and(
+          eq(bookingSlots.tenantId, ctx.tenant.id),
+          eq(bookings.tenantId, ctx.tenant.id),
+          eq(bookings.branchId, branchId),
+          lt(bookingSlots.startsAt, endUtc),
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, startUtc)),
+        ),
+      )
+      .groupBy(bookingSlots.bookingId)
+      .as('in_range')
+
+    const statusRows = await tx
+      .select({ status: bookings.status, n: sql<number>`count(*)::int` })
+      .from(inRange)
+      .innerJoin(bookings, eq(bookings.id, inRange.bookingId))
+      .groupBy(bookings.status)
+    const byStatus: Record<string, number> = {}
+    let total = 0
+    for (const r of statusRows) {
+      byStatus[r.status] = r.n
+      total += r.n
+    }
+
+    // Past the last page → clamp to it rather than returning an empty page.
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)))
+
+    const pageRows = await tx
+      .select({
+        bookingId: bookings.id,
+        bookingNumber: bookings.bookingNumber,
+        customerName: bookings.customerName,
+        customerPhone: bookings.customerPhone,
+        status: bookings.status,
+        source: bookings.source,
+        total: bookings.total,
+        deposit: bookings.deposit,
+        cancellationReason: bookings.cancellationReason,
+        backdated: bookings.backdated,
+        bookingCreatedAt: bookings.createdAt,
+        firstStartsAt: inRange.firstStartsAt,
+        lastEndsAt: inRange.lastEndsAt,
+        isOpen: inRange.isOpen,
+        resourceNames: inRange.resourceNames,
+      })
+      .from(inRange)
+      .innerJoin(bookings, eq(bookings.id, inRange.bookingId))
+      .orderBy(sql`${inRange.firstStartsAt} desc`, asc(bookings.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize)
+
+    const bookingIds = pageRows.map((r) => r.bookingId)
+    const totalRows =
+      bookingIds.length > 0
+        ? await tx
+            .select({
+              bookingId: bookingSlots.bookingId,
+              slotsTotal: sql<string>`coalesce(sum(${bookingSlots.slotTotal}), 0)::text`,
+              slotCount: sql<number>`count(*)::int`,
+            })
+            .from(bookingSlots)
+            .where(and(eq(bookingSlots.tenantId, ctx.tenant.id), inArray(bookingSlots.bookingId, bookingIds)))
+            .groupBy(bookingSlots.bookingId)
+        : []
+    const totals = new Map(totalRows.map((t) => [t.bookingId, t]))
+    const advanceByBooking = await advancePaidTotals(tx, ctx.tenant.id, bookingIds)
+
+    return {
+      rows: pageRows.map((r) => ({
+        ...r,
+        slotsTotal: totals.get(r.bookingId)?.slotsTotal ?? '0.00',
+        slotCount: totals.get(r.bookingId)?.slotCount ?? 0,
+        advancePaid: advanceByBooking.get(r.bookingId) ?? '0.00',
+      })),
+      total,
+      page,
+      pageSize,
+      summary: { bookings: total, byStatus },
+    }
+  })
+}

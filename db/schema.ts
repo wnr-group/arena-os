@@ -521,6 +521,9 @@ export const bookingSlots = pgTable(
   (t) => [
     index('idx_booking_slots_booking').on(t.bookingId),
     index('idx_booking_slots_resource_time').on(t.resourceId, t.startsAt),
+    // 0122 — tenant-wide time-range scans (M34 bookings date presets).
+    index('idx_booking_slots_tenant_starts').on(t.tenantId, t.startsAt),
+    index('idx_booking_slots_tenant_ends').on(t.tenantId, t.endsAt),
   ],
 )
 
