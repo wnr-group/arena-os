@@ -240,6 +240,19 @@ async function main() {
     const all = await list(ctx, 10, 10)
     check('cancelled booking is returned, flagged by status', all.rows.find((q) => q.customerName === 'X1')?.status === 'cancelled')
     check('no-show returned', all.rows.some((q) => q.status === 'no_show'))
+
+    // Refund-owed + payment-hold signals reach the multi-day list (the day table shows both).
+    const xRefund = await booking(T, T.branchId, 'X2', 'cancelled', one(17))
+    await owner.query('update bookings set deposit_review_required=true where id=$1', [xRefund])
+    const hold = new Date('2045-04-10T09:00:00Z')
+    const pRow = await booking(T, T.branchId, 'P1', 'pending_payment', one(19))
+    await owner.query('update bookings set payment_hold_expires_at=$2 where id=$1', [pRow, hold])
+    const sig = await list(ctx, 10, 10)
+    const byName = (n: string) => sig.rows.find((q) => q.customerName === n)
+    check('cancelled booking with a paid deposit carries depositReviewRequired', byName('X2')?.depositReviewRequired === true)
+    check('a plain cancelled booking is not flagged', byName('X1')?.depositReviewRequired === false)
+    check('pending_payment row carries its hold expiry', byName('P1')?.paymentHoldExpiresAt?.getTime() === hold.getTime())
+    check('a booking with no hold has a null expiry', byName('C1')?.paymentHoldExpiresAt === null)
   }
 
   // ══ 4. pagination ════════════════════════════════════════════════════════

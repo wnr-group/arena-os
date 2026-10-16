@@ -2,7 +2,16 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { BookingDetailPanel, advanceGapOf, type OrderSummary, type PanelPaymentState } from './BookingDetailPanel'
-import { PAYMENT_LABELS, SOURCE_BADGE, SOURCE_LABELS, STATUS_BADGE, STATUS_LABELS } from './bookingBadges'
+import {
+  PAYMENT_LABELS,
+  REFUND_REQUIRED_BADGE,
+  REFUND_REQUIRED_LABEL,
+  SOURCE_BADGE,
+  SOURCE_LABELS,
+  STATUS_BADGE,
+  STATUS_LABELS,
+  statusText,
+} from './bookingBadges'
 import { dateInZone, formatMoney, prettyDate, timeInZone } from '@/lib/format'
 import { groupByDay } from '@/lib/booking/range-groups'
 import { todayInZone } from '@/lib/booking/time'
@@ -19,6 +28,10 @@ export type RangeRow = {
   total: string
   deposit: string
   cancellationReason: string | null
+  /** pending_payment only: when the payment hold lapses (ISO). */
+  paymentHoldExpiresAt: string | null
+  /** A paid online deposit on a cancelled booking is owed back. */
+  depositReviewRequired: boolean
   backdated: boolean
   bookingCreatedAt: string
   /** Earliest in-range slot start. */
@@ -304,8 +317,13 @@ function BookingRow({
         <span
           className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${STATUS_BADGE[r.status] ?? 'bg-muted text-muted-foreground'}`}
         >
-          {STATUS_LABELS[r.status] ?? r.status}
+          {statusText(r.status, r.paymentHoldExpiresAt, timeZone)}
         </span>
+        {r.depositReviewRequired && (
+          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${REFUND_REQUIRED_BADGE}`}>
+            {REFUND_REQUIRED_LABEL}
+          </span>
+        )}
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <span className={`h-1.5 w-1.5 rounded-full ${PAYMENT_DOT[payKey] ?? 'bg-zinc-300'}`} aria-hidden />
           {PAYMENT_LABELS[payKey]}

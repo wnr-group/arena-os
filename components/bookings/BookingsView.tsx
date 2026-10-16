@@ -27,10 +27,13 @@ import { BookingDetailPanel, advanceGapOf, type OrderSummary } from './BookingDe
 import {
   PAYMENT_BADGE,
   PAYMENT_LABELS,
+  REFUND_REQUIRED_BADGE,
+  REFUND_REQUIRED_LABEL,
   SOURCE_BADGE,
   SOURCE_LABELS,
   STATUS_BADGE,
   STATUS_LABELS,
+  statusText,
 } from './bookingBadges'
 import type { RangePreset } from '@/lib/booking/ranges'
 import { lateEntryLabel } from '@/lib/booking/late-entry'
@@ -674,14 +677,11 @@ export function BookingsView({
                             STATUS_BADGE[b.status] ?? 'bg-muted text-muted-foreground'
                           }`}
                         >
-                          {STATUS_LABELS[b.status] ?? b.status}
-                          {b.status === 'pending_payment' && b.representative.paymentHoldExpiresAt
-                            ? ` (expires ${timeInZone(b.representative.paymentHoldExpiresAt, timeZone)})`
-                            : ''}
+                          {statusText(b.status, b.representative.paymentHoldExpiresAt, timeZone)}
                         </span>
                         {b.representative.depositReviewRequired && (
-                          <span className="ml-1.5 inline-flex items-center rounded-full bg-destructive/10 px-2 py-1 text-xs font-semibold text-destructive">
-                            Paid — refund required
+                          <span className={`ml-1.5 inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${REFUND_REQUIRED_BADGE}`}>
+                            {REFUND_REQUIRED_LABEL}
                           </span>
                         )}
                       </td>

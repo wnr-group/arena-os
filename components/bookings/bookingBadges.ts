@@ -1,5 +1,6 @@
 // Badge styles and labels shared by the day view's bookings table, the multi-day
 // list (M34 #4) and the booking detail panel.
+import { timeInZone } from '@/lib/format'
 
 /**
  * Payment badges. "Unbilled" is the absence of an invoice rather than a state
@@ -39,6 +40,25 @@ export const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
   no_show: 'No-show',
 }
+/**
+ * Status text. A pending_payment booking with a payment hold shows when the
+ * hold lapses ("Awaiting payment (expires 14:05)"), same on every bookings view.
+ */
+export function statusText(status: string, paymentHoldExpiresAt: string | null | undefined, timeZone: string): string {
+  const label = STATUS_LABELS[status] ?? status
+  return status === 'pending_payment' && paymentHoldExpiresAt
+    ? `${label} (expires ${timeInZone(paymentHoldExpiresAt, timeZone)})`
+    : label
+}
+
+/**
+ * Raised when a cancelled booking had a paid online deposit (depositReviewRequired,
+ * #40): the flag staff use to find refunds owed. Colour + words only — each view
+ * adds its own size/shape classes.
+ */
+export const REFUND_REQUIRED_BADGE = 'bg-destructive/10 text-destructive'
+export const REFUND_REQUIRED_LABEL = 'Paid — refund required'
+
 export const SOURCE_BADGE: Record<string, string> = {
   online: 'bg-accent text-primary',
   walk_in: 'bg-muted text-muted-foreground',

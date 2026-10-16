@@ -147,6 +147,8 @@ export default async function BookingsPage({
             total: r.total,
             deposit: r.deposit,
             cancellationReason: r.cancellationReason,
+            paymentHoldExpiresAt: r.paymentHoldExpiresAt?.toISOString() ?? null,
+            depositReviewRequired: r.depositReviewRequired,
             backdated: r.backdated,
             bookingCreatedAt: r.bookingCreatedAt.toISOString(),
             firstStartsAt: r.firstStartsAt.toISOString(),

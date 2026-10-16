@@ -434,6 +434,8 @@ export async function listRangeBookings(
         total: bookings.total,
         deposit: bookings.deposit,
         cancellationReason: bookings.cancellationReason,
+        paymentHoldExpiresAt: bookings.paymentHoldExpiresAt,
+        depositReviewRequired: bookings.depositReviewRequired,
         backdated: bookings.backdated,
         bookingCreatedAt: bookings.createdAt,
         firstStartsAt: inRange.firstStartsAt,

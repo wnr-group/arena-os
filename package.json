@@ -26,6 +26,7 @@
     "test:employee-analytics": "tsx --import ./scripts/server-only-hook.mjs scripts/test-employee-analytics.ts",
     "test:payroll-presets": "tsx --import ./scripts/server-only-hook.mjs scripts/test-payroll-presets.ts",
     "test:payroll-chips-render": "tsx scripts/test-payroll-chips-render.tsx",
+    "test:range-list-signals": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-range-list-signals.tsx",
     "test:report-presets-qa": "tsx --import ./scripts/server-only-hook.mjs scripts/test-report-presets-qa.ts",
     "test:booking-settings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-settings.ts",
     "test:booking-horizon": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-horizon.ts",
