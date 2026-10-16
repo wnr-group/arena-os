@@ -68,6 +68,11 @@ for (const n of [30, 90, 180]) {
   check('nothing beyond the last bookable date is rendered', !h.includes(`data-date="${addDays(last, 1)}"`))
   check('month headings are real headings', count(h, '<h3') === new Set(dates.map((d) => d.slice(0, 7))).size)
   check('has a Jump-to control with a month option per heading', h.includes('Jump to') && count(h, '<option') === new Set(dates.map((d) => d.slice(0, 7))).size)
+  // Controlled by the selected month: it must follow the value, not stay on the first month.
+  const selectedMonth = (html: string) => /<option value="(\d{4}-\d{2})" selected=""/.exec(html)?.[1]
+  check('Jump-to shows the selected month (initial value)', selectedMonth(render(90)) === TODAY.slice(0, 7), selectedMonth(render(90)))
+  const lastDay = dateOptions(TODAY, 90)[89]
+  check('Jump-to follows a selection in a later month', selectedMonth(render(90, [], lastDay)) === lastDay.slice(0, 7), selectedMonth(render(90, [], lastDay)))
   check('has a calendar trigger wired as a dialog opener', h.includes('aria-haspopup="dialog"') && h.includes('aria-expanded="false"') && h.includes('Calendar'))
   check('the popover is not rendered until opened (no 90-day prefetch of anything)', !h.includes('role="dialog"'))
   check('every date button is a real <button type="button"> with aria-pressed', count(h, /<button type="button" data-date="/g) === n && count(h, /data-date="[^"]*" aria-pressed="(true|false)"/g) === n)

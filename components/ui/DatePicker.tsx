@@ -149,6 +149,15 @@ function LongPicker({
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
+  // The month the strip is showing. Follows the selected date (a chip pick or a
+  // calendar choice) and is also set by "Jump to", so the select never lags.
+  const [viewMonth, setViewMonth] = useState(value.slice(0, 7))
+  const [seenValue, setSeenValue] = useState(value)
+  if (seenValue !== value) {
+    setSeenValue(value)
+    setViewMonth(value.slice(0, 7))
+  }
+
   const isClosedDay = (d: string) => closed.has(dow(d))
   const inWindow = (d: string) => d >= first && d <= last
 
@@ -164,6 +173,7 @@ function LongPicker({
   }, [value])
 
   function jumpTo(monthKey: string) {
+    setViewMonth(monthKey)
     const strip = stripRef.current
     const el = strip?.querySelector<HTMLElement>(`[data-month="${monthKey}"]`)
     if (!strip || !el) return
@@ -178,7 +188,7 @@ function LongPicker({
           <select
             aria-label="Jump to month"
             onChange={(e) => jumpTo(e.target.value)}
-            defaultValue={value.slice(0, 7)}
+            value={viewMonth}
             className="rounded-lg border border-border bg-background px-2 py-1.5 text-sm font-medium text-foreground"
           >
             {months.map((m) => (
