@@ -160,7 +160,11 @@ export function ResourceBookingPage({
   const [step, setStep] = useState<Step>('select')
   const [date, setDate] = useState(initial.date)
   const [dateNotice, setDateNotice] = useState<string | null>(
-    initial.clamped ? `That date is outside the booking window, so we've picked ${prettyDateLong(initial.date)} instead.` : null,
+    !initial.clamped
+      ? null
+      : initial.reason === 'beyond'
+        ? `That date is outside the booking window, so we've picked ${prettyDateLong(initial.date)} instead.`
+        : `That date isn't available, so we've picked ${prettyDateLong(initial.date)} instead.`,
   )
   const [duration, setDuration] = useState(60)
   const [slots, setSlots] = useState<Slot[] | null>(null)

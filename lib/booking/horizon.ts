@@ -124,24 +124,27 @@ export function horizonNow(): Date {
 /**
  * Pull a requested date (e.g. a prefilled or rebook link) into the bookable
  * window instead of erroring: past or malformed → today, beyond → the last
- * bookable date. `clamped` says whether it had to move, so the UI can explain.
+ * bookable date. `clamped` says whether it had to move and `reason` why, so
+ * the UI can explain it truthfully (a past date is not "outside the window").
  */
+export type ClampReason = 'past' | 'invalid' | 'beyond'
+
 export function clampDateToWindow(
   requested: string | undefined | null,
   todayStr: string,
   maxAdvanceDays: number,
-): { date: string; clamped: boolean } {
-  if (!requested) return { date: todayStr, clamped: false }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) return { date: todayStr, clamped: true }
+): { date: string; clamped: boolean; reason: ClampReason | null } {
+  if (!requested) return { date: todayStr, clamped: false, reason: null }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) return { date: todayStr, clamped: true, reason: 'invalid' }
   const [y, m, d] = requested.split('-').map(Number)
   const real = new Date(Date.UTC(y, m - 1, d))
   if (real.getUTCFullYear() !== y || real.getUTCMonth() !== m - 1 || real.getUTCDate() !== d) {
-    return { date: todayStr, clamped: true }
+    return { date: todayStr, clamped: true, reason: 'invalid' }
   }
-  if (requested < todayStr) return { date: todayStr, clamped: true }
+  if (requested < todayStr) return { date: todayStr, clamped: true, reason: 'past' }
   const last = lastBookableDate(todayStr, maxAdvanceDays)
-  if (requested > last) return { date: last, clamped: true }
-  return { date: requested, clamped: false }
+  if (requested > last) return { date: last, clamped: true, reason: 'beyond' }
+  return { date: requested, clamped: false, reason: null }
 }
 
 /** A window this short keeps the original chip strip on the storefront, so 7-day venues look exactly as before. */

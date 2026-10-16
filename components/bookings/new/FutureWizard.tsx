@@ -253,16 +253,18 @@ export function FutureWizard({
 
   const dateOptions = useMemo(() => windowDates(today, maxAdvanceDays), [today, maxAdvanceDays])
   const lastDate = lastBookableDate(today, maxAdvanceDays)
-  // A ?date= beyond the window is pulled in with a notice rather than erroring.
+  // A ?date= outside the window (past, junk or beyond) is pulled in with a notice rather than erroring.
   const clampedStart = useMemo(
     () => clampDateToWindow(requestedDate, today, maxAdvanceDays),
     [requestedDate, today, maxAdvanceDays],
   )
   const initialDate = clampedStart.date
   const [dateNotice, setDateNotice] = useState<string | null>(
-    clampedStart.clamped
-      ? `That date is outside the booking window (up to ${prettyDate(lastDate, timeZone)}), so we picked ${prettyDate(initialDate, timeZone)} instead.`
-      : null,
+    !clampedStart.clamped
+      ? null
+      : clampedStart.reason === 'beyond'
+        ? `That date is outside the booking window (up to ${prettyDate(lastDate, timeZone)}), so we picked ${prettyDate(initialDate, timeZone)} instead.`
+        : `That date isn't available, so we picked ${prettyDate(initialDate, timeZone)} instead.`,
   )
   const [date, setDate] = useState(initialDate)
   const [duration, setDuration] = useState(60)
