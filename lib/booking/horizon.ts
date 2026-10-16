@@ -12,11 +12,13 @@
  * - A booking is in-horizon when its START date (tenant-local) is ≤ the last
  *   bookable date. A slot that starts on the last day and runs past midnight
  *   into the next is judged by its start, so it is allowed.
- * - An ordinary slot's END is bounded too, but loosely: it may run into the day
- *   after the last bookable date (the overnight allowance) and no further.
- *   Without that, a slot starting on the last day could run for months.
- * - A per-day (date-range) booking is judged by BOTH ends: its end date must
- *   also be ≤ the last bookable date. Callers pass `endsAt` for those only.
+ * - When the caller supplies an END, it is bounded too: its date must be ≤ the
+ *   last bookable date + `endGraceDays`. A per-day (date-range) booking passes
+ *   grace 0 (its end must be in range). An ordinary slot passes 1, the overnight
+ *   allowance: it may run into the day after the last date and no further —
+ *   without that, a slot starting on the last day could run for months.
+ * - With no end (null) only the start is judged; callers that know the end
+ *   should pass it.
  * - Only the upper bound lives here. The past is a separate rule (backdated
  *   entry, M28; walk-in late checkout, M32) and is never judged by this file.
  */
@@ -43,11 +45,11 @@ export function isDateWithinHorizon(dateStr: string, todayStr: string, maxAdvanc
 /**
  * Is this booking inside the window?
  *
- * `endsAtUtcOrNull` is supplied ONLY for per-day (date-range) bookings, whose
- * end date must also be in range. For an ordinary slot pass null: it is judged
- * by its start alone, however late it runs. A day-range slot's end instant is
- * exclusive-ish ("Dn close"), so its date is taken 1ms before the instant, the
- * same convention the day-rate window uses.
+ * `endsAtUtcOrNull`, when given, must also land inside the window plus
+ * `endGraceDays` (0 for a per-day booking, 1 for an hourly slot's overnight
+ * allowance). Null judges the start alone. The end's date is taken 1ms before
+ * the instant ("Dn close" convention, shared with the day-rate window), so an
+ * end of exactly local midnight belongs to the day before.
  */
 export function isWithinHorizon(
   startsAtUtc: Date,
@@ -55,25 +57,15 @@ export function isWithinHorizon(
   todayStr: string,
   tz: string,
   maxAdvanceDays: number,
+  endGraceDays = 0,
 ): boolean {
   const last = lastBookableDate(todayStr, maxAdvanceDays)
   if (todayInZone(tz, startsAtUtc) > last) return false
   if (endsAtUtcOrNull) {
     const endDate = todayInZone(tz, new Date(endsAtUtcOrNull.getTime() - 1))
-    if (endDate > last) return false
+    if (endDate > addDays(last, endGraceDays)) return false
   }
   return true
-}
-
-/**
- * Is an ordinary (hourly) slot's end inside the overnight allowance — on or
- * before the day AFTER the last bookable date? Like the day-range check, the
- * end's date is taken 1ms before the instant, so ending exactly at 00:00 two
- * days after the last date is out, and ending at 00:00 the day after is in.
- */
-export function isSlotEndWithinHorizon(endsAtUtc: Date, todayStr: string, tz: string, maxAdvanceDays: number): boolean {
-  const endDate = todayInZone(tz, new Date(endsAtUtc.getTime() - 1))
-  return endDate <= addDays(lastBookableDate(todayStr, maxAdvanceDays), 1)
 }
 
 /** The first instant that is NOT bookable: 00:00 local on the day after the last bookable date. */

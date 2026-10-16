@@ -17,7 +17,6 @@ import {
   dateOptions,
   dayRangeError,
   horizonEndsAt,
-  isSlotEndWithinHorizon,
   isDateWithinHorizon,
   isWithinHorizon,
   lastBookableDate,
@@ -110,11 +109,11 @@ console.log('\n── start vs end ──')
 
   // Hourly slot END: the overnight allowance is the day after the last date, no further.
   const e = (d: string, t: string) => zonedTimeToUtc(d, t, tz)
-  check('hourly end 01:00 the day after the last day is IN (overnight allowance)', isSlotEndWithinHorizon(e(addDays(last, 1), '01:00'), today, tz, 7))
-  check('hourly end at exactly 00:00 two days after the last day is IN (belongs to the day before)', isSlotEndWithinHorizon(e(addDays(last, 2), '00:00'), today, tz, 7))
-  check('hourly end 01:00 two days after the last day is OUT', !isSlotEndWithinHorizon(e(addDays(last, 2), '01:00'), today, tz, 7))
-  check('a slot starting on the last day and ending months later is OUT (start alone says IN)', isWithinHorizon(start, null, today, tz, 7) && !isSlotEndWithinHorizon(e(addDays(last, 60), '10:00'), today, tz, 7))
-  check('hourly end within the window is IN', isSlotEndWithinHorizon(e(last, '12:00'), today, tz, 7))
+  check('hourly end 01:00 the day after the last day is IN (overnight allowance)', isWithinHorizon(start, e(addDays(last, 1), '01:00'), today, tz, 7, 1))
+  check('hourly end at exactly 00:00 two days after the last day is IN (belongs to the day before)', isWithinHorizon(start, e(addDays(last, 2), '00:00'), today, tz, 7, 1))
+  check('hourly end 01:00 two days after the last day is OUT', !isWithinHorizon(start, e(addDays(last, 2), '01:00'), today, tz, 7, 1))
+  check('a slot starting on the last day and ending months later is OUT (start alone says IN)', isWithinHorizon(start, null, today, tz, 7) && !isWithinHorizon(start, e(addDays(last, 60), '10:00'), today, tz, 7, 1))
+  check('hourly end within the window is IN', isWithinHorizon(start, e(last, '12:00'), today, tz, 7, 1))
 }
 
 // ── day ranges ──────────────────────────────────────────────────────────────

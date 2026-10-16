@@ -23,7 +23,7 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
-import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isSlotEndWithinHorizon, isWithinHorizon } from './horizon'
+import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
 import { getBookingSettingsCore } from './settings'
 import {
   attachAddonsToSlots,
@@ -773,11 +773,9 @@ export async function assertWithinAdvanceWindow(
   const { maxAdvanceDays } = await getBookingSettingsCore(tx, ctx.tenantId)
   const today = todayInZone(ctx.timezone, now)
   for (const s of slots) {
-    const ends = s.rateUnit === 'day' ? s.endsAt : null
-    if (!isWithinHorizon(s.startsAt, ends, today, ctx.timezone, maxAdvanceDays)) {
-      throw new BookingError(horizonMessage(today, maxAdvanceDays))
-    }
-    if (s.rateUnit !== 'day' && s.endsAt && !isSlotEndWithinHorizon(s.endsAt, today, ctx.timezone, maxAdvanceDays)) {
+    // Per-day: end must be in range. Hourly: end may run one day past (overnight).
+    const graceDays = s.rateUnit === 'day' ? 0 : 1
+    if (!isWithinHorizon(s.startsAt, s.endsAt, today, ctx.timezone, maxAdvanceDays, graceDays)) {
       throw new BookingError(horizonMessage(today, maxAdvanceDays))
     }
   }
