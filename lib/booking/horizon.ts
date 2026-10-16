@@ -12,6 +12,9 @@
  * - A booking is in-horizon when its START date (tenant-local) is ≤ the last
  *   bookable date. A slot that starts on the last day and runs past midnight
  *   into the next is judged by its start, so it is allowed.
+ * - An ordinary slot's END is bounded too, but loosely: it may run into the day
+ *   after the last bookable date (the overnight allowance) and no further.
+ *   Without that, a slot starting on the last day could run for months.
  * - A per-day (date-range) booking is judged by BOTH ends: its end date must
  *   also be ≤ the last bookable date. Callers pass `endsAt` for those only.
  * - Only the upper bound lives here. The past is a separate rule (backdated
@@ -60,6 +63,17 @@ export function isWithinHorizon(
     if (endDate > last) return false
   }
   return true
+}
+
+/**
+ * Is an ordinary (hourly) slot's end inside the overnight allowance — on or
+ * before the day AFTER the last bookable date? Like the day-range check, the
+ * end's date is taken 1ms before the instant, so ending exactly at 00:00 two
+ * days after the last date is out, and ending at 00:00 the day after is in.
+ */
+export function isSlotEndWithinHorizon(endsAtUtc: Date, todayStr: string, tz: string, maxAdvanceDays: number): boolean {
+  const endDate = todayInZone(tz, new Date(endsAtUtc.getTime() - 1))
+  return endDate <= addDays(lastBookableDate(todayStr, maxAdvanceDays), 1)
 }
 
 /** The first instant that is NOT bookable: 00:00 local on the day after the last bookable date. */

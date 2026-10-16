@@ -172,6 +172,12 @@ async function main() {
       await wipeBookings(T)
       const overnight = await tryCreate(T, who, at(T, last, '23:00'), at(T, addDays(last, 1), '01:00'))
       check(`${who}: a slot starting on the last day and running past midnight is accepted (judged by start)`, overnight.ok, overnight)
+      // Nothing else caps slot length on create/quote, so the end is bounded here:
+      // a start inside the window must not buy a hold months past it.
+      const runaway = await tryCreate(T, who, at(T, last, '10:00'), at(T, addDays(last, 60), '10:00'))
+      check(`${who}: a slot starting on the last day but ending 60 days later is refused`, !runaway.ok && runaway.horizon, runaway)
+      const tooLong = await tryCreate(T, who, at(T, last, '10:00'), at(T, addDays(last, 2), '10:00'))
+      check(`${who}: a slot ending two days after the last day is refused`, !tooLong.ok && tooLong.horizon, tooLong)
       const midnight = await tryCreate(T, who, at(T, addDays(last, 1), '00:00'), at(T, addDays(last, 1), '01:00'))
       check(`${who}: 00:00 local the day after is refused`, !midnight.ok && midnight.horizon, midnight)
     }

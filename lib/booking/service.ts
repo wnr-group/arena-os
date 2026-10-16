@@ -23,7 +23,7 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
-import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
+import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isSlotEndWithinHorizon, isWithinHorizon } from './horizon'
 import { getBookingSettingsCore } from './settings'
 import {
   attachAddonsToSlots,
@@ -759,7 +759,9 @@ export async function recordAdvanceTenders(
  * storefront (withPublicTenant) alike; a venue with no row is held to 7 days.
  *
  * A slot is judged by its START date, except a per-day (rateUnit 'day') slot,
- * whose END date must also be inside the window. Upper bound only — the past is
+ * whose END date must also be inside the window. An hourly slot may run
+ * overnight, but its end may not pass the day after the last bookable date —
+ * nothing else bounds slot length on the create/quote path. Upper bound only — the past is
  * governed by the backdated / late-checkout rules, which never call this.
  */
 export async function assertWithinAdvanceWindow(
@@ -773,6 +775,9 @@ export async function assertWithinAdvanceWindow(
   for (const s of slots) {
     const ends = s.rateUnit === 'day' ? s.endsAt : null
     if (!isWithinHorizon(s.startsAt, ends, today, ctx.timezone, maxAdvanceDays)) {
+      throw new BookingError(horizonMessage(today, maxAdvanceDays))
+    }
+    if (s.rateUnit !== 'day' && s.endsAt && !isSlotEndWithinHorizon(s.endsAt, today, ctx.timezone, maxAdvanceDays)) {
       throw new BookingError(horizonMessage(today, maxAdvanceDays))
     }
   }
