@@ -229,6 +229,7 @@ function LongPicker({
                         type="button"
                         data-date={d}
                         aria-pressed={isSelected}
+                        aria-label={`${p.long}${isClosed ? ', closed' : ''}`}
                         disabled={isClosed}
                         title={isClosed ? 'Closed' : undefined}
                         onClick={() => onChange(d)}

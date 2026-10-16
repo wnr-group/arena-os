@@ -82,6 +82,10 @@ console.log('\n── closed days (30-day venue, Sundays closed) ──')
   check(`${sundays.length} Sundays are disabled and struck through`, count(h, /disabled=""[^>]*title="Closed"|title="Closed"[^>]*disabled=""/g) >= sundays.length || count(h, 'line-through') >= sundays.length, count(h, 'line-through'))
   check('every Sunday button is disabled', sundays.every((d) => new RegExp(`data-date="${d}"[^>]*disabled`).test(h)))
   check('a weekday is not disabled', !new RegExp(`data-date="2045-04-24"[^>]*disabled`).test(h))
+  // A disabled button can be skipped by screen readers, so the closed state lives in the accessible name.
+  const labelOf = (html: string, d: string) => new RegExp(`data-date="${d}"[^>]*aria-label="([^"]*)"`).exec(html)?.[1]
+  check('every Sunday button is named with its full date and ", closed"', sundays.every((d) => /^\w+day, \w+ \d+, \d{4}, closed$/.test(labelOf(h, d) ?? '')), labelOf(h, sundays[0]))
+  check('an open weekday is named with its full date, no "closed"', /^\w+day, \w+ \d+, \d{4}$/.test(labelOf(h, '2045-04-24') ?? ''), labelOf(h, '2045-04-24'))
   const sel = render(30, [4], TODAY) // today (Thursday) closed but selected
   check('a closed day that is currently selected stays selectable (the page explains it)', !new RegExp(`data-date="${TODAY}"[^>]*disabled`).test(sel))
 }
