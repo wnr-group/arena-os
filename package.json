@@ -25,6 +25,7 @@
     "test:m34-qa": "tsx --import ./scripts/server-only-hook.mjs scripts/test-m34-qa.ts",
     "test:employee-analytics": "tsx --import ./scripts/server-only-hook.mjs scripts/test-employee-analytics.ts",
     "test:payroll-presets": "tsx --import ./scripts/server-only-hook.mjs scripts/test-payroll-presets.ts",
+    "test:payroll-chips-render": "tsx scripts/test-payroll-chips-render.tsx",
     "test:report-presets-qa": "tsx --import ./scripts/server-only-hook.mjs scripts/test-report-presets-qa.ts",
     "test:booking-settings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-settings.ts",
     "test:booking-horizon": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-horizon.ts",
