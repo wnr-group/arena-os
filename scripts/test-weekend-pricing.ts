@@ -96,6 +96,7 @@ function testPureResolver() {
 async function testReservedBookings() {
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   // Dynamic, AFTER loadEnv(): public-availability.ts pulls in @/db, whose
   // pool reads process.env.DATABASE_URL at module-load time — a static

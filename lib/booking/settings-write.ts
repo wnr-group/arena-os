@@ -28,6 +28,8 @@ export async function applyBookingWindow(
     .where(eq(bookingSettings.tenantId, actor.tenantId))
     .limit(1)
   const old = row?.maxAdvanceDays ?? DEFAULT_MAX_ADVANCE_DAYS
+  // Unchanged: nothing to write, audit or stamp as "updated by".
+  if (old === next) return old
   await tx
     .insert(bookingSettings)
     .values({ tenantId: actor.tenantId, maxAdvanceDays: next, updatedBy: actor.membershipId })
@@ -35,14 +37,12 @@ export async function applyBookingWindow(
       target: bookingSettings.tenantId,
       set: { maxAdvanceDays: next, updatedBy: actor.membershipId },
     })
-  if (old !== next) {
-    await writeAudit(tx, actor, {
-      action: 'booking_settings.max_advance_days_changed',
-      entityType: 'booking_settings',
-      entityId: actor.tenantId,
-      before: { maxAdvanceDays: old },
-      after: { maxAdvanceDays: next },
-    })
-  }
+  await writeAudit(tx, actor, {
+    action: 'booking_settings.max_advance_days_changed',
+    entityType: 'booking_settings',
+    entityId: actor.tenantId,
+    before: { maxAdvanceDays: old },
+    after: { maxAdvanceDays: next },
+  })
   return old
 }

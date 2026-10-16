@@ -63,11 +63,11 @@ export async function getAvailableStarts(
 ): Promise<AvailabilityResponse> {
   try {
     const ctx = await requireContext()
-    const beyond = await staffHorizonError(ctx, input.parse(raw).date)
+    const v = input.parse(raw)
+    const beyond = await staffHorizonError(ctx, v.date)
     if (beyond) return { error: beyond }
     // An expired unpaid online hold still shows the slot as taken; release it first.
     await sweepTenantHolds(ctx.tenant.id)
-    const v = input.parse(raw)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
 
@@ -232,11 +232,11 @@ export async function getAvailableStartsForType(
 ): Promise<TypeAvailabilityResponse> {
   try {
     const ctx = await requireContext()
-    const beyond = await staffHorizonError(ctx, typeInput.parse(raw).date)
+    const v = typeInput.parse(raw)
+    const beyond = await staffHorizonError(ctx, v.date)
     if (beyond) return { error: beyond }
     // An expired unpaid online hold still shows the slot as taken; release it first.
     await sweepTenantHolds(ctx.tenant.id)
-    const v = typeInput.parse(raw)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
 

@@ -270,6 +270,7 @@ async function main() {
       const T = key === 'ist' ? IST_T : NY_T
       await setWindow(T, 30)
       // pin "now" so the tenant-local today is D - 29 (noon UTC is the same calendar day in both zones)
+      process.env.ARENA_ALLOW_TEST_NOW = '1'
       process.env.ARENA_TEST_NOW = `${addDays(D, -29)}T12:00:00Z`
       const ctx = { tenantId: T.tenantId, timezone: T.tz, membershipId: T.sessions.manager.membershipId }
       const tryCreate = async (start: Date, end: Date) => {
@@ -300,6 +301,7 @@ async function main() {
     // a 180-day window straddling the NY DST change: today 2045-02-01, last = 2045-07-30
     const T = NY_T
     await setWindow(T, 180)
+    process.env.ARENA_ALLOW_TEST_NOW = '1'
     process.env.ARENA_TEST_NOW = '2045-02-01T17:00:00Z'
     const ctx = { tenantId: T.tenantId, timezone: T.tz, membershipId: T.sessions.manager.membershipId }
     const tryAt = async (d: string, hhmm: string) => {

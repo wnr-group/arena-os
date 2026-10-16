@@ -50,6 +50,7 @@ function needsName(lookup: { found: boolean; name: string | null }): boolean {
 async function main() {
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2041-05-01T00:00:00Z'
   const { lookupCustomerByPhone, createBooking } = await import('../lib/actions/bookings')
 

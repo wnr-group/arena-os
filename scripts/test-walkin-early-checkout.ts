@@ -24,7 +24,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { createBookingCore, BookingError } from '../lib/booking/service'
-import { startWalkinCore, checkoutWalkinCore, reopenWalkinCore } from '../lib/booking/walkin'
+import { startWalkinCore, checkoutWalkinCore, reopenWalkinCore, earlyCheckoutEnd } from '../lib/booking/walkin'
 import { addonHeadroom, lockAddonCatalog } from '../lib/booking/addons'
 import { loadBookingLines } from '../lib/billing/invoice'
 import { timeInZone } from '../lib/format'
@@ -249,6 +249,19 @@ async function main() {
   check('R4 open-tab checkout still stamps a bounded ends_at', tabSlot.ends_at !== null && Number(tabSlot.slot_total) > 0)
   const tabRe = await errOf(reopen(tab.id))
   check('R4 open-tab reopen still works and unbounds ends_at', tabRe === null && (await slot(tab.id)).ends_at === null, tabRe)
+
+  // ── pure: which instant a checkout trims to (injected clock) ─────────────
+  console.log('\n── earlyCheckoutEnd (pure) ──')
+  const s0 = new Date('2045-04-10T10:00:00Z')
+  const c0 = new Date(+s0 + HOUR)
+  const w0 = { startsAt: s0, committedEndAt: c0 }
+  const at = (m: number) => new Date(+s0 + m * MIN)
+  check('45 minutes in: trims to that instant', +earlyCheckoutEnd(w0, at(45))! === +at(45))
+  check('exactly at the committed end: nothing to trim', earlyCheckoutEnd(w0, at(60)) === null)
+  check('after the committed end: nothing to trim', earlyCheckoutEnd(w0, at(75)) === null)
+  check('at the start instant: not trimmed (would break ends_at > starts_at)', earlyCheckoutEnd(w0, at(0)) === null)
+  check('before the start (clock skew): not trimmed', earlyCheckoutEnd(w0, at(-1)) === null)
+  check('no committed end (open tab): not trimmed', earlyCheckoutEnd({ startsAt: s0, committedEndAt: null }, at(30)) === null)
 
   await q(`delete from tenants where slug=$1`, [slug])
   await ownerPool.end()

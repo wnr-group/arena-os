@@ -105,15 +105,18 @@ export function dayRangeError(
 }
 
 /**
- * "Now" for the horizon check. Production always uses the real clock. Outside
- * production a script may pin it with ARENA_TEST_NOW (an ISO instant) so
- * fixtures that deliberately book on fixed far-future calendar dates — chosen
- * for their weekday and collision-free — stay valid without every one of them
- * being rewritten around today's date. Honoured ONLY when NODE_ENV is not
- * 'production', and it moves nothing but this check.
+ * "Now" for the horizon check. Production always uses the real clock. A test
+ * script may pin it with ARENA_TEST_NOW (an ISO instant) so fixtures that
+ * deliberately book on fixed far-future calendar dates — chosen for their
+ * weekday and collision-free — stay valid without every one of them being
+ * rewritten around today's date. Honoured ONLY when NODE_ENV is not
+ * 'production' AND ARENA_ALLOW_TEST_NOW=1 is also set: a staging or preview
+ * deploy that forgets NODE_ENV=production still ignores a stray ARENA_TEST_NOW.
+ * It moves nothing but this check.
  */
 export function horizonNow(): Date {
-  const pinned = process.env.NODE_ENV !== 'production' ? process.env.ARENA_TEST_NOW : undefined
+  const allowed = process.env.NODE_ENV !== 'production' && process.env.ARENA_ALLOW_TEST_NOW === '1'
+  const pinned = allowed ? process.env.ARENA_TEST_NOW : undefined
   if (pinned) {
     const d = new Date(pinned)
     if (!Number.isNaN(d.getTime())) return d

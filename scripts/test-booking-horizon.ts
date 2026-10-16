@@ -17,6 +17,7 @@ import {
   dateOptions,
   dayRangeError,
   horizonEndsAt,
+  horizonNow,
   isDateWithinHorizon,
   isWithinHorizon,
   lastBookableDate,
@@ -130,6 +131,31 @@ console.log('\n── day ranges ──')
   check('31 days across a leap Feb is counted by the calendar', calendarDaysInRange('2048-02-15', '2048-03-16') === 31)
   check('32 days across Feb 29 is refused', !!dayRangeError('2048-02-15', '2048-03-17', '2048-02-15', 90))
   check('a 31-day range is still refused if it ends beyond a 7-day window', !!dayRangeError('2045-04-20', '2045-05-20', today, 7))
+}
+
+
+// ── horizonNow: the test clock needs BOTH NODE_ENV != production and an explicit opt-in ──
+console.log('\n── test clock gating ──')
+{
+  const env = process.env as Record<string, string | undefined>
+  const saved = { n: env.NODE_ENV, t: env.ARENA_TEST_NOW, a: env.ARENA_ALLOW_TEST_NOW }
+  const PIN = '2041-05-01T00:00:00Z'
+  const isPinned = () => horizonNow().getTime() === new Date(PIN).getTime()
+  env.ARENA_TEST_NOW = PIN
+  env.NODE_ENV = 'development'
+  delete env.ARENA_ALLOW_TEST_NOW
+  check('ARENA_TEST_NOW alone (no opt-in) is ignored', !isPinned())
+  env.ARENA_ALLOW_TEST_NOW = '1'
+  check('with ARENA_ALLOW_TEST_NOW=1 outside production it pins the clock', isPinned())
+  env.NODE_ENV = 'production'
+  check('in production it is ignored even with the opt-in', !isPinned())
+  env.NODE_ENV = 'development'
+  env.ARENA_ALLOW_TEST_NOW = 'true'
+  check('only the exact opt-in value "1" counts', !isPinned())
+  for (const [k, v] of [['NODE_ENV', saved.n], ['ARENA_TEST_NOW', saved.t], ['ARENA_ALLOW_TEST_NOW', saved.a]] as const) {
+    if (v === undefined) delete env[k]
+    else env[k] = v
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

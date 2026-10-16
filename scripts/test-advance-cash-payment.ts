@@ -56,6 +56,7 @@ const TZ = 'Asia/Kolkata'
 async function main() {
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2048-01-01T00:00:00Z'
   const { createBooking, startWalkin, checkoutWalkin, setBookingStatus } = await import('../lib/actions/bookings')
   const { createInvoiceForBooking } = await import('../lib/actions/billing')

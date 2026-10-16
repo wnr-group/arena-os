@@ -140,6 +140,7 @@ function testPureSegments() {
 async function testReservedBookingsHappyHours() {
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })

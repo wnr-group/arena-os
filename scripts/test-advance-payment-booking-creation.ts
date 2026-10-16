@@ -42,6 +42,7 @@ async function main() {
   const { loadEnv } = await import('./env')
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2047-02-01T00:00:00Z'
   const { createBookingCore, BookingError } = await import('../lib/booking/service')
   const { startWalkinCore } = await import('../lib/booking/walkin')

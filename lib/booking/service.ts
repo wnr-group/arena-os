@@ -761,8 +761,9 @@ export async function recordAdvanceTenders(
  * A slot is judged by its START date, except a per-day (rateUnit 'day') slot,
  * whose END date must also be inside the window. An hourly slot may run
  * overnight, but its end may not pass the day after the last bookable date —
- * nothing else bounds slot length on the create/quote path. Upper bound only — the past is
- * governed by the backdated / late-checkout rules, which never call this.
+ * nothing else bounds slot length on the create/quote path. Upper bound only —
+ * the past is governed by the backdated / late-checkout rules, which never call
+ * this.
  */
 export async function assertWithinAdvanceWindow(
   tx: Db,

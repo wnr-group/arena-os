@@ -457,6 +457,7 @@ async function testServiceChargeComposition() {
 async function main() {
   loadEnv()
   // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
   process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   await testFourCombinations()
   await testFullInvoiceReconciliation()

@@ -1052,7 +1052,10 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
  * ends_at > starts_at CHECK). The amount billed is NOT derived from this: a
  * timed session is still priced over [start, committed end).
  */
-function earlyCheckoutEnd(walkin: WalkinForCheckout, now: Date): Date | null {
+export function earlyCheckoutEnd(
+  walkin: Pick<WalkinForCheckout, 'committedEndAt' | 'startsAt'>,
+  now: Date,
+): Date | null {
   if (!walkin.committedEndAt) return null
   if (now.getTime() >= walkin.committedEndAt.getTime()) return null
   if (now.getTime() <= walkin.startsAt.getTime()) return null
@@ -1128,6 +1131,8 @@ export async function checkoutWalkinCore(
   tx: Db,
   ctx: { tenantId: string; timezone: string; membershipId?: string | null },
   input: CheckoutWalkinInput,
+  /** Injected for tests; production always uses the real clock. */
+  now: Date = new Date(),
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
   const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
@@ -1137,7 +1142,7 @@ export async function checkoutWalkinCore(
   const rules = walkin.holidayRateApplied || walkin.isSetup ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
   const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
-  const trimmedEnd = walkin.billingMode === 'timed' ? earlyCheckoutEnd(walkin, new Date()) : null
+  const trimmedEnd = walkin.billingMode === 'timed' ? earlyCheckoutEnd(walkin, now) : null
 
   // M21 per-head #4: the (possibly just-edited) head count is written here,
   // at the moment checkout actually commits — same "preview travels loose,
