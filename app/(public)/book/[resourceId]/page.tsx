@@ -10,6 +10,9 @@ import {
 } from '@/lib/booking/public-availability'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { todayInZone } from '@/lib/booking/time'
+import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { closedWeekdaysOf } from '@/lib/booking/closed-days'
+import { CHIP_STRIP_MAX_DAYS } from '@/lib/booking/horizon'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublishedBranding } from '@/lib/website/public'
 import { accentColorStyle } from '@/lib/website/color'
@@ -50,10 +53,10 @@ export default async function ResourceBookPage({
   searchParams,
 }: {
   params: Promise<{ resourceId: string }>
-  searchParams: Promise<{ setup?: string | string[] }>
+  searchParams: Promise<{ setup?: string | string[]; date?: string | string[] }>
 }) {
   const { resourceId } = await params
-  const { setup: setupParam } = await searchParams
+  const { setup: setupParam, date: dateParam } = await searchParams
   if (!UUID.test(resourceId)) notFound()
 
   const slug = await currentTenantSlug()
@@ -86,6 +89,8 @@ export default async function ResourceBookPage({
     branch && industryHasStudioSetups(tenant.industry)
       ? await getPublicTypeAddons(tenant.id, branch.id, [resource.resourceTypeId])
       : []
+  const maxAdvanceDays = await publicMaxAdvanceDaysOrDefault(tenant.id)
+  const closedWeekdays = branch && maxAdvanceDays > CHIP_STRIP_MAX_DAYS ? await closedWeekdaysOf(tenant.id, branch.id) : []
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
   // Same proactive-disable pattern as app/(public)/checkout/page.tsx: whether
@@ -116,6 +121,9 @@ export default async function ResourceBookPage({
             initialSetupId={initialSetupId}
             addonCatalog={addonCatalog}
             today={todayInZone(tenant.timezone)}
+            maxAdvanceDays={maxAdvanceDays}
+            closedWeekdays={closedWeekdays}
+            initialDate={typeof dateParam === 'string' ? dateParam : undefined}
             razorpayConfigured={razorpayCredentials !== null}
           />
         </main>

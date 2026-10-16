@@ -45,6 +45,9 @@ export function BookingWizard({
   currency,
   today,
   initialDate,
+  maxAdvanceDays,
+  closedWeekdays = [],
+  canChangeSettings = false,
   initialTab,
   initialResourceTypeId,
   initialResourceId,
@@ -57,6 +60,10 @@ export function BookingWizard({
   currency: string
   today: string
   initialDate: string
+  /** M37 #4: the venue's advance-booking window - applies to the Future tab only (walk-ins start now). */
+  maxAdvanceDays: number
+  closedWeekdays?: number[]
+  canChangeSettings?: boolean
   initialTab: 'walkin' | 'future'
   initialResourceTypeId?: string
   initialResourceId?: string
@@ -114,6 +121,9 @@ export function BookingWizard({
             currency={currency}
             today={today}
             initialDate={initialDate}
+            maxAdvanceDays={maxAdvanceDays}
+            closedWeekdays={closedWeekdays}
+            canChangeSettings={canChangeSettings}
             initialResourceTypeId={initialResourceTypeId}
             initialResourceId={initialResourceId}
             resources={resources}

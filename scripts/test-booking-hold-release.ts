@@ -19,6 +19,7 @@ import { createHmac, createHash, randomBytes, randomInt } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
 import { seedRazorpay } from './seed-razorpay'
+import { allowFarBookings } from './booking-window-fixture'
 
 loadEnv()
 let pass = 0
@@ -55,6 +56,7 @@ async function main() {
   }
 
   const tenantId = (await q<{ id: string }>(`insert into tenants (slug,name,status,timezone,industry) values ($1,'Hold QA','active','Asia/Kolkata','recording_studio') returning id`, [slug])).rows[0].id
+  await allowFarBookings((t, p) => q(t, p), tenantId)
   const branchId = (await q<{ id: string }>(`insert into branches (tenant_id,name,is_primary,status) values ($1,'Main',true,'active') returning id`, [tenantId])).rows[0].id
   const typeId = (await q<{ id: string }>(`insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Studio','500.00') returning id`, [tenantId])).rows[0].id
   for (let dow = 0; dow <= 6; dow++) {

@@ -10,10 +10,12 @@ import { AddonPicker, estimateAddonTotal, type AddonSelection } from '@/componen
 import type { AvailableAddon } from '@/lib/booking/addons'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
-import { addDays } from '@/lib/booking/time'
+import Link from 'next/link'
+import { clampDateToWindow, dateOptions as windowDates, dayRangeError, lastBookableDate } from '@/lib/booking/horizon'
+import { advanceWindowLabel } from '@/lib/booking/settings'
+import { DatePicker } from '@/components/ui/DatePicker'
 import { daysInRange } from '@/lib/booking/availability'
 import {
-  dateCardParts,
   durationLabel,
   time12,
   SectionLabel,
@@ -41,7 +43,6 @@ const STEPS = ['Devices', 'Slot', 'Customer', 'Confirm']
 
 /** Same window and duration set the public booking site uses — this step's
  *  layout mirrors that page exactly (see components/public-booking/ResourceBookingPage.tsx). */
-const DATE_WINDOW_DAYS = 7
 
 type ResourceTypeOption = {
   id: string
@@ -73,7 +74,10 @@ export function FutureWizard({
   timeZone,
   currency,
   today,
-  initialDate,
+  initialDate: requestedDate,
+  maxAdvanceDays,
+  closedWeekdays = [],
+  canChangeSettings = false,
   initialResourceTypeId,
   initialResourceId,
   resources,
@@ -83,7 +87,14 @@ export function FutureWizard({
   timeZone: string
   currency: string
   today: string
+  /** The date from the bookings page's ?date= link; clamped into the window below. */
   initialDate: string
+  /** M37 #4: the venue's advance-booking window (same single setting as the storefront). */
+  maxAdvanceDays: number
+  /** Weekdays (0 = Sunday) the branch is closed - struck out in the long picker. */
+  closedWeekdays?: number[]
+  /** Managers get a link to Settings -> Hours beside the limit hint. */
+  canChangeSettings?: boolean
   initialResourceTypeId?: string
   /** Set when the wizard was opened from a specific device's row on the
    *  Timeline (BookingsView) rather than the generic "New booking" button —
@@ -240,7 +251,21 @@ export function FutureWizard({
     return (rate * minutes) / 60
   }
 
-  const dateOptions = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
+  const dateOptions = useMemo(() => windowDates(today, maxAdvanceDays), [today, maxAdvanceDays])
+  const lastDate = lastBookableDate(today, maxAdvanceDays)
+  // A ?date= outside the window (past, junk or beyond) is pulled in with a notice rather than erroring.
+  const clampedStart = useMemo(
+    () => clampDateToWindow(requestedDate, today, maxAdvanceDays),
+    [requestedDate, today, maxAdvanceDays],
+  )
+  const initialDate = clampedStart.date
+  const [dateNotice, setDateNotice] = useState<string | null>(
+    !clampedStart.clamped
+      ? null
+      : clampedStart.reason === 'beyond'
+        ? `That date is outside the booking window (up to ${prettyDate(lastDate, timeZone)}), so we picked ${prettyDate(initialDate, timeZone)} instead.`
+        : `That date isn't available, so we picked ${prettyDate(initialDate, timeZone)} instead.`,
+  )
   const [date, setDate] = useState(initialDate)
   const [duration, setDuration] = useState(60)
   const [slots, setSlots] = useState<GridSlot[] | null>(null)
@@ -354,9 +379,11 @@ export function FutureWizard({
       setRangeLoading(false)
       return
     }
-    if (rangeEnd < rangeStart) {
+    // Reversed, longer than 31 days, or past the booking window.
+    const badRange = dayRangeError(rangeStart, rangeEnd, today, maxAdvanceDays)
+    if (badRange) {
       setRangeWindow(null)
-      setRangeError('End date must be on or after the start date.')
+      setRangeError(badRange)
       setRangeConflict(false)
       setRangeLoading(false)
       return
@@ -379,7 +406,7 @@ export function FutureWizard({
     return () => {
       cancelled = true
     }
-  }, [isDayRateSetup, pinnedResourceId, branchId, rangeStart, rangeEnd])
+  }, [isDayRateSetup, pinnedResourceId, branchId, rangeStart, rangeEnd, today, maxAdvanceDays])
 
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
@@ -800,7 +827,7 @@ export function FutureWizard({
                       className={`${wizardInput} mt-1`}
                       value={rangeStart}
                       min={today}
-                      max={rangeEnd}
+                      max={rangeEnd < lastDate ? rangeEnd : lastDate}
                       onChange={(e) => setRangeStart(e.target.value)}
                     />
                   </div>
@@ -814,6 +841,7 @@ export function FutureWizard({
                       className={`${wizardInput} mt-1`}
                       value={rangeEnd}
                       min={rangeStart}
+                      max={lastDate}
                       onChange={(e) => setRangeEnd(e.target.value)}
                     />
                   </div>
@@ -839,40 +867,35 @@ export function FutureWizard({
               <>
                 <section className="mt-5">
                   <SectionLabel icon={CalendarDays}>Date</SectionLabel>
-                  <div className="mt-3 grid grid-cols-7 gap-1.5 sm:gap-2">
-                    {dateOptions.map((d) => {
-                      const parts = dateCardParts(d)
-                      const isSelected = d === date
-                      return (
-                        <button
-                          key={d}
-                          type="button"
-                          onClick={() => setDate(d)}
-                          className={`flex flex-col items-center gap-0.5 rounded-xl border px-1 py-2.5 transition-all duration-200 active:scale-95 ${
-                            isSelected
-                              ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                              : 'border-border bg-card text-foreground hover:border-primary/40'
-                          }`}
-                        >
-                          <span
-                            className={`text-[10px] font-semibold uppercase tracking-wide ${
-                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                            }`}
-                          >
-                            {parts.weekday}
-                          </span>
-                          <span className="text-base font-bold tabular-nums">{parts.day}</span>
-                          <span
-                            className={`text-[10px] font-semibold uppercase tracking-wide ${
-                              isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                            }`}
-                          >
-                            {parts.month}
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
+                  <DatePicker
+                    variant="staff"
+                    dates={dateOptions}
+                    value={date}
+                    onChange={(d) => {
+                      setDate(d)
+                      setDateNotice(null)
+                    }}
+                    closedWeekdays={closedWeekdays}
+                  />
+                  {dateNotice && (
+                    <p role="status" className="mt-2 text-sm text-muted-foreground">
+                      {dateNotice}
+                    </p>
+                  )}
+                  {maxAdvanceDays > 7 && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Bookings can be made up to {advanceWindowLabel(maxAdvanceDays)} ahead
+                      {canChangeSettings && (
+                        <>
+                          {' '}- change in{' '}
+                          <Link href="/settings/hours" className="font-medium underline underline-offset-2">
+                            Settings &rarr; Hours
+                          </Link>
+                        </>
+                      )}
+                      .
+                    </p>
+                  )}
                 </section>
 
                 <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2">

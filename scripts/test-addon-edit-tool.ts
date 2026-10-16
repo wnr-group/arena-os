@@ -27,6 +27,7 @@ import { setSlotAddonsCore } from '../lib/booking/addons'
 import { issueInvoiceForBooking } from '../lib/billing/invoice'
 import { canManageWalkins } from '../lib/auth/roles'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -77,6 +78,7 @@ async function main() {
       [slug, `${slug} co`, TZ],
     )
   ).rows[0].id
+  await allowFarBookings((t, p) => q(t, p), tenantId)
   const branchId = (
     await q<{ id: string }>(`insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`, [tenantId])
   ).rows[0].id
