@@ -32,7 +32,7 @@
  *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, lte, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
@@ -1045,6 +1045,21 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
 }
 
 /**
+ * Where a timed walk-in's slot should END once it is checked out: the moment of
+ * checkout, if that is earlier than the committed end — otherwise null (nothing
+ * to trim, leave the slot alone). Uses the SERVER's clock, never the client's
+ * endAt, and only trims to an instant after the session started (the table's
+ * ends_at > starts_at CHECK). The amount billed is NOT derived from this: a
+ * timed session is still priced over [start, committed end).
+ */
+function earlyCheckoutEnd(walkin: WalkinForCheckout, now: Date): Date | null {
+  if (!walkin.committedEndAt) return null
+  if (now.getTime() >= walkin.committedEndAt.getTime()) return null
+  if (now.getTime() <= walkin.startsAt.getTime()) return null
+  return now
+}
+
+/**
  * Read-only preview of what checkoutWalkinCore would charge — for a
  * checkout dialog's live-updating amount. No lock: nothing is written, and
  * the real checkout re-validates and re-prices from scratch regardless, so a
@@ -1096,8 +1111,13 @@ export async function previewWalkinCheckout(
  * bounded (freeing the resource from the exclusion constraint's "still
  * going" reading) without ever claiming more time than was truly occupied.
  *
- * Timed: `ends_at` is already the committed end (extendWalkinCore keeps it in
- * sync) and is left untouched here — only `slot_total` is new.
+ * Timed: the BILL is unchanged — still priced over [start, committed end), so a
+ * customer who leaves early pays the booked time. But the RESOURCE is freed:
+ * `ends_at` (and the add-ons' ends_at, releasing their stock) is trimmed to the
+ * moment of checkout when that is before the committed end, so the unused time
+ * can be booked straight away. `bookings.committed_end_at` is untouched — it
+ * keeps the original commitment, and reopenWalkinCore restores `ends_at` from
+ * it. A checkout at/after the committed end trims nothing.
  *
  * Deliberately does NOT flip `bookings.status` to 'completed' — that still
  * goes through the existing setBookingStatus, gated on assertBookingFullyPaid,
@@ -1117,6 +1137,7 @@ export async function checkoutWalkinCore(
   const rules = walkin.holidayRateApplied || walkin.isSetup ? [] : await loadActiveHappyHourRules(tx, ctx.tenantId)
   const { rate, multiplier } = walkinRateAndMultiplier(walkin, headCount)
   const priced = priceElapsedTime(walkin.startsAt, priceEnd, rate, rules, ctx.timezone, multiplier)
+  const trimmedEnd = walkin.billingMode === 'timed' ? earlyCheckoutEnd(walkin, new Date()) : null
 
   // M21 per-head #4: the (possibly just-edited) head count is written here,
   // at the moment checkout actually commits — same "preview travels loose,
@@ -1141,13 +1162,16 @@ export async function checkoutWalkinCore(
   } else {
     await tx
       .update(bookingSlots)
-      .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate })
+      .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate, ...(trimmedEnd ? { endsAt: trimmedEnd } : {}) })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
   // M33: the walk-in's single pricing pass is NOW — price its add-on lines
   // over the same [start, priceEnd) window the room used, and stamp their
   // ends_at in lockstep with the slot's. No-op without add-ons.
   const addonTotal = await priceWalkinAddons(tx, ctx.tenantId, walkin.slotId, walkin.startsAt, priceEnd)
+  // Early timed checkout: the add-ons were priced over the full committed
+  // window above, but they stop HOLDING stock when the session actually ends.
+  if (trimmedEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, trimmedEnd)
   const checkoutTotal = round2(priced.unitPrice + addonTotal)
   // The booking's own subtotal/total are stamped here too — a walk-in is born
   // with both at 0 (nothing is priced until now), and every screen that reads
@@ -1316,9 +1340,11 @@ export async function correctWalkinEndTimeCore(
  * active booking now exists on this resource: an open tab's ends_at is
  * about to go back to null (unbounded), which would overlap ANY such
  * booking, the exact hazard startWalkinCore's own open-tab guard exists to
- * prevent at start time. A timed session doesn't need this check: its
- * ends_at (the committed end) never moves, so reopening it changes nothing
- * the exclusion constraint would recheck.
+ * prevent at start time. A timed session that was checked out at or after its
+ * committed end needs nothing. One that was checked out EARLY had its ends_at
+ * trimmed (checkoutWalkinCore), so reopening restores ends_at from
+ * bookings.committed_end_at — and is refused, with a clear message, if the
+ * freed time has since been booked (or an add-on's stock taken).
  *
  * per_head: head_count is left exactly as it was — still editable through
  * the ordinary checkout flow once the session is unbilled again.
@@ -1362,6 +1388,37 @@ export async function reopenWalkinCore(
     }
   }
 
+  // A timed session checked out early: its slot was trimmed short of the
+  // committed end, which must be re-claimed (and re-validated) now.
+  const restoreEnd =
+    walkin.billingMode === 'timed' &&
+    walkin.committedEndAt &&
+    walkin.slotEndsAt &&
+    walkin.slotEndsAt.getTime() < walkin.committedEndAt.getTime()
+      ? walkin.committedEndAt
+      : null
+  if (restoreEnd && walkin.slotEndsAt) {
+    const [taken] = await tx
+      .select({ startsAt: bookingSlots.startsAt })
+      .from(bookingSlots)
+      .where(
+        and(
+          eq(bookingSlots.resourceId, walkin.resourceId),
+          eq(bookingSlots.active, true),
+          ne(bookingSlots.id, walkin.slotId),
+          lt(bookingSlots.startsAt, restoreEnd),
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, walkin.slotEndsAt)),
+        ),
+      )
+      .orderBy(asc(bookingSlots.startsAt))
+      .limit(1)
+    if (taken) {
+      throw new BookingError(
+        'This station was booked after the walk-in was checked out — reopening would overlap that booking. Leave it checked out, or cancel the later booking first.',
+      )
+    }
+  }
+
   const before = { billingMode: walkin.billingMode, endsAt: walkin.slotEndsAt?.toISOString() ?? null, slotTotal: walkin.slotTotal }
 
   if (walkin.billingMode === 'open_tab') {
@@ -1370,7 +1427,13 @@ export async function reopenWalkinCore(
     // re-check that nothing else took those units in the meantime.
     await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, null, { checkStock: true })
   } else {
-    await tx.update(bookingSlots).set({ slotTotal: '0.00' }).where(eq(bookingSlots.id, walkin.slotId))
+    await tx
+      .update(bookingSlots)
+      .set({ slotTotal: '0.00', ...(restoreEnd ? { endsAt: restoreEnd } : {}) })
+      .where(eq(bookingSlots.id, walkin.slotId))
+    // The session holds its full committed window again, so its add-ons hold
+    // stock again: re-check nothing else took those units in the meantime.
+    if (restoreEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, restoreEnd, { checkStock: true })
   }
   await unpriceWalkinAddons(tx, ctx.tenantId, walkin.slotId)
   await tx
@@ -1383,7 +1446,11 @@ export async function reopenWalkinCore(
     entityType: 'booking',
     entityId: walkin.bookingId,
     before,
-    after: { billingMode: walkin.billingMode, endsAt: walkin.billingMode === 'open_tab' ? null : before.endsAt, slotTotal: '0.00' },
+    after: {
+      billingMode: walkin.billingMode,
+      endsAt: walkin.billingMode === 'open_tab' ? null : (restoreEnd ?? walkin.slotEndsAt)?.toISOString() ?? null,
+      slotTotal: '0.00',
+    },
   })
 
   return { bookingId: walkin.bookingId }

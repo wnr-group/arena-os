@@ -280,6 +280,8 @@ export async function getBillableForBooking(
         bookingNumber: bookings.bookingNumber,
         status: bookings.status,
         channel: bookings.channel,
+        billingMode: bookings.billingMode,
+        committedEndAt: bookings.committedEndAt,
         headCount: bookings.headCount,
         branchId: bookings.branchId,
         branchName: branches.name,
@@ -518,7 +520,14 @@ export async function getBillableForBooking(
         customerName: row.directoryName ?? row.bookingCustomerName,
         customerPhone: row.directoryPhone ?? row.bookingCustomerPhone,
         startsAt: window?.startsAt ? new Date(window.startsAt).toISOString() : null,
-        endsAt: window?.endsAt ? new Date(window.endsAt).toISOString() : null,
+        // A timed walk-in checked out early has a trimmed slot but bills its
+        // full booked window — the header shows the booked end, like its line.
+        endsAt:
+          row.channel === 'walkin' && row.billingMode === 'timed' && row.committedEndAt
+            ? row.committedEndAt.toISOString()
+            : window?.endsAt
+              ? new Date(window.endsAt).toISOString()
+              : null,
         resourceNames:
           bookingLines.length > 0
             ? [...new Set(bookingLines.map((l) => l.description.split(' · ')[0]))]

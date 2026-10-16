@@ -5,8 +5,10 @@
  *     '0.00', and extendWalkin (which only ever applies to a TIMED walk-in)
  *     is irrelevant here — the acceptance re-check for open-tab is that
  *     checkoutWalkin (a real close) works again afterward
- *   - timed: reopen resets slot_total to '0.00', leaves ends_at (the
- *     committed end) untouched, and extendWalkin works again afterward
+ *   - timed: checkout before the committed end trims ends_at (freeing the
+ *     station); reopen resets slot_total to '0.00' and restores ends_at from
+ *     the committed end; extendWalkin works again afterward (the full
+ *     early-checkout matrix lives in test-walkin-early-checkout.ts)
  *   - refused if the session was never checked out in the first place
  *   - refused once a live (non-void) invoice exists — a voided one does NOT
  *     block it
@@ -124,7 +126,7 @@ async function main() {
   const co1b = await checkoutWalkin({ bookingId: start1.bookingId })
   check('checkout works again after reopening', !co1b.error, co1b)
 
-  // ══ 2. TIMED: reopen resets slot_total, leaves ends_at, extend works again ═
+  // ══ 2. TIMED: early checkout trims ends_at, reopen restores it, extend works again ═
   console.log('\n── timed ──')
   const stationB = await makeStation('PS5-B')
   const start2 = await startWalkin({
@@ -141,12 +143,19 @@ async function main() {
   const co2 = await checkoutWalkin({ bookingId: start2.bookingId })
   check('timed checkout succeeds', !co2.error, co2)
   const afterCheckout2 = await slotOf(start2.bookingId)
-  check('checked out: slot_total > 0, ends_at unchanged (the committed end)', Number(afterCheckout2.slot_total) > 0 && afterCheckout2.ends_at?.getTime() === beforeCheckout2.ends_at?.getTime())
+  check(
+    'checked out early: slot_total > 0, ends_at trimmed to before the committed end (resource freed)',
+    Number(afterCheckout2.slot_total) > 0 &&
+      afterCheckout2.ends_at !== null &&
+      beforeCheckout2.ends_at !== null &&
+      afterCheckout2.ends_at.getTime() < beforeCheckout2.ends_at.getTime() - 30 * 60_000,
+    afterCheckout2,
+  )
 
   const reopen2 = await reopenWalkin(start2.bookingId)
   check('timed reopen succeeds', !reopen2.error, reopen2)
   const afterReopen2 = await slotOf(start2.bookingId)
-  check('timed: slot_total back to 0.00, ends_at STILL unchanged', afterReopen2.slot_total === '0.00' && afterReopen2.ends_at?.getTime() === beforeCheckout2.ends_at?.getTime())
+  check('timed: slot_total back to 0.00, ends_at restored to the committed end', afterReopen2.slot_total === '0.00' && afterReopen2.ends_at?.getTime() === beforeCheckout2.ends_at?.getTime())
 
   const extend2 = await extendWalkin({ bookingId: start2.bookingId, addMinutes: 15 })
   check('extendWalkin works again after reopening', !extend2.error, extend2)
