@@ -42,6 +42,8 @@ export type RangeRow = {
   resourceNames: string[]
   /** Sum of slot_total over EVERY slot of the booking. */
   slotsTotal: string
+  /** Sum of slot_total over the booking's ACTIVE slots — the day view's bookingActiveSlotTotal. */
+  activeSlotsTotal: string
   advancePaid: string
 }
 
@@ -196,7 +198,7 @@ export function BookingsRangeList({
             total: selectedRow.total,
             deposit: selectedRow.deposit,
             advancePaid: selectedRow.advancePaid,
-            bookingActiveSlotTotal: activeSlotTotal(selectedRow),
+            bookingActiveSlotTotal: selectedRow.activeSlotsTotal,
             startsAt: selectedRow.firstStartsAt,
             endsAt: selectedRow.isOpen ? null : selectedRow.lastEndsAt,
             cancellationReason: selectedRow.cancellationReason,
@@ -219,15 +221,6 @@ export function BookingsRangeList({
   )
 }
 
-/**
- * The day view's "active slot total": slots go inactive exactly when a booking
- * is cancelled / no-show (trg_bookings_sync_slots), so it is the all-slot sum
- * for every other status and zero for those two.
- */
-function activeSlotTotal(r: RangeRow): string {
-  return r.status === 'cancelled' || r.status === 'no_show' ? '0.00' : r.slotsTotal
-}
-
 function BookingRow({
   row: r,
   groupDate,
@@ -246,7 +239,7 @@ function BookingRow({
   const cancelled = r.status === 'cancelled'
   // Same signal as the day table: a live invoice wins; otherwise the cash
   // advance falling short of the known total reads "Part paid".
-  const advanceGap = payment ? undefined : advanceGapOf({ advancePaid: r.advancePaid, bookingActiveSlotTotal: activeSlotTotal(r) })
+  const advanceGap = payment ? undefined : advanceGapOf({ advancePaid: r.advancePaid, bookingActiveSlotTotal: r.activeSlotsTotal })
   const payKey = payment?.status ?? (advanceGap ? 'partially_paid' : 'unbilled')
   const dueText =
     payment && payment.refunded > 0

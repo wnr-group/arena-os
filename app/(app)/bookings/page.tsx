@@ -156,6 +156,7 @@ export default async function BookingsPage({
             isOpen: r.isOpen,
             resourceNames: r.resourceNames ?? [],
             slotsTotal: r.slotsTotal,
+            activeSlotsTotal: r.activeSlotsTotal,
             advancePaid: r.advancePaid,
           }))}
           fromDate={range.fromDate}

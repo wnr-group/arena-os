@@ -370,7 +370,8 @@ const clampInt = (n: unknown, min: number, max: number, fallback: number) =>
  * overlapping slot start (it can precede `startUtc` for a carried-in booking —
  * clamp for day grouping). Rows are newest-first with the booking id as a
  * stable tie-break, and paged with LIMIT/OFFSET. `slotsTotal` sums EVERY slot
- * of the booking, including ones outside the range.
+ * of the booking, including ones outside the range; `activeSlotsTotal` sums
+ * only its active slots (the day view's bookingActiveSlotTotal).
  *
  * `summary` counts the whole range (not just the page) per booking status.
  * Revenue is deliberately not derived here.
@@ -456,6 +457,8 @@ export async function listRangeBookings(
             .select({
               bookingId: bookingSlots.bookingId,
               slotsTotal: sql<string>`coalesce(sum(${bookingSlots.slotTotal}), 0)::text`,
+              // Same definition as listDayBookings' bookingActiveSlotTotal: active slots only.
+              activeSlotsTotal: sql<string>`coalesce(sum(${bookingSlots.slotTotal}) filter (where ${bookingSlots.active}), 0)::text`,
               slotCount: sql<number>`count(*)::int`,
             })
             .from(bookingSlots)
@@ -469,6 +472,7 @@ export async function listRangeBookings(
       rows: pageRows.map((r) => ({
         ...r,
         slotsTotal: totals.get(r.bookingId)?.slotsTotal ?? '0.00',
+        activeSlotsTotal: totals.get(r.bookingId)?.activeSlotsTotal ?? '0.00',
         slotCount: totals.get(r.bookingId)?.slotCount ?? 0,
         advancePaid: advanceByBooking.get(r.bookingId) ?? '0.00',
       })),

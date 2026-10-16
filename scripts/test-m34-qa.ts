@@ -311,13 +311,26 @@ async function main() {
       { total: '250.00' },
     )
     await booking(T, T.branchId, 'OPEN-TAB', 'checked_in', [{ res: T.r1, from: at(T, day, '20:00'), to: null, total: '0.00' }])
+    // Confirmed, but one slot is inactive (e.g. FIX-BK-0001): the status alone would say "all slots count".
+    const partial = await booking(
+      T, T.branchId, 'INACTIVE-SLOT', 'confirmed',
+      [
+        { res: T.r1, from: at(T, day, '12:00'), to: at(T, day, '13:00'), total: '250.00' },
+        { res: T.r2, from: at(T, day, '12:00'), to: at(T, day, '14:00'), total: '500.00' },
+      ],
+      { total: '250.00' },
+    )
+    await owner.query(
+      `update booking_slots set active=false where booking_id=$1 and resource_id=$2`,
+      [partial, T.r2],
+    )
     void single
 
     const dayRows = await listDayBookings(c, T.branchId, day, T.tz)
     const r = resolveRange('month', '2045-04-20', T.tz)
     const list = await listRangeBookings(c, T.branchId, r.startUtc, r.endUtc)
     const byName = new Map(list.rows.map((x) => [x.customerName, x]))
-    for (const name of ['SINGLE', 'MULTI-RES-MULTI-DAY', 'CANCELLED', 'OPEN-TAB']) {
+    for (const name of ['SINGLE', 'MULTI-RES-MULTI-DAY', 'CANCELLED', 'OPEN-TAB', 'INACTIVE-SLOT']) {
       const slots = dayRows.filter((s) => s.customerName === name)
       const row = byName.get(name)
       check(`${name}: present in both feeds`, slots.length > 0 && !!row)
@@ -326,17 +339,17 @@ async function main() {
       check(`${name}: bookings.total equal (${s0.total} vs ${row.total})`, Number(s0.total) === Number(row.total))
       check(`${name}: advance paid equal`, Number(s0.advancePaid) === Number(row.advancePaid))
       check(`${name}: deposit equal`, Number(s0.deposit) === Number(row.deposit))
-      // The list derives bookingActiveSlotTotal from slotsTotal (0 for cancelled/no-show).
-      const derived = row.status === 'cancelled' || row.status === 'no_show' ? 0 : Number(row.slotsTotal)
+      // The list reads the same active-only sum the timeline does — no status guessing.
       check(
-        `${name}: active slot total equal (timeline ${s0.bookingActiveSlotTotal} vs list-derived ${derived})`,
-        Number(s0.bookingActiveSlotTotal) === derived,
+        `${name}: active slot total equal (timeline ${s0.bookingActiveSlotTotal} vs list ${row.activeSlotsTotal})`,
+        Number(s0.bookingActiveSlotTotal) === Number(row.activeSlotsTotal),
       )
     }
     check('multi-day booking appears once in the list', list.rows.filter((x) => x.customerName === 'MULTI-RES-MULTI-DAY').length === 1)
     check('its all-slot total includes the out-of-day slot (1000.00)', Number(byName.get('MULTI-RES-MULTI-DAY')?.slotsTotal) === 1000)
-    check('cancelled booking slots are inactive (trigger assumption behind the 0.00 mapping)', dayRows.filter((s) => s.customerName === 'CANCELLED').every((s) => s.active === false))
-    check('summary counts the whole range', list.summary.bookings === 4 && list.summary.byStatus.cancelled === 1)
+    const ina = byName.get('INACTIVE-SLOT')
+    check('non-cancelled booking with an inactive slot: active total 250.00, all-slot total 750.00', Number(ina?.activeSlotsTotal) === 250 && Number(ina?.slotsTotal) === 750)
+    check('summary counts the whole range', list.summary.bookings === 5 && list.summary.byStatus.cancelled === 1)
   }
 
   for (const T of Object.values(tenants)) await wipe(T)

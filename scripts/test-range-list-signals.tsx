@@ -45,6 +45,7 @@ const row = (n: string, status: string, over: Partial<RangeRow> = {}): RangeRow 
   isOpen: false,
   resourceNames: ['Table 1'],
   slotsTotal: '500.00',
+  activeSlotsTotal: '500.00',
   advancePaid: '0.00',
   ...over,
 })
