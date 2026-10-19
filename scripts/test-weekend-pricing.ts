@@ -41,6 +41,7 @@ import { priceBill, round2 } from '../lib/billing/pricing'
 import { isWeekendDay, resolveDayRate } from '../lib/booking/rate'
 import { weekdayInZone, todayInZone } from '../lib/booking/time'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 // lib/booking/walkin.ts statically imports @/db (for a `withUser` it never
 // actually gets called from here — this test uses its own local `withUser`
 // below) — @/db's pools are created from process.env.DATABASE_URL(_OWNER) at
@@ -94,6 +95,9 @@ function testPureResolver() {
 // ── 2. priceBookingSlots / createBookingCore — reserved bookings, real DB ────
 async function testReservedBookings() {
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
+  process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   // Dynamic, AFTER loadEnv(): public-availability.ts pulls in @/db, whose
   // pool reads process.env.DATABASE_URL at module-load time — a static
   // top-level import here would evaluate that before loadEnv() ran and
@@ -118,6 +122,7 @@ async function testReservedBookings() {
     [slug, `${slug} co`, TZ],
   )
   const tenantId = t.rows[0].id
+  await allowFarBookings((t, p) => ownerPool.query(t, p), tenantId)
   const b = await ownerPool.query<{ id: string }>(
     `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
      on conflict (tenant_id,name) do update set is_primary=true returning id`,

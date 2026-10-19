@@ -23,6 +23,7 @@ import * as schema from '../db/schema'
 import { loadEnv } from './env'
 import { seedRazorpay } from './seed-razorpay'
 import { entitleTenant } from './entitle-fixture'
+import { allowFarBookings } from './booking-window-fixture'
 
 loadEnv()
 type Db = NodePgDatabase<typeof schema>
@@ -71,6 +72,7 @@ async function main() {
   }
 
   const tenantId = (await q<{ id: string }>(`insert into tenants (slug,name,status,timezone,industry) values ($1,'M36 QA','active','Asia/Kolkata','recording_studio') returning id`, [slug])).rows[0].id
+  await allowFarBookings((t, p) => q(t, p), tenantId)
   const branchId = (await q<{ id: string }>(`insert into branches (tenant_id,name,is_primary,status) values ($1,'Main',true,'active') returning id`, [tenantId])).rows[0].id
   const taxId = (await q<{ id: string }>(`insert into tax_rates (tenant_id,name,percent,applies_to) values ($1,'GST18',18,'resources') returning id`, [tenantId])).rows[0].id
   const typeId = (await q<{ id: string }>(`insert into resource_types (tenant_id,name,hourly_rate,tax_rate_id) values ($1,'Studio','500.00',$2) returning id`, [tenantId, taxId])).rows[0].id

@@ -49,6 +49,7 @@ import { createBookingCore } from '../lib/booking/service'
 import { issueInvoiceForBooking } from '../lib/billing/invoice'
 import { round2 } from '../lib/billing/pricing'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -82,6 +83,7 @@ async function makeTenant(ownerPool: Pool, slug: string, industry: 'gaming_cafe'
     [slug, `${slug} co`, TZ, industry],
   )
   const tenantId = t.rows[0].id
+  await allowFarBookings((t, p) => ownerPool.query(t, p), tenantId)
   const b = await ownerPool.query<{ id: string }>(
     `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
      on conflict (tenant_id,name) do update set is_primary=true returning id`,
@@ -454,6 +456,9 @@ async function testServiceChargeComposition() {
 
 async function main() {
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
+  process.env.ARENA_TEST_NOW = '2046-03-01T00:00:00Z'
   await testFourCombinations()
   await testFullInvoiceReconciliation()
   await testServiceChargeComposition()

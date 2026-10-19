@@ -41,6 +41,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 import { loadEnv } from './env'
+import { allowFarBookings } from './booking-window-fixture'
 
 let pass = 0,
   fail = 0
@@ -54,6 +55,9 @@ const TZ = 'Asia/Kolkata'
 
 async function main() {
   loadEnv()
+  // M37: this script books on fixed far-future calendar dates; pin the advance-window clock beside them.
+  process.env.ARENA_ALLOW_TEST_NOW = '1'
+  process.env.ARENA_TEST_NOW = '2048-01-01T00:00:00Z'
   const { createBooking, startWalkin, checkoutWalkin, setBookingStatus } = await import('../lib/actions/bookings')
   const { createInvoiceForBooking } = await import('../lib/actions/billing')
 
@@ -67,6 +71,7 @@ async function main() {
       [slug, `${slug} co`, TZ, industry],
     )
     const tenantId = t.rows[0].id
+    await allowFarBookings((t, p) => owner.query(t, p), tenantId)
     const br = await owner.query<{ id: string }>(
       `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true) returning id`,
       [tenantId],

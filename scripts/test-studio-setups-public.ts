@@ -82,6 +82,9 @@ async function main() {
     [tenantId, resourceId],
   )
   const royalId = royal.rows[0].id
+  // M37: this test books a day-rate range 10-12 days out, beyond the default
+  // 7-day advance window, so the fixture venue opts into a longer one.
+  await owner.query('insert into booking_settings (tenant_id,max_advance_days) values ($1,30)', [tenantId])
   await (await import('./seed-razorpay')).seedRazorpay((t, p) => owner.query(t, p), tenantId)
   for (let dow = 0; dow <= 6; dow++) {
     await owner.query(

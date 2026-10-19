@@ -1,10 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
-import { canManageWalkins } from '@/lib/auth/roles'
+import { canManageWalkins, isManager } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
-import { listResources, listResourceSetups } from '@/lib/booking/data'
+import { listResources, listResourceSetups, getWorkingHours } from '@/lib/booking/data'
+import { CHIP_STRIP_MAX_DAYS } from '@/lib/booking/horizon'
+import { maxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
 import { todayInZone } from '@/lib/booking/time'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { BookingWizard } from '@/components/bookings/new/BookingWizard'
@@ -91,6 +93,16 @@ export default async function NewBookingPage({
       setups: setupsByResource[r.id] ?? [],
     }))
 
+  // M37 #4: the same single window the storefront uses; staff are bound by it
+  // (createBookingCore enforces it server-side). Fails closed to 7 days. Only the
+  // long picker needs the closed weekdays, so the working-hours read is skipped
+  // for short windows.
+  const maxAdvanceDays = await maxAdvanceDaysOrDefault(ctx)
+  const closedWeekdays =
+    maxAdvanceDays > CHIP_STRIP_MAX_DAYS
+      ? (await getWorkingHours(ctx, branch.id)).filter((h) => h.isClosed).map((h) => h.dayOfWeek)
+      : []
+
   const today = todayInZone(ctx.tenant.timezone)
   const initialDate = sp.date && /^\d{4}-\d{2}-\d{2}$/.test(sp.date) ? sp.date : today
   const initialTab: 'walkin' | 'future' = sp.tab === 'future' || !walkinEnabled ? 'future' : 'walkin'
@@ -102,6 +114,9 @@ export default async function NewBookingPage({
       currency={ctx.tenant.currency}
       today={today}
       initialDate={initialDate}
+      maxAdvanceDays={maxAdvanceDays}
+      closedWeekdays={closedWeekdays}
+      canChangeSettings={isManager(ctx.role)}
       initialTab={initialTab}
       initialResourceTypeId={sp.resourceTypeId}
       initialResourceId={sp.resourceId}

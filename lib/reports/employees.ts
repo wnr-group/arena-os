@@ -6,8 +6,7 @@ import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
-import { zonedTimeToUtc } from '@/lib/booking/time'
-import { addDays } from '@/lib/booking/data'
+import { addDays, zonedTimeToUtc } from '@/lib/booking/time'
 
 export type EmployeeAnalyticsRow = {
   membershipId: string

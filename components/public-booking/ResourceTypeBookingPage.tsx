@@ -35,10 +35,7 @@ import { BookingPaymentSummary, paymentFlow, type QuotePayment } from './Booking
 import { HoneypotField } from './HoneypotField'
 import {
   DURATIONS,
-  DATE_WINDOW_DAYS,
   SLOT_MINUTES,
-  addDays,
-  dateCardParts,
   prettyDateLong,
   durationLabel,
   time12,
@@ -46,6 +43,8 @@ import {
   EmptyNotice,
   SummaryRow,
 } from './ResourceBookingPage'
+import { clampDateToWindow, dateOptions } from '@/lib/booking/horizon'
+import { DatePicker } from '@/components/ui/DatePicker'
 
 type Step = 'select' | 'details'
 
@@ -63,6 +62,9 @@ export function ResourceTypeBookingPage({
   tenant,
   resourceType,
   today,
+  maxAdvanceDays,
+  closedWeekdays = [],
+  initialDate,
   razorpayConfigured,
   initialDuration = 60,
   initialPlayers = 1,
@@ -70,6 +72,12 @@ export function ResourceTypeBookingPage({
   tenant: PublicTenant
   resourceType: PublicResourceTypeDetail
   today: string
+  /** M37 #3: the venue's advance-booking window — bookable dates are today … today + N − 1. */
+  maxAdvanceDays: number
+  /** Weekdays (0 = Sunday) the venue is closed, from its working hours. */
+  closedWeekdays?: number[]
+  /** A prefilled date (?date=); clamped into the window with a notice when it falls outside. */
+  initialDate?: string
   /** Gates the "pay online now" choice — read server-side from the same
    *  credential loader createBookingPaymentIntent uses, so the choice is
    *  hidden rather than offered and then failing (M14 #8). */
@@ -85,10 +93,18 @@ export function ResourceTypeBookingPage({
   initialPlayers?: number
 }) {
   const router = useRouter()
-  const dates = useMemo(() => Array.from({ length: DATE_WINDOW_DAYS }, (_, i) => addDays(today, i)), [today])
+  const dates = useMemo(() => dateOptions(today, maxAdvanceDays), [today, maxAdvanceDays])
+  const initial = useMemo(() => clampDateToWindow(initialDate, today, maxAdvanceDays), [initialDate, today, maxAdvanceDays])
 
   const [step, setStep] = useState<Step>('select')
-  const [date, setDate] = useState(today)
+  const [date, setDate] = useState(initial.date)
+  const [dateNotice, setDateNotice] = useState<string | null>(
+    !initial.clamped
+      ? null
+      : initial.reason === 'beyond'
+        ? `That date is outside the booking window, so we've picked ${prettyDateLong(initial.date)} instead.`
+        : `That date isn't available, so we've picked ${prettyDateLong(initial.date)} instead.`,
+  )
   const [duration, setDuration] = useState(initialDuration)
   /**
    * Every start time of the working day, each carrying the unit it would be
@@ -388,39 +404,20 @@ export function ResourceTypeBookingPage({
 
               <section>
                 <SectionLabel icon={CalendarDays}>Date</SectionLabel>
-                <div className="mt-3 grid grid-cols-7 gap-2">
-                  {dates.map((d) => {
-                    const parts = dateCardParts(d)
-                    const isSelected = d === date
-                    return (
-                      <button
-                        key={d}
-                        onClick={() => setDate(d)}
-                        className={`flex flex-col items-center gap-0.5 rounded-2xl border px-2 py-3 transition-all duration-200 active:scale-95 ${
-                          isSelected
-                            ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20'
-                            : 'border-border bg-card text-foreground hover:border-primary/40'
-                        }`}
-                      >
-                        <span
-                          className={`text-[11px] font-semibold uppercase tracking-wide ${
-                            isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                          }`}
-                        >
-                          {parts.weekday}
-                        </span>
-                        <span className="text-lg font-bold tabular-nums">{parts.day}</span>
-                        <span
-                          className={`text-[11px] font-semibold uppercase tracking-wide ${
-                            isSelected ? 'text-primary-foreground/80' : 'text-muted-foreground'
-                          }`}
-                        >
-                          {parts.month}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
+                <DatePicker
+                  dates={dates}
+                  value={date}
+                  onChange={(d) => {
+                    setDate(d)
+                    setDateNotice(null)
+                  }}
+                  closedWeekdays={closedWeekdays}
+                />
+                {dateNotice && (
+                  <p role="status" className="mt-2 text-sm text-muted-foreground">
+                    {dateNotice}
+                  </p>
+                )}
               </section>
 
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">

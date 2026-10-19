@@ -16,7 +16,16 @@ import {
   getPublicAddonAvailability,
   type PublicAddonAvailability,
 } from '@/lib/booking/public-availability'
-import { createBookingCore, priceBookingSlots, resolvePublicHeadCount, BookingError } from '@/lib/booking/service'
+import {
+  assertWithinAdvanceWindow,
+  createBookingCore,
+  priceBookingSlots,
+  resolvePublicHeadCount,
+  BookingError,
+} from '@/lib/booking/service'
+import { dayRangeError, horizonMessage, horizonNow, isDateWithinHorizon } from '@/lib/booking/horizon'
+import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { todayInZone } from '@/lib/booking/time'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { resolveOnlineCharge, OnlineChargeError, PAYMENT_HOLD_MINUTES, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
@@ -36,6 +45,16 @@ import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 
 const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
+
+/**
+ * M37 #2: refuse a date beyond the venue's advance-booking window. Fails closed
+ * to 7 days if the setting cannot be read. Returns the error text, or null.
+ */
+async function publicHorizonError(tenant: { id: string; timezone: string }, dateStr: string): Promise<string | null> {
+  const max = await publicMaxAdvanceDaysOrDefault(tenant.id)
+  const today = todayInZone(tenant.timezone, horizonNow())
+  return isDateWithinHorizon(dateStr, today, max) ? null : horizonMessage(today, max)
+}
 
 async function callerIp(): Promise<string> {
   return ipFromHeaders(await headers())
@@ -118,6 +137,8 @@ export async function getPublicAvailability(
 
   const v = availabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+  const beyond = await publicHorizonError(tenant, v.data.date)
+  if (beyond) return { error: beyond }
 
 
   await sweepTenantHolds(tenant.id)
@@ -165,6 +186,8 @@ export async function getPublicResourceAvailability(
 
   const v = resourceAvailabilityInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+  const beyond = await publicHorizonError(tenant, v.data.date)
+  if (beyond) return { error: beyond }
 
 
   await sweepTenantHolds(tenant.id)
@@ -215,6 +238,11 @@ export async function getPublicBookingDayRange(raw: z.input<typeof dayRangeInput
 
   const v = dayRangeInput.safeParse(raw)
   if (!v.success) return { error: 'Invalid request.' }
+  {
+    const max = await publicMaxAdvanceDaysOrDefault(tenant.id)
+    const bad = dayRangeError(v.data.startDate, v.data.endDate, todayInZone(tenant.timezone, horizonNow()), max)
+    if (bad) return { error: bad }
+  }
 
 
   await sweepTenantHolds(tenant.id)
@@ -309,6 +337,8 @@ export async function getPublicBookingQuote(raw: z.input<typeof quoteInput>): Pr
         slots: [{ resourceId: v.data.resourceId, startsAt: v.data.startsAt, endsAt: v.data.endsAt, setupId: v.data.setupId }],
         headCount,
       })
+      // M37 #2: the quote refuses what createPublicBooking would refuse.
+      await assertWithinAdvanceWindow(tx, { tenantId: tenant.id, timezone: tenant.timezone }, priced.slots)
       const addons = await priceResourceAddons(
         tx,
         tenant.id,

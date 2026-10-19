@@ -197,7 +197,7 @@ export async function loadBookingLines(
   timeZone: string,
 ): Promise<BillLine[]> {
   const [booking] = await tx
-    .select({ channel: bookings.channel, billingMode: bookings.billingMode })
+    .select({ channel: bookings.channel, billingMode: bookings.billingMode, committedEndAt: bookings.committedEndAt })
     .from(bookings)
     .where(and(eq(bookings.id, bookingId), eq(bookings.tenantId, tenantId)))
     .limit(1)
@@ -260,7 +260,11 @@ export async function loadBookingLines(
       return true
     })
     .map((s) => ({
-      description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(s.endsAt, timeZone)}`,
+      // A timed walk-in checked out early has its slot trimmed to the leave
+      // time (freeing the resource), but it is billed the full booked window,
+      // so the line shows the BOOKED end — a full-hour charge must not read as
+      // a 45-minute session.
+      description: `${s.resourceName} · ${timeInZone(s.startsAt, timeZone)}–${timeInZone(isUncommittedTimed && booking?.committedEndAt ? booking.committedEndAt : s.endsAt, timeZone)}`,
       kind: 'booking' as const,
       sourceId: s.id,
       ...(s.backdated

@@ -521,6 +521,9 @@ export const bookingSlots = pgTable(
   (t) => [
     index('idx_booking_slots_booking').on(t.bookingId),
     index('idx_booking_slots_resource_time').on(t.resourceId, t.startsAt),
+    // 0122 — tenant-wide time-range scans (M34 bookings date presets).
+    index('idx_booking_slots_tenant_starts').on(t.tenantId, t.startsAt),
+    index('idx_booking_slots_tenant_ends').on(t.tenantId, t.endsAt),
   ],
 )
 
@@ -2984,3 +2987,16 @@ export const tenantSubscriptionsRelations = relations(tenantSubscriptions, ({ on
   tenant: one(tenants, { fields: [tenantSubscriptions.tenantId], references: [tenants.id] }),
   plan: one(plans, { fields: [tenantSubscriptions.planId], references: [plans.id] }),
 }))
+
+// ── booking settings (migration 0123, M37 #1) ────────────────────────────────
+// Venue-wide advance-booking window. One row per tenant; a tenant with no row
+// behaves as DEFAULT_MAX_ADVANCE_DAYS (lib/booking/settings.ts).
+export const bookingSettings = pgTable('booking_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** Bookable dates are today … today + N − 1 in the tenant timezone. */
+  maxAdvanceDays: integer('max_advance_days').notNull().default(7),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
