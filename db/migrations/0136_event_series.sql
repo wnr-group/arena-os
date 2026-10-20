@@ -95,7 +95,7 @@ create table if not exists public.event_series (
     and (cadence = 'monthly') = (day_of_month is not null)
   ),
 
-  -- The same two rules `events` enforces (0124/0113), restated here so a series
+  -- The same two rules `events` enforces (0124/0127), restated here so a series
   -- cannot be configured to generate events that would violate them — the job
   -- would then fail every night with no way for a manager to see why.
   constraint event_series_tournament_format check (

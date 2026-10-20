@@ -20,7 +20,7 @@
 -- that way cannot be REFERENCED in the transaction that added it. Every policy
 -- and index here that names 'event_registration' therefore has to precede it
 -- in a file that does NOT add it… which is impossible in one file. So the label
--- goes last here and everything that names it lands in 0115. Same split, same
+-- goes last here and everything that names it lands in 0129. Same split, same
 -- reason, as 0058 → 0059.
 -- ============================================================================
 

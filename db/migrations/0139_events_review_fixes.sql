@@ -43,7 +43,7 @@
 -- BLOCKS stays in the job (scripts/run-recurring-events.ts) through the same
 -- syncEventBlocks() the settings screen uses, rather than being reimplemented
 -- in SQL here — one implementation of "what does this event reserve", which is
--- the whole point of migration 0116.
+-- the whole point of migration 0130.
 -- ============================================================================
 
 -- ── 1. refund flagging on a second capture ──────────────────────────────────

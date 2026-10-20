@@ -64,7 +64,7 @@
 
 -- ── tenant-safe resource references ─────────────────────────────────────────
 --
--- The composite-FK pattern 0016/0018/0110 use. A plain `references
+-- The composite-FK pattern 0016/0018/0124 use. A plain `references
 -- resources(id)` would let tenant A's event claim tenant B's station, because
 -- the FK never sees tenant_id. Referencing (tenant_id, id) makes that
 -- combination unrepresentable rather than merely rejected by application code
