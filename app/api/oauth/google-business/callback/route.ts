@@ -30,10 +30,11 @@ import { eq } from 'drizzle-orm'
  * venue owner, attaching the attacker's Business Profile to the victim's venue.
  * That is login-CSRF, and it is the specific attack this pair prevents.
  *
- * Note what is deliberately NOT here: an owner check. A redirect back from
- * Google is not a place to demand a session — the owner may have been bounced
- * through an account chooser — so the signed state carries the authorisation
- * that requireOwner() established in /start.
+ * Note what is deliberately NOT here: an owner check. The signed state carries
+ * the authorisation that requireOwner() established in /start. The proxy still
+ * requires a staff session cookie on this path (it is not a public route), so
+ * if the session expired during consent the owner is sent to /login and the
+ * flow has to be restarted.
  */
 export async function GET(req: NextRequest) {
   const settings = new URL('/settings/business', req.nextUrl.origin)
