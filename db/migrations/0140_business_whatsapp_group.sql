@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0126 WhatsApp group invite, per tenant.
+-- Arena OS — 0140 WhatsApp group invite, per tenant.
 --
 -- Two columns on `business_profiles` and one narrow public reader. No new
 -- table: business_profiles is already the tenant's one-row settings record
@@ -49,10 +49,10 @@
 -- Both columns are additive with safe defaults, so every existing tenant lands
 -- disabled with no link and nothing about the booking flow changes.
 --
--- ══ WHY 0126 ═════════════════════════════════════════════════════════════════
+-- ══ WHY 0140 ═════════════════════════════════════════════════════════════════
 --
 -- The first number free after main (through 0109) and the M15 events migrations
--- (0110–0125). scripts/migrate.ts records applied files by full NAME and sorts
+-- (0124–0139). scripts/migrate.ts records applied files by full NAME and sorts
 -- by filename, so a duplicate sequence number would make apply order an
 -- accident of spelling; keeping the numbers unique avoids that.
 -- ============================================================================
@@ -77,9 +77,9 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 comment on column public.business_profiles.whatsapp_group_url is
-  'Canonical WhatsApp group invite (https://chat.whatsapp.com/<code>), or null. Host-pinned by CHECK because it drives an automatic redirect on the public confirmation page (0126).';
+  'Canonical WhatsApp group invite (https://chat.whatsapp.com/<code>), or null. Host-pinned by CHECK because it drives an automatic redirect on the public confirmation page (0140).';
 comment on column public.business_profiles.whatsapp_group_enabled is
-  'Whether the confirmation page offers the WhatsApp group. False for every tenant until an owner turns it on; cannot be true without a link (0126).';
+  'Whether the confirmation page offers the WhatsApp group. False for every tenant until an owner turns it on; cannot be true without a link (0140).';
 
 -- ── the public reader ───────────────────────────────────────────────────────
 --
@@ -103,4 +103,4 @@ revoke all on function public.public_whatsapp_group(uuid) from public;
 grant execute on function public.public_whatsapp_group(uuid) to arena_app;
 
 comment on function public.public_whatsapp_group(uuid) is
-  'The tenant''s WhatsApp group invite for the public booking confirmation page (0126). SECURITY DEFINER so the public path never reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only for the tenant pinned by withPublicTenant(), and only when the owner has enabled it.';
+  'The tenant''s WhatsApp group invite for the public booking confirmation page (0140). SECURITY DEFINER so the public path never reads business_profiles, which holds the GSTIN, legal name and registered address. Returns one scalar, only for the tenant pinned by withPublicTenant(), and only when the owner has enabled it.';

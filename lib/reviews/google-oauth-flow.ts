@@ -4,7 +4,7 @@ import { BUSINESS_SCOPE } from './google-oauth'
 
 /**
  * The consent-flow plumbing: where we send an owner, and how we trust what
- * comes back (0128).
+ * comes back (0142).
  *
  * ══ THE STATE PARAMETER IS THE WHOLE SECURITY STORY ═════════════════════════
  *
@@ -39,7 +39,7 @@ export const OAUTH_STATE_COOKIE = 'g_oauth_state'
 
 /**
  * The state-signing key, DERIVED from the app's master key rather than being it
- * (0129).
+ * (0143).
  *
  * Still one secret to configure and rotate — introducing a second env var buys
  * nothing here. But the raw value was previously handed straight to HMAC while

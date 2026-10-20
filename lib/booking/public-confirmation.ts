@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, sql } from 'drizzle-orm'
 import { ownerDb, withPublicTenant } from '@/db'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { round2 } from '@/lib/billing/pricing'
@@ -74,7 +74,6 @@ export async function getPublicBookingByToken(
         customerName: bookings.customerName,
         total: bookings.total,
         createdAt: bookings.createdAt,
-        deposit: bookings.deposit,
       })
       .from(bookings)
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.confirmationToken, token)))
