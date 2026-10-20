@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { ownerDb } from '@/db'
+import { requireOwner } from '@/lib/auth/guard'
 import { saveGoogleRefreshToken } from '@/lib/reviews/google-credentials'
 import {
   exchangeAuthCode,
@@ -30,11 +31,10 @@ import { eq } from 'drizzle-orm'
  * venue owner, attaching the attacker's Business Profile to the victim's venue.
  * That is login-CSRF, and it is the specific attack this pair prevents.
  *
- * Note what is deliberately NOT here: an owner check. The signed state carries
- * the authorisation that requireOwner() established in /start. The proxy still
- * requires a staff session cookie on this path (it is not a public route), so
- * if the session expired during consent the owner is sent to /login and the
- * flow has to be restarted.
+ * Defence in depth: the signed-in owner's tenant must also match the tenant in
+ * the state. The proxy requires a staff session cookie on this path (it is not
+ * a public route), so if the session expired during consent the owner is sent
+ * to /login and the flow has to be restarted.
  */
 export async function GET(req: NextRequest) {
   const settings = new URL('/settings/business', req.nextUrl.origin)
@@ -56,6 +56,15 @@ export async function GET(req: NextRequest) {
 
   const verified = readOAuthState(returned)
   if (!verified) return fail('bad_state')
+
+  // The session in this browser must belong to the tenant the flow started
+  // for. Fails closed on no session, a non-owner, or a different workspace.
+  try {
+    const ctx = await requireOwner()
+    if (ctx.tenant.id !== verified.tenantId) return fail('bad_state')
+  } catch {
+    return fail('bad_state')
+  }
 
   const code = req.nextUrl.searchParams.get('code')
   if (!code) return fail('no_code')
