@@ -5,9 +5,9 @@
  * reason ./lifecycle is: the public registration panel is a client component and
  * has to apply the same rules the server does, without dragging a database
  * driver into the browser bundle. The transactional half lives in
- * ./registrations, and the real enforcement lives in migration 0113.
+ * ./registrations, and the real enforcement lives in migration 0127.
  *
- * Keep the unions in sync with the SQL enums, the way ./types mirrors 0110.
+ * Keep the unions in sync with the SQL enums, the way ./types mirrors 0124.
  */
 
 export type EventRegistrationMode = 'solo' | 'team'

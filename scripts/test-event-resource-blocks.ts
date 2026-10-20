@@ -76,8 +76,16 @@ async function refusal(fn: () => Promise<unknown>): Promise<string | null> {
 }
 
 const tag = Date.now().toString(36).slice(-5)
-/** All times are absolute instants; the window is far in the future so nothing else touches it. */
-const T = (h: number, m = 0) => new Date(Date.UTC(2031, 4, 12, h, m, 0))
+/**
+ * All times are absolute instants; the window is ~200 days out so nothing else
+ * touches it, yet inside the 365-day ceiling of the advance-booking window
+ * (booking_settings.max_advance_days, which makeTenant raises to that ceiling).
+ */
+const DAY0 = (() => {
+  const d = new Date()
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 200)
+})()
+const T = (h: number, m = 0) => new Date(DAY0 + h * 3_600_000 + m * 60_000)
 
 async function main() {
   const { syncEventBlocks, setEventResources, releaseEventBlocks, statusBlocks, listEventBlocks } =
@@ -105,6 +113,11 @@ async function main() {
       [`${slug}${tag}`, `${slug} co`],
     )
     const tenantId = t.rows[0].id
+    await owner.query(
+      `insert into booking_settings (tenant_id,max_advance_days) values ($1,365)
+       on conflict (tenant_id) do update set max_advance_days=365`,
+      [tenantId],
+    )
     const b = await owner.query<{ id: string }>(
       `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
        on conflict (tenant_id,name) do update set is_primary=true returning id`,
@@ -592,7 +605,7 @@ async function main() {
   // The design claim is that no availability query needed editing, because they
   // all read booking_slots on (resource_id, active) without joining bookings.
   // That is proven here by driving the REAL public readers rather than asserted
-  // in a comment. 11:30–13:30 IST on 2031-05-12, well inside opening hours.
+  // in a comment. 11:30–13:30 IST on DAY0, well inside opening hours.
   {
     for (let dow = 0; dow < 7; dow++) {
       await owner.query(
@@ -605,7 +618,7 @@ async function main() {
     const { getPublicAvailableStarts, getPublicAvailableStartsForType } = await import(
       '../lib/booking/public-availability'
     )
-    const DATE = '2031-05-12'
+    const DATE = new Date(DAY0).toISOString().slice(0, 10)
     const TZ = 'Asia/Kolkata'
     const inWindow = (d: Date) => d >= T(6) && d < T(8)
 

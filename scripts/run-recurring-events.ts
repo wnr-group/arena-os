@@ -181,7 +181,7 @@ async function main() {
           //
           // syncEventBlocks() is the SAME function the settings screen calls,
           // not a SQL reimplementation: one definition of what an event holds,
-          // and the booking_slots exclusion constraint (0003/0116) is what
+          // and the booking_slots exclusion constraint (0003/0130) is what
           // actually enforces it. A conflict throws, which rolls this series'
           // transaction back — the occurrence and its block are all-or-nothing,
           // exactly as they are when a manager publishes by hand.

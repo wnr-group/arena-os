@@ -121,10 +121,10 @@ async function main() {
     const cols = (await ownerPool.query<{ column_name: string; is_nullable: string; column_default: string }>(
       `select column_name,is_nullable,column_default from information_schema.columns
         where table_schema='public' and table_name='business_profiles' order by ordinal_position`)).rows
-    // service_charge_* come from main; the WhatsApp pair and the Google review pair
+    // service_charge_* and weekend_days come from main; the WhatsApp pair and the Google review pair
     // are appended by their migrations — the venue's invites live on the profile.
     check('table has exactly the specified columns', cols.map((c) => c.column_name).join(',') ===
-      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at,service_charge_percent,service_charge_tax_rate_id,whatsapp_group_url,whatsapp_group_enabled,google_review_url,google_review_enabled')
+      'tenant_id,legal_name,gstin,address,logo_url,invoice_prefix,place_of_supply,created_at,updated_at,service_charge_percent,service_charge_tax_rate_id,weekend_days,whatsapp_group_url,whatsapp_group_enabled,google_review_url,google_review_enabled')
     check('whatsapp_group_enabled is NOT NULL default false',
       cols.find((c) => c.column_name === 'whatsapp_group_enabled')?.is_nullable === 'NO' &&
       String(cols.find((c) => c.column_name === 'whatsapp_group_enabled')?.column_default).includes('false'))

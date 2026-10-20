@@ -21,7 +21,7 @@ import { BUSINESS_SCOPE } from './google-oauth'
  * signed with the app's existing master key. It is verified on the way back,
  * and the TENANT IS READ FROM THE SIGNED VALUE rather than from the request —
  * so a callback cannot name a tenant it was not issued for, whatever host it
- * arrives on. The nonce makes each attempt single-use in the cookie that pairs
+ * arrives on. The nonce makes each attempt distinct (time-limited, not strictly single-use) in the cookie that pairs
  * with it.
  *
  * ── Why a signed value AND a cookie ────────────────────────────────────────

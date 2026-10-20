@@ -725,7 +725,7 @@ async function participantNames(
        -- reader fetched and sorted EVERY registration on the event —
        -- cancelled, waitlisted, unpaid — to label a few dozen, and it
        -- answered "who is a participant" with different SQL from
-       -- public_event_participants() (0135/0123), which is the asymmetry
+       -- public_event_participants() (0135/0137), which is the asymmetry
        -- that let the two readers' seed order diverge in the first place.
        and exists (
          select 1 from public.event_matches m

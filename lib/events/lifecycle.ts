@@ -15,7 +15,7 @@
  *
  * The database still enforces everything a single row CAN express: the window,
  * the capacity floor, the fee floor and the tournament/format equivalence are
- * all CHECK constraints in migration 0110. validateEventFields() states the
+ * all CHECK constraints in migration 0124. validateEventFields() states the
  * same rules early so a manager gets a sentence instead of a constraint
  * violation; it is not the only line of defence.
  */
@@ -129,6 +129,6 @@ export function validateEventFields(v: {
   return null
 }
 
-/** Mirrors the events_team_size CHECK bounds in migration 0113. */
+/** Mirrors the events_team_size CHECK bounds in migration 0127. */
 export const MIN_TEAM_SIZE = 2
 export const MAX_TEAM_SIZE = 50

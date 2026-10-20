@@ -441,7 +441,7 @@ export async function applyVerifiedPaymentWebhook(
       })
 
       if (outcome === 'not_found') {
-        // The row was read `for update` a few statements ago. Refuse loudly
+        // The row was read (without a lock — see above) a few statements ago. Refuse loudly
         // rather than reporting a confirmation that did not happen.
         throw new Error(
           `event_registration webhook: registration ${registration!.id} vanished mid-transaction`,

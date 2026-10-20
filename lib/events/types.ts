@@ -1,5 +1,5 @@
 /**
- * The event vocabulary, mirrored from the SQL enums in migration 0110.
+ * The event vocabulary, mirrored from the SQL enums in migration 0124.
  *
  * Deliberately dependency-free (no `server-only`, no db import) so the public
  * event listing, the registration flow and the tournament bracket views can all

@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
 
   settings.searchParams.set('google', 'connected')
   const res = NextResponse.redirect(settings)
-  // Single-use: the state is spent whether or not this succeeded.
+  // The cookie is cleared whether or not this succeeded; the state itself is only time-limited (10 min) and cookie-paired.
   res.cookies.delete(OAUTH_STATE_COOKIE)
   return res
 }

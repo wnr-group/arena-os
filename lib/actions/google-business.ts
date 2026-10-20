@@ -57,7 +57,6 @@ const connectionInput = z.object({
   locationId: z.string().trim().min(1, 'Enter your Google location id.').max(200),
   clientId: z.string().trim().min(1, 'Enter your OAuth client id.').max(300),
   clientSecret: z.string().trim().min(1, 'Enter your OAuth client secret.').max(300),
-
 })
 
 export async function saveGoogleOAuthClientAction(
