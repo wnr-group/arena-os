@@ -74,7 +74,7 @@ export function isTerminal(status: EventStatus): boolean {
 /**
  * The field rules, stated once so the form, the action, the tests and any
  * future caller agree. Returns an error message, or null when the shape is
- * valid. Mirrors the CHECK constraints in 0110 one-for-one.
+ * valid. Mirrors the CHECK constraints in 0124 one-for-one.
  */
 export function validateEventFields(v: {
   type: EventType
@@ -106,7 +106,7 @@ export function validateEventFields(v: {
     return 'Only tournaments have a bracket format.'
   }
 
-  // The team rules, mirroring the events_team_size CHECK in migration 0113 one
+  // The team rules, mirroring the events_team_size CHECK in migration 0127 one
   // for one. Stated here too so a manager gets a sentence rather than a
   // constraint violation — the same division of labour the fee and window rules
   // above already use.

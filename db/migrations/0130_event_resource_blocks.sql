@@ -1,5 +1,5 @@
 -- ============================================================================
--- Arena OS — 0116 event resource blocking (M15 #4)
+-- Arena OS — 0130 event resource blocking (M15 #4)
 --
 -- An event reserves gaming stations for its window, so nothing else can be
 -- booked on them while it runs.
@@ -224,7 +224,7 @@ create trigger trg_resources_branch_event_blocks
 alter table public.event_resources enable row level security;
 
 -- Any member may read which stations an event claims; only a manager may
--- change it. The same split events itself uses (0110).
+-- change it. The same split events itself uses (0124).
 drop policy if exists event_resources_select on public.event_resources;
 create policy event_resources_select on public.event_resources
   for select using (tenant_id in (select public.auth_tenant_ids()));

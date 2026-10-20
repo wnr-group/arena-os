@@ -50,7 +50,7 @@ import type { EventStatus, EventType, TournamentFormat as EventFormat } from './
  * mutation requires a manager session.
  */
 
-/** Statuses a spectator may reach. The outer bound migration 0121 enforces. */
+/** Statuses a spectator may reach. The outer bound migration 0135 enforces. */
 export const PUBLIC_LIVE_STATUSES = [
   'published',
   'registration_open',
@@ -240,7 +240,7 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
     // ── standings, via the SHARED pure function ────────────────────────────
     let standings: PublicStanding[] = []
     if (format === 'round_robin' || format === 'points') {
-      // ORDER comes from the projection's own `seed` column (0123), which is
+      // ORDER comes from the projection's own `seed` column (0137), which is
       // arrival order — checked_in_at, ties on registration id — the same rule
       // seedParticipants() applied when the draw was built. That is what makes
       // the public tiebreak identical to the staff one AND to the rule
