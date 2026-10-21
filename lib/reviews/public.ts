@@ -1,6 +1,6 @@
 import 'server-only'
 import { cache } from 'react'
-import { desc, eq } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { googleReviews } from '@/db/schema'
 
@@ -57,14 +57,17 @@ export type PublicGoogleReviews = {
 const HOMEPAGE_LIMIT = 6
 
 /**
- * The venue's cached reviews, newest first.
+ * The venue's newest cached reviews (at most HOMEPAGE_LIMIT), plus the average
+ * and count over ALL cached reviews.
  *
- * `averageRating` and `count` are computed over what is CACHED, not over
- * Google's own `averageRating`/`totalReviewCount`. Those two numbers are
- * available from the API and deliberately not stored: showing "4.8 from 312
- * reviews" beside six cached ones invites a visitor to wonder where the other
- * 306 are, and the moment a sync lags, the headline number and the visible
- * reviews disagree. What is shown is what is here.
+ * `averageRating` and `count` come from a separate aggregate over every cached
+ * row — NOT from the six that are displayed. Taking them from the limited list
+ * made a venue with 200 reviews read "from 6 reviews" with an average biased to
+ * the newest few. The sync caches the venue's whole review list (and prunes
+ * ones Google removed), so the aggregate describes the same set Google does,
+ * to within sync lag. They are still computed over what is CACHED rather than
+ * stored from Google's own `averageRating`/`totalReviewCount`: the headline
+ * can never disagree with the data this page actually holds.
  *
  * `cache()` dedupes within one render pass, so a page body and its
  * generateMetadata() share a single query.
@@ -72,8 +75,8 @@ const HOMEPAGE_LIMIT = 6
 export const getPublicGoogleReviews = cache(async function getPublicGoogleReviews(
   tenantId: string,
 ): Promise<PublicGoogleReviews> {
-  const rows = await withPublicTenant(tenantId, (tx) =>
-    tx
+  const { rows, totals } = await withPublicTenant(tenantId, async (tx) => {
+    const rows = await tx
       .select({
         id: googleReviews.id,
         reviewerName: googleReviews.reviewerName,
@@ -85,18 +88,28 @@ export const getPublicGoogleReviews = cache(async function getPublicGoogleReview
       .from(googleReviews)
       .where(eq(googleReviews.tenantId, tenantId))
       .orderBy(desc(googleReviews.reviewCreatedAt))
-      .limit(HOMEPAGE_LIMIT),
-  )
+      .limit(HOMEPAGE_LIMIT)
+
+    // Over every cached row, not just the page above.
+    const [totals] = await tx
+      .select({
+        count: sql<number>`count(*)`.mapWith(Number),
+        avg: sql<number>`coalesce(avg(${googleReviews.rating}), 0)`.mapWith(Number),
+      })
+      .from(googleReviews)
+      .where(eq(googleReviews.tenantId, tenantId))
+
+    return { rows, totals }
+  })
 
   if (rows.length === 0) return { reviews: [], averageRating: 0, count: 0 }
 
-  const total = rows.reduce((sum, r) => sum + r.rating, 0)
   return {
     reviews: rows.map((r) => ({
       ...r,
       reviewCreatedAt: r.reviewCreatedAt.toISOString(),
     })),
-    averageRating: Math.round((total / rows.length) * 10) / 10,
-    count: rows.length,
+    averageRating: Math.round(totals.avg * 10) / 10,
+    count: totals.count,
   }
 })

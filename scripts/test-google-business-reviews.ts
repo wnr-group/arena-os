@@ -511,7 +511,7 @@ async function main() {
   {
     const a = await getPublicGoogleReviews(A)
     check("A's homepage sees A's reviews", a.reviews.length > 0)
-    check('…with an average over what is cached', a.averageRating > 0 && a.count === a.reviews.length)
+    check('…with an average over what is cached', a.averageRating > 0 && a.count >= a.reviews.length)
 
     const b = await getPublicGoogleReviews(B)
     check("B's homepage sees B's reviews", b.reviews.length > 0)
@@ -539,6 +539,21 @@ async function main() {
     const D = await makeTenant('gbpd')
     const empty = await getPublicGoogleReviews(D)
     check('an unconnected venue returns an empty set, not an error', empty.reviews.length === 0 && empty.count === 0)
+
+    // The headline describes ALL cached reviews, not the handful displayed:
+    // nine reviews, the six newest five-star and the three oldest one-star.
+    for (let i = 0; i < 9; i++) {
+      await owner.query(
+        `insert into google_reviews (tenant_id, google_review_id, rating, comment, review_created_at, synced_at)
+         values ($1, $2, $3, 'x', now() - ($4 || ' days')::interval, now())`,
+        [D, `agg${i}`, i < 6 ? 5 : 1, String(i)],
+      )
+    }
+    const agg = await getPublicGoogleReviews(D)
+    check('only the newest few reviews are displayed', agg.reviews.length === 6, agg.reviews.length)
+    check('…but the count is over every cached review', agg.count === 9, agg.count)
+    check('…and the average is over every cached review, not just the six shown', agg.averageRating === 3.7, agg.averageRating)
+    await owner.query('delete from google_reviews where tenant_id=$1', [D])
   }
 
   // ════════════════════════════════════════════════════════════════════════
