@@ -379,6 +379,8 @@ export async function createEventRegistrationPayment(
  *   unfulfillable    money arrived but the last place had gone — cancelled and
  *                    flagged refund_required
  *   amount_mismatch  the fee moved between checkout and capture — same landing
+ *   event_closed     the event was cancelled, completed or under way when the
+ *                    money landed — no place is granted, refund_required is set
  *   not_found        the registration vanished (cannot happen; asserted anyway)
  */
 export type ConfirmRegistrationOutcome =
@@ -387,6 +389,7 @@ export type ConfirmRegistrationOutcome =
   | 'already_paid'
   | 'unfulfillable'
   | 'amount_mismatch'
+  | 'event_closed'
   | 'not_found'
 
 /**
@@ -407,6 +410,7 @@ export const REFUND_OUTCOMES: readonly ConfirmRegistrationOutcome[] = [
   'already_paid',
   'unfulfillable',
   'amount_mismatch',
+  'event_closed',
 ]
 
 /**

@@ -678,6 +678,47 @@ async function main() {
   check('…the money and its reference are recorded against the entry', lateRow.paid_amount === '300.00' && lateRow.payment_reference === `pay_${RUN}_late`)
   check('…and the entry stays cancelled', lateRow.status === 'cancelled')
 
+  // ── a capture that lands after the EVENT is cancelled / completed ─────────
+  for (const closed of ['cancelled', 'completed'] as const) {
+    const ev = await makeEvent(A, `Closed ${closed} Cup`, { capacity: 5, fee: '500.00' })
+    const cc = await makeCustomer(A.tenantId, `Closed ${closed}`)
+    const cr = await claimEventRegistration(cc, ev, null)
+    if (!cr.ok) throw new Error('cannot continue')
+    const orderId = `order_${RUN}_closed_${closed}`
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,event_registration_id,purpose,gateway,
+                                    gateway_order_id,amount,currency,status)
+       values ($1,$2,$3,'event_registration','razorpay',$4,'500.00','INR','pending')`,
+      [A.tenantId, A.branchId, cr.registrationId, orderId],
+    )
+    await owner.query(`update events set status=$2 where id=$1`, [ev, closed])
+    if (closed === 'cancelled') {
+      await owner.query(
+        `update event_registrations set status='cancelled', cancelled_at=now(),
+                payment_hold_expires_at=null where id=$1`,
+        [cr.registrationId],
+      )
+    }
+    const res = await applyVerifiedPaymentWebhook({
+      verifiedTenantId: A.tenantId,
+      eventType: 'payment.captured',
+      eventId: `evt_${RUN}_closed_${closed}`,
+      payment: payment({ id: `pay_${RUN}_closed_${closed}`, order_id: orderId }) as never,
+    })
+    check(
+      `a capture after the event is ${closed} reports event_closed and a refund`,
+      res.kind === 'processed' &&
+        res.purpose === 'event_registration' &&
+        res.registrationOutcome === 'event_closed' &&
+        res.refundRequired === true,
+      res,
+    )
+    const closedRow = await reg(cr.registrationId)
+    check(`…the entry is not re-confirmed (${closed})`, closedRow.status === 'cancelled', closedRow.status)
+    check(`…and is flagged refund_required (${closed})`, closedRow.refund_required === true)
+    check(`…with the money recorded (${closed})`, closedRow.paid_amount === '500.00')
+  }
+
   // ══ 10. PAID WAITLIST PROMOTION ════════════════════════════════════════════
   console.log('\n── promotion on a paid event asks for payment, it does not gift a place ──')
 
