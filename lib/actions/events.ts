@@ -9,7 +9,7 @@ import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
-import { EventError, updateEventStatusCore, validateEventFields } from '@/lib/events/service'
+import { EventError, assertEventEditAllowed, updateEventStatusCore, validateEventFields } from '@/lib/events/service'
 import { EVENT_STATUSES, EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
 import { setEventResources, syncEventBlocks } from '@/lib/events/resource-blocks'
 import {
@@ -181,12 +181,20 @@ export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Re
             format: events.tournamentFormat,
             mode: events.registrationMode,
             teamSize: events.teamSize,
+            entryFee: events.entryFee,
+            capacity: events.capacity,
           })
           .from(events)
           .where(and(eq(events.id, v.id), eq(events.tenantId, ctx.tenant.id)))
           .for('update')
           .limit(1)
         if (!current) throw new EventError('Event not found.')
+
+        // Under the same lock: no claim or payment can slip in before the write.
+        await assertEventEditAllowed(tx, { tenantId: ctx.tenant.id }, v.id, current, {
+          entryFee: values.entryFee,
+          capacity: values.capacity,
+        })
 
         const formatChanged = current.format !== values.tournamentFormat
         const modeChanged =

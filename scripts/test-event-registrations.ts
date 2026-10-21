@@ -719,6 +719,61 @@ async function main() {
     check(`…with the money recorded (${closed})`, closedRow.paid_amount === '500.00')
   }
 
+  // ── editing fee / capacity while registrations are in flight ──────────────
+  {
+    const { drizzle } = await import('drizzle-orm/node-postgres')
+    const schema = await import('../db/schema')
+    const { assertEventEditAllowed } = await import('../lib/events/service')
+    const odb = drizzle(owner, { schema })
+    const refused = async (
+      eventId: string,
+      cur: { entryFee: string; capacity: number | null },
+      next: { entryFee: string; capacity: number | null },
+    ) => {
+      try {
+        await assertEventEditAllowed(odb as never, { tenantId: A.tenantId }, eventId, cur, next)
+        return null
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e)
+      }
+    }
+
+    const ev = await makeEvent(A, 'Edit Guard Cup', { capacity: 3, fee: '500.00' })
+    const cur = { entryFee: '500.00', capacity: 3 }
+    check('an event with no registrations can change fee and capacity',
+      (await refused(ev, cur, { entryFee: '700.00', capacity: 1 })) === null)
+
+    const e1 = await makeCustomer(A.tenantId, 'Edit One')
+    const e2 = await makeCustomer(A.tenantId, 'Edit Two')
+    const r1 = await claimEventRegistration(e1, ev, null)
+    const r2 = await claimEventRegistration(e2, ev, null)
+    if (!r1.ok || !r2.ok) throw new Error('cannot continue')
+
+    check('a fee change is refused while a live payment hold exists',
+      ((await refused(ev, cur, { entryFee: '700.00', capacity: 3 })) ?? '').includes('part-way through paying'))
+    check('…including a change to free',
+      (await refused(ev, cur, { entryFee: '0.00', capacity: 3 })) !== null)
+    check('an unchanged fee is allowed while holds exist',
+      (await refused(ev, cur, { entryFee: '500.00', capacity: 3 })) === null)
+    check('capacity below current occupancy (2 held) is refused',
+      ((await refused(ev, cur, { entryFee: '500.00', capacity: 1 })) ?? '').includes('cannot be lowered'))
+    check('capacity down to exactly the occupancy is allowed',
+      (await refused(ev, cur, { entryFee: '500.00', capacity: 2 })) === null)
+    check('capacity can go up or become unlimited',
+      (await refused(ev, cur, { entryFee: '500.00', capacity: 10 })) === null &&
+        (await refused(ev, cur, { entryFee: '500.00', capacity: null })) === null)
+
+    // Holds lapse: the fee may change again, and expired holds do not count.
+    await owner.query(
+      `update event_registrations set payment_hold_expires_at = now() - interval '1 minute' where event_id=$1`,
+      [ev],
+    )
+    check('once the holds have expired the fee may change',
+      (await refused(ev, cur, { entryFee: '700.00', capacity: 3 })) === null)
+    check('…and expired holds no longer count toward occupancy',
+      (await refused(ev, cur, { entryFee: '500.00', capacity: 1 })) === null)
+  }
+
   // ── a capture for a cancelled entry that cannot be resurrected ────────────
   {
     // Hold lapsed, customer registered again, then the OLD order was paid. The
