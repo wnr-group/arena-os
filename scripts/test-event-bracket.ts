@@ -219,8 +219,9 @@ section('5. double elimination')
 
     // EVERY loser has exactly one destination, except where elimination is the
     // point: losers-bracket matches and the reset.
-    const wbNoRoute = wb.filter((m) => m.loserTo === null)
-    check(`${label}: every winners-bracket loser has a destination`, wbNoRoute.length === 0, `${wbNoRoute.length} unrouted`)
+    // A round-1 BYE has no loser to route.
+    const wbNoRoute = wb.filter((m) => m.loserTo === null && m.status !== 'bye')
+    check(`${label}: every played winners-bracket match routes its loser`, wbNoRoute.length === 0, `${wbNoRoute.length} unrouted`)
     check(`${label}: losers-bracket losers are eliminated (no route)`, lb.every((m) => m.loserTo === null))
 
     // Every destination — winner or loser — names a match that exists.
@@ -421,6 +422,69 @@ section('10. the format entry point')
       return e instanceof BracketError
     }
   })())
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+section('11. double elimination plays to a champion at EVERY field size')
+{
+  // Replicates the routing in recordMatchResult / placeParticipant: winners and
+  // losers move along the stored pointers into EMPTY slots, a match opens once
+  // both slots are filled, and the first grand final voids its reset when the
+  // winners-bracket champion wins it.
+  type Key = { side: string; round: number; position: number }
+  type Sim = { m: GeneratedMatch; a: string | null; b: string | null; status: string; winner: string | null }
+  const keyOf = (k: Key) => `${k.side}:${k.round}:${k.position}`
+
+  const play = (n: number, pick: (i: number) => 'a' | 'b') => {
+    const sims = new Map<string, Sim>()
+    for (const m of generateBracket('double_elim', people(n))) {
+      sims.set(keyOf(m), { m, a: m.a, b: m.b, status: m.status, winner: null })
+    }
+    const place = (d: { key: Key; slot: 'a' | 'b' }, who: string) => {
+      const t = sims.get(keyOf(d.key))
+      if (!t) throw new Error(`missing destination ${keyOf(d.key)}`)
+      if (t[d.slot] === null) t[d.slot] = who
+      if (t.a && t.b && t.status === 'pending') t.status = 'ready'
+    }
+    let played = 0
+    for (;;) {
+      const next = [...sims.values()].find((s) => s.status === 'ready' && s.a && s.b)
+      if (!next) break
+      const side = pick(played++)
+      const winner = (side === 'a' ? next.a : next.b) as string
+      const loser = (side === 'a' ? next.b : next.a) as string
+      next.status = 'completed'
+      next.winner = winner
+      if (next.m.winnerTo) place(next.m.winnerTo, winner)
+      if (next.m.loserTo) place(next.m.loserTo, loser)
+      if (next.m.side === 'final' && next.m.round === 1 && winner === next.a) {
+        const reset = sims.get('final:2:0')!
+        if (reset.status === 'pending' || reset.status === 'ready') reset.status = 'void'
+      }
+    }
+    const stuck = [...sims.values()].filter((s) => s.status === 'pending' || s.status === 'ready')
+    const f1 = sims.get('final:1:0')!
+    const f2 = sims.get('final:2:0')!
+    const champion = f2.status === 'completed' ? f2.winner : f1.status === 'completed' ? f1.winner : null
+    return { stuck, champion }
+  }
+
+  const strategies: [string, (i: number) => 'a' | 'b'][] = [
+    ['slot a always wins', () => 'a'],
+    ['slot b always wins', () => 'b'],
+    ['alternating', (i) => (i % 2 === 0 ? 'a' : 'b')],
+    ['every third to b', (i) => (i % 3 === 0 ? 'b' : 'a')],
+  ]
+  for (let n = 2; n <= 17; n++) {
+    for (const [label, pick] of strategies) {
+      const { stuck, champion } = play(n, pick)
+      check(
+        `n=${n} (${label}): no match is stranded and a champion is crowned`,
+        stuck.length === 0 && champion !== null,
+        `stuck=${stuck.map((s) => keyOf(s.m)).join(',')} champion=${champion}`,
+      )
+    }
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

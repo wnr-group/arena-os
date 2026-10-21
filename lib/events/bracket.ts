@@ -453,7 +453,122 @@ export function generateDoubleElimination(seeds: BracketParticipant[]): Generate
       : m,
   )
 
-  return [...routed, ...lbMatches, ...finals]
+  return collapseUnfedLosersSlots([...routed, ...lbMatches, ...finals])
+}
+
+/**
+ * Remove the losers-bracket matches a non-power-of-two field can never play.
+ *
+ * A winners-bracket round-1 bye produces no loser, so the losers slot it was
+ * routed to is never fed. The service only moves players along stored pointers,
+ * so a match with a permanently empty slot would sit in `pending` forever and
+ * strand everything downstream — no grand final, no champion.
+ *
+ * Resolved here, at generation, the same way single elimination resolves its
+ * byes. Walking the draw in play order, a losers/final match with
+ *
+ *   two live feeders  is a real match, left alone;
+ *   one live feeder   can never get an opponent: it becomes `void` and its
+ *                     live feeder's pointer is redirected straight to this
+ *                     match's own destination (the occupant is a walkover);
+ *   no live feeder    becomes `void` and feeds nothing.
+ *
+ * Void rows keep their coordinates so the draw sheet keeps its shape, and the
+ * UI and score entry already handle `void`.
+ */
+function collapseUnfedLosersSlots(matches: GeneratedMatch[]): GeneratedMatch[] {
+  const keyStr = (k: MatchKey) => `${k.side}:${k.round}:${k.position}`
+  const byKey = new Map(matches.map((m) => [keyStr(m), { ...m }]))
+  const sideOrder: Record<BracketSide, number> = {
+    winners: 0,
+    losers: 1,
+    final: 2,
+    round_robin: 3,
+    points: 4,
+  }
+  const ordered = [...byKey.values()].sort(
+    (x, y) => sideOrder[x.side] - sideOrder[y.side] || x.round - y.round || x.position - y.position,
+  )
+
+  // Live feeders per destination slot, as "from-key|winner|loser" edges.
+  type Edge = { from: GeneratedMatch; kind: 'winner' | 'loser' }
+  const feeders = new Map<string, Edge[]>()
+  for (const m of ordered) {
+    for (const kind of ['winner', 'loser'] as const) {
+      const dest = kind === 'winner' ? m.winnerTo : m.loserTo
+      if (!dest) continue
+      const k = `${keyStr(dest.key)}|${dest.slot}`
+      feeders.set(k, [...(feeders.get(k) ?? []), { from: m, kind }])
+    }
+  }
+
+  // produces: does this match ever send a winner / loser onward?
+  const producesWinner = new Map<string, boolean>()
+  const producesLoser = new Map<string, boolean>()
+  const passThrough = new Set<string>()
+
+  // Redirect a pointer past any pass-through voids it lands on.
+  const resolve = (dest: MatchDestination): MatchDestination => {
+    let d = dest
+    while (passThrough.has(keyStr(d.key))) {
+      const next = byKey.get(keyStr(d.key))!.winnerTo
+      if (!next) break
+      d = next
+    }
+    return d
+  }
+
+  for (const m of ordered) {
+    const mk = keyStr(m)
+    if (m.side === 'winners') {
+      // A bye's survivor advances (pre-placed); it has no loser to send.
+      producesWinner.set(mk, true)
+      producesLoser.set(mk, m.status !== 'bye')
+      if (m.status === 'bye') m.loserTo = null
+      continue
+    }
+    if (m.side !== 'losers' && m.side !== 'final') continue
+    if (m.side === 'final' && m.round === 2) {
+      producesWinner.set(mk, true)
+      continue
+    }
+
+    const liveSlots = (['a', 'b'] as const).map((slot) =>
+      (feeders.get(`${mk}|${slot}`) ?? []).some((e) =>
+        e.kind === 'winner'
+          ? producesWinner.get(keyStr(e.from))
+          : producesLoser.get(keyStr(e.from)),
+      ),
+    )
+    const live = liveSlots.filter(Boolean).length
+
+    if (live === 2 || m.side === 'final') {
+      producesWinner.set(mk, true)
+      producesLoser.set(mk, true)
+      continue
+    }
+
+    m.status = 'void'
+    m.loserTo = null
+    if (live === 1) {
+      passThrough.add(mk)
+      producesWinner.set(mk, true)
+    } else {
+      producesWinner.set(mk, false)
+      m.winnerTo = null
+    }
+  }
+
+  // Redirect every live pointer that lands on a pass-through void.
+  for (const m of ordered) {
+    if (passThrough.has(keyStr(m))) continue
+    if (m.winnerTo) m.winnerTo = resolve(m.winnerTo)
+    if (m.loserTo) m.loserTo = resolve(m.loserTo)
+  }
+  // Pass-through rows themselves no longer receive or send anything.
+  for (const k of passThrough) byKey.get(k)!.winnerTo = null
+
+  return ordered.map((m) => byKey.get(keyStr(m))!)
 }
 
 // ── round robin ──────────────────────────────────────────────────────────────
