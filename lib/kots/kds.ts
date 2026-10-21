@@ -15,10 +15,10 @@
  * A voided line never counts as outstanding, and a removed line takes its
  * kot_items row with it (ON DELETE CASCADE).
  */
-import { and, eq, inArray, ne, notExists, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, notExists, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { kots, kotItems, orderItems, orderSettings, orders } from '@/db/schema'
+import { kitchenStations, kots, kotItems, orderItems, orderSettings, orders } from '@/db/schema'
 import { KotError, type KotOrderRef } from './service'
 
 type Db = NodePgDatabase<typeof schema>
@@ -30,6 +30,8 @@ export type KdsSettings = {
   /** Course firing (M19 #2) — only meaningful when `enabled` too. */
   coursesEnabled: boolean
   courseNames: string[]
+  /** Station routing (M19 #3) — only meaningful when `enabled` too. */
+  stationsEnabled: boolean
 }
 
 /** A tenant with no order_settings row behaves exactly as before the KDS. */
@@ -40,6 +42,7 @@ export const DEFAULT_KDS_SETTINGS: KdsSettings = {
   lateMinutes: 15,
   coursesEnabled: false,
   courseNames: DEFAULT_COURSE_NAMES,
+  stationsEnabled: false,
 }
 
 export async function getKdsSettingsCore(tx: Db, tenantId: string): Promise<KdsSettings> {
@@ -50,6 +53,7 @@ export async function getKdsSettingsCore(tx: Db, tenantId: string): Promise<KdsS
       lateMinutes: orderSettings.kdsLateMinutes,
       coursesEnabled: orderSettings.coursesEnabled,
       courseNames: orderSettings.courseNames,
+      stationsEnabled: orderSettings.stationsEnabled,
     })
     .from(orderSettings)
     .where(eq(orderSettings.tenantId, tenantId))
@@ -57,7 +61,11 @@ export async function getKdsSettingsCore(tx: Db, tenantId: string): Promise<KdsS
   return row ?? DEFAULT_KDS_SETTINGS
 }
 
-export async function saveKdsSettingsCore(tx: Db, tenantId: string, v: KdsSettings): Promise<void> {
+export async function saveKdsSettingsCore(
+  tx: Db,
+  tenantId: string,
+  v: Omit<KdsSettings, 'stationsEnabled'> & { stationsEnabled?: boolean },
+): Promise<void> {
   const whole = (n: number) => Number.isInteger(n)
   if (!whole(v.warnMinutes) || !whole(v.lateMinutes) || v.warnMinutes < 1 || v.lateMinutes > 480) {
     throw new KotError('Timer thresholds must be whole minutes between 1 and 480.')
@@ -78,6 +86,8 @@ export async function saveKdsSettingsCore(tx: Db, tenantId: string, v: KdsSettin
     kdsLateMinutes: v.lateMinutes,
     coursesEnabled: v.coursesEnabled,
     courseNames: names,
+    // Omitted = leave the stored value alone (callers predating stations).
+    ...(v.stationsEnabled === undefined ? {} : { stationsEnabled: v.stationsEnabled }),
   }
   await tx
     .insert(orderSettings)
@@ -114,8 +124,12 @@ async function lockKot(tx: Db, tenantId: string, kotId: string) {
   return kot
 }
 
-/** Not-voided lines on the order with no bump row. */
-async function outstandingLineIds(tx: Db, tenantId: string, orderId: string): Promise<string[]> {
+/** Which station's lines an operation covers: `{ id }` = that station, `{ id: null }`
+ *  = lines with no station, undefined = every line on the ticket. */
+export type StationScope = { id: string | null } | undefined
+
+/** Not-voided, fired lines on the order with no bump row (optionally one station's). */
+async function outstandingLineIds(tx: Db, tenantId: string, orderId: string, station?: StationScope): Promise<string[]> {
   const rows = await tx
     .select({ id: orderItems.id })
     .from(orderItems)
@@ -126,6 +140,11 @@ async function outstandingLineIds(tx: Db, tenantId: string, orderId: string): Pr
         ne(orderItems.voidStatus, 'voided'),
         // Held lines aren't the cook's yet — they never block "ready".
         eq(orderItems.fireStatus, 'fired'),
+        station === undefined
+          ? undefined
+          : station.id === null
+            ? isNull(orderItems.stationId)
+            : eq(orderItems.stationId, station.id),
         notExists(tx.select({ one: sql`1` }).from(kotItems).where(eq(kotItems.orderItemId, orderItems.id))),
       ),
     )
@@ -191,22 +210,29 @@ export async function recallKotItemCore(tx: Db, actor: KdsActor, kotId: string, 
   return result(kot, 'preparing', false)
 }
 
-/** Bump every outstanding line at once → ready. */
-export async function bumpKotCore(tx: Db, actor: KdsActor, kotId: string): Promise<KdsResult> {
+/**
+ * Bump every outstanding line at once. Without `station` that completes the
+ * ticket (→ ready). With one, only that station's lines are bumped and the
+ * ticket becomes ready only if that left nothing outstanding anywhere — the
+ * other stations are still cooking otherwise.
+ */
+export async function bumpKotCore(tx: Db, actor: KdsActor, kotId: string, station?: StationScope): Promise<KdsResult> {
   await assertKdsEnabled(tx, actor.tenantId)
   const kot = await lockKot(tx, actor.tenantId, kotId)
   if (kot.status !== 'pending' && kot.status !== 'preparing') {
     throw new KotError(`A ${kot.status} ticket can't be bumped.`)
   }
-  const left = await outstandingLineIds(tx, actor.tenantId, kot.orderId)
+  const left = await outstandingLineIds(tx, actor.tenantId, kot.orderId, station)
   if (left.length > 0) {
     await tx
       .insert(kotItems)
       .values(left.map((orderItemId) => ({ tenantId: actor.tenantId, kotId, orderItemId, bumpedBy: actor.membershipId })))
       .onConflictDoNothing({ target: kotItems.orderItemId })
   }
-  await setStatus(tx, actor.tenantId, kotId, 'ready')
-  return result(kot, 'ready', true)
+  const stillCooking = station === undefined ? 0 : (await outstandingLineIds(tx, actor.tenantId, kot.orderId)).length
+  const next = stillCooking > 0 ? 'preparing' : 'ready'
+  await setStatus(tx, actor.tenantId, kotId, next)
+  return result(kot, next, next === 'ready')
 }
 
 /** Recall a completed ticket: every line back to outstanding, ticket → preparing. */
@@ -280,4 +306,19 @@ export async function fireCourseCore(tx: Db, orderId: string, course: number): P
   }
   if (fired === 0) throw new KotError('Nothing is being held for that course.')
   return fired
+}
+
+/**
+ * Station routing as the order path sees it: id → name of the tenant's active
+ * stations, or null when routing is off (no KDS, or stations not enabled), in
+ * which case no order line is given a station.
+ */
+export async function getStationRoutingCore(tx: Db, tenantId: string): Promise<Map<string, string> | null> {
+  const s = await getKdsSettingsCore(tx, tenantId)
+  if (!(s.enabled && s.stationsEnabled)) return null
+  const rows = await tx
+    .select({ id: kitchenStations.id, name: kitchenStations.name })
+    .from(kitchenStations)
+    .where(and(eq(kitchenStations.tenantId, tenantId), eq(kitchenStations.isActive, true)))
+  return new Map(rows.map((r) => [r.id, r.name]))
 }

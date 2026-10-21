@@ -61,8 +61,10 @@ export async function bumpKotItem(kotId: string, orderItemId: string): Promise<R
 export async function recallKotItem(kotId: string, orderItemId: string): Promise<Result> {
   return kdsAction((tx, a) => recallKotItemCore(tx, a, kotId, orderItemId))
 }
-export async function bumpKot(kotId: string): Promise<Result> {
-  return kdsAction((tx, a) => bumpKotCore(tx, a, kotId))
+/** `station` scopes the bump to one station's lines (a station screen's
+ *  "Bump ticket"); omit for the whole ticket. `{ id: null }` = unrouted lines. */
+export async function bumpKot(kotId: string, station?: { id: string | null }): Promise<Result> {
+  return kdsAction((tx, a) => bumpKotCore(tx, a, kotId, station))
 }
 export async function recallKot(kotId: string): Promise<Result> {
   return kdsAction((tx, a) => recallKotCore(tx, a, kotId))
@@ -75,6 +77,7 @@ export async function saveKdsSettings(v: {
   lateMinutes: number
   coursesEnabled: boolean
   courseNames: string[]
+  stationsEnabled: boolean
 }): Promise<Result> {
   try {
     const ctx = await requireManager()

@@ -12,7 +12,12 @@ import { getKdsSettingsCore } from '@/lib/kots/kds'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { canFireCourse, canManageKitchen, isManager } from '@/lib/auth/roles'
 
-export default async function KitchenPage() {
+export default async function KitchenPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ station?: string }>
+}) {
+  const sp = await searchParams
   const ctx = await getActiveContext()
   if (!ctx) return null
 
@@ -33,7 +38,14 @@ export default async function KitchenPage() {
     : null
 
   if (kdsEligible && kdsSettings?.enabled) {
-    const [board, menuItemRows] = await Promise.all([getKdsBoard(ctx, branch.id), listMenuItems(ctx)])
+    // ?station=<uuid> = that station's screen, ?station=none = unrouted lines.
+    const scope =
+      sp.station === 'none'
+        ? { id: null }
+        : sp.station && /^[0-9a-f-]{36}$/i.test(sp.station)
+          ? { id: sp.station }
+          : undefined
+    const [board, menuItemRows] = await Promise.all([getKdsBoard(ctx, branch.id, scope), listMenuItems(ctx)])
     return (
       <div className="mx-auto max-w-[110rem] px-4 py-6 sm:px-6 lg:px-8">
         <h1 className="text-2xl font-semibold">Kitchen</h1>
@@ -41,6 +53,7 @@ export default async function KitchenPage() {
           board={board}
           canBump={canManageKitchen(ctx.role)}
           canFire={canFireCourse(ctx.role)}
+          scope={board.settings.stationsEnabled ? scope : undefined}
           menuItems={menuItemRows
             .filter((i) => i.status !== 'hidden')
             .map((i) => ({ id: i.id, name: i.name, categoryName: i.categoryName, status: i.status as 'available' | 'out_of_stock' }))}

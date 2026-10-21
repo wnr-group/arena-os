@@ -7,6 +7,7 @@ import { Bell, Check, Flame, Loader2, MapPin, PackageX, Pause, Printer, RotateCc
 import { bumpKot, bumpKotItem, fireCourse, recallKot, recallKotItem } from '@/lib/actions/kds'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KdsBoard as KdsBoardData, KdsTicket } from '@/lib/kots/kds-data'
+import { usePolling } from './usePolling'
 import { EightySixPanel, type EightySixItem } from './EightySixPanel'
 
 /** Adaptive polling: fast while the screen is visible, none while the tab is
@@ -37,12 +38,15 @@ export function KdsBoard({
   menuItems,
   canBump,
   canFire,
+  scope,
 }: {
   board: KdsBoardData
   menuItems: EightySixItem[]
   canBump: boolean
   /** Waiters/cashiers can fire a held course even though they can't bump. */
   canFire: boolean
+  /** The station screen being shown: undefined = every station, `{ id: null }` = unrouted. */
+  scope?: { id: string | null }
 }) {
   const router = useRouter()
   const { settings, tickets, heldOnly, allDay } = board
@@ -55,29 +59,7 @@ export function KdsBoard({
   const [show86, setShow86] = useState(false)
   const [, startTransition] = useTransition()
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | null = null
-    const start = () => {
-      if (timer === null) timer = setInterval(() => router.refresh(), POLL_MS)
-    }
-    const stop = () => {
-      if (timer !== null) clearInterval(timer)
-      timer = null
-    }
-    const onVisibility = () => {
-      if (document.hidden) stop()
-      else {
-        router.refresh()
-        start()
-      }
-    }
-    if (!document.hidden) start()
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [router])
+  usePolling(POLL_MS)
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000)
@@ -118,6 +100,8 @@ export function KdsBoard({
         </button>
       </div>
 
+      {settings.stationsEnabled && <StationTabs stations={board.stations} scope={scope} />}
+
       {error && (
         <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -147,6 +131,8 @@ export function KdsBoard({
                   busy={busy}
                   canBump={canBump}
                   canFire={canFire}
+                  scope={scope}
+                  showStation={scope === undefined && settings.stationsEnabled}
                   run={run}
                 />
               ))}
@@ -251,6 +237,8 @@ function TicketCard({
   busy,
   canBump,
   canFire,
+  scope,
+  showStation,
   run,
 }: {
   ticket: KdsTicket
@@ -260,6 +248,9 @@ function TicketCard({
   busy: string | null
   canBump: boolean
   canFire: boolean
+  scope?: { id: string | null }
+  /** Tag each line with its station (the all-stations view only). */
+  showStation: boolean
   run: (key: string, fn: () => Promise<{ error?: string }>) => void
 }) {
   const level = levelFor(Math.floor(elapsedMs / 60000), warn, late)
@@ -309,6 +300,11 @@ function TicketCard({
               <span className="flex items-start justify-between gap-2">
                 <span className={`text-lg font-semibold leading-tight ${item.bumped ? 'line-through' : ''}`}>
                   {item.qty}× {item.name}
+                  {showStation && item.stationName && (
+                    <span className="ml-2 rounded bg-background px-1.5 py-0.5 align-middle text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                      {item.stationName}
+                    </span>
+                  )}
                 </span>
                 {canBump &&
                   (busy === key ? (
@@ -364,7 +360,7 @@ function TicketCard({
         <button
           type="button"
           disabled={busy !== null}
-          onClick={() => run(ticket.kotId, () => bumpKot(ticket.kotId))}
+          onClick={() => run(ticket.kotId, () => bumpKot(ticket.kotId, scope))}
           className="mt-3 inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-lg bg-primary text-base font-semibold text-primary-foreground shadow-sm transition hover:shadow-md disabled:opacity-50"
         >
           {busy === ticket.kotId ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
@@ -421,5 +417,32 @@ function HeldGroups({
         )
       })}
     </div>
+  )
+}
+
+/** One tab per station (a wall screen per station bookmarks its tab), plus
+ *  lines with no station and the expo/pass view. */
+function StationTabs({ stations, scope }: { stations: { id: string; name: string }[]; scope?: { id: string | null } }) {
+  const tab = (active: boolean) =>
+    `inline-flex min-h-11 items-center rounded-lg border px-4 text-sm font-medium transition ${
+      active ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+    }`
+  return (
+    <nav aria-label="Stations" className="flex flex-wrap gap-2">
+      <Link href="/kitchen" className={tab(scope === undefined)}>
+        All stations
+      </Link>
+      {stations.map((s) => (
+        <Link key={s.id} href={`/kitchen?station=${s.id}`} className={tab(scope?.id === s.id)}>
+          {s.name}
+        </Link>
+      ))}
+      <Link href="/kitchen?station=none" className={tab(scope !== undefined && scope.id === null)}>
+        Unassigned
+      </Link>
+      <Link href="/kitchen/expo" className={tab(false)}>
+        Expo / pass →
+      </Link>
+    </nav>
   )
 }

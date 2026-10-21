@@ -1,7 +1,7 @@
 import 'server-only'
-import { and, asc, eq, inArray, ne } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { kots, kotItems, orders, orderItems, orderItemModifiers, resources } from '@/db/schema'
+import { kitchenStations, kots, kotItems, orders, orderItems, orderItemModifiers, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { getKdsSettingsCore, type KdsSettings } from './kds'
 
@@ -15,10 +15,13 @@ export type KdsItem = {
   bumped: boolean
   courseNo: number
   courseName: string | null
+  /** Station snapshot (M19 #3); null = unrouted. */
+  stationId: string | null
+  stationName: string | null
 }
 
 /** Lines of one course that are on the ticket but not yet sent to the cook. */
-export type KdsHeldGroup = { course: number; name: string; items: Pick<KdsItem, 'itemId' | 'name' | 'qty' | 'modifiers' | 'notes'>[] }
+export type KdsHeldGroup = { course: number; name: string; items: Pick<KdsItem, 'itemId' | 'name' | 'qty' | 'modifiers' | 'notes' | 'stationName'>[] }
 
 export type KdsTicket = {
   orderId: string
@@ -41,8 +44,13 @@ export type KdsTicket = {
 
 export type AllDayCount = { key: string; name: string; qty: number }
 
+/** A station screen's scope: one station, or the lines with no station. */
+export type StationFilter = { id: string | null }
+
 export type KdsBoard = {
   settings: KdsSettings
+  /** Active stations, for the station tabs (empty when routing is off). */
+  stations: { id: string; name: string }[]
   /** Tickets with at least one fired line. */
   tickets: KdsTicket[]
   /** Tables whose whole order is still on hold — nothing for the cook yet. */
@@ -63,9 +71,20 @@ export type KdsBoard = {
  * disappear from the board; comped lines stay (the food is still cooked).
  * Same accepted-orders gate as listActiveKots.
  */
-export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBoard> {
+export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: StationFilter): Promise<KdsBoard> {
   return withUser(ctx.user.id, async (tx) => {
     const settings = await getKdsSettingsCore(tx, ctx.tenant.id)
+    const routing = settings.enabled && settings.stationsEnabled
+    const stations = routing
+      ? await tx
+          .select({ id: kitchenStations.id, name: kitchenStations.name })
+          .from(kitchenStations)
+          .where(and(eq(kitchenStations.tenantId, ctx.tenant.id), eq(kitchenStations.isActive, true)))
+          .orderBy(asc(kitchenStations.sortOrder), asc(kitchenStations.name))
+      : []
+    // A station screen sees only its own lines (a stale ?station= with
+    // routing off is ignored rather than showing an empty board).
+    const scope = routing ? station : undefined
 
     const rows = await tx
       .select({
@@ -87,6 +106,8 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBo
         courseName: orderItems.courseName,
         fireStatus: orderItems.fireStatus,
         firedAt: orderItems.firedAt,
+        stationId: orderItems.stationId,
+        stationName: orderItems.stationName,
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
@@ -99,6 +120,11 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBo
           eq(kots.branchId, branchId),
           inArray(kots.status, ['pending', 'preparing', 'ready']),
           eq(orders.acceptanceStatus, 'accepted'),
+          scope === undefined
+            ? undefined
+            : scope.id === null
+              ? isNull(orderItems.stationId)
+              : eq(orderItems.stationId, scope.id),
         ),
       )
       .orderBy(asc(kots.createdAt), asc(kots.id), asc(orderItems.id))
@@ -145,7 +171,7 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBo
         heldByKot.set(r.kotId, groups)
         const g = groups.get(r.courseNo) ?? { course: r.courseNo, name: r.courseName ?? `Course ${r.courseNo}`, items: [] }
         groups.set(r.courseNo, g)
-        g.items.push({ itemId: r.itemId, name: r.name, qty: r.qty, modifiers: modsByItem.get(r.itemId) ?? [], notes: r.notes })
+        g.items.push({ itemId: r.itemId, name: r.name, qty: r.qty, modifiers: modsByItem.get(r.itemId) ?? [], notes: r.notes, stationName: r.stationName })
         continue
       }
       if (!bumped) {
@@ -162,6 +188,8 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBo
         bumped,
         courseNo: r.courseNo,
         courseName: r.courseName,
+        stationId: r.stationId,
+        stationName: r.stationName,
       })
       if (!bumped && t.status !== 'ready') {
         const key = r.menuItemId ?? `name:${r.name}`
@@ -178,10 +206,15 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string): Promise<KdsBo
     }
     const all = [...byKot.values()]
 
+    // A station screen drops a ticket once ALL of that station's lines are
+    // bumped (its work is done); the expo view (no scope) keeps everything.
+    const visible = scope === undefined ? all : all.filter((t) => t.items.length === 0 || t.items.some((i) => !i.bumped))
+
     return {
       settings,
-      tickets: all.filter((t) => t.items.length > 0),
-      heldOnly: all.filter((t) => t.items.length === 0 && t.held.length > 0),
+      stations,
+      tickets: visible.filter((t) => t.items.length > 0),
+      heldOnly: visible.filter((t) => t.items.length === 0 && t.held.length > 0),
       allDay: [...counts.values()].sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)),
       serverNow: new Date().toISOString(),
     }

@@ -19,6 +19,7 @@ import {
   orderItemModifiers,
   orderItemVoidRequests,
   menuItems,
+  menuCategories,
   modifierGroups,
   modifierOptions,
   menuItemModifierGroups,
@@ -33,7 +34,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
-import { getCourseConfigCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
+import { getCourseConfigCore, getStationRoutingCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -178,9 +179,12 @@ export async function createOrderCore(
       price: menuItems.price,
       status: menuItems.status,
       taxPercent: taxRates.percent,
+      stationId: menuItems.stationId,
+      categoryStationId: menuCategories.stationId,
     })
     .from(menuItems)
     .leftJoin(taxRates, eq(taxRates.id, menuItems.taxRateId))
+    .leftJoin(menuCategories, eq(menuCategories.id, menuItems.categoryId))
     .where(and(eq(menuItems.tenantId, ctx.tenantId), inArray(menuItems.id, ids)))
 
   const byId = new Map(rows.map((r) => [r.id, r]))
@@ -418,8 +422,15 @@ export async function createOrderCore(
     }
   }
 
+  // Station routing (M19 #3): null unless the venue opted in. When on, each
+  // line snapshots the item's station (own, else its category's) — a station
+  // that has since been deactivated/deleted routes to nothing.
+  const stations = await getStationRoutingCore(tx, ctx.tenantId)
+
   const preparedItems = input.items.map((i) => {
     const m = byId.get(i.menuItemId)!
+    const stationId = stations ? (m.stationId ?? m.categoryStationId) : null
+    const stationName = stationId ? (stations?.get(stationId) ?? null) : null
     const basePrice = Number(m.price)
     // Every item is in scope: a live rule discounts whatever is ordered
     // inside its time window, with no per-item opt-in required. Only the
@@ -457,6 +468,8 @@ export async function createOrderCore(
         courseNo: courseCfg ? (i.course ?? 1) : 1,
         courseName: courseCfg ? courseCfg.names[(i.course ?? 1) - 1] : null,
         fireStatus: (i.hold ? 'held' : 'fired') as 'held' | 'fired',
+        stationId: stationName ? stationId : null,
+        stationName,
       },
       modifiers: selected.map((o) => ({
         tenantId: ctx.tenantId,

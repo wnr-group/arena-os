@@ -871,6 +871,8 @@ export const menuCategories = pgTable(
     name: text('name').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     isActive: boolean('is_active').notNull().default(true),
+    // Default station for the category's dishes (migration 0148).
+    stationId: uuid('station_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -895,6 +897,8 @@ export const menuItems = pgTable(
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
     happyHourEligible: boolean('happy_hour_eligible').notNull().default(false),
+    // Where this dish is made (migration 0148); falls back to the category's.
+    stationId: uuid('station_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1101,6 +1105,10 @@ export const orderItems = pgTable(
     courseName: text('course_name'),
     fireStatus: text('fire_status', { enum: ['fired', 'held'] }).notNull().default('fired'),
     firedAt: timestamp('fired_at', { withTimezone: true }),
+    // Station snapshot (migration 0148): where this line is cooked, frozen at
+    // order time so later menu re-mapping never re-routes a live ticket.
+    stationId: uuid('station_id'),
+    stationName: text('station_name'),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
@@ -1198,6 +1206,19 @@ export const kots = pgTable(
     index('idx_kots_open').on(t.tenantId, t.branchId, t.status),
   ],
 )
+
+// ── kitchen_stations (migration 0148) ────────────────────────────────────────
+export const kitchenStations = pgTable('kitchen_stations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
 
 // ── kot_items (migration 0146) ───────────────────────────────────────────────
 // Sparse item-level kitchen state: a row = this order line was bumped (cooked);
@@ -1743,6 +1764,8 @@ export const orderSettings = pgTable('order_settings', {
   // Course firing opt-in (migration 0147); only effective with kdsEnabled.
   coursesEnabled: boolean('courses_enabled').notNull().default(false),
   courseNames: text('course_names').array().notNull().default(['Starters', 'Mains', 'Desserts']),
+  // Station routing opt-in (migration 0148); only effective with kdsEnabled.
+  stationsEnabled: boolean('stations_enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

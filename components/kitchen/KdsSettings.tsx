@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { Loader2, Settings2 } from 'lucide-react'
 import { saveKdsSettings } from '@/lib/actions/kds'
 
@@ -13,12 +14,14 @@ export function KdsSettings({
   lateMinutes,
   coursesEnabled,
   courseNames,
+  stationsEnabled,
 }: {
   enabled: boolean
   warnMinutes: number
   lateMinutes: number
   coursesEnabled: boolean
   courseNames: string[]
+  stationsEnabled: boolean
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -26,6 +29,7 @@ export function KdsSettings({
   const [warn, setWarn] = useState(String(warnMinutes))
   const [late, setLate] = useState(String(lateMinutes))
   const [courses, setCourses] = useState(coursesEnabled)
+  const [stations, setStations] = useState(stationsEnabled)
   const [names, setNames] = useState(courseNames.join(', '))
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
@@ -36,6 +40,7 @@ export function KdsSettings({
       const r = await saveKdsSettings({ enabled: on, warnMinutes: Number(warn),
         lateMinutes: Number(late),
         coursesEnabled: courses,
+        stationsEnabled: stations,
         courseNames: names.split(',').map((n) => n.trim()).filter(Boolean),
       })
       if (r.error) setError(r.error)
@@ -92,6 +97,20 @@ export function KdsSettings({
               <input value={names} onChange={(e) => setNames(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5" />
             </label>
           )}
+          <label className="flex items-start gap-3 text-sm">
+            <input type="checkbox" checked={stations} onChange={(e) => setStations(e.target.checked)} className="mt-1 size-4" />
+            <span>
+              <span className="font-medium">Station routing</span>
+              <span className="block text-muted-foreground">
+                Send each dish to its station (bar, grill, fryer…) and get an expo view. Needs the kitchen display on.
+              </span>
+              {stations && (
+                <Link href="/kitchen/stations" className="mt-1 inline-block font-medium text-primary hover:underline">
+                  Manage stations &amp; menu routing →
+                </Link>
+              )}
+            </span>
+          </label>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <button
             type="button"
