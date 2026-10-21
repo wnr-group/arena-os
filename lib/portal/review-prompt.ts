@@ -51,11 +51,12 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  * EITHER of these — one finished experience is enough to have something to
  * review — but each now means something that actually ended:
  *
- *   BOOKING   status = 'completed'. Not `confirmed` and not `checked_in` —
- *             both of those mean the visit is still ahead of or during the
- *             customer, and `confirmed` is true from the instant a booking is
- *             created. Not `cancelled` or `no_show`: somebody who never turned
- *             up has no experience to rate.
+ *   BOOKING   status = 'completed', or 'checked_in' with every slot already
+ *             ended (0148). Not `confirmed` — true from the instant a booking
+ *             is created, so it includes visits still ahead of the customer —
+ *             and not a `checked_in` customer who is still mid-session. Not
+ *             `pending_payment`, `cancelled` or `no_show`: somebody who never
+ *             turned up has no experience to rate.
  *
  *   FOOD      an `accepted`, non-cancelled order whose KITCHEN TICKET has been
  *             served. Delivery is not on the order: `orders.status` is the
@@ -69,9 +70,10 @@ import { normalizeGoogleReviewUrl } from '@/lib/settings/google-review'
  * requiring both would mean its customers could never be asked. Equally,
  * somebody who only ordered food still had an experience worth rating.
  *
- * Only the FOOD half moved in 0130. An `accepted` order used to qualify on its
- * own, but accepted only means somebody let the order exist — the food may
- * never have left the kitchen.
+ * Both halves were tightened after 0141. In 0144 an `accepted` order stopped
+ * qualifying on its own (accepted only means somebody let the order exist — the
+ * food may never have left the kitchen); in 0148 a booking stopped qualifying
+ * until the session had actually happened.
  *
  * The two are independent — `orders.booking_id` is nullable, so food ordered
  * without a booking token counts on its own.

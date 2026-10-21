@@ -273,14 +273,50 @@ async function main() {
   // fulfilment value. Food reaching the customer is kots.status = 'served', and
   // createOrderCore writes exactly one KOT per order in the same transaction —
   // so these fixtures mirror the real shape.
-  const mkBooking = async (customerId: string, status: string, tenant = A) =>
-    owner.query(
+  /**
+   * `slot` gives the booking one booking_slot relative to now: 'past' (ended an
+   * hour ago), 'ongoing' (started an hour ago, ends in an hour) or 'future'
+   * (tomorrow). Each slot gets its own resource so the no-overlap constraint
+   * never interferes.
+   */
+  const mkBooking = async (
+    customerId: string,
+    status: string,
+    tenant = A,
+    slot?: 'past' | 'ongoing' | 'future',
+  ) => {
+    const b = await owner.query<{ id: string }>(
       `insert into bookings (tenant_id,branch_id,customer_id,booking_number,status,source,
                              subtotal,discount,tax,total,deposit)
        values ($1,$2,$3,'BK'||floor(random()*1e9)::text,$4::booking_status,'online',
-               '0','0','0','0','0')`,
+               '0','0','0','0','0') returning id`,
       [tenant.tenantId, tenant.branchId, customerId, status],
     )
+    if (slot) {
+      const rt = await owner.query<{ id: string }>(
+        `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Rev','100.00')
+         on conflict (tenant_id,name) do update set hourly_rate = excluded.hourly_rate returning id`,
+        [tenant.tenantId],
+      )
+      const res = await owner.query<{ id: string }>(
+        `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+         values ($1,$2,$3,'R'||floor(random()*1e9)::text,'available') returning id`,
+        [tenant.tenantId, tenant.branchId, rt.rows[0].id],
+      )
+      const [from, to] =
+        slot === 'past'
+          ? ["now() - interval '2 hours'", "now() - interval '1 hour'"]
+          : slot === 'ongoing'
+            ? ["now() - interval '1 hour'", "now() + interval '1 hour'"]
+            : ["now() + interval '1 day'", "now() + interval '1 day 1 hour'"]
+      await owner.query(
+        `insert into booking_slots (tenant_id,booking_id,resource_id,starts_at,ends_at,resource_name,resource_type_name)
+         values ($1,$2,$3,${from},${to},'R','Rev')`,
+        [tenant.tenantId, b.rows[0].id, res.rows[0].id],
+      )
+    }
+    return b
+  }
 
   const mkOrder = async (customerId: string, status: string, acceptance: string, tenant = A) => {
     const r = await owner.query<{ id: string }>(
@@ -315,12 +351,36 @@ async function main() {
     check('a customer with no history is NOT eligible', (await eligible(fresh)) === false)
 
     // ── the BOOKING half, with no food anywhere ─────────────────────────────
-    // The booking half is UNCHANGED from 0141: an existing booking that has not
-    // been called off qualifies on its own, whatever the kitchen is doing.
-    for (const st of ['confirmed', 'checked_in', 'completed']) {
-      const c = await makeCustomer(A.tenantId, `${st} booking only`)
-      await mkBooking(c, st)
-      check(`a '${st}' booking ALONE is eligible (no food needed)`, (await eligible(c)) === true)
+    // 0148: the session must have HAPPENED. 'confirmed' is true from the moment
+    // of booking, so a future visit must not raise the prompt.
+    {
+      const done = await makeCustomer(A.tenantId, 'completed booking only')
+      await mkBooking(done, 'completed')
+      check("a 'completed' booking ALONE is eligible (no food needed)", (await eligible(done)) === true)
+
+      const over = await makeCustomer(A.tenantId, 'checked_in, slot ended')
+      await mkBooking(over, 'checked_in', A, 'past')
+      check("a 'checked_in' booking whose slot has ended is eligible", (await eligible(over)) === true)
+
+      const mid = await makeCustomer(A.tenantId, 'checked_in, mid-session')
+      await mkBooking(mid, 'checked_in', A, 'ongoing')
+      check("a 'checked_in' booking still in progress is NOT eligible", (await eligible(mid)) === false)
+
+      const noSlot = await makeCustomer(A.tenantId, 'checked_in, no slot')
+      await mkBooking(noSlot, 'checked_in')
+      check("a 'checked_in' booking with no slot (no end to compare) is NOT eligible", (await eligible(noSlot)) === false)
+
+      const future = await makeCustomer(A.tenantId, 'confirmed, future')
+      await mkBooking(future, 'confirmed', A, 'future')
+      check("a 'confirmed' FUTURE booking is NOT eligible (the reported bug)", (await eligible(future)) === false)
+
+      const lapsed = await makeCustomer(A.tenantId, 'confirmed, slot passed')
+      await mkBooking(lapsed, 'confirmed', A, 'past')
+      check("a 'confirmed' booking is NOT eligible even after its time (never attended)", (await eligible(lapsed)) === false)
+
+      const unpaid = await makeCustomer(A.tenantId, 'pending_payment')
+      await mkBooking(unpaid, 'pending_payment', A, 'future')
+      check("a 'pending_payment' booking is NOT eligible", (await eligible(unpaid)) === false)
     }
 
     for (const st of ['cancelled', 'no_show']) {
@@ -355,11 +415,11 @@ async function main() {
     }
 
     // ── OR, not AND: one good half carries a bad other half ─────────────────
-    const goodBookingBadFood = await makeCustomer(A.tenantId, 'Confirmed booking, food pending')
-    await mkBooking(goodBookingBadFood, 'confirmed')
+    const goodBookingBadFood = await makeCustomer(A.tenantId, 'Completed booking, food pending')
+    await mkBooking(goodBookingBadFood, 'completed')
     await mkKot(await mkOrder(goodBookingBadFood, 'open', 'accepted'), 'pending')
     check(
-      'confirmed booking + undelivered food is eligible — the booking carries it',
+      'completed booking + undelivered food is eligible — the booking carries it',
       (await eligible(goodBookingBadFood)) === true,
     )
 
@@ -393,7 +453,7 @@ async function main() {
 
     // ── 10. one tenant cannot make another tenant's customer eligible ───────
     const bQualified = await makeCustomer(B.tenantId, 'B Qualified')
-    await mkBooking(bQualified, 'confirmed', B)
+    await mkBooking(bQualified, 'completed', B)
     check("tenant B's own booking makes B's customer eligible", (await eligible(bQualified)) === true)
 
     // The two halves are protected by DIFFERENT things, so they are asserted
@@ -435,7 +495,7 @@ async function main() {
 
     // ── 8. an answered prompt stays answered ────────────────────────────────
     const answered = await makeCustomer(A.tenantId, 'Already Reviewed')
-    await mkBooking(answered, 'confirmed')
+    await mkBooking(answered, 'completed')
     check('…eligible before answering', (await eligible(answered)) === true)
     await complete(answered)
     check('…still eligible as a FACT after answering', (await eligible(answered)) === true)
@@ -594,8 +654,7 @@ async function main() {
   {
     // ── every qualifying experience raises it ───────────────────────────────
     const qualifying: [string, (c: string) => Promise<unknown>][] = [
-      ['a confirmed booking', (c) => mkBooking(c, 'confirmed')],
-      ['a checked-in booking', (c) => mkBooking(c, 'checked_in')],
+      ['a checked-in booking whose slot ended', (c) => mkBooking(c, 'checked_in', A, 'past')],
       ['a completed booking', (c) => mkBooking(c, 'completed')],
       ['served food', (c) => mkServedFood(c)],
     ]
@@ -607,6 +666,8 @@ async function main() {
 
     // ── and nothing else does ───────────────────────────────────────────────
     const offCases: [string, (c: string) => Promise<unknown>][] = [
+      ['a confirmed booking in the future', (c) => mkBooking(c, 'confirmed', A, 'future')],
+      ['a checked-in booking still in progress', (c) => mkBooking(c, 'checked_in', A, 'ongoing')],
       ['a cancelled booking', (c) => mkBooking(c, 'cancelled')],
       ['a no-show booking', (c) => mkBooking(c, 'no_show')],
       ['food still pending in the kitchen', async (c) => mkKot(await mkOrder(c, 'open', 'accepted'), 'pending')],
