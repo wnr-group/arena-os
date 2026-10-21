@@ -1,5 +1,5 @@
 import 'server-only'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, lt, notInArray, sql } from 'drizzle-orm'
 import { ownerDb, type DB } from '@/db'
 import { googleBusinessCredentials, googleReviews } from '@/db/schema'
 import { loadGoogleConnection } from './google-credentials'
@@ -23,11 +23,10 @@ import type { FetchGoogleReviews } from './google-business-api'
  * window — however short — where a visitor's homepage showed no reviews, and
  * would lose everything if the fetch failed halfway.
  *
- * A review that Google no longer returns is deliberately KEPT. Google removes
- * reviews for its own reasons (spam sweeps, an account closing), and a
- * homepage that empties itself because one call came back short is worse than
- * one that is slightly out of date. Pruning, if ever wanted, is a separate
- * decision with its own rule.
+ * A review Google no longer returns IS removed — but only after a fetch that is
+ * provably complete (not truncated, nothing skipped). A review deleted by its
+ * author, or taken down by Google, must not sit on the public homepage forever;
+ * and a short or partial call must not empty it. See the prune step below.
  *
  * ── Failure is recorded, not thrown away ───────────────────────────────────
  *
@@ -49,6 +48,8 @@ export type SyncResult = {
    * was structurally always 0.
    */
   skipped: number
+  /** Cached rows deleted because Google no longer returns them. */
+  removed: number
   error: string | null
 }
 
@@ -58,7 +59,14 @@ export async function syncGoogleReviewsForTenant(
   db: DB = ownerDb,
   opts: { minIntervalMs?: number } = {},
 ): Promise<SyncResult> {
-  const base = { tenantId, connected: false, synced: 0, skipped: 0, error: null } as SyncResult
+  const base = {
+    tenantId,
+    connected: false,
+    synced: 0,
+    skipped: 0,
+    removed: 0,
+    error: null,
+  } as SyncResult
 
   // Set once the tenant is known to be connected, so a failure after that point
   // is reported as a broken connection rather than "not connected".
@@ -104,6 +112,7 @@ export async function syncGoogleReviewsForTenant(
       refreshToken: connection.refreshToken,
     })
 
+    const startedAt = new Date()
     let synced = 0
     for (const r of fetched.reviews) {
       await db
@@ -137,12 +146,46 @@ export async function syncGoogleReviewsForTenant(
       synced++
     }
 
+    // ── prune what Google no longer returns ──────────────────────────────
+    //
+    // Only after a fetch that is PROVABLY complete: the walk was not cut short
+    // (`truncated === false`, so an adapter that does not say never prunes) and
+    // nothing was dropped as unmappable (an entry we could not read might be
+    // exactly the cached row we would otherwise delete). Anything less could
+    // wipe a homepage because one call came back short.
+    //
+    // `synced_at < startedAt` leaves alone any row a concurrent sync wrote
+    // while this one was in flight, so two racing runs cannot delete each
+    // other's fresh rows; a row this run upserted is in the keep-list anyway.
+    let removed = 0
+    if (fetched.truncated === false && fetched.skipped === 0) {
+      const keep = fetched.reviews.map((r) => r.googleReviewId)
+      const gone = await db
+        .delete(googleReviews)
+        .where(
+          and(
+            eq(googleReviews.tenantId, tenantId),
+            lt(googleReviews.syncedAt, startedAt),
+            keep.length > 0 ? notInArray(googleReviews.googleReviewId, keep) : undefined,
+          ),
+        )
+        .returning({ id: googleReviews.id })
+      removed = gone.length
+    }
+
     await db
       .update(googleBusinessCredentials)
       .set({ lastSyncedAt: new Date(), lastSyncError: null })
       .where(eq(googleBusinessCredentials.tenantId, tenantId))
 
-    return { tenantId, connected: true, synced, skipped: fetched.skipped, error: null }
+    return {
+      tenantId,
+      connected: true,
+      synced,
+      skipped: fetched.skipped,
+      removed,
+      error: null,
+    }
   } catch (e) {
     // The MESSAGE only. A token or an Authorization header must never reach a
     // column an owner-facing screen renders.
@@ -166,6 +209,27 @@ export async function syncGoogleReviewsForTenant(
     }
     return { ...base, connected: true, error: message }
   }
+}
+
+/**
+ * Remove a tenant's cached reviews from the public homepage.
+ *
+ * Called on Disconnect. With no connection there is no sync, so nothing could
+ * ever remove a review Google later deletes or takes down — the cache would go
+ * stale in exactly the way the prune step exists to prevent. Reconnecting and
+ * syncing repopulates it. Runs on the owner connection because staff have no
+ * DELETE policy on google_reviews; the tenant id must come from the
+ * authenticated context, never from the caller's input.
+ */
+export async function deleteCachedGoogleReviews(
+  tenantId: string,
+  db: DB = ownerDb,
+): Promise<number> {
+  const gone = await db
+    .delete(googleReviews)
+    .where(eq(googleReviews.tenantId, tenantId))
+    .returning({ id: googleReviews.id })
+  return gone.length
 }
 
 /**
@@ -220,6 +284,7 @@ export async function syncAllGoogleReviews(
         connected: true,
         synced: 0,
         skipped: 0,
+        removed: 0,
         error: e instanceof Error ? e.message : 'Unknown error',
       })
     }

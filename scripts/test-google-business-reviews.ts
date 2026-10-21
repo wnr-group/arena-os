@@ -60,7 +60,7 @@ async function main() {
     getGoogleConnectionStatus,
   } = await import('../lib/reviews/google-credentials')
   const { issueOAuthState, readOAuthState, consentUrl } = await import('../lib/reviews/google-oauth-flow')
-  const { syncGoogleReviewsForTenant, syncAllGoogleReviews } = await import('../lib/reviews/sync')
+  const { syncGoogleReviewsForTenant, syncAllGoogleReviews, deleteCachedGoogleReviews } = await import('../lib/reviews/sync')
 
   // ════════════════════════════════════════════════════════════════════════
   section('1. Google’s shapes → ours (pure)')
@@ -160,6 +160,19 @@ async function main() {
     check('the loop follows nextPageToken', calls === 2 && paged.reviews.length === 2)
     check('…and stops when there is none', paged.reviews.map((r) => r.googleReviewId).join() === 'p1,p2')
     check('…reporting nothing skipped when every entry maps', paged.skipped === 0, paged.skipped)
+    check('…and reporting a complete walk as not truncated', paged.truncated === false, paged.truncated)
+
+    // A server that never stops offering a next page hits the 40-page bound;
+    // that result is a PREFIX and must say so, or the sync would prune the rest.
+    let endless = 0
+    const endlessFetch = (async () => {
+      endless++
+      return { ok: true, json: async () => ({ reviews: [], nextPageToken: 'more' }) } as unknown as Response
+    }) as unknown as typeof fetch
+    const cut = await createGoogleReviewFetcher(endlessFetch, async () => 'access-token')({
+      accountId: '1', locationId: '2', clientId: 'cid', clientSecret: 'csec', refreshToken: 'r',
+    })
+    check('a walk cut off by the page bound reports truncated', cut.truncated === true && endless === 40, { endless, t: cut.truncated })
 
     // A bad status must surface as a classified error, never an empty array:
     // empty would be indistinguishable from a venue that has no reviews yet,
@@ -361,7 +374,42 @@ async function main() {
     const [{ n2 }] = (
       await owner.query<{ n2: string }>('select count(*) n2 from google_reviews where tenant_id=$1', [A])
     ).rows
-    check('a review Google no longer returns is kept, not deleted', Number(n2) === 2)
+    check('a fetch that does not say it is complete never prunes', Number(n2) === 2)
+
+    // ── pruning: only after a PROVABLY complete fetch ──────────────────────
+    const full =
+      (rows: ReturnType<typeof review>[], over: { truncated?: boolean; skipped?: number } = {}): FetchGoogleReviews =>
+      async () => {
+        const mapped = rows.map(toGoogleReview).flatMap((r) => (r ? [r] : []))
+        return { reviews: mapped, skipped: over.skipped ?? 0, truncated: over.truncated ?? false }
+      }
+    const idsOf = async (t: string) =>
+      (await owner.query<{ g: string }>('select google_review_id g from google_reviews where tenant_id=$1 order by 1', [t]))
+        .rows.map((r) => r.g)
+    // Make sure there is something to prune: g1 + g2 present.
+    await syncGoogleReviewsForTenant(A, full([review('g1', 'FIVE'), review('g2', 'FOUR'), review('g3', 'THREE')]), ownerDrizzle)
+    check('setup: three cached reviews', (await idsOf(A)).join() === 'g1,g2,g3', await idsOf(A))
+
+    const truncatedRun = await syncGoogleReviewsForTenant(A, full([review('g1', 'FIVE')], { truncated: true }), ownerDrizzle)
+    check('a TRUNCATED fetch removes nothing', truncatedRun.removed === 0 && (await idsOf(A)).length === 3)
+    const skippedRun = await syncGoogleReviewsForTenant(A, full([review('g1', 'FIVE')], { skipped: 1 }), ownerDrizzle)
+    check('a fetch that skipped unreadable entries removes nothing', skippedRun.removed === 0 && (await idsOf(A)).length === 3)
+
+    const pruned = await syncGoogleReviewsForTenant(A, full([review('g1', 'FIVE'), review('g3', 'THREE')]), ownerDrizzle)
+    check('a complete fetch removes the review Google no longer returns', pruned.removed === 1 && (await idsOf(A)).join() === 'g1,g3', await idsOf(A))
+    check('…and reports it on the sync result', pruned.error === null && pruned.synced === 2)
+
+    // Another tenant's rows are never in scope of this tenant's prune.
+    const bBefore = (await idsOf(B)).length
+    await syncGoogleReviewsForTenant(A, full([review('g1', 'FIVE')]), ownerDrizzle)
+    check("pruning one tenant leaves another tenant's reviews alone", (await idsOf(B)).length === bBefore)
+
+    // The last review being deleted is a legitimate complete fetch.
+    const emptied = await syncGoogleReviewsForTenant(A, full([]), ownerDrizzle)
+    check('a complete, empty fetch clears the cache (the last review was deleted)', emptied.removed === 1 && (await idsOf(A)).length === 0)
+
+    // Restore what later sections expect A to have.
+    await syncGoogleReviewsForTenant(A, fake([review('g1', 'FIVE'), review('g2', 'FOUR')]), ownerDrizzle)
 
     // Failure is RECORDED, not thrown, so a job can carry on to the next venue.
     const failing: FetchGoogleReviews = async () => {
@@ -499,7 +547,11 @@ async function main() {
     await deleteGoogleConnection(A, ownerDrizzle)
     check('the connection is gone', (await loadGoogleConnection(A, ownerDrizzle)) === null)
     const still = await getPublicGoogleReviews(A)
-    check('…but the cached reviews are KEPT (disconnect ≠ erase)', still.reviews.length > 0)
+    check('the credentials delete alone leaves the cache (the action clears it next)', still.reviews.length > 0)
+    const cleared = await deleteCachedGoogleReviews(A, ownerDrizzle)
+    check('disconnect clears the cached reviews', cleared > 0)
+    check('…so the public homepage shows none', (await getPublicGoogleReviews(A)).reviews.length === 0)
+    check("…and another tenant's reviews are untouched", (await getPublicGoogleReviews(B)).reviews.length > 0)
   }
 
   for (const t of [A, B]) {

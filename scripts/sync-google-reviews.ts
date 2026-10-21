@@ -121,7 +121,7 @@ async function main() {
   console.log(
     `done — ${t.examined} tenant(s) examined, ${t.connected} connected, ` +
       `${t.notConnected} not connected, ${t.synced} review(s) cached, ` +
-      `${t.skipped} skipped, ${t.failed} failed (${outcome.ms}ms)`,
+      `${t.skipped} skipped, ${t.removed} removed, ${t.failed} failed (${outcome.ms}ms)`,
   )
 
   // Non-zero ONLY when a connected tenant actually errored, so a scheduler

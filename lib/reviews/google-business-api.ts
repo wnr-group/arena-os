@@ -78,6 +78,13 @@ export type GoogleReviewsPage = {
   reviews: GoogleReviewFromApi[]
   /** Entries Google returned that this project could not store. */
   skipped: number
+  /**
+   * True when the page-count bound stopped the walk while Google still had
+   * more to give, so `reviews` is only a prefix of the venue's reviews. The
+   * sync may only PRUNE cached rows after a fetch that reports `false` — an
+   * absent value is treated as "unknown" and never prunes.
+   */
+  truncated?: boolean
 }
 
 /**
@@ -291,6 +298,7 @@ export function createGoogleReviewFetcher(
 
     const out: GoogleReviewFromApi[] = []
     let skipped = 0
+    let truncated = false
     let pageToken: string | undefined
     // A bound, not a `while (true)`: a server that kept returning the same
     // nextPageToken would otherwise spin forever against a shared quota. 40
@@ -325,9 +333,11 @@ export function createGoogleReviewFetcher(
 
       if (!json.nextPageToken) break
       pageToken = json.nextPageToken
+      // Ran out of pages with a token still outstanding: this is a prefix.
+      if (page === 39) truncated = true
     }
 
-    return { reviews: out, skipped }
+    return { reviews: out, skipped, truncated }
   }
 }
 

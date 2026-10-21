@@ -181,10 +181,10 @@ export async function saveGoogleRefreshToken(
 /**
  * Forget a tenant's connection.
  *
- * The CACHED REVIEWS are deliberately left alone. Disconnecting means "stop
- * syncing", not "erase what you already showed" — and a venue that reconnects
- * should not have a homepage that goes blank in between. Deleting them is a
- * separate, explicit act.
+ * This removes the credentials only. The cached reviews are cleared by the
+ * caller with deleteCachedGoogleReviews() (lib/reviews/sync.ts): once nothing
+ * syncs, a review Google later deletes could never leave the cache, so keeping
+ * them public after Disconnect would let them go stale indefinitely.
  */
 export async function deleteGoogleConnection(tenantId: string, db: DB = ownerDb): Promise<void> {
   await db

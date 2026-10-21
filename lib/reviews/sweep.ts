@@ -72,6 +72,7 @@ export function summariseSweep(results: SyncResult[]) {
     notConnected: results.length - connected.length,
     synced: connected.reduce((sum, r) => sum + r.synced, 0),
     skipped: connected.reduce((sum, r) => sum + r.skipped, 0),
+    removed: connected.reduce((sum, r) => sum + r.removed, 0),
     failed: connected.filter((r) => r.error !== null).length,
   }
 }

@@ -6,7 +6,7 @@ import { withUser } from '@/db'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
 import { zodErrorMessage } from '@/lib/utils/errors'
 import { saveGoogleOAuthClient, deleteGoogleConnection } from '@/lib/reviews/google-credentials'
-import { syncGoogleReviewsForTenant } from '@/lib/reviews/sync'
+import { syncGoogleReviewsForTenant, deleteCachedGoogleReviews } from '@/lib/reviews/sync'
 import { createGoogleReviewFetcher } from '@/lib/reviews/google-business-api'
 
 type Result = { error?: string; success?: true }
@@ -76,18 +76,21 @@ export async function saveGoogleOAuthClientAction(
 }
 
 /**
- * Forget the connection.
+ * Forget the connection AND take the cached reviews off the public homepage.
  *
- * The CACHED REVIEWS are deliberately kept — disconnecting means "stop
- * syncing", not "erase what the homepage already shows" — so a venue that
- * reconnects does not have a page that goes blank in between. Deleting them is
- * a separate, explicit act.
+ * Once disconnected nothing syncs, so a review Google later deletes or takes
+ * down could never be removed from the cache — it would stay public forever.
+ * Clearing on disconnect keeps the homepage honest; reconnecting and syncing
+ * brings the reviews back. The tenant id is the authenticated owner's own.
  */
 export async function disconnectGoogleBusiness(): Promise<Result> {
   try {
     const ctx = await requireOwner()
     await withUser(ctx.user.id, (tx) => deleteGoogleConnection(ctx.tenant.id, tx))
+    // Owner connection: staff have no DELETE policy on google_reviews.
+    await deleteCachedGoogleReviews(ctx.tenant.id)
     revalidatePath('/settings/business')
+    revalidatePath('/')
     return { success: true }
   } catch (e) {
     return fail(e)
