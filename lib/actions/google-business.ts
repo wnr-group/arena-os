@@ -136,7 +136,14 @@ export async function syncGoogleReviewsNow(): Promise<
 > {
   try {
     const ctx = await requireOwner()
-    const r = await syncGoogleReviewsForTenant(ctx.tenant.id, createGoogleReviewFetcher())
+    const r = await syncGoogleReviewsForTenant(
+      ctx.tenant.id,
+      createGoogleReviewFetcher(),
+      undefined,
+      // The button is otherwise unthrottled and each click can walk dozens of
+      // pages against the venue's own Google quota.
+      { minIntervalMs: 60_000 },
+    )
 
     revalidatePath('/settings/business')
     if (!r.connected) {

@@ -5,20 +5,14 @@
  *   npm run reviews:sync
  *   # or: npx tsx --import ./scripts/server-only-hook.mjs scripts/sync-google-reviews.ts
  *
- * ── WHY THIS IS A SCRIPT AND NOT AN HTTP CRON ENDPOINT ──────────────────────
+ * ── TWO WAYS TO SCHEDULE IT ─────────────────────────────────────────────────
  *
- * The same reason scripts/run-dunning.ts and scripts/run-recurring-expenses.ts
- * give, and it has not changed: this project has no scheduler — no cron route,
- * no job table, no queue, no CRON_SECRET. The ONE established pattern for
- * scheduled work here is a tsx script run as the OWNER role by a host scheduler
- * (scripts/refresh-reports.ts, scripts/run-recurring-expenses.ts,
- * scripts/run-dunning.ts). This follows it exactly rather than inventing a
- * second architecture.
- *
- * An HTTP endpoint would also have to invent an authentication scheme for
- * itself — a shared secret in a header, checked by hand — to stop the internet
- * spending every tenant's Google quota. A script that only a shell with the
- * owner database credentials can run has no such surface.
+ * This script is for a host scheduler (the pattern scripts/run-dunning.ts and
+ * scripts/run-recurring-expenses.ts follow). On Vercel the same sweep runs from
+ * app/api/cron/sync-google-reviews, guarded by CRON_SECRET and scheduled in
+ * vercel.json. Both call runGoogleReviewSweep() in lib/reviews/sweep.ts, so they
+ * share ONE advisory lock and cannot overlap each other. Use one or the other,
+ * not both on a tight schedule.
  *
  * ── HOW OFTEN ───────────────────────────────────────────────────────────────
  *
@@ -42,24 +36,11 @@
  *
  * ── OVERLAPPING RUNS ────────────────────────────────────────────────────────
  *
- * The sweep is sequential, so it gets slower as venues connect: one token
- * exchange plus up to 40 paginated calls each. Once it outlasts the schedule,
- * two runs overlap. The database survives that — the unique constraint plus ON
- * CONFLICT DO UPDATE cannot duplicate a row — but both runs spend the same
- * per-project Google quota on the same reviews, and they interleave
- * last_sync_attempt / last_sync_error so a failure can look like it recovered.
- *
- * So this process takes pg_try_advisory_lock on a DEDICATED client it holds for
- * its whole lifetime, and exits quietly (status 0) when a previous run still
- * holds it. A dedicated client because @/db is a connection POOL: a
- * session-level lock taken by one pooled statement would be released on a
- * different connection than the next statement borrows, so the lock would not
- * mean what it says.
- *
- * try, not plain pg_advisory_lock: a second run must SKIP, not queue up behind
- * the first and then immediately repeat the whole sweep. Session-level rather
- * than transaction-level so it survives every COMMIT inside the sweep, and is
- * released by the connection dropping even if this process is killed.
+ * The sweep is sequential, so it gets slower as venues connect. Once it
+ * outlasts the schedule two runs would overlap and spend the same per-project
+ * Google quota twice. runGoogleReviewSweep() takes pg_try_advisory_lock on a
+ * dedicated client and reports `skipped` when a previous run holds it; this
+ * script then exits quietly with status 0.
  *
  * ── SECURITY ────────────────────────────────────────────────────────────────
  *
@@ -67,9 +48,9 @@
  * report refresh and the dunning job: reading across every tenant at once is an
  * owner-level operation and there is no session to scope it to. NOTHING is
  * taken from a caller — no tenant id, no account id, no location id, no token.
- * Every value is read from google_business_credentials. There is no HTTP
- * surface to authenticate and no argument to validate, because there are no
- * arguments.
+ * Every value is read from google_business_credentials. This script has no
+ * arguments to validate; the Vercel route that runs the same sweep takes none
+ * either and is guarded by the CRON_SECRET bearer check (lib/cron/auth.ts).
  *
  * No secret is printed. Refresh tokens and client secrets are decrypted inside
  * lib/reviews/google-credentials.ts, held for the life of one fetch, and never
@@ -114,16 +95,7 @@
  * with an injected fake. So treat the first scheduled run as the test, and read
  * last_sync_error rather than assuming silence means success.
  */
-import { Client } from 'pg'
 import { loadEnv } from './env'
-
-/**
- * The advisory-lock key for the whole sweep. Arbitrary but FIXED — advisory
- * locks share one namespace per database, so it must not collide with another
- * job's. Nothing else in this project takes one today; keep any future keys
- * listed together.
- */
-const SYNC_LOCK_KEY = 4207105
 
 async function main() {
   // BEFORE importing anything that touches @/db — the pool reads
@@ -131,72 +103,31 @@ async function main() {
   // file would build it with no password.
   loadEnv()
 
-  if (!process.env.DATABASE_URL_OWNER) {
-    throw new Error('DATABASE_URL_OWNER is not set in .env.local')
-  }
+  const { runGoogleReviewSweep, summariseSweep } = await import('../lib/reviews/sweep')
 
-  // Checked HERE rather than discovered per tenant. Without it every connected
-  // venue fails identically on decrypting its refresh token, which reads in the
-  // log like a fleet-wide Google outage and is really one missing variable.
-  if (!process.env.PAYMENT_SETTINGS_ENCRYPTION_KEY) {
-    throw new Error(
-      'PAYMENT_SETTINGS_ENCRYPTION_KEY is not set; stored refresh tokens cannot be decrypted.',
-    )
-  }
+  console.log('→ google reviews: syncing every connected tenant')
+  const outcome = await runGoogleReviewSweep()
 
-  // Its own connection, held for the life of this process — see OVERLAPPING
-  // RUNS above for why the pooled app connection cannot carry this lock.
-  const lockClient = new Client({ connectionString: process.env.DATABASE_URL_OWNER })
-  await lockClient.connect()
-  const { rows: lock } = await lockClient.query<{ got: boolean }>(
-    'select pg_try_advisory_lock($1) as got',
-    [SYNC_LOCK_KEY],
-  )
-  if (lock[0]?.got !== true) {
+  if (outcome.skipped) {
     console.log('skipped — a previous sync is still running')
-    await lockClient.end()
     // Zero: an overlapping run is normal operation, not something to alert on.
     process.exit(0)
   }
 
-  const { createGoogleReviewFetcher } = await import('../lib/reviews/google-business-api')
-  const { syncAllGoogleReviews } = await import('../lib/reviews/sync')
-
-  const started = Date.now()
-  console.log('→ google reviews: syncing every connected tenant')
-
-  try {
-    // The real fetcher, with the real `fetch` and the real token exchange. The
-    // parameter exists so the test suite can inject a fake; production passes
-    // neither and gets both defaults.
-    const results = await syncAllGoogleReviews(createGoogleReviewFetcher())
-
-    const connected = results.filter((r) => r.connected)
-    const failed = connected.filter((r) => r.error !== null)
-    const synced = connected.reduce((sum, r) => sum + r.synced, 0)
-    const skipped = connected.reduce((sum, r) => sum + r.skipped, 0)
-
-    for (const r of failed) console.warn(`  ! ${r.tenantId}: ${r.error}`)
-
-    console.log(
-      `done — ${results.length} tenant(s) examined, ` +
-        `${connected.length} connected, ` +
-        `${results.length - connected.length} not connected, ` +
-        `${synced} review(s) cached, ` +
-        `${skipped} skipped, ` +
-        `${failed.length} failed (${Date.now() - started}ms)`,
-    )
-
-    // Non-zero ONLY when a connected tenant actually errored, so a scheduler
-    // alerts on a revoked token or a disabled API and stays quiet on an
-    // ordinary run where nobody has connected anything.
-    process.exit(failed.length === 0 ? 0 : 1)
-  } finally {
-    // Released explicitly so a long-lived runner does not hold it; the
-    // connection dropping would release it anyway if this process is killed.
-    await lockClient.query('select pg_advisory_unlock($1)', [SYNC_LOCK_KEY]).catch(() => {})
-    await lockClient.end().catch(() => {})
+  const t = summariseSweep(outcome.results)
+  for (const r of outcome.results.filter((x) => x.connected && x.error !== null)) {
+    console.warn(`  ! ${r.tenantId}: ${r.error}`)
   }
+  console.log(
+    `done — ${t.examined} tenant(s) examined, ${t.connected} connected, ` +
+      `${t.notConnected} not connected, ${t.synced} review(s) cached, ` +
+      `${t.skipped} skipped, ${t.failed} failed (${outcome.ms}ms)`,
+  )
+
+  // Non-zero ONLY when a connected tenant actually errored, so a scheduler
+  // alerts on a revoked token or a disabled API and stays quiet on an
+  // ordinary run where nobody has connected anything.
+  process.exit(t.failed === 0 ? 0 : 1)
 }
 
 main().catch((e) => {

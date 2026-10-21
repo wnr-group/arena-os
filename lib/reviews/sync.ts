@@ -56,78 +56,116 @@ export async function syncGoogleReviewsForTenant(
   tenantId: string,
   fetchReviews: FetchGoogleReviews,
   db: DB = ownerDb,
+  opts: { minIntervalMs?: number } = {},
 ): Promise<SyncResult> {
   const base = { tenantId, connected: false, synced: 0, skipped: 0, error: null } as SyncResult
 
-  const connection = await loadGoogleConnection(tenantId, db)
-  // Not connected is the NORMAL case — most tenants never will be. No row is
-  // touched and nothing is reported as broken.
-  if (!connection) return base
-
-  await db
-    .update(googleBusinessCredentials)
-    .set({ lastSyncAttempt: new Date() })
-    .where(eq(googleBusinessCredentials.tenantId, tenantId))
-
-  let fetched
+  // Set once the tenant is known to be connected, so a failure after that point
+  // is reported as a broken connection rather than "not connected".
+  let connected = false
   try {
-    fetched = await fetchReviews({
+    // INSIDE the try: loadGoogleConnection rethrows a DecryptionError for a
+    // tampered row, an AAD mismatch or a rotated key. That must be this
+    // tenant's recorded failure, not an exception that ends a sweep of every
+    // tenant after it.
+    const connection = await loadGoogleConnection(tenantId, db)
+    // Not connected is the NORMAL case — most tenants never will be. No row is
+    // touched and nothing is reported as broken.
+    if (!connection) return base
+    connected = true
+
+    // Optional throttle for the interactive "Sync now" button, which is not
+    // otherwise rate limited: refuse if an attempt began moments ago.
+    if (opts.minIntervalMs) {
+      const [row] = await db
+        .select({ lastSyncAttempt: googleBusinessCredentials.lastSyncAttempt })
+        .from(googleBusinessCredentials)
+        .where(eq(googleBusinessCredentials.tenantId, tenantId))
+        .limit(1)
+      if (row?.lastSyncAttempt && Date.now() - row.lastSyncAttempt.getTime() < opts.minIntervalMs) {
+        return {
+          ...base,
+          connected: true,
+          error: 'A sync was started a moment ago. Please wait a minute and try again.',
+        }
+      }
+    }
+
+    await db
+      .update(googleBusinessCredentials)
+      .set({ lastSyncAttempt: new Date() })
+      .where(eq(googleBusinessCredentials.tenantId, tenantId))
+
+    const fetched = await fetchReviews({
       accountId: connection.accountId,
       locationId: connection.locationId,
       clientId: connection.clientId,
       clientSecret: connection.clientSecret,
       refreshToken: connection.refreshToken,
     })
-  } catch (e) {
-    // The MESSAGE only. A token or an Authorization header must never reach a
-    // column an owner-facing screen renders.
-    const message = e instanceof Error ? e.message : 'Unknown error'
-    await db
-      .update(googleBusinessCredentials)
-      .set({ lastSyncError: message.slice(0, 500) })
-      .where(eq(googleBusinessCredentials.tenantId, tenantId))
-    return { ...base, connected: true, error: message }
-  }
 
-  let synced = 0
-  for (const r of fetched.reviews) {
-    await db
-      .insert(googleReviews)
-      .values({
-        tenantId,
-        googleReviewId: r.googleReviewId,
-        reviewerName: r.reviewerName,
-        // ?? null because the field is optional: a fetcher that omits it must
-        // write a null, not leave the column at its previous value.
-        reviewerPhotoUrl: r.reviewerPhotoUrl ?? null,
-        rating: r.rating,
-        comment: r.comment,
-        reviewCreatedAt: r.reviewCreatedAt,
-        syncedAt: new Date(),
-      })
-      // The unique constraint turns a re-sync into an update. `tenant_id` is
-      // NOT in the update set: the conflict target already fixed it, and a row
-      // must never be able to change hands between tenants.
-      .onConflictDoUpdate({
-        target: [googleReviews.tenantId, googleReviews.googleReviewId],
-        set: {
+    let synced = 0
+    for (const r of fetched.reviews) {
+      await db
+        .insert(googleReviews)
+        .values({
+          tenantId,
+          googleReviewId: r.googleReviewId,
           reviewerName: r.reviewerName,
+          // ?? null because the field is optional: a fetcher that omits it must
+          // write a null, not leave the column at its previous value.
           reviewerPhotoUrl: r.reviewerPhotoUrl ?? null,
           rating: r.rating,
           comment: r.comment,
           reviewCreatedAt: r.reviewCreatedAt,
           syncedAt: new Date(),
-        },
-      })
-    synced++
+        })
+        // The unique constraint turns a re-sync into an update. `tenant_id` is
+        // NOT in the update set: the conflict target already fixed it, and a row
+        // must never be able to change hands between tenants.
+        .onConflictDoUpdate({
+          target: [googleReviews.tenantId, googleReviews.googleReviewId],
+          set: {
+            reviewerName: r.reviewerName,
+            reviewerPhotoUrl: r.reviewerPhotoUrl ?? null,
+            rating: r.rating,
+            comment: r.comment,
+            reviewCreatedAt: r.reviewCreatedAt,
+            syncedAt: new Date(),
+          },
+        })
+      synced++
+    }
+
+    await db
+      .update(googleBusinessCredentials)
+      .set({ lastSyncedAt: new Date(), lastSyncError: null })
+      .where(eq(googleBusinessCredentials.tenantId, tenantId))
+
+    return { tenantId, connected: true, synced, skipped: fetched.skipped, error: null }
+  } catch (e) {
+    // The MESSAGE only. A token or an Authorization header must never reach a
+    // column an owner-facing screen renders.
+    const message = e instanceof Error ? e.message : 'Unknown error'
+    if (connected) {
+      // Best-effort: if the database itself is the problem this write can fail
+      // too, and that must not turn into an exception for the caller.
+      await db
+        .update(googleBusinessCredentials)
+        .set({ lastSyncError: message.slice(0, 500) })
+        .where(eq(googleBusinessCredentials.tenantId, tenantId))
+        .catch(() => {})
+    } else {
+      // Failed while loading the connection (e.g. a DecryptionError). The row
+      // exists, so record it for the owner-facing screen all the same.
+      await db
+        .update(googleBusinessCredentials)
+        .set({ lastSyncAttempt: new Date(), lastSyncError: message.slice(0, 500) })
+        .where(eq(googleBusinessCredentials.tenantId, tenantId))
+        .catch(() => {})
+    }
+    return { ...base, connected: true, error: message }
   }
-
-  await db
-    .update(googleBusinessCredentials)
-    .set({ lastSyncedAt: new Date(), lastSyncError: null })
-    .where(eq(googleBusinessCredentials.tenantId, tenantId))
-
-  return { tenantId, connected: true, synced, skipped: fetched.skipped, error: null }
 }
 
 /**
@@ -172,7 +210,19 @@ export async function syncAllGoogleReviews(
 
   const results: SyncResult[] = []
   for (const t of tenants) {
-    results.push(await syncGoogleReviewsForTenant(t.tenantId, fetchReviews, db))
+    try {
+      results.push(await syncGoogleReviewsForTenant(t.tenantId, fetchReviews, db))
+    } catch (e) {
+      // syncGoogleReviewsForTenant records its own failures and should not
+      // throw; this is the backstop so nothing it missed can end the sweep.
+      results.push({
+        tenantId: t.tenantId,
+        connected: true,
+        synced: 0,
+        skipped: 0,
+        error: e instanceof Error ? e.message : 'Unknown error',
+      })
+    }
   }
   return results
 }

@@ -402,6 +402,60 @@ async function main() {
       '…and an unauthorised one does not stop the loop',
       all.every((r) => r.error === null),
     )
+
+    // A tampered row (AAD mismatch / rotated key) makes loadGoogleConnection
+    // THROW. That must be this tenant's recorded failure, not the end of the sweep.
+    const D = await makeTenant('gbpbad')
+    await saveGoogleOAuthClient(
+      D,
+      { accountId: 'accounts/777', locationId: 'locations/666', clientId: 'client-D', clientSecret: 'client-secret-D' },
+      ownerDrizzle,
+    )
+    await saveGoogleRefreshToken(D, 'refresh-secret-D', ownerDrizzle)
+    await owner.query(
+      `update google_business_credentials set refresh_token_encrypted='not-a-valid-ciphertext' where tenant_id=$1`,
+      [D],
+    )
+    const direct = await syncGoogleReviewsForTenant(D, fake([review('d1', 'FIVE')]), ownerDrizzle)
+    check('a tenant whose credentials cannot be decrypted returns an error, not a throw',
+      direct.connected === true && direct.error !== null)
+    const [{ derr }] = (
+      await owner.query<{ derr: string | null }>(
+        'select last_sync_error derr from google_business_credentials where tenant_id=$1',
+        [D],
+      )
+    ).rows
+    check('…and records it for the owner to see', derr !== null && derr.length > 0)
+
+    let sweepThrew = false
+    let sweep: Awaited<ReturnType<typeof syncAllGoogleReviews>> = []
+    try {
+      sweep = await syncAllGoogleReviews(fake([review('all2', 'FOUR')]), ownerDrizzle)
+    } catch {
+      sweepThrew = true
+    }
+    check('a sweep with a tampered tenant still completes', !sweepThrew)
+    check('…the tampered tenant is reported as failed', sweep.find((r) => r.tenantId === D)?.error != null)
+    check('…and every other connected tenant still synced',
+      sweep.filter((r) => r.tenantId !== D && r.connected).length >= 2 &&
+        sweep.filter((r) => r.tenantId !== D).every((r) => r.error === null))
+    await owner.query('delete from google_business_credentials where tenant_id=$1', [D])
+
+    // The interactive button is throttled; the cron sweep is not.
+    let calls = 0
+    const counting: FetchGoogleReviews = async () => {
+      calls++
+      return { reviews: [], skipped: 0 }
+    }
+    await syncGoogleReviewsForTenant(B, counting, ownerDrizzle)
+    const throttled = await syncGoogleReviewsForTenant(B, counting, ownerDrizzle, { minIntervalMs: 60_000 })
+    check('a second "Sync now" within the interval is refused', throttled.error !== null && calls === 1)
+    await owner.query(
+      `update google_business_credentials set last_sync_attempt = now() - interval '2 minutes' where tenant_id=$1`,
+      [B],
+    )
+    const allowed = await syncGoogleReviewsForTenant(B, counting, ownerDrizzle, { minIntervalMs: 60_000 })
+    check('…and allowed again once the interval has passed', allowed.error === null && calls === 2)
   }
 
   // ════════════════════════════════════════════════════════════════════════
