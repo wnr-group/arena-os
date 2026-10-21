@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { requireOwner } from '@/lib/auth/guard'
+import { AuthError, requireOwner } from '@/lib/auth/guard'
 import { getGoogleConnectionStatus } from '@/lib/reviews/google-credentials'
 import {
   consentUrl,
@@ -32,10 +32,22 @@ import {
  * than to a Google error page that would not explain itself.
  */
 export async function GET(req: NextRequest) {
-  const ctx = await requireOwner()
+  const settings = new URL('/settings/business', req.nextUrl.origin)
+
+  let ctx: Awaited<ReturnType<typeof requireOwner>>
+  try {
+    ctx = await requireOwner()
+  } catch (e) {
+    // A signed-in manager (or anyone who is not the owner) gets sent back to
+    // settings rather than an unhandled 500. Only AuthError is handled here:
+    // anything else — including the redirect to /login that requireContext()
+    // throws when there is no session at all — must propagate untouched.
+    if (!(e instanceof AuthError)) throw e
+    settings.searchParams.set('google', 'forbidden')
+    return NextResponse.redirect(settings)
+  }
 
   const status = await getGoogleConnectionStatus(ctx.tenant.id)
-  const settings = new URL('/settings/business', req.nextUrl.origin)
   if (!status?.clientId) {
     settings.searchParams.set('google', 'no_client')
     return NextResponse.redirect(settings)

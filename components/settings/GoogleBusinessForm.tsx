@@ -123,7 +123,7 @@ export function GoogleBusinessForm({
             <input id="gClientId" value={fields.clientId} onChange={(e) => set({ clientId: e.target.value })} disabled={pending} placeholder="…apps.googleusercontent.com" className={input} autoCorrect="off" spellCheck={false} />
           </Field>
 
-          <Field id="gClientSecret" label="OAuth client secret" hint="Stored encrypted and never shown again — leave blank only if you are not changing it.">
+          <Field id="gClientSecret" label="OAuth client secret" hint="Stored encrypted and never shown again. Saving any change here means entering the secret again and re-authorising with Google.">
             <input id="gClientSecret" type="password" value={fields.clientSecret} onChange={(e) => set({ clientSecret: e.target.value })} disabled={pending} placeholder="••••••••" className={input} autoComplete="off" />
           </Field>
         </div>
