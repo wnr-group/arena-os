@@ -59,8 +59,11 @@ export type MatchDestination = { key: MatchKey; slot: Slot }
  *            engine has ALREADY placed that participant in the next match, so
  *            nothing has to be scored for them to advance. Kept as a row so the
  *            draw reads correctly, and refused by score entry.
+ *   void     a losers-bracket slot that can never be fed (a bye upstream). The
+ *            row is kept for the shape of the draw; it is never played, and
+ *            anything that would have landed in it is routed past it.
  */
-export type GeneratedMatchStatus = 'pending' | 'ready' | 'bye'
+export type GeneratedMatchStatus = 'pending' | 'ready' | 'bye' | 'void'
 
 export type GeneratedMatch = {
   side: BracketSide
