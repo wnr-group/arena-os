@@ -57,6 +57,10 @@ const createInput = z.object({
         // oversized value is refused here with a clear message instead of
         // reaching the INSERT and failing on the DB's own range check.
         seatNo: z.coerce.number().int().min(1).max(MAX_SEAT_NO, `Seat number cannot exceed ${MAX_SEAT_NO}.`).optional(),
+        // Course firing (M19 #2) — validated against the tenant's own course
+        // list in createOrderCore; refused outright if courses are off.
+        course: z.coerce.number().int().min(1).max(6).optional(),
+        hold: z.boolean().optional(),
       }),
     )
     .min(1, 'Add at least one item'),

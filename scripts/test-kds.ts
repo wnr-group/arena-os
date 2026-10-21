@@ -33,6 +33,7 @@ const check = (l: string, c: boolean) => {
   else fail++
 }
 const TZ = 'Asia/Kolkata'
+const NAMES = ['Starters', 'Mains', 'Desserts']
 const ROLES = ['owner', 'manager', 'kitchen_staff', 'floor_staff', 'cashier', 'receptionist'] as const
 type Role = (typeof ROLES)[number]
 
@@ -137,15 +138,15 @@ async function main() {
 
   // ── 2. settings ───────────────────────────────────────────────────────────
   const badSet = await attempt(() =>
-    withUser(A.members.owner.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: true, warnMinutes: 15, lateMinutes: 8 })),
+    withUser(A.members.owner.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: true, warnMinutes: 15, lateMinutes: 8, coursesEnabled: false, courseNames: NAMES })),
   )
   check('settings: warn >= late rejected', !badSet.ok)
   const mgrSet = await attempt(() =>
-    withUser(A.members.manager.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: true, warnMinutes: 5, lateMinutes: 10 })),
+    withUser(A.members.manager.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: true, warnMinutes: 5, lateMinutes: 10, coursesEnabled: false, courseNames: NAMES })),
   )
   check('settings: manager can enable + set thresholds', mgrSet.ok)
   const cookSet = await attempt(() =>
-    withUser(cook.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: false, warnMinutes: 5, lateMinutes: 10 })),
+    withUser(cook.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: false, warnMinutes: 5, lateMinutes: 10, coursesEnabled: false, courseNames: NAMES })),
   )
   check('settings: kitchen_staff blocked by RLS', !cookSet.ok)
   const row = (await q('select kds_enabled, kds_warn_minutes, kds_late_minutes from order_settings where tenant_id=$1', [A.tenantId]))[0]
@@ -248,7 +249,7 @@ async function main() {
   check("tenant B cannot read tenant A's kot_items", bSees.every((x) => x.tenantId === B.tenantId))
 
   // ── 8. flag off again: reconcile is a no-op ───────────────────────────────
-  await withUser(A.members.owner.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: false, warnMinutes: 5, lateMinutes: 10 }))
+  await withUser(A.members.owner.userId, (tx) => saveKdsSettingsCore(tx, A.tenantId, { enabled: false, warnMinutes: 5, lateMinutes: 10, coursesEnabled: false, courseNames: NAMES }))
   const o2 = await fire(A, [1, 1, 1])
   await q(`update order_items set void_status='voided' where id=any($1)`, [[o2.lines[0], o2.lines[1]]])
   await withUser(A.members.owner.userId, (tx) => reconcileKotAfterLineChange(tx, A.tenantId, o2.orderId))

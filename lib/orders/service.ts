@@ -33,7 +33,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
-import { reconcileKotAfterLineChange } from '@/lib/kots/kds'
+import { getCourseConfigCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -63,6 +63,12 @@ export type CreateOrderItemInput = {
   // guest count is finalised, and a stale/absent cover_count must never
   // block placing food. Pure bookkeeping — never affects pricing.
   seatNo?: number
+  // Course firing (migration 0147, M19 #2). Only accepted for tenants that
+  // turned courses on (and the KDS); `course` is 1-based into their course
+  // names, `hold` keeps the line off the cook's board until it's fired. Both
+  // absent = fired immediately, i.e. exactly the pre-courses behaviour.
+  course?: number
+  hold?: boolean
 }
 
 export type CreateOrderInput = {
@@ -399,6 +405,19 @@ export async function createOrderCore(
     }
   }
 
+  // Only read the course config when the caller actually sent course info —
+  // KOT creation is a hot path and most tenants never will.
+  const usesCourses = input.items.some((i) => i.course !== undefined || i.hold !== undefined)
+  const courseCfg = usesCourses ? await getCourseConfigCore(tx, ctx.tenantId) : null
+  if (courseCfg && !courseCfg.enabled) {
+    throw new OrderError('Course firing is not turned on for this venue.')
+  }
+  for (const i of input.items) {
+    if (courseCfg && i.course !== undefined && (!Number.isInteger(i.course) || i.course < 1 || i.course > courseCfg.names.length)) {
+      throw new OrderError('Pick one of the configured courses.')
+    }
+  }
+
   const preparedItems = input.items.map((i) => {
     const m = byId.get(i.menuItemId)!
     const basePrice = Number(m.price)
@@ -435,6 +454,9 @@ export async function createOrderCore(
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
         seatNo: i.seatNo ?? null,
+        courseNo: courseCfg ? (i.course ?? 1) : 1,
+        courseName: courseCfg ? courseCfg.names[(i.course ?? 1) - 1] : null,
+        fireStatus: (i.hold ? 'held' : 'fired') as 'held' | 'fired',
       },
       modifiers: selected.map((o) => ({
         tenantId: ctx.tenantId,

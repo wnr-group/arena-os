@@ -55,7 +55,8 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
-      .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
+      // Held course lines (migration 0147) aren't the kitchen's yet.
+      .leftJoin(orderItems, and(eq(orderItems.orderId, orders.id), eq(orderItems.fireStatus, 'fired')))
       .leftJoin(resources, eq(resources.id, orders.resourceId))
       .where(
         and(
@@ -152,7 +153,7 @@ export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise
         specialInstructions: orderItems.specialInstructions,
       })
       .from(orderItems)
-      .where(eq(orderItems.orderId, head.orderId))
+      .where(and(eq(orderItems.orderId, head.orderId), eq(orderItems.fireStatus, 'fired')))
       .orderBy(asc(orderItems.id))
 
     const modifiersByItem = await loadModifierNamesByItem(

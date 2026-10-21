@@ -3,11 +3,13 @@
 import { revalidatePath } from 'next/cache'
 import { withUser } from '@/db'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
-import { canManageKitchen } from '@/lib/auth/roles'
+import { canFireCourse, canManageKitchen } from '@/lib/auth/roles'
 import { KotError } from '@/lib/kots/service'
 import {
   bumpKotCore,
   bumpKotItemCore,
+  fireCourseCore,
+  getCourseConfigCore,
   recallKotCore,
   recallKotItemCore,
   saveKdsSettingsCore,
@@ -67,7 +69,13 @@ export async function recallKot(kotId: string): Promise<Result> {
 }
 
 /** Turn the KDS on/off and set its timer thresholds — manager/owner only. */
-export async function saveKdsSettings(v: { enabled: boolean; warnMinutes: number; lateMinutes: number }): Promise<Result> {
+export async function saveKdsSettings(v: {
+  enabled: boolean
+  warnMinutes: number
+  lateMinutes: number
+  coursesEnabled: boolean
+  courseNames: string[]
+}): Promise<Result> {
   try {
     const ctx = await requireManager()
     await requireEntitlement(ctx, KDS_MODULE)
@@ -77,5 +85,39 @@ export async function saveKdsSettings(v: { enabled: boolean; warnMinutes: number
     return {}
   } catch (e) {
     return fail(e)
+  }
+}
+
+/**
+ * Fire a held course for an order — the waiter's "ready for mains" tap, also
+ * offered on the KDS. Front-of-house + kitchen roles (fire_order_course
+ * re-checks the role in SQL, so this gate is convenience, not the lock).
+ */
+export async function fireCourse(orderId: string, course: number): Promise<Result> {
+  try {
+    const ctx = await requireContext()
+    if (!canFireCourse(ctx.role)) throw new AuthError('You are not allowed to fire courses.')
+    if (ctx.tenant.industry !== 'restaurant') throw new AuthError('Course firing is for restaurant venues.')
+    await requireEntitlement(ctx, KDS_MODULE)
+    await withUser(ctx.user.id, (tx) => fireCourseCore(tx, orderId, course))
+    revalidatePath('/kitchen')
+    revalidatePath('/bookings')
+    revalidatePath('/floor')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** For the waiter's order dialog: the course names to offer, or null when the
+ *  venue doesn't use courses (the dialog then shows no course controls). */
+export async function getCourseOptions(): Promise<string[] | null> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry !== 'restaurant') return null
+    const cfg = await withUser(ctx.user.id, (tx) => getCourseConfigCore(tx, ctx.tenant.id))
+    return cfg.enabled ? cfg.names : null
+  } catch {
+    return null
   }
 }

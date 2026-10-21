@@ -7,19 +7,37 @@ import { saveKdsSettings } from '@/lib/actions/kds'
 
 /** Manager/owner control for the kitchen display: opt-in switch + the minutes
  *  at which a ticket's timer turns amber ("slow") and red ("late"). */
-export function KdsSettings({ enabled, warnMinutes, lateMinutes }: { enabled: boolean; warnMinutes: number; lateMinutes: number }) {
+export function KdsSettings({
+  enabled,
+  warnMinutes,
+  lateMinutes,
+  coursesEnabled,
+  courseNames,
+}: {
+  enabled: boolean
+  warnMinutes: number
+  lateMinutes: number
+  coursesEnabled: boolean
+  courseNames: string[]
+}) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [on, setOn] = useState(enabled)
   const [warn, setWarn] = useState(String(warnMinutes))
   const [late, setLate] = useState(String(lateMinutes))
+  const [courses, setCourses] = useState(coursesEnabled)
+  const [names, setNames] = useState(courseNames.join(', '))
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
   function save() {
     setError(null)
     startTransition(async () => {
-      const r = await saveKdsSettings({ enabled: on, warnMinutes: Number(warn), lateMinutes: Number(late) })
+      const r = await saveKdsSettings({ enabled: on, warnMinutes: Number(warn),
+        lateMinutes: Number(late),
+        coursesEnabled: courses,
+        courseNames: names.split(',').map((n) => n.trim()).filter(Boolean),
+      })
       if (r.error) setError(r.error)
       else {
         setOpen(false)
@@ -59,6 +77,21 @@ export function KdsSettings({ enabled, warnMinutes, lateMinutes }: { enabled: bo
               <input type="number" min={2} value={late} onChange={(e) => setLate(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5" />
             </label>
           </div>
+          <label className="flex items-start gap-3 text-sm">
+            <input type="checkbox" checked={courses} onChange={(e) => setCourses(e.target.checked)} className="mt-1 size-4" />
+            <span>
+              <span className="font-medium">Course firing</span>
+              <span className="block text-muted-foreground">
+                Waiters can hold later courses and fire them when the table is ready. Needs the kitchen display on.
+              </span>
+            </span>
+          </label>
+          {courses && (
+            <label className="block text-sm">
+              <span className="font-medium">Course names, in order (comma-separated)</span>
+              <input value={names} onChange={(e) => setNames(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5" />
+            </label>
+          )}
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <button
             type="button"

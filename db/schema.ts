@@ -1094,6 +1094,13 @@ export const orderItems = pgTable(
     // time so a bill can later be split "by who ordered what". Null =
     // unassigned/shared. Snapshot only; never read by pricing.
     seatNo: smallint('seat_no'),
+    // Course firing (migration 0147, M19 #2). course_name is a snapshot, like
+    // the price columns. 'held' lines are invisible to the cook until fired
+    // (fire_order_course); every pre-existing / non-opted-in line is 'fired'.
+    courseNo: smallint('course_no').notNull().default(1),
+    courseName: text('course_name'),
+    fireStatus: text('fire_status', { enum: ['fired', 'held'] }).notNull().default('fired'),
+    firedAt: timestamp('fired_at', { withTimezone: true }),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
@@ -1733,6 +1740,9 @@ export const orderSettings = pgTable('order_settings', {
   kdsEnabled: boolean('kds_enabled').notNull().default(false),
   kdsWarnMinutes: integer('kds_warn_minutes').notNull().default(8),
   kdsLateMinutes: integer('kds_late_minutes').notNull().default(15),
+  // Course firing opt-in (migration 0147); only effective with kdsEnabled.
+  coursesEnabled: boolean('courses_enabled').notNull().default(false),
+  courseNames: text('course_names').array().notNull().default(['Starters', 'Mains', 'Desserts']),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

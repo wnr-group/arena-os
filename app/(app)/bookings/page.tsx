@@ -64,6 +64,9 @@ async function loadBookingExtras(ctx: ActiveContext, bookingIds: string[], isRes
         voidReason: row.voidReason,
         pendingVoidMode: row.pendingVoidMode,
         modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
+        courseNo: row.courseNo!,
+        courseName: row.courseName,
+        held: row.fireStatus === 'held',
       })
     }
   }

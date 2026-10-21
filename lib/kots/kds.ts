@@ -23,10 +23,24 @@ import { KotError, type KotOrderRef } from './service'
 
 type Db = NodePgDatabase<typeof schema>
 
-export type KdsSettings = { enabled: boolean; warnMinutes: number; lateMinutes: number }
+export type KdsSettings = {
+  enabled: boolean
+  warnMinutes: number
+  lateMinutes: number
+  /** Course firing (M19 #2) — only meaningful when `enabled` too. */
+  coursesEnabled: boolean
+  courseNames: string[]
+}
 
 /** A tenant with no order_settings row behaves exactly as before the KDS. */
-export const DEFAULT_KDS_SETTINGS: KdsSettings = { enabled: false, warnMinutes: 8, lateMinutes: 15 }
+export const DEFAULT_COURSE_NAMES = ['Starters', 'Mains', 'Desserts']
+export const DEFAULT_KDS_SETTINGS: KdsSettings = {
+  enabled: false,
+  warnMinutes: 8,
+  lateMinutes: 15,
+  coursesEnabled: false,
+  courseNames: DEFAULT_COURSE_NAMES,
+}
 
 export async function getKdsSettingsCore(tx: Db, tenantId: string): Promise<KdsSettings> {
   const [row] = await tx
@@ -34,6 +48,8 @@ export async function getKdsSettingsCore(tx: Db, tenantId: string): Promise<KdsS
       enabled: orderSettings.kdsEnabled,
       warnMinutes: orderSettings.kdsWarnMinutes,
       lateMinutes: orderSettings.kdsLateMinutes,
+      coursesEnabled: orderSettings.coursesEnabled,
+      courseNames: orderSettings.courseNames,
     })
     .from(orderSettings)
     .where(eq(orderSettings.tenantId, tenantId))
@@ -49,7 +65,20 @@ export async function saveKdsSettingsCore(tx: Db, tenantId: string, v: KdsSettin
   if (v.warnMinutes >= v.lateMinutes) {
     throw new KotError('The "slow" threshold must be shorter than the "late" threshold.')
   }
-  const set = { kdsEnabled: v.enabled, kdsWarnMinutes: v.warnMinutes, kdsLateMinutes: v.lateMinutes }
+  const names = v.courseNames.map((n) => n.trim())
+  if (names.length < 2 || names.length > 6 || names.some((n) => n.length === 0 || n.length > 30)) {
+    throw new KotError('Give 2 to 6 course names, each up to 30 characters.')
+  }
+  if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) {
+    throw new KotError('Course names must be different from each other.')
+  }
+  const set = {
+    kdsEnabled: v.enabled,
+    kdsWarnMinutes: v.warnMinutes,
+    kdsLateMinutes: v.lateMinutes,
+    coursesEnabled: v.coursesEnabled,
+    courseNames: names,
+  }
   await tx
     .insert(orderSettings)
     .values({ tenantId, ...set })
@@ -95,6 +124,8 @@ async function outstandingLineIds(tx: Db, tenantId: string, orderId: string): Pr
         eq(orderItems.tenantId, tenantId),
         eq(orderItems.orderId, orderId),
         ne(orderItems.voidStatus, 'voided'),
+        // Held lines aren't the cook's yet — they never block "ready".
+        eq(orderItems.fireStatus, 'fired'),
         notExists(tx.select({ one: sql`1` }).from(kotItems).where(eq(kotItems.orderItemId, orderItems.id))),
       ),
     )
@@ -125,7 +156,7 @@ export async function bumpKotItemCore(tx: Db, actor: KdsActor, kotId: string, or
   }
 
   const [line] = await tx
-    .select({ id: orderItems.id, voidStatus: orderItems.voidStatus })
+    .select({ id: orderItems.id, voidStatus: orderItems.voidStatus, fireStatus: orderItems.fireStatus })
     .from(orderItems)
     .where(
       and(eq(orderItems.id, orderItemId), eq(orderItems.orderId, kot.orderId), eq(orderItems.tenantId, actor.tenantId)),
@@ -133,6 +164,7 @@ export async function bumpKotItemCore(tx: Db, actor: KdsActor, kotId: string, or
     .limit(1)
   if (!line) throw new KotError('That item is not on this ticket.')
   if (line.voidStatus === 'voided') throw new KotError('That item was voided.')
+  if (line.fireStatus === 'held') throw new KotError('That course is on hold — fire it first.')
 
   await tx
     .insert(kotItems)
@@ -205,12 +237,47 @@ export async function reconcileKotAfterLineChange(tx: Db, tenantId: string, orde
   const [anyActive] = await tx
     .select({ id: orderItems.id })
     .from(orderItems)
-    .where(and(eq(orderItems.orderId, orderId), eq(orderItems.tenantId, tenantId), ne(orderItems.voidStatus, 'voided')))
+    .where(
+      and(
+        eq(orderItems.orderId, orderId),
+        eq(orderItems.tenantId, tenantId),
+        ne(orderItems.voidStatus, 'voided'),
+        eq(orderItems.fireStatus, 'fired'),
+      ),
+    )
     .limit(1)
-  if (!anyActive) return // nothing left at all — the caller cancels the ticket
+  // Nothing fired and live: either nothing left at all (the caller cancels the
+  // ticket) or only held lines remain, which must NOT read as "done".
+  if (!anyActive) return
   if ((await outstandingLineIds(tx, tenantId, orderId)).length > 0) return
   await tx
     .update(kots)
     .set({ status: 'ready' })
     .where(and(inArray(kots.id, open.map((k) => k.id)), eq(kots.tenantId, tenantId)))
+}
+
+/** Course config as the order path sees it: usable only with the KDS on too. */
+export async function getCourseConfigCore(tx: Db, tenantId: string): Promise<{ enabled: boolean; names: string[] }> {
+  const s = await getKdsSettingsCore(tx, tenantId)
+  return { enabled: s.enabled && s.coursesEnabled, names: s.courseNames }
+}
+
+/**
+ * Fire a held course on an order: its held lines become active, and a ticket
+ * the kitchen had finished / the floor had served goes back to `preparing`.
+ * Runs through fire_order_course (migration 0147), which checks the caller's
+ * role itself — waiters and cashiers can't UPDATE kots directly.
+ */
+export async function fireCourseCore(tx: Db, orderId: string, course: number): Promise<number> {
+  if (!Number.isInteger(course) || course < 1 || course > 6) throw new KotError('Unknown course.')
+  let fired: number
+  try {
+    const r = await tx.execute(sql`select public.fire_order_course(${orderId}::uuid, ${course}::smallint) as n`)
+    fired = Number((r.rows[0] as { n: number | string }).n)
+  } catch (e) {
+    const err = (e as { cause?: { message?: string } }).cause ?? (e as { message?: string })
+    throw new KotError(err.message?.replace(/^error: /i, '') || 'Could not fire that course.')
+  }
+  if (fired === 0) throw new KotError('Nothing is being held for that course.')
+  return fired
 }

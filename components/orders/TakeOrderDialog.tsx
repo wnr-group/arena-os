@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, PackageCheck, PackageX } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
 import { setMenuItemAvailability } from '@/lib/actions/menu'
+import { getCourseOptions } from '@/lib/actions/kds'
 import { formatMoney } from '@/lib/format'
 import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
@@ -52,6 +53,11 @@ type CartLine = {
    *  whichever seat was active when the line was added; bookkeeping only,
    *  never affects price. */
   seatNo: number | null
+  /** Course firing (M19 #2) — 1-based into the venue's course names. Only
+   *  sent to the server when the venue uses courses. */
+  course: number
+  /** Hold this line off the kitchen until the waiter fires its course. */
+  hold: boolean
 }
 
 function cartLineKey(menuItemId: string, optionIds: string[], seatNo: number | null): string {
@@ -118,6 +124,18 @@ export function TakeOrderDialog({
   // Tap a seat chip, then tap items as usual; nothing here blocks ordering
   // when it's left at "Shared" (the default), so tagging stays fully optional.
   const [activeSeat, setActiveSeat] = useState<number | null>(null)
+  // The venue's course names, or null when it doesn't use courses (then no
+  // course controls render and nothing course-related is sent).
+  const [courseNames, setCourseNames] = useState<string[] | null>(null)
+  useEffect(() => {
+    let live = true
+    getCourseOptions().then((c) => {
+      if (live) setCourseNames(c)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
   const showSeatPicker = Boolean(seatCount && seatCount >= 2)
   // Below lg, the cart lives in a bottom sheet (toggled from the summary bar)
   // instead of a permanent third column — there just isn't room for three
@@ -217,7 +235,7 @@ export function TakeOrderDialog({
       if (existing) return lines.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l))
       return [
         ...lines,
-        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers: [], seatNo: activeSeat },
+        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers: [], seatNo: activeSeat, course: 1, hold: false },
       ]
     })
   }
@@ -230,7 +248,7 @@ export function TakeOrderDialog({
       if (existing) return lines.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l))
       return [
         ...lines,
-        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers, seatNo: activeSeat },
+        { key, menuItemId: item.id, name: item.name, price: item.price, taxPercent: item.taxPercent, qty: 1, specialInstructions: '', modifiers, seatNo: activeSeat, course: 1, hold: false },
       ]
     })
   }
@@ -259,6 +277,16 @@ export function TakeOrderDialog({
     setCart((lines) => lines.map((l) => (l.key === key ? { ...l, specialInstructions: value } : l)))
   }
 
+  /** Picking a later course holds it by default — the usual "mains wait for
+   *  the table" — but the waiter can untick Hold to send it straight away. */
+  function setCourse(key: string, course: number) {
+    setCart((lines) => lines.map((l) => (l.key === key ? { ...l, course, hold: course > 1 } : l)))
+  }
+
+  function setHold(key: string, hold: boolean) {
+    setCart((lines) => lines.map((l) => (l.key === key ? { ...l, hold } : l)))
+  }
+
   function removeLine(key: string) {
     setCart((lines) => lines.filter((l) => l.key !== key))
   }
@@ -280,6 +308,7 @@ export function TakeOrderDialog({
           specialInstructions: l.specialInstructions || undefined,
           modifierOptionIds: l.modifiers.map((m) => m.optionId),
           seatNo: l.seatNo ?? undefined,
+          ...(courseNames ? { course: l.course, hold: l.hold } : {}),
         })),
       })
       if (r.error) setError(r.error)
@@ -373,6 +402,26 @@ export function TakeOrderDialog({
                   value={line.specialInstructions}
                   onChange={(e) => updateInstructions(line.key, e.target.value)}
                 />
+                {courseNames && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <select
+                      aria-label={`Course for ${line.name}`}
+                      value={line.course}
+                      onChange={(e) => setCourse(line.key, Number(e.target.value))}
+                      className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                    >
+                      {courseNames.map((n, i) => (
+                        <option key={n} value={i + 1}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="inline-flex items-center gap-1.5 text-sm">
+                      <input type="checkbox" checked={line.hold} onChange={(e) => setHold(line.key, e.target.checked)} />
+                      Hold
+                    </label>
+                  </div>
+                )}
               </div>
             )
           })

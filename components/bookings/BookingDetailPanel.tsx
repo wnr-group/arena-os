@@ -13,6 +13,7 @@ import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { setBookingStatus, undoCheckIn } from '@/lib/actions/bookings'
 import { editOrderItemQuantity, removeOrderItem } from '@/lib/actions/orders'
+import { fireCourse } from '@/lib/actions/kds'
 import { formatMoney, timeInZone } from '@/lib/format'
 import { lateEntryLabel } from '@/lib/booking/late-entry'
 import type { BookingPaymentState } from '@/lib/billing/data'
@@ -36,6 +37,10 @@ export type OrderItemLine = {
   pendingVoidMode: 'void' | 'comp' | null
   /** Chosen modifier option names (M17 #8) — e.g. ["Large", "Extra cheese"]. */
   modifiers: string[]
+  /** Course firing (M19 #2). `held` = not yet sent to the cook. */
+  courseNo: number
+  courseName: string | null
+  held: boolean
 }
 export type OrderSummary = { orderId: string; orderNumber: string; status: string; items: OrderItemLine[] }
 
@@ -456,6 +461,9 @@ export function BookingDetailPanel({
                         <span className="font-medium">{o.orderNumber}</span>
                         <span className="text-xs capitalize text-muted-foreground">{o.status}</span>
                       </div>
+                      {o.status === 'open' && (
+                        <HeldCourseBar items={o.items} orderId={o.orderId} />
+                      )}
                       <ul className="mt-1 space-y-0.5">
                         {o.items.map((it) => (
                           <li
@@ -468,6 +476,15 @@ export function BookingDetailPanel({
                               </span>
                               {it.modifiers.length > 0 && (
                                 <span className="ml-1 text-xs text-primary">— {it.modifiers.join(', ')}</span>
+                              )}
+                              {it.courseName && (
+                                <span
+                                  className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                    it.held ? 'bg-amber-500/10 text-amber-600' : 'bg-muted text-muted-foreground'
+                                  }`}
+                                >
+                                  {it.held ? `Held · ${it.courseName}` : it.courseName}
+                                </span>
                               )}
                               {it.specialInstructions ? ` — ${it.specialInstructions}` : ''}
                               {it.happyHourName && (
@@ -615,5 +632,55 @@ export function BookingDetailPanel({
         />
       )}
     </>
+  )
+}
+
+/**
+ * "Fire Mains" buttons for an order's held courses (M19 #2). One button per
+ * distinct held course, ordered by course number. Renders nothing for the
+ * (vast majority of) orders with no held lines. fireCourse / fire_order_course
+ * re-check role, plan and the venue's opt-in server-side.
+ */
+function HeldCourseBar({ items, orderId }: { items: OrderItemLine[]; orderId: string }) {
+  const router = useRouter()
+  const [pending, start] = useTransition()
+  const [firing, setFiring] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const held = new Map<number, string>()
+  for (const it of items) {
+    if (it.held && it.voidStatus !== 'voided') held.set(it.courseNo, it.courseName ?? `Course ${it.courseNo}`)
+  }
+  if (held.size === 0) return null
+
+  function fire(course: number) {
+    setError(null)
+    setFiring(course)
+    start(async () => {
+      const r = await fireCourse(orderId, course)
+      if (r.error) setError(r.error)
+      else router.refresh()
+      setFiring(null)
+    })
+  }
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+      {[...held.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([course, name]) => (
+          <button
+            key={course}
+            type="button"
+            disabled={pending}
+            onClick={() => fire(course)}
+            className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2.5 py-1 text-xs font-semibold text-black transition hover:bg-amber-400 disabled:opacity-50"
+          >
+            {pending && firing === course && <Loader2 size={12} className="animate-spin" />}
+            Fire {name}
+          </button>
+        ))}
+      {error && <span role="alert" className="text-xs text-destructive">{error}</span>}
+    </div>
   )
 }

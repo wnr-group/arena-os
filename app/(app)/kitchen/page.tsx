@@ -10,7 +10,7 @@ import { KdsSettings } from '@/components/kitchen/KdsSettings'
 import { getKdsBoard } from '@/lib/kots/kds-data'
 import { getKdsSettingsCore } from '@/lib/kots/kds'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
-import { canManageKitchen, isManager } from '@/lib/auth/roles'
+import { canFireCourse, canManageKitchen, isManager } from '@/lib/auth/roles'
 
 export default async function KitchenPage() {
   const ctx = await getActiveContext()
@@ -40,6 +40,7 @@ export default async function KitchenPage() {
         <KdsBoard
           board={board}
           canBump={canManageKitchen(ctx.role)}
+          canFire={canFireCourse(ctx.role)}
           menuItems={menuItemRows
             .filter((i) => i.status !== 'hidden')
             .map((i) => ({ id: i.id, name: i.name, categoryName: i.categoryName, status: i.status as 'available' | 'out_of_stock' }))}

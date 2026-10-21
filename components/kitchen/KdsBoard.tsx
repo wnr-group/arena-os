@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Bell, Check, Loader2, MapPin, PackageX, Printer, RotateCcw, Smartphone, Undo2 } from 'lucide-react'
-import { bumpKot, bumpKotItem, recallKot, recallKotItem } from '@/lib/actions/kds'
+import { Bell, Check, Flame, Loader2, MapPin, PackageX, Pause, Printer, RotateCcw, Smartphone, Undo2 } from 'lucide-react'
+import { bumpKot, bumpKotItem, fireCourse, recallKot, recallKotItem } from '@/lib/actions/kds'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KdsBoard as KdsBoardData, KdsTicket } from '@/lib/kots/kds-data'
 import { EightySixPanel, type EightySixItem } from './EightySixPanel'
@@ -36,13 +36,16 @@ export function KdsBoard({
   board,
   menuItems,
   canBump,
+  canFire,
 }: {
   board: KdsBoardData
   menuItems: EightySixItem[]
   canBump: boolean
+  /** Waiters/cashiers can fire a held course even though they can't bump. */
+  canFire: boolean
 }) {
   const router = useRouter()
-  const { settings, tickets, allDay } = board
+  const { settings, tickets, heldOnly, allDay } = board
   // Offset between the server clock and this device's clock, so a wall display
   // with a wrong clock still shows true waiting times.
   const offset = useMemo(() => new Date(board.serverNow).getTime() - Date.now(), [board.serverNow])
@@ -95,14 +98,16 @@ export function KdsBoard({
     [router],
   )
 
-  const active = tickets.filter((t) => t.status !== 'ready')
+  const active = tickets
+    .filter((t) => t.status !== 'ready')
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
   const ready = tickets.filter((t) => t.status === 'ready')
 
   return (
     <div className="mt-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          {active.length} cooking · {ready.length} ready · live
+          {active.length} cooking · {ready.length} ready{heldOnly.length > 0 ? ` · ${heldOnly.length} on hold` : ''} · live
         </p>
         <button
           type="button"
@@ -136,15 +141,35 @@ export function KdsBoard({
                 <TicketCard
                   key={t.kotId}
                   ticket={t}
-                  elapsedMs={now + offset - new Date(t.createdAt).getTime()}
+                  elapsedMs={now + offset - new Date(t.startedAt).getTime()}
                   warn={settings.warnMinutes}
                   late={settings.lateMinutes}
                   busy={busy}
                   canBump={canBump}
+                  canFire={canFire}
                   run={run}
                 />
               ))}
             </div>
+          )}
+
+          {heldOnly.length > 0 && (
+            <section aria-label="On hold">
+              <h2 className="mb-2 flex items-center gap-2 text-base font-semibold text-amber-600">
+                <Pause size={16} /> On hold — not sent to the cook yet
+              </h2>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                {heldOnly.map((t) => (
+                  <div key={t.kotId} className="rounded-xl border border-dashed border-amber-500/60 bg-amber-500/5 p-3">
+                    <p className="text-base font-semibold">
+                      {t.kotNumber}
+                      {t.tableName ? ` · ${t.tableName}` : ''}
+                    </p>
+                    <HeldGroups ticket={t} busy={busy} canFire={canFire} run={run} />
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
 
           {ready.length > 0 && (
@@ -164,6 +189,7 @@ export function KdsBoard({
                         {t.items.reduce((n, i) => n + i.qty, 0)} items
                       </span>
                     </div>
+                    <HeldGroups ticket={t} busy={busy} canFire={canFire} run={run} />
                     <div className="mt-3 flex gap-2">
                       {canBump && (
                         <button
@@ -224,6 +250,7 @@ function TicketCard({
   late,
   busy,
   canBump,
+  canFire,
   run,
 }: {
   ticket: KdsTicket
@@ -232,6 +259,7 @@ function TicketCard({
   late: number
   busy: string | null
   canBump: boolean
+  canFire: boolean
   run: (key: string, fn: () => Promise<{ error?: string }>) => void
 }) {
   const level = levelFor(Math.floor(elapsedMs / 60000), warn, late)
@@ -274,7 +302,7 @@ function TicketCard({
       </p>
 
       <ul className="mt-2 flex-1 space-y-1.5">
-        {ticket.items.map((item) => {
+        {ticket.items.map((item, idx) => {
           const key = `${ticket.kotId}:${item.itemId}`
           const content = (
             <>
@@ -300,8 +328,16 @@ function TicketCard({
           const cls = `block w-full rounded-lg px-3 py-2 text-left ${
             item.bumped ? 'bg-emerald-500/10 text-muted-foreground' : 'bg-muted/50'
           }`
+          // Course sub-headers only when this table actually uses courses.
+          const showCourse =
+            item.courseName !== null && (idx === 0 || ticket.items[idx - 1].courseNo !== item.courseNo)
           return (
             <li key={item.itemId}>
+              {showCourse && (
+                <p className="mb-1 mt-1 flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                  <Flame size={12} /> {item.courseName}
+                </p>
+              )}
               {canBump ? (
                 <button
                   type="button"
@@ -322,6 +358,8 @@ function TicketCard({
         })}
       </ul>
 
+      <HeldGroups ticket={ticket} busy={busy} canFire={canFire} run={run} />
+
       {canBump && (
         <button
           type="button"
@@ -333,6 +371,55 @@ function TicketCard({
           Bump ticket{left < ticket.items.length ? ` (${left} left)` : ''}
         </button>
       )}
+    </div>
+  )
+}
+
+/** Held courses on a ticket, each with its own Fire button — the clear
+ *  "held vs active" separation: amber dashed = waiting, solid card = cooking. */
+function HeldGroups({
+  ticket,
+  busy,
+  canFire,
+  run,
+}: {
+  ticket: KdsTicket
+  busy: string | null
+  canFire: boolean
+  run: (key: string, fn: () => Promise<{ error?: string }>) => void
+}) {
+  if (ticket.held.length === 0) return null
+  return (
+    <div className="mt-3 space-y-2">
+      {ticket.held.map((g) => {
+        const key = `${ticket.kotId}:fire:${g.course}`
+        return (
+          <div key={g.course} className="rounded-lg border border-dashed border-amber-500/70 bg-amber-500/5 p-2">
+            <p className="flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-amber-600">
+              <Pause size={12} /> Held · {g.name}
+            </p>
+            <ul className="mt-1 text-sm text-muted-foreground">
+              {g.items.map((i) => (
+                <li key={i.itemId}>
+                  {i.qty}× {i.name}
+                  {i.modifiers.length > 0 ? ` — ${i.modifiers.join(', ')}` : ''}
+                </li>
+              ))}
+            </ul>
+            {canFire && (
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => run(key, () => fireCourse(ticket.orderId, g.course))}
+                className="mt-2 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-amber-500 text-sm font-semibold text-black transition hover:bg-amber-400 disabled:opacity-50"
+              >
+                {busy === key ? <Loader2 size={16} className="animate-spin" /> : <Flame size={16} />}
+                Fire {g.name}
+              </button>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
