@@ -34,6 +34,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { enqueueKitchenTicketsCore, enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
 import { getCourseConfigCore, getStationRoutingCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
 
 type Db = NodePgDatabase<typeof schema>
@@ -508,6 +509,21 @@ export async function createOrderCore(
     status: 'pending',
   })
 
+  // Kitchen paper (M19 #4): same transaction, so the ticket exists iff the
+  // order does. Staff-placed, already-accepted orders only — an online order
+  // awaiting review prints on accept (acceptOrderCore), and the anonymous
+  // online path has no member to own a print job under RLS. A branch with no
+  // printer makes this a single cheap query.
+  if (ctx.membershipId && (input.acceptanceStatus ?? 'accepted') === 'accepted') {
+    await enqueueKitchenTicketsCore(tx, {
+      tenantId: ctx.tenantId,
+      branchId: input.branchId,
+      orderId: order.id,
+      reason: 'new',
+      membershipId: ctx.membershipId,
+    })
+  }
+
   return { id: order.id, orderNumber, kotNumber }
 }
 
@@ -577,6 +593,9 @@ export async function acceptOrderCore(tx: Db, ctx: { tenantId: string }, orderId
     .update(orders)
     .set({ acceptanceStatus: 'accepted' })
     .where(and(eq(orders.id, order.id), eq(orders.tenantId, ctx.tenantId)))
+
+  // Now it is the kitchen's: print its ticket (no-op without a printer).
+  await enqueueKitchenTicketsForOrderCore(tx, ctx.tenantId, order.id, 'new')
 }
 
 /**

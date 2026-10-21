@@ -294,17 +294,17 @@ export async function getCourseConfigCore(tx: Db, tenantId: string): Promise<{ e
  * Runs through fire_order_course (migration 0147), which checks the caller's
  * role itself — waiters and cashiers can't UPDATE kots directly.
  */
-export async function fireCourseCore(tx: Db, orderId: string, course: number): Promise<number> {
+export async function fireCourseCore(tx: Db, orderId: string, course: number): Promise<string[]> {
   if (!Number.isInteger(course) || course < 1 || course > 6) throw new KotError('Unknown course.')
-  let fired: number
+  let fired: string[]
   try {
-    const r = await tx.execute(sql`select public.fire_order_course(${orderId}::uuid, ${course}::smallint) as n`)
-    fired = Number((r.rows[0] as { n: number | string }).n)
+    const r = await tx.execute(sql`select public.fire_order_course(${orderId}::uuid, ${course}::smallint)::text[] as ids`)
+    fired = (r.rows[0] as { ids: string[] }).ids ?? []
   } catch (e) {
     const err = (e as { cause?: { message?: string } }).cause ?? (e as { message?: string })
     throw new KotError(err.message?.replace(/^error: /i, '') || 'Could not fire that course.')
   }
-  if (fired === 0) throw new KotError('Nothing is being held for that course.')
+  if (fired.length === 0) throw new KotError('Nothing is being held for that course.')
   return fired
 }
 

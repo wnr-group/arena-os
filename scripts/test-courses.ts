@@ -188,7 +188,7 @@ async function main() {
   // ── 6. firing semantics ───────────────────────────────────────────────────
   const n = await fireAs(A, 'floor_staff', o.orderId, 2)
   const burgerAfter = await lineState(o.lines[0])
-  check('fire returns the number of lines fired and stamps fired_at', n === 1 && burgerAfter.fire_status === 'fired' && burgerAfter.fired_at !== null)
+  check('fire returns the number of lines fired and stamps fired_at', n.length === 1 && burgerAfter.fire_status === 'fired' && burgerAfter.fired_at !== null)
   check('firing reopens a ready ticket → preparing', (await status(o.kotId)) === 'preparing')
   check('other course stays held', (await lineState(o.lines[1])).fire_status === 'held')
   b = await board(A)

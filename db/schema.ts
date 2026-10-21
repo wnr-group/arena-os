@@ -25,6 +25,7 @@ import {
   index,
   primaryKey,
   foreignKey,
+  customType,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 
@@ -1216,8 +1217,66 @@ export const kitchenStations = pgTable('kitchen_stations', {
   name: text('name').notNull(),
   sortOrder: integer('sort_order').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
+  // Kitchen printer for this station's tickets (migration 0149); null = default.
+  printerId: uuid('printer_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── printers + print_jobs (migration 0149) ───────────────────────────────────
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea'
+  },
+})
+
+export const printers = pgTable('printers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  kind: text('kind', { enum: ['kitchen', 'receipt'] }).notNull(),
+  isDefault: boolean('is_default').notNull().default(false),
+  paperChars: integer('paper_chars').notNull().default(42),
+  mediaType: text('media_type').notNull().default('application/vnd.star.starprnt'),
+  secretHash: text('secret_hash').notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  deviceMac: text('device_mac'),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  lastStatus: text('last_status'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const printJobs = pgTable('print_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  printerId: uuid('printer_id')
+    .notNull()
+    .references(() => printers.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['kitchen_ticket', 'receipt', 'test'] }).notNull(),
+  title: text('title').notNull(),
+  kotId: uuid('kot_id'),
+  invoiceId: uuid('invoice_id'),
+  payload: bytea('payload').notNull(),
+  status: text('status', { enum: ['pending', 'sent', 'printed', 'failed', 'cancelled'] })
+    .notNull()
+    .default('pending'),
+  error: text('error'),
+  attempts: integer('attempts').notNull().default(0),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
 })
 
 // ── kot_items (migration 0146) ───────────────────────────────────────────────

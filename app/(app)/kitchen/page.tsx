@@ -5,6 +5,9 @@ import { branches } from '@/db/schema'
 import { listActiveKots } from '@/lib/kots/data'
 import { listMenuItems } from '@/lib/menu/data'
 import { KitchenQueue, type KotTicket } from '@/components/kitchen/KitchenQueue'
+import Link from 'next/link'
+import { PrintAlertBanner } from '@/components/kitchen/PrintAlertBanner'
+import { getPrintAlert } from '@/lib/printing/queue'
 import { KdsBoard } from '@/components/kitchen/KdsBoard'
 import { KdsSettings } from '@/components/kitchen/KdsSettings'
 import { getKdsBoard } from '@/lib/kots/kds-data'
@@ -30,6 +33,21 @@ export default async function KitchenPage({
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
+  // Network printing (M19 #4): a banner whenever paper is not coming out, and a
+  // way into printer setup. Null/absent for tenants without the module or printers.
+  const printing = ctx.tenant.industry === 'restaurant' && (await hasEntitlement(ctx, 'module.printing'))
+  const printAlert = printing ? await getPrintAlert(ctx) : null
+  const printHeader = printing && (
+    <>
+      <div className="mt-1 flex items-center gap-4 text-sm">
+        <Link href="/kitchen/printers" className="font-medium text-primary hover:underline">
+          Printers &amp; print queue
+        </Link>
+      </div>
+      <PrintAlertBanner alert={printAlert} />
+    </>
+  )
+
   // The KDS needs all three: a restaurant tenant, a plan that includes it, and
   // the tenant's own opt-in. Anything less renders the unchanged ticket list.
   const kdsEligible = ctx.tenant.industry === 'restaurant' && (await hasEntitlement(ctx, 'module.kitchen_display'))
@@ -49,6 +67,7 @@ export default async function KitchenPage({
     return (
       <div className="mx-auto max-w-[110rem] px-4 py-6 sm:px-6 lg:px-8">
         <h1 className="text-2xl font-semibold">Kitchen</h1>
+        {printHeader}
         <KdsBoard
           board={board}
           canBump={canManageKitchen(ctx.role)}
@@ -109,6 +128,7 @@ export default async function KitchenPage({
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold">Kitchen</h1>
+      {printHeader}
       <p className="mt-1 text-sm text-muted-foreground">
         Active tickets — this screen updates itself every few seconds.
       </p>

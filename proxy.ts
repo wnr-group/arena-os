@@ -93,6 +93,9 @@ export function proxy(request: NextRequest) {
   // authenticate with a bearer CRON_SECRET inside the route (app/api/cron/*),
   // which refuses to run at all when the secret is unset.
   const isCron = pathname.startsWith('/api/cron/')
+  // Network printers (Star CloudPRNT) poll with no cookie; the printer id +
+  // secret in the path authenticate them inside the route (app/api/cloudprnt).
+  const isCloudPrint = pathname.startsWith('/api/cloudprnt/')
 
   // ── customer gate ─────────────────────────────────────────────────────────
   // Checked BEFORE the staff gate, and covering the /account tree exclusively.
@@ -138,6 +141,7 @@ export function proxy(request: NextRequest) {
     !isPublicRoute &&
     !isWebhook &&
     !isCron &&
+    !isCloudPrint &&
     !isPortalRoute
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()

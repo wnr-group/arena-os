@@ -16,6 +16,7 @@ import {
   type KdsResult,
 } from '@/lib/kots/kds'
 import { requireEntitlement, EntitlementError } from '@/lib/platform/entitlement-guard'
+import { enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
 import { sendOrderReadyNotification } from '@/lib/notifications/service'
 
 type Result = { error?: string }
@@ -102,7 +103,11 @@ export async function fireCourse(orderId: string, course: number): Promise<Resul
     if (!canFireCourse(ctx.role)) throw new AuthError('You are not allowed to fire courses.')
     if (ctx.tenant.industry !== 'restaurant') throw new AuthError('Course firing is for restaurant venues.')
     await requireEntitlement(ctx, KDS_MODULE)
-    await withUser(ctx.user.id, (tx) => fireCourseCore(tx, orderId, course))
+    await withUser(ctx.user.id, async (tx) => {
+      const lineIds = await fireCourseCore(tx, orderId, course)
+      // Kitchen paper for exactly the lines just fired (no-op without a printer).
+      await enqueueKitchenTicketsForOrderCore(tx, ctx.tenant.id, orderId, 'fire', ctx.membershipId, lineIds)
+    })
     revalidatePath('/kitchen')
     revalidatePath('/bookings')
     revalidatePath('/floor')
