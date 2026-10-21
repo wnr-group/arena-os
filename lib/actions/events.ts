@@ -380,7 +380,7 @@ export async function deleteEvent(eventId: string): Promise<Result> {
     // Best-effort, after the row is gone: deleteImage never throws, and an
     // orphaned object is cheaper than a failed delete. Same order lib/actions
     // /menu.ts uses.
-    await deleteImage(bannerUrl)
+    await deleteImage(bannerUrl, ctx.tenant.id)
 
     revalidateEventPaths()
     return {}

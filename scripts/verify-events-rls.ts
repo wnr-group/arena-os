@@ -418,9 +418,9 @@ async function main() {
       check('uploadImage returns a URL', typeof url === 'string' && url.length > 0)
       check("…under the tenant's events prefix", url.includes(`tenants/${A.tenantId}/events/`))
       check("…with a random key, not the caller's filename", !url.endsWith('banner.png'))
-      check('…recognised by the deletion guard', objectKeyFromUrl(url) !== null)
+      check('…recognised by the deletion guard', objectKeyFromUrl(url, A.tenantId) !== null)
       const { deleteObject } = await import('../lib/storage/s3')
-      await deleteObject(url)
+      await deleteObject(url, A.tenantId)
       check('…and is deletable (cleanup)', true)
     } catch (e) {
       check(`banner upload against real S3 (${e instanceof Error ? e.message : 'failed'})`, false)
