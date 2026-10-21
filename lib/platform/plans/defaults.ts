@@ -54,6 +54,7 @@ export const KNOWN_ENTITLEMENT_KEYS = [
   'module.expenses',
   'module.reports',
   'module.events',
+  'module.kitchen_display',
 ] as const
 
 export const DEFAULT_PLANS: readonly PlanSeed[] = [
@@ -69,6 +70,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.expenses': false,
       'module.reports': false,
       'module.events': false,
+      'module.kitchen_display': false,
     },
   },
   {
@@ -85,6 +87,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.expenses': true,
       'module.reports': true,
       'module.events': true,
+      'module.kitchen_display': true,
     },
   },
   {
@@ -102,6 +105,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.expenses': true,
       'module.reports': true,
       'module.events': true,
+      'module.kitchen_display': true,
     },
   },
 ] as const

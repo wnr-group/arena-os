@@ -33,6 +33,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { reconcileKotAfterLineChange } from '@/lib/kots/kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -840,6 +841,10 @@ async function applyVoidDecision(
         .set({ status: 'cancelled' })
         .where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
       await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+    } else {
+      // KDS tenants: the voided line may have been the only one still
+      // outstanding, which makes the ticket done (no-op without the KDS).
+      await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
     }
   }
 
@@ -952,6 +957,8 @@ export async function removeOrderItemCore(
   if (!somethingLeft) {
     await tx.update(orders).set({ status: 'cancelled' }).where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
     await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+  } else {
+    await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
   }
 
   await writeAudit(tx, actor, {

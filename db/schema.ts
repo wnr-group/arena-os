@@ -1192,6 +1192,31 @@ export const kots = pgTable(
   ],
 )
 
+// ── kot_items (migration 0146) ───────────────────────────────────────────────
+// Sparse item-level kitchen state: a row = this order line was bumped (cooked);
+// no row = still outstanding. Written only by the KDS (lib/kots/kds.ts).
+export const kotItems = pgTable(
+  'kot_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    kotId: uuid('kot_id')
+      .notNull()
+      .references(() => kots.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id')
+      .notNull()
+      .references(() => orderItems.id, { onDelete: 'cascade' }),
+    bumpedAt: timestamp('bumped_at', { withTimezone: true }).notNull().defaultNow(),
+    bumpedBy: uuid('bumped_by').references(() => memberships.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    unique('kot_items_order_item_key').on(t.orderItemId),
+    index('idx_kot_items_kot').on(t.tenantId, t.kotId),
+  ],
+)
+
 // ── notifications (migration 0061) ───────────────────────────────────────────
 // A minimal outbox, forward-compatible with the roadmap's eventual M3-C
 // design (notification_settings + notifications + retry) — see
@@ -1704,6 +1729,10 @@ export const orderSettings = pgTable('order_settings', {
     .primaryKey()
     .references(() => tenants.id, { onDelete: 'cascade' }),
   autoAcceptOnlineOrders: boolean('auto_accept_online_orders').notNull().default(false),
+  // Kitchen Display System opt-in + timer colour thresholds (migration 0146).
+  kdsEnabled: boolean('kds_enabled').notNull().default(false),
+  kdsWarnMinutes: integer('kds_warn_minutes').notNull().default(8),
+  kdsLateMinutes: integer('kds_late_minutes').notNull().default(15),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

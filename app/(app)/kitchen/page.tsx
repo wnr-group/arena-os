@@ -5,6 +5,12 @@ import { branches } from '@/db/schema'
 import { listActiveKots } from '@/lib/kots/data'
 import { listMenuItems } from '@/lib/menu/data'
 import { KitchenQueue, type KotTicket } from '@/components/kitchen/KitchenQueue'
+import { KdsBoard } from '@/components/kitchen/KdsBoard'
+import { KdsSettings } from '@/components/kitchen/KdsSettings'
+import { getKdsBoard } from '@/lib/kots/kds-data'
+import { getKdsSettingsCore } from '@/lib/kots/kds'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
+import { canManageKitchen, isManager } from '@/lib/auth/roles'
 
 export default async function KitchenPage() {
   const ctx = await getActiveContext()
@@ -18,6 +24,30 @@ export default async function KitchenPage() {
       .limit(1),
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
+
+  // The KDS needs all three: a restaurant tenant, a plan that includes it, and
+  // the tenant's own opt-in. Anything less renders the unchanged ticket list.
+  const kdsEligible = ctx.tenant.industry === 'restaurant' && (await hasEntitlement(ctx, 'module.kitchen_display'))
+  const kdsSettings = kdsEligible
+    ? await withUser(ctx.user.id, (tx) => getKdsSettingsCore(tx, ctx.tenant.id))
+    : null
+
+  if (kdsEligible && kdsSettings?.enabled) {
+    const [board, menuItemRows] = await Promise.all([getKdsBoard(ctx, branch.id), listMenuItems(ctx)])
+    return (
+      <div className="mx-auto max-w-[110rem] px-4 py-6 sm:px-6 lg:px-8">
+        <h1 className="text-2xl font-semibold">Kitchen</h1>
+        <KdsBoard
+          board={board}
+          canBump={canManageKitchen(ctx.role)}
+          menuItems={menuItemRows
+            .filter((i) => i.status !== 'hidden')
+            .map((i) => ({ id: i.id, name: i.name, categoryName: i.categoryName, status: i.status as 'available' | 'out_of_stock' }))}
+        />
+        {isManager(ctx.role) && <KdsSettings {...kdsSettings} />}
+      </div>
+    )
+  }
 
   const [rows, menuItemRows] = await Promise.all([listActiveKots(ctx, branch.id), listMenuItems(ctx)])
 
@@ -69,6 +99,7 @@ export default async function KitchenPage() {
         Active tickets — this screen updates itself every few seconds.
       </p>
       <KitchenQueue tickets={[...ticketsById.values()]} menuItems={eightySixItems} />
+      {kdsSettings && isManager(ctx.role) && <KdsSettings {...kdsSettings} />}
     </div>
   )
 }
