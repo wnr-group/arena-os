@@ -18,12 +18,23 @@ export function PrintAlertBanner({ alert }: { alert: PrintAlert | null }) {
     return null
   }
   return (
-    <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-red-600/50 bg-red-600/10 px-4 py-3 text-sm">
-      <AlertTriangle size={18} className="shrink-0 text-red-600" />
-      <p className="min-w-0 flex-1 font-medium text-red-700">
-        Printing problem: {bits.join(' · ')}. Tickets may not have printed — use the browser print link on a ticket if needed.
-      </p>
-      <Link href="/kitchen/printers" className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 font-semibold text-white">
+    <div
+      role="alert"
+      className="mt-4 flex flex-wrap items-center gap-4 rounded-2xl border border-red-500/30 border-l-4 border-l-red-600 bg-red-500/5 px-4 py-3.5 text-sm shadow-sm"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-600/10">
+        <AlertTriangle size={18} className="text-red-600" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-red-700 dark:text-red-400">Printing problem: {bits.join(' · ')}</p>
+        <p className="mt-0.5 text-muted-foreground">
+          Tickets may not have printed — use the browser print link on a ticket if needed.
+        </p>
+      </div>
+      <Link
+        href="/kitchen/printers"
+        className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-red-600 px-4 font-semibold text-white shadow-sm transition hover:bg-red-700"
+      >
         <Printer size={15} /> Check printers
       </Link>
     </div>

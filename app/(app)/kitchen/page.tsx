@@ -6,6 +6,7 @@ import { listActiveKots } from '@/lib/kots/data'
 import { listMenuItems } from '@/lib/menu/data'
 import { KitchenQueue, type KotTicket } from '@/components/kitchen/KitchenQueue'
 import Link from 'next/link'
+import { Printer } from 'lucide-react'
 import { PrintAlertBanner } from '@/components/kitchen/PrintAlertBanner'
 import { getPrintAlert } from '@/lib/printing/queue'
 import { KdsBoard } from '@/components/kitchen/KdsBoard'
@@ -39,9 +40,12 @@ export default async function KitchenPage({
   const printAlert = printing ? await getPrintAlert(ctx) : null
   const printHeader = printing && (
     <>
-      <div className="mt-1 flex items-center gap-4 text-sm">
-        <Link href="/kitchen/printers" className="font-medium text-primary hover:underline">
-          Printers &amp; print queue
+      <div className="mt-2 flex items-center gap-4 text-sm">
+        <Link
+          href="/kitchen/printers"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3.5 py-1.5 font-medium text-foreground shadow-sm transition hover:border-primary/40 hover:text-primary"
+        >
+          <Printer size={14} /> Printers &amp; print queue
         </Link>
       </div>
       <PrintAlertBanner alert={printAlert} />
@@ -66,7 +70,7 @@ export default async function KitchenPage({
     const [board, menuItemRows] = await Promise.all([getKdsBoard(ctx, branch.id, scope), listMenuItems(ctx)])
     return (
       <div className="mx-auto max-w-[110rem] px-4 py-6 sm:px-6 lg:px-8">
-        <h1 className="text-2xl font-semibold">Kitchen</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Kitchen</h1>
         {printHeader}
         <KdsBoard
           board={board}
