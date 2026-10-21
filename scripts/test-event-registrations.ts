@@ -719,6 +719,80 @@ async function main() {
     check(`…with the money recorded (${closed})`, closedRow.paid_amount === '500.00')
   }
 
+  // ── a capture for a cancelled entry that cannot be resurrected ────────────
+  {
+    // Hold lapsed, customer registered again, then the OLD order was paid. The
+    // flip to 'registered' would violate idx_event_registrations_active and
+    // roll the webhook back forever; it must be a recorded refund instead.
+    const ev = await makeEvent(A, 'Re-register Cup', { capacity: 5, fee: '500.00' })
+    const cc = await makeCustomer(A.tenantId, 'Re Register')
+    const first = await claimEventRegistration(cc, ev, null)
+    if (!first.ok) throw new Error('cannot continue')
+    const orderId = `order_${RUN}_rereg`
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,event_registration_id,purpose,gateway,
+                                    gateway_order_id,amount,currency,status)
+       values ($1,$2,$3,'event_registration','razorpay',$4,'500.00','INR','pending')`,
+      [A.tenantId, A.branchId, first.registrationId, orderId],
+    )
+    await owner.query(
+      `update event_registrations set status='cancelled', cancelled_at=now(),
+              payment_hold_expires_at=null where id=$1`,
+      [first.registrationId],
+    )
+    const second = await claimEventRegistration(cc, ev, null)
+    if (!second.ok) throw new Error('cannot continue')
+    const res = await applyVerifiedPaymentWebhook({
+      verifiedTenantId: A.tenantId,
+      eventType: 'payment.captured',
+      eventId: `evt_${RUN}_rereg`,
+      payment: payment({ id: `pay_${RUN}_rereg`, order_id: orderId }) as never,
+    })
+    check(
+      'paying a superseded order is a refund, not a webhook crash',
+      res.kind === 'processed' &&
+        res.purpose === 'event_registration' &&
+        res.registrationOutcome === 'unfulfillable' &&
+        res.refundRequired === true,
+      res,
+    )
+    const oldRow = await reg(first.registrationId)
+    check('…the old entry stays cancelled, refund flagged', oldRow.status === 'cancelled' && oldRow.refund_required === true)
+    check('…the money is recorded against it', oldRow.paid_amount === '500.00')
+    check('…and the new entry is untouched', (await reg(second.registrationId)).status === 'pending_payment')
+
+    // Cancelled team entry: the team is withdrawn, so a late payment must not
+    // seat the entrant on a dead team.
+    const tev = await makeEvent(A, 'Dead Team Cup', { capacity: 5, fee: '500.00', mode: 'team', teamSize: 3 })
+    const tc = await makeCustomer(A.tenantId, 'Dead Captain')
+    const tr = await claimEventRegistration(tc, tev, 'Ghosts')
+    if (!tr.ok) throw new Error('cannot continue')
+    const tOrder = `order_${RUN}_deadteam`
+    await owner.query(
+      `insert into payment_intents (tenant_id,branch_id,event_registration_id,purpose,gateway,
+                                    gateway_order_id,amount,currency,status)
+       values ($1,$2,$3,'event_registration','razorpay',$4,'500.00','INR','pending')`,
+      [A.tenantId, A.branchId, tr.registrationId, tOrder],
+    )
+    await cancelOwnEventRegistration(tc, tr.registrationId)
+    const tres = await applyVerifiedPaymentWebhook({
+      verifiedTenantId: A.tenantId,
+      eventType: 'payment.captured',
+      eventId: `evt_${RUN}_deadteam`,
+      payment: payment({ id: `pay_${RUN}_deadteam`, order_id: tOrder }) as never,
+    })
+    check(
+      'a capture for a withdrawn team entry is a refund',
+      tres.kind === 'processed' &&
+        tres.purpose === 'event_registration' &&
+        tres.registrationOutcome === 'unfulfillable' &&
+        tres.refundRequired === true,
+      tres,
+    )
+    const tRow = await reg(tr.registrationId)
+    check('…the entry stays cancelled', tRow.status === 'cancelled' && tRow.refund_required === true, tRow.status)
+  }
+
   // ══ 10. PAID WAITLIST PROMOTION ════════════════════════════════════════════
   console.log('\n── promotion on a paid event asks for payment, it does not gift a place ──')
 
