@@ -136,6 +136,8 @@ const NAV: NavItem[] = [
       { href: '/menu/items', label: 'Items', icon: ClipboardList },
       // Modifier groups (M17 #8) — restaurant tenants only, same scoping as
       // Tables/Void-Comp Requests below.
+      // Stock + recipes (M10) — manager-only; the page checks the plan.
+      { href: '/inventory', label: 'Inventory', icon: Boxes },
       { href: '/menu/modifiers', label: 'Modifiers', icon: Layers, industries: ['restaurant'] },
     ],
   },

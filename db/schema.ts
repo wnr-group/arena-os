@@ -3199,3 +3199,65 @@ export const floorSections = pgTable(
     index('idx_floor_sections_branch').on(t.tenantId, t.branchId, t.sortOrder),
   ],
 )
+
+// M10 (0153): inventory. stock_movements is the append-only ledger; `quantity`
+// on stock_items is kept equal to its sum by a trigger (arena_app cannot write it).
+export const stockItems = pgTable(
+  'stock_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    unit: text('unit').notNull().default('unit'),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull().default('0'),
+    reorderLevel: numeric('reorder_level', { precision: 14, scale: 3 }).notNull().default('0'),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('stock_items_tenant_id_key').on(t.tenantId, t.id),
+    unique('stock_items_branch_name_key').on(t.branchId, t.name),
+    index('idx_stock_items_branch').on(t.tenantId, t.branchId),
+  ],
+)
+
+export const stockMovements = pgTable(
+  'stock_movements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    stockItemId: uuid('stock_item_id').notNull(),
+    delta: numeric('delta', { precision: 14, scale: 3 }).notNull(),
+    reason: text('reason'),
+    /** opening | purchase | adjustment | wastage | order */
+    sourceType: text('source_type').notNull().default('adjustment'),
+    sourceId: uuid('source_id'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_stock_movements_item').on(t.tenantId, t.stockItemId, t.createdAt)],
+)
+
+// M10 (0154): optional recipe — one portion of a menu item consumes `quantity` of a stock item.
+export const menuItemIngredients = pgTable(
+  'menu_item_ingredients',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    menuItemId: uuid('menu_item_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('menu_item_ingredients_item_stock_key').on(t.menuItemId, t.stockItemId)],
+)

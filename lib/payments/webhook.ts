@@ -8,6 +8,7 @@ import { issueInvoiceForOrder } from '@/lib/billing/invoice'
 import { paise, recordVerifiedGatewayPayment } from '@/lib/billing/payments'
 import { completeBookingIfFullySettled } from '@/lib/booking/service'
 import { handleLatePayment } from '@/lib/booking/payment-hold'
+import { deductStockForOrders } from '@/lib/inventory/deduct'
 import { applyPaidDepositsToInvoice, backfillDepositOrderIds } from './deposit-settlement'
 import type { RazorpayPaymentEntity } from './razorpay-webhook'
 
@@ -488,6 +489,9 @@ export async function applyVerifiedPaymentWebhook(
       .update(orders)
       .set({ acceptanceStatus: 'accepted', status: 'billed' })
       .where(and(eq(orders.id, order!.id), eq(orders.tenantId, verifiedTenantId)))
+    // M10: an online order is a sale the moment it is paid — deduct its linked
+    // ingredients (once per order, never failing the webhook).
+    await deductStockForOrders(tx, verifiedTenantId, [order!.id])
 
     return {
       kind: 'processed',

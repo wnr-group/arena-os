@@ -36,6 +36,7 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
+import { deductStockForOrders } from '@/lib/inventory/deduct'
 import {
   computeServiceCharge,
   mergeTaxBreakup,
@@ -1205,6 +1206,9 @@ export async function issueInvoiceForBooking(
           inArray(orders.id, billedOrderIds),
         ),
       )
+    // M10: deduct linked ingredients for the food just billed — once per order
+    // (idempotent), never blocking the bill. No recipe, no movement.
+    await deductStockForOrders(tx, tenant.id, billedOrderIds)
   }
 
   // ── 7b. void anything still unreviewed ────────────────────────────────────
