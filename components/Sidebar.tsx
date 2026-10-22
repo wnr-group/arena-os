@@ -181,6 +181,8 @@ const NAV: NavItem[] = [
     children: [
       { href: '/reports', label: 'Revenue & Bookings', icon: TrendingUp, can: isManager },
       { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
+      // Turnover, spend per cover, dayparts, menu-mix, void/comp, servers (M20) — restaurants only.
+      { href: '/reports/restaurant', label: 'Restaurant', icon: Armchair, can: isManager, industries: ['restaurant'] },
       // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
       // and getPnlReport() throws for one; this entry only decides visibility.
       { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },
