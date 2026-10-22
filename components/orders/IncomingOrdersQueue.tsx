@@ -145,8 +145,8 @@ export function IncomingOrdersQueue({
             return (
               <div key={order.orderId} className="rounded-xl border border-border bg-card p-4 shadow-sm">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-base font-semibold">
-                    <ShoppingBag size={15} className="text-primary" /> {order.orderNumber}
+                  <span className="inline-flex flex-wrap items-center gap-1.5 text-base font-semibold">
+                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><ShoppingBag size={15} className="text-primary" /> {order.orderNumber}</span>
                     <OrderTypeBadge orderType={order.orderType} contactName={order.contactName} pickupAt={order.pickupAt} />
                   </span>
                   <span className="text-sm font-bold text-primary">{formatMoney(total, currency)}</span>
@@ -218,8 +218,8 @@ export function IncomingOrdersQueue({
                   className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-4 shadow-sm"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-base font-semibold">
-                      <ShoppingBag size={15} className="text-amber-600 dark:text-amber-400" /> {order.orderNumber}
+                    <span className="inline-flex flex-wrap items-center gap-1.5 text-base font-semibold">
+                      <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><ShoppingBag size={15} className="text-amber-600 dark:text-amber-400" /> {order.orderNumber}</span>
                       <OrderTypeBadge orderType={order.orderType} contactName={order.contactName} pickupAt={order.pickupAt} />
                     </span>
                     <span className="text-sm font-bold text-amber-700 dark:text-amber-400">

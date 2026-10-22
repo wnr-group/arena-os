@@ -84,7 +84,9 @@ export function ExpoBoard({ board, canServe }: { board: KdsBoard; canServe: bool
   return (
     <div className="mt-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground">{tickets.length} tables in the kitchen · live</p>
+        <p className="text-sm text-muted-foreground">
+          {tickets.length} {tickets.some((t) => t.orderType && t.orderType !== 'dine_in') ? (tickets.length === 1 ? 'order' : 'orders') : tickets.length === 1 ? 'table' : 'tables'} in the kitchen · live
+        </p>
         <Link href="/kitchen" className="text-sm font-medium text-primary hover:underline">
           ← Station screens
         </Link>
