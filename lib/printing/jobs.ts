@@ -113,6 +113,8 @@ export async function enqueueKitchenTicketsCore(
       orderNumber: orders.orderNumber,
       channel: orders.channel,
       tableName: resources.name,
+      orderType: orders.orderType,
+      contactName: orders.contactName,
       tz: tenants.timezone,
     })
     .from(kots)
@@ -187,7 +189,10 @@ export async function enqueueKitchenTicketsCore(
       {
         kotNumber: head.kotNumber,
         orderNumber: head.orderNumber,
-        tableName: head.tableName,
+        // M20: a takeaway / delivery has no table, so the big header line says what it is.
+        tableName:
+          head.tableName ??
+          (head.orderType === 'dine_in' ? null : `${head.orderType === 'delivery' ? 'DELIVERY' : 'TAKEAWAY'}${head.contactName ? ` ${head.contactName}` : ''}`),
         stationName: b.stationName,
         channel: head.channel,
         time: timeIn(head.tz),

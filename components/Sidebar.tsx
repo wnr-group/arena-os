@@ -18,6 +18,7 @@ import {
   Users,
   UtensilsCrossed,
   HandCoins,
+  ShoppingBag,
   ChevronDown,
   Contact,
   ChefHat,
@@ -111,8 +112,11 @@ const NAV: NavItem[] = [
   // Walk-in waitlist (M20) — same roles; the page checks the plan + opt-in.
   // Floor sections + server assignment (M20) — manager-only setup; the page checks the plan.
   { href: '/settings/sections', label: 'Floor sections', icon: Layers, can: isManager, industries: ['restaurant'] },
+  { href: '/settings/takeaway-delivery', label: 'Takeaway settings', icon: ShoppingBag, can: isManager, industries: ['restaurant'] },
   // How tips are shared + the monthly payout that payroll pays (M20) — manager-only; the page checks the plan.
   { href: '/settings/tips', label: 'Tip payouts', icon: HandCoins, can: isManager, industries: ['restaurant'] },
+  // Takeaway & delivery orders — no table (M20). Same roles as walk-ins; the page checks the plan + opt-in.
+  { href: '/orders/takeaway', label: 'Takeaway & Delivery', icon: ShoppingBag, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/waitlist', label: 'Waitlist', icon: ListOrdered, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },

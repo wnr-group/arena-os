@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, ne, notInArray, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { withUser } from '@/db'
 import { kots, orders, orderItems, orderItemModifiers, bookings, resources } from '@/db/schema'
@@ -48,6 +48,9 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
         orderNumber: orders.orderNumber,
         channel: orders.channel,
         stationName: resources.name,
+        orderType: orders.orderType,
+        contactName: orders.contactName,
+        pickupAt: orders.pickupAt,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
         qty: orderItems.qty,
@@ -64,6 +67,10 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
           eq(kots.branchId, branchId),
           notInArray(kots.status, ['served', 'cancelled']),
           eq(orders.acceptanceStatus, 'accepted'),
+          // M20: a takeaway / delivery order leaves the kitchen's screens once it is
+          // handed over or cancelled (the ticket itself may only be closed by kitchen
+          // roles, so the screens don't depend on it). Dine-in is never filtered here.
+          or(eq(orders.orderType, 'dine_in'), and(ne(orders.status, 'cancelled'), isNull(orders.handoverStatus))),
         ),
       )
       .orderBy(asc(kots.createdAt), asc(orderItems.id))

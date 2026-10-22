@@ -7,6 +7,7 @@ import { Check, CheckCircle2, Hourglass, Loader2, Pause } from 'lucide-react'
 import { updateKotStatus } from '@/lib/actions/kots'
 import type { KdsBoard, KdsItem, KdsTicket } from '@/lib/kots/kds-data'
 import { usePolling } from './usePolling'
+import { OrderTypeBadge } from '@/components/orders/OrderTypeBadge'
 
 const POLL_MS = 4000
 
@@ -106,6 +107,7 @@ export function ExpoBoard({ board, canServe }: { board: KdsBoard; canServe: bool
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-lg font-bold">
                     {t.tableName ?? t.orderNumber} <span className="text-sm font-medium text-muted-foreground">{t.kotNumber}</span>
+                    <OrderTypeBadge orderType={t.orderType} contactName={t.contactName} pickupAt={t.pickupAt} className="ml-2 align-middle" />
                   </span>
                   <span className="rounded-md bg-muted px-2 py-0.5 text-sm font-bold tabular-nums">{mins}m</span>
                 </div>

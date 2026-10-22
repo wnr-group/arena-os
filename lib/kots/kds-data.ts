@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, asc, eq, inArray, isNull, ne } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, ne, or } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { kitchenStations, kots, kotItems, orders, orderItems, orderItemModifiers, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
@@ -36,6 +36,11 @@ export type KdsTicket = {
   orderNumber: string
   channel: 'staff' | 'online'
   tableName: string | null
+  /** M20 (0157): dine_in for every table order; takeaway / delivery have no table. */
+  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  contactName: string | null
+  /** ISO — the time a takeaway customer asked for. */
+  pickupAt: string | null
   /** Fired lines only — what the cook sees. */
   items: KdsItem[]
   /** Held lines, grouped by course, waiting for a Fire. */
@@ -96,6 +101,9 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
         orderNumber: orders.orderNumber,
         channel: orders.channel,
         tableName: resources.name,
+        orderType: orders.orderType,
+        contactName: orders.contactName,
+        pickupAt: orders.pickupAt,
         itemId: orderItems.id,
         menuItemId: orderItems.menuItemId,
         name: orderItems.itemName,
@@ -120,6 +128,10 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
           eq(kots.branchId, branchId),
           inArray(kots.status, ['pending', 'preparing', 'ready']),
           eq(orders.acceptanceStatus, 'accepted'),
+          // M20: a takeaway / delivery order leaves the kitchen's screens once it is
+          // handed over or cancelled (the ticket itself may only be closed by kitchen
+          // roles, so the screens don't depend on it). Dine-in is never filtered here.
+          or(eq(orders.orderType, 'dine_in'), and(ne(orders.status, 'cancelled'), isNull(orders.handoverStatus))),
           scope === undefined
             ? undefined
             : scope.id === null
@@ -160,6 +172,9 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
           orderNumber: r.orderNumber,
           channel: r.channel,
           tableName: r.tableName,
+          orderType: r.orderType as KdsTicket['orderType'],
+          contactName: r.contactName,
+          pickupAt: r.pickupAt ? r.pickupAt.toISOString() : null,
           items: [],
           held: [],
         }

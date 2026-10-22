@@ -6,6 +6,7 @@ import { Clock, MapPin, Check, X, Loader2, ShoppingBag, CreditCard } from 'lucid
 import { acceptOnlineOrder, rejectOnlineOrder } from '@/lib/actions/orders'
 import { saveAutoAcceptOnlineOrders } from '@/lib/actions/order-settings'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { OrderTypeBadge } from '@/components/orders/OrderTypeBadge'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { formatMoney } from '@/lib/format'
 
@@ -21,6 +22,10 @@ export type IncomingOrder = {
   orderNumber: string
   createdAt: string
   stationName: string | null
+  /** M20: takeaway / delivery have no table; dine-in shows no badge. */
+  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  contactName: string | null
+  pickupAt: string | null
   items: IncomingOrderItem[]
 }
 
@@ -142,6 +147,7 @@ export function IncomingOrdersQueue({
                 <div className="flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 text-base font-semibold">
                     <ShoppingBag size={15} className="text-primary" /> {order.orderNumber}
+                    <OrderTypeBadge orderType={order.orderType} contactName={order.contactName} pickupAt={order.pickupAt} />
                   </span>
                   <span className="text-sm font-bold text-primary">{formatMoney(total, currency)}</span>
                 </div>
@@ -214,6 +220,7 @@ export function IncomingOrdersQueue({
                   <div className="flex items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-1.5 text-base font-semibold">
                       <ShoppingBag size={15} className="text-amber-600 dark:text-amber-400" /> {order.orderNumber}
+                      <OrderTypeBadge orderType={order.orderType} contactName={order.contactName} pickupAt={order.pickupAt} />
                     </span>
                     <span className="text-sm font-bold text-amber-700 dark:text-amber-400">
                       {formatMoney(total, currency)}

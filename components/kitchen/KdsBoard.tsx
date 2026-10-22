@@ -9,6 +9,7 @@ import { updateKotStatus } from '@/lib/actions/kots'
 import type { KdsBoard as KdsBoardData, KdsTicket } from '@/lib/kots/kds-data'
 import { usePolling } from './usePolling'
 import { EightySixPanel, type EightySixItem } from './EightySixPanel'
+import { OrderTypeBadge } from '@/components/orders/OrderTypeBadge'
 
 /** Adaptive polling: fast while the screen is visible, none while the tab is
  *  hidden (a screen that's asleep shouldn't hit the database), and an
@@ -311,6 +312,7 @@ function TicketCard({
             <MapPin size={11} /> {ticket.tableName}
           </span>
         )}
+        <OrderTypeBadge orderType={ticket.orderType} contactName={ticket.contactName} pickupAt={ticket.pickupAt} />
         <Link
           href={`/kitchen/${ticket.kotId}/print`}
           aria-label={`Print ticket ${ticket.kotNumber}`}

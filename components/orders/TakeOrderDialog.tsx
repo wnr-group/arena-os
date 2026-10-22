@@ -80,6 +80,8 @@ export function TakeOrderDialog({
   timeZone,
   canToggle86,
   seatCount,
+  placeOrder,
+  headerNote,
   onClose,
   onCreated,
 }: {
@@ -105,6 +107,21 @@ export function TakeOrderDialog({
    *  hides the picker entirely: every non-restaurant caller of this dialog
    *  passes nothing, so seat tagging never appears outside a table session. */
   seatCount?: number | null
+  /** M20: place the order some other way than createOrder (a takeaway / delivery
+   *  order, which has no booking). Receives the same items + the attempt's
+   *  idempotency key. Absent = the existing booking/walk-in behaviour. */
+  placeOrder?: (
+    items: {
+      menuItemId: string
+      qty: number
+      specialInstructions?: string
+      modifierOptionIds?: string[]
+      seatNo?: number
+    }[],
+    idempotencyKey: string,
+  ) => Promise<{ error?: string; orderNumber?: string }>
+  /** Replaces the "Attaching to booking…" line under the title. */
+  headerNote?: string
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -298,19 +315,17 @@ export function TakeOrderDialog({
       return
     }
     start(async () => {
-      const r = await createOrder({
-        branchId,
-        bookingId,
-        idempotencyKey,
-        items: cart.map((l) => ({
-          menuItemId: l.menuItemId,
-          qty: l.qty,
-          specialInstructions: l.specialInstructions || undefined,
-          modifierOptionIds: l.modifiers.map((m) => m.optionId),
-          seatNo: l.seatNo ?? undefined,
-          ...(courseNames ? { course: l.course, hold: l.hold } : {}),
-        })),
-      })
+      const lines = cart.map((l) => ({
+        menuItemId: l.menuItemId,
+        qty: l.qty,
+        specialInstructions: l.specialInstructions || undefined,
+        modifierOptionIds: l.modifiers.map((m) => m.optionId),
+        seatNo: l.seatNo ?? undefined,
+        ...(courseNames ? { course: l.course, hold: l.hold } : {}),
+      }))
+      const r = placeOrder
+        ? await placeOrder(lines, idempotencyKey)
+        : await createOrder({ branchId, bookingId, idempotencyKey, items: lines })
       if (r.error) setError(r.error)
       else onCreated(r.orderNumber ?? '')
     })
@@ -483,7 +498,7 @@ export function TakeOrderDialog({
             <div className="min-w-0">
               <h2 className="text-lg font-semibold sm:text-xl">Take order</h2>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">
-                {bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.'}
+                {headerNote ?? (bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.')}
               </p>
             </div>
             <button

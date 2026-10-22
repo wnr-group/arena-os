@@ -291,6 +291,12 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
               ? 'accepted'
               : 'pending',
           idempotencyKey: v.idempotencyKey,
+          // M20: an order with no table and no booking is a pickup — stamp it a
+          // takeaway so the kitchen and the host can see what it is.
+          typed:
+            !resourceId && !bookingId
+              ? { orderType: 'takeaway' as const, contactName: v.customerName?.trim() || customer.name || 'Customer', contactPhone: v.customerPhone }
+              : undefined,
           items: v.items,
         },
       )

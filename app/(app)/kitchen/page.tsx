@@ -102,6 +102,9 @@ export default async function KitchenPage({
         orderNumber: row.orderNumber,
         channel: row.channel,
         stationName: row.stationName,
+        orderType: row.orderType,
+        contactName: row.contactName,
+        pickupAt: row.pickupAt ? row.pickupAt.toISOString() : null,
         items: [],
       }
       ticketsById.set(row.kotId, ticket)

@@ -487,7 +487,7 @@ export async function applyVerifiedPaymentWebhook(
     // issueInvoiceForBooking applies to a booking's food orders).
     await tx
       .update(orders)
-      .set({ acceptanceStatus: 'accepted', status: 'billed' })
+      .set({ acceptanceStatus: 'accepted', status: 'billed', invoiceId: issued.invoiceId })
       .where(and(eq(orders.id, order!.id), eq(orders.tenantId, verifiedTenantId)))
     // M10: an online order is a sale the moment it is paid — deduct its linked
     // ingredients (once per order, never failing the webhook).

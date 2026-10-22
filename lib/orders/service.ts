@@ -96,6 +96,21 @@ export type CreateOrderInput = {
   // or an impatient double-tap on "Place order"), but changes for every new
   // attempt. See the early return below.
   idempotencyKey?: string
+  /**
+   * M20 (0157): a takeaway or delivery order — no table, no booking. Absent =
+   * a dine-in order, byte-for-byte the pre-M20 behaviour. Validated by the
+   * callers (lib/orders/typed.ts); the DB's CHECK constraints are the backstop.
+   */
+  typed?: {
+    orderType: 'takeaway' | 'delivery'
+    contactName: string
+    contactPhone?: string | null
+    pickupAt?: Date | null
+    deliveryAddress?: string | null
+    deliveryFee?: number
+    deliveryFeeTaxRate?: number
+    notes?: string | null
+  }
   items: CreateOrderItemInput[]
 }
 
@@ -389,6 +404,16 @@ export async function createOrderCore(
       resourceId: input.resourceId ?? null,
       createdBy: ctx.membershipId,
       idempotencyKey: input.idempotencyKey ?? null,
+      ...(input.typed && {
+        orderType: input.typed.orderType,
+        contactName: input.typed.contactName.trim(),
+        contactPhone: input.typed.contactPhone?.trim() || null,
+        pickupAt: input.typed.pickupAt ?? null,
+        deliveryAddress: input.typed.orderType === 'delivery' ? (input.typed.deliveryAddress?.trim() ?? null) : null,
+        deliveryFee: (input.typed.orderType === 'delivery' ? (input.typed.deliveryFee ?? 0) : 0).toFixed(2),
+        deliveryFeeTaxRate: (input.typed.orderType === 'delivery' ? (input.typed.deliveryFeeTaxRate ?? 0) : 0).toFixed(2),
+        notes: input.typed.notes?.trim() || null,
+      }),
     })
     .returning({ id: orders.id })
 

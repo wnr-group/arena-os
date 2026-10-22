@@ -1046,6 +1046,23 @@ export const orders = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    // M20 (0157): what kind of order this is. Every pre-existing and every
+    // table/booking order is 'dine_in'; takeaway and delivery have no table.
+    orderType: text('order_type').$type<'dine_in' | 'takeaway' | 'delivery'>().notNull().default('dine_in'),
+    // Post-kitchen handover only; the earlier steps are the kitchen ticket's status.
+    handoverStatus: text('handover_status').$type<'out_for_delivery' | 'collected' | 'delivered'>(),
+    contactName: text('contact_name'),
+    contactPhone: text('contact_phone'),
+    pickupAt: timestamp('pickup_at', { withTimezone: true }),
+    deliveryAddress: text('delivery_address'),
+    deliveryFee: numeric('delivery_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    deliveryFeeTaxRate: numeric('delivery_fee_tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    driverName: text('driver_name'),
+    driverPhone: text('driver_phone'),
+    handedOverAt: timestamp('handed_over_at', { withTimezone: true }),
+    /** The invoice that billed this (standalone) order. */
+    invoiceId: uuid('invoice_id'),
+    notes: text('notes'),
     // Idempotency (migration 0065, column type fixed in 0068) — a
     // client-generated key (lib/utils/idempotency-key.ts's newIdempotencyKey,
     // NOT crypto.randomUUID — see 0068 for why), reused verbatim on any retry
@@ -1837,6 +1854,11 @@ export const orderSettings = pgTable('order_settings', {
   courseNames: text('course_names').array().notNull().default(['Starters', 'Mains', 'Desserts']),
   // Station routing opt-in (migration 0148); only effective with kdsEnabled.
   stationsEnabled: boolean('stations_enabled').notNull().default(false),
+  // Takeaway / delivery (migration 0157): staff-created typed orders, default off.
+  takeawayEnabled: boolean('takeaway_enabled').notNull().default(false),
+  deliveryEnabled: boolean('delivery_enabled').notNull().default(false),
+  defaultDeliveryFee: numeric('default_delivery_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+  deliveryFeeTaxRate: numeric('delivery_fee_tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -2077,7 +2099,7 @@ export const invoiceItems = pgTable(
     // own add-on, kept distinct from 'adjustment' so reporting can separate
     // "what did we sell" from "what did we add on top".
     kind: text('kind')
-      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon'>()
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon' | 'delivery'>()
       .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),
