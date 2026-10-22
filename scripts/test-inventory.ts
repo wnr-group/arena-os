@@ -213,6 +213,14 @@ async function main() {
   const both = await as(A, 'cashier', (tx) => deductStockForOrders(tx, A.tenantId, [sale.orderId, sale.orderId]))
   check('...even when the same order is listed twice', both.movements === 0)
 
+  // lines added and billed after the first deduction are topped up, once
+  const topC0 = await qty(cheese.id)
+  await q(`update order_items set qty = qty + 1 where order_id=$1 and item_name='Pizza'`, [sale.orderId])
+  const top = await as(A, 'cashier', (tx) => deductStockForOrders(tx, A.tenantId, [sale.orderId]))
+  check('a line added after billing is deducted as a top-up (1 pizza = 0.2 cheese)', top.movements >= 1 && near(await qty(cheese.id), topC0 - 0.2))
+  const top2 = await as(A, 'cashier', (tx) => deductStockForOrders(tx, A.tenantId, [sale.orderId]))
+  check('...and the top-up is itself exactly once', top2.movements === 0 && near(await qty(cheese.id), topC0 - 0.2))
+
   // voided / comped lines
   const s2 = await sell(A, 1, [{ name: 'Pizza', qty: 1 }, { name: 'Salad', qty: 1 }])
   await q(`update order_items set void_status='voided' where order_id=$1 and item_name='Salad'`, [s2.orderId])

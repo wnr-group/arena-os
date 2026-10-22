@@ -8,18 +8,20 @@ type Db = NodePgDatabase<typeof schema>
 /**
  * Deduct stock for food orders that have just been billed (M10 / AROS-98).
  *
- * One movement per (stock item, order): the SUM over the order's lines (dish recipe AND
+ * Per (stock item, order): the SUM over the order's lines (dish recipe AND
  * the ingredients of any chosen modifier options) of
- * `sold qty × recipe quantity per portion`, source_type 'order', source_id the
- * order. Properties that matter:
+ * `sold qty × recipe quantity per portion`, minus whatever earlier movements for
+ * that order already took; a positive remainder is written as a movement,
+ * source_type 'order', source_id the order. Properties that matter:
  *
  *   * NO RECIPE, NO MOVEMENT — a menu item without menu_item_ingredients rows
  *     joins to nothing, so unlinked items (and tenants who never use
  *     inventory) cost one empty query and change nothing.
- *   * EXACTLY ONCE — uq_stock_movements_order_once (0153) is unique on
- *     (stock item, order), and the insert is ON CONFLICT DO NOTHING, so a
- *     re-run (invoice voided then re-billed, a webhook retry, a split bill)
- *     can never deduct the same sale twice. Returns only what it newly wrote.
+ *   * EXACTLY ONCE, TOP-UPS INCLUDED — only the not-yet-deducted difference is
+ *     written, under a row lock on the order, so a re-run (invoice voided then
+ *     re-billed, a webhook retry) writes nothing, while lines added and billed
+ *     later (split bill, re-bill) are deducted as their own movement. Nothing is
+ *     ever restocked automatically. Returns only what it newly wrote.
  *   * VOIDED LINES EXCLUDED, COMPED LINES INCLUDED — a voided line never left
  *     the kitchen; a comped plate was cooked and eaten.
  *   * BRANCH-SCOPED — only stock held at the order's own branch is touched.
@@ -36,9 +38,18 @@ export async function deductStockForOrders(
   tenantId: string,
   orderIds: string[],
 ): Promise<{ movements: number }> {
-  if (orderIds.length === 0) return { movements: 0 }
+  const ids = [...new Set(orderIds)].sort()
+  if (ids.length === 0) return { movements: 0 }
   try {
     return await tx.transaction(async (sp) => {
+      // Serialize concurrent deductions for the same order (sorted: no deadlocks).
+      await sp.execute(sql`
+        select id from public.orders
+         where tenant_id = ${tenantId}
+           and id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+         order by id
+           for update
+      `)
       const res = await sp.execute<{ id: string }>(sql`
         with lines as (
           -- the dish's own recipe, per portion sold
@@ -53,7 +64,7 @@ export async function deductStockForOrders(
               on mii.menu_item_id = oi.menu_item_id
              and mii.tenant_id = o.tenant_id
            where o.tenant_id = ${tenantId}
-             and o.id in (${sql.join(orderIds.map((id) => sql`${id}::uuid`), sql`, `)})
+             and o.id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
           union all
           -- plus whatever the chosen modifier options add ("extra cheese"), per portion
           select o.tenant_id, o.id, o.branch_id, moi.stock_item_id,
@@ -70,24 +81,38 @@ export async function deductStockForOrders(
               on moi.option_id = oim.modifier_option_id
              and moi.tenant_id = o.tenant_id
            where o.tenant_id = ${tenantId}
-             and o.id in (${sql.join(orderIds.map((id) => sql`${id}::uuid`), sql`, `)})
+             and o.id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+        )
+        , need as (
+          select l.tenant_id, l.stock_item_id, l.order_id, sum(l.amt) as amt
+            from lines l
+            join public.stock_items si
+              on si.id = l.stock_item_id
+             and si.tenant_id = l.tenant_id
+             and si.branch_id = l.branch_id
+             and si.active
+           group by l.tenant_id, l.stock_item_id, l.order_id
+        ),
+        done as (
+          select m.stock_item_id, m.source_id, - sum(m.delta) as amt
+            from public.stock_movements m
+           where m.tenant_id = ${tenantId}
+             and m.source_type = 'order'
+             and m.source_id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+           group by m.stock_item_id, m.source_id
         )
         insert into public.stock_movements (tenant_id, stock_item_id, delta, reason, source_type, source_id)
-        select l.tenant_id,
-               l.stock_item_id,
-               - sum(l.amt),
+        select n.tenant_id,
+               n.stock_item_id,
+               - (n.amt - coalesce(d.amt, 0)),
                'Sold',
                'order',
-               l.order_id
-          from lines l
-          join public.stock_items si
-            on si.id = l.stock_item_id
-           and si.tenant_id = l.tenant_id
-           and si.branch_id = l.branch_id
-           and si.active
-         group by l.tenant_id, l.stock_item_id, l.order_id
-        having sum(l.amt) > 0
-        on conflict (stock_item_id, source_id) where source_type = 'order' do nothing
+               n.order_id
+          from need n
+          left join done d
+            on d.stock_item_id = n.stock_item_id
+           and d.source_id = n.order_id
+         where n.amt - coalesce(d.amt, 0) > 0
         returning id
       `)
       return { movements: res.rows.length }
