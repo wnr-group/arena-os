@@ -8,6 +8,7 @@ import {
   employeeAdvances,
   employeeAdvanceRecoveries,
   payslips,
+  tipPayouts,
   type SalaryComponent,
 } from '@/db/schema'
 import { round2 } from '@/lib/billing/pricing'
@@ -204,6 +205,31 @@ export async function runPayroll(
     advancesByMember.set(a.membershipId, list)
   }
 
+  // ── finalised tips waiting to be paid for this period (M20 / AROS-181) ───
+  // Tips ride on the payslip as their own line: NOT in gross / net_pay, so wage
+  // cost, deductions and advance recovery are computed exactly as before. Only
+  // payouts finalised BEFORE this run are picked up; a payout for someone with
+  // no salary structure (skipped below) stays pending for a manual settlement.
+  const pendingTips = await tx
+    .select({ id: tipPayouts.id, membershipId: tipPayouts.membershipId, amount: tipPayouts.amount })
+    .from(tipPayouts)
+    .where(
+      and(
+        eq(tipPayouts.tenantId, tenantId),
+        eq(tipPayouts.period, period),
+        eq(tipPayouts.status, 'pending'),
+        inArray(tipPayouts.membershipId, staffIds),
+      ),
+    )
+    .for('update')
+  const tipsByMember = new Map<string, { ids: string[]; total: number }>()
+  for (const t of pendingTips) {
+    const e = tipsByMember.get(t.membershipId) ?? { ids: [], total: 0 }
+    e.ids.push(t.id)
+    e.total = round2(e.total + Number(t.amount))
+    tipsByMember.set(t.membershipId, e)
+  }
+
   // ── compute + write one payslip per employee with a salary structure ────
   const generated: PayslipResult[] = []
   const skipped: SkippedResult[] = []
@@ -250,9 +276,18 @@ export async function runPayroll(
         deductionsTotal: deductionsTotal.toFixed(2),
         advanceInstalment: advanceInstalment.toFixed(2),
         netPay: netPay.toFixed(2),
+        tipPayout: (tipsByMember.get(member.id)?.total ?? 0).toFixed(2),
         createdBy: actorMembershipId,
       })
       .returning({ id: payslips.id })
+
+    const tips = tipsByMember.get(member.id)
+    if (tips) {
+      await tx
+        .update(tipPayouts)
+        .set({ status: 'paid', payslipId: payslip.id, paidAt: new Date() })
+        .where(and(eq(tipPayouts.tenantId, tenantId), inArray(tipPayouts.id, tips.ids)))
+    }
 
     if (recoveries.length > 0) {
       await tx.insert(employeeAdvanceRecoveries).values(

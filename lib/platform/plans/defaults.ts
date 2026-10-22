@@ -60,6 +60,7 @@ export const KNOWN_ENTITLEMENT_KEYS = [
   'module.waitlist',
   'module.floor_sections',
   'module.inventory',
+  'module.tips',
 ] as const
 
 export const DEFAULT_PLANS: readonly PlanSeed[] = [
@@ -81,6 +82,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.waitlist': false,
       'module.floor_sections': false,
       'module.inventory': false,
+      'module.tips': false,
     },
   },
   {
@@ -103,6 +105,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.waitlist': true,
       'module.floor_sections': true,
       'module.inventory': true,
+      'module.tips': true,
     },
   },
   {
@@ -126,6 +129,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.waitlist': true,
       'module.floor_sections': true,
       'module.inventory': true,
+      'module.tips': true,
     },
   },
 ] as const

@@ -833,6 +833,8 @@ export const payslips = pgTable(
       .notNull()
       .default('0'),
     netPay: numeric('net_pay', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** M20 (0156): tips paid on this payslip — NOT part of gross / net_pay. */
+    tipPayout: numeric('tip_payout', { precision: 10, scale: 2 }).notNull().default('0'),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -3278,4 +3280,54 @@ export const modifierOptionIngredients = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique('modifier_option_ingredients_key').on(t.optionId, t.stockItemId)],
+)
+
+// M20 (0156): tips. tip_settings = the tenant's rules; tip_periods = a closed
+// month's frozen rules + totals; tip_payouts = the per-person ledger payroll pays.
+export const tipSettings = pgTable('tip_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  mode: text('mode').$type<'direct' | 'pooled'>().notNull().default('direct'),
+  tipOutPct: numeric('tip_out_pct', { precision: 5, scale: 2 }).notNull().default('0'),
+  poolRoles: text('pool_roles').array().notNull().default(sql`array['floor_staff']`),
+  tipOutRoles: text('tip_out_roles').array().notNull().default(sql`array[]::text[]`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
+export const tipPeriods = pgTable(
+  'tip_periods',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    period: text('period').notNull(),
+    settings: jsonb('settings').$type<Record<string, unknown>>().notNull(),
+    totalTips: numeric('total_tips', { precision: 12, scale: 2 }).notNull(),
+    distributed: numeric('distributed', { precision: 12, scale: 2 }).notNull(),
+    undistributed: numeric('undistributed', { precision: 12, scale: 2 }).notNull().default('0'),
+    finalizedBy: uuid('finalized_by').references(() => memberships.id, { onDelete: 'set null' }),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.period] })],
+)
+
+export const tipPayouts = pgTable(
+  'tip_payouts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    period: text('period').notNull(),
+    membershipId: uuid('membership_id').notNull(),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    breakdown: jsonb('breakdown').$type<Record<string, number>>().notNull().default({}),
+    status: text('status').$type<'pending' | 'paid'>().notNull().default('pending'),
+    payslipId: uuid('payslip_id').references(() => payslips.id, { onDelete: 'set null' }),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('tip_payouts_period_member_key').on(t.tenantId, t.period, t.membershipId)],
 )

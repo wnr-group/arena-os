@@ -111,6 +111,8 @@ const NAV: NavItem[] = [
   // Walk-in waitlist (M20) — same roles; the page checks the plan + opt-in.
   // Floor sections + server assignment (M20) — manager-only setup; the page checks the plan.
   { href: '/settings/sections', label: 'Floor sections', icon: Layers, can: isManager, industries: ['restaurant'] },
+  // How tips are shared + the monthly payout that payroll pays (M20) — manager-only; the page checks the plan.
+  { href: '/settings/tips', label: 'Tip payouts', icon: HandCoins, can: isManager, industries: ['restaurant'] },
   { href: '/waitlist', label: 'Waitlist', icon: ListOrdered, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
@@ -185,6 +187,8 @@ const NAV: NavItem[] = [
       { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
       // Turnover, spend per cover, dayparts, menu-mix, void/comp, servers (M20) — restaurants only.
       { href: '/reports/restaurant', label: 'Restaurant', icon: Armchair, can: isManager, industries: ['restaurant'] },
+      // Tips by server and day (M20) — restaurants only.
+      { href: '/reports/tips', label: 'Tips', icon: HandCoins, can: isManager, industries: ['restaurant'] },
       // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
       // and getPnlReport() throws for one; this entry only decides visibility.
       { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },

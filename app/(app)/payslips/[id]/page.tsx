@@ -120,6 +120,22 @@ export default async function PayslipPage({ params }: { params: Promise<{ id: st
           </div>
         </section>
 
+        {/* Tips (M20): paid on top of net pay — never part of gross, deductions or advance recovery. */}
+        {Number(payslip.tipPayout) > 0 && (
+          <section className="print-keep mt-3 flex justify-end">
+            <div className="w-full space-y-1.5 text-sm sm:w-72">
+              <div className="flex justify-between gap-4 px-4">
+                <span className="text-muted-foreground">Tips (distribution for {formatPayrollPeriod(payslip.period)})</span>
+                <span className="tabular-nums">{money(payslip.tipPayout)}</span>
+              </div>
+              <div className="flex justify-between gap-4 rounded-lg border px-4 py-2.5 font-semibold">
+                <span>Total payable</span>
+                <span className="tabular-nums">{money(String(round2(Number(payslip.netPay) + Number(payslip.tipPayout))))}</span>
+              </div>
+            </div>
+          </section>
+        )}
+
         <footer className="mt-6 border-t pt-4 text-center text-xs text-muted-foreground">
           This is a computer-generated payslip.
         </footer>
