@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeftRight, Ban, CalendarClock, ListOrdered, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Ban, CalendarClock, UserRound, ListOrdered, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
 import { TransferTableDialog } from './TransferTableDialog'
@@ -13,6 +13,8 @@ import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/com
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { CancelBookingDialog } from '@/components/bookings/CancelBookingDialog'
 import { setBookingStatus, requestBill } from '@/lib/actions/bookings'
+import { setSessionServer } from '@/lib/actions/sections'
+import { groupTablesBySection } from '@/lib/sections/rules'
 import { formatMoney } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { OrderSummary } from '@/components/bookings/BookingsView'
@@ -51,6 +53,14 @@ export type TableRow = {
   billRequestedAt: string | null
   status: TableStatus
   runningTotal: number
+  /** M20 (0152): floor section (null = unsectioned). */
+  sectionId: string | null
+  sectionName: string | null
+  sectionSort: number | null
+  /** The server on the running session (null if none / table is free). */
+  sessionServerId: string | null
+  /** Session's server, or for a free table whoever is assigned to it. */
+  serverName: string | null
 }
 
 const STATUS_LABEL: Record<TableStatus, string> = {
@@ -107,6 +117,7 @@ export function FloorView({
   upcomingReservations,
   waitlistOn,
   waitlist,
+  servers,
   currency,
   timeZone,
   tables,
@@ -126,6 +137,8 @@ export function FloorView({
   waitlistOn: boolean
   /** Active (waiting/notified) parties — only their join time is needed here. */
   waitlist: { createdAt: string }[]
+  /** Servers a front-of-house user may reassign a running table to (M20); empty hides the control. */
+  servers: { id: string; name: string }[]
   currency: string
   timeZone: string
   tables: TableRow[]
@@ -260,8 +273,17 @@ export function FloorView({
           add tables to it.
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
-          {tables.map((t) => {
+        <div className="mt-6 space-y-7">
+          {groupTablesBySection(tables).map((group) => (
+            <div key={group.sectionId ?? 'none'}>
+              {group.name && (
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.name}
+                  <span className="text-xs font-normal normal-case text-muted-foreground/70">{group.tables.length} tables</span>
+                </h2>
+              )}
+              <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
+          {group.tables.map((t) => {
             const isOccupied = Boolean(t.bookingId)
             const nextRes = nextReservationByTable.get(t.id)
             return (
@@ -322,9 +344,19 @@ export function FloorView({
                     </span>
                   </div>
                 )}
+
+                {t.serverName && (
+                  <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <UserRound size={12} className="shrink-0" />
+                    <span className="truncate">{t.serverName}</span>
+                  </div>
+                )}
               </button>
             )
           })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -378,6 +410,26 @@ export function FloorView({
                 <dt className="text-muted-foreground">Guests</dt>
                 <dd className="text-right font-medium">{liveSelected.coverCount ?? '—'}</dd>
               </div>
+              {servers.length > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <dt className="text-muted-foreground">Server</dt>
+                  <dd>
+                    <select
+                      className="rounded-md border bg-background px-2 py-1 text-sm"
+                      value={liveSelected.sessionServerId ?? ''}
+                      disabled={pending}
+                      onChange={(e) => act('set_server', () => setSessionServer(liveSelected.bookingId!, e.target.value || null))}
+                    >
+                      <option value="">Unassigned</option>
+                      {servers.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </dd>
+                </div>
+              )}
               {liveSelected.customerName && (
                 <div className="flex justify-between gap-4">
                   <dt className="text-muted-foreground">Customer</dt>

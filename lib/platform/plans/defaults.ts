@@ -58,6 +58,7 @@ export const KNOWN_ENTITLEMENT_KEYS = [
   'module.printing',
   'module.table_reservations',
   'module.waitlist',
+  'module.floor_sections',
 ] as const
 
 export const DEFAULT_PLANS: readonly PlanSeed[] = [
@@ -77,6 +78,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.printing': false,
       'module.table_reservations': false,
       'module.waitlist': false,
+      'module.floor_sections': false,
     },
   },
   {
@@ -97,6 +99,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.printing': true,
       'module.table_reservations': true,
       'module.waitlist': true,
+      'module.floor_sections': true,
     },
   },
   {
@@ -118,6 +121,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.printing': true,
       'module.table_reservations': true,
       'module.waitlist': true,
+      'module.floor_sections': true,
     },
   },
 ] as const

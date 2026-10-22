@@ -18,6 +18,7 @@ import { dayWindow, type DayHours } from '@/lib/booking/availability'
 import { todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { getReservationSettingsCore } from './settings'
 import { assertNoUpcomingReservation } from './guard'
+import { resolveTableServer } from '@/lib/sections/resolve'
 import {
   RESERVATION_LIMITS,
   RESERVATION_SLOT_MINUTES,
@@ -269,6 +270,8 @@ export async function seatReservationCore(
       checkedInAt: now,
       // A late arrival revives a lapsed no-show; nothing was cancelled.
       cancelledAt: null,
+      // M20: the server assigned to the table they end up at.
+      serverId: await resolveTableServer(tx, ctx.tenantId, targetId),
     })
     .where(and(eq(bookings.id, b.id), eq(bookings.tenantId, ctx.tenantId)))
 

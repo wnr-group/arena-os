@@ -1,5 +1,6 @@
 import 'server-only'
 import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { withUser } from '@/db'
 import { advancePaidTotals } from './advance-ledger'
 import {
@@ -12,6 +13,8 @@ import {
   bookings,
   bookingSlots,
   taxRates,
+  floorSections,
+  memberships,
 } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { addDays, zonedTimeToUtc } from './time'
@@ -183,9 +186,20 @@ export function getWorkingHours(ctx: ActiveContext, branchId: string) {
  * currently occupies each one. A resource with no matching row here is free.
  */
 export function listTables(ctx: ActiveContext, branchId: string) {
+  // M20 (0152): the session's server, and — for a free table — whoever is
+  // assigned to it (table override, else its section's).
+  const sessionServer = alias(memberships, 'session_server')
+  const assignedServer = alias(memberships, 'assigned_server')
   return withUser(ctx.user.id, (tx) =>
     tx
       .select({
+        sectionId: resources.sectionId,
+        sectionName: floorSections.name,
+        sectionSort: floorSections.sortOrder,
+        sessionServerId: bookings.serverId,
+        sessionServerName: sessionServer.fullName,
+        assignedServerId: sql<string | null>`coalesce(${resources.assignedServerId}, ${floorSections.assignedServerId})`,
+        assignedServerName: assignedServer.fullName,
         id: resources.id,
         name: resources.name,
         status: resources.status,
@@ -210,6 +224,12 @@ export function listTables(ctx: ActiveContext, branchId: string) {
           eq(bookings.tenantId, ctx.tenant.id),
           inArray(bookings.status, ['confirmed', 'checked_in']),
         ),
+      )
+      .leftJoin(floorSections, eq(floorSections.id, resources.sectionId))
+      .leftJoin(sessionServer, eq(sessionServer.id, bookings.serverId))
+      .leftJoin(
+        assignedServer,
+        sql`${assignedServer.id} = coalesce(${resources.assignedServerId}, ${floorSections.assignedServerId})`,
       )
       .where(
         and(

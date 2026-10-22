@@ -109,6 +109,8 @@ const NAV: NavItem[] = [
   // Table reservations (M20) — restaurant floor roles; the page itself checks the plan + opt-in.
   { href: '/reservations', label: 'Reservations', icon: CalendarClock, can: canManageWalkins, industries: ['restaurant'] },
   // Walk-in waitlist (M20) — same roles; the page checks the plan + opt-in.
+  // Floor sections + server assignment (M20) — manager-only setup; the page checks the plan.
+  { href: '/settings/sections', label: 'Floor sections', icon: Layers, can: isManager, industries: ['restaurant'] },
   { href: '/waitlist', label: 'Waitlist', icon: ListOrdered, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },

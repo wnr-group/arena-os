@@ -4,6 +4,7 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { canManageIncomingOrders, canManageKitchen, canManageWalkins } from '@/lib/auth/roles'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { todayInZone } from '@/lib/booking/time'
+import { listServers } from '@/lib/sections/data'
 import { isWaitlistEnabled, listActiveWaitlist } from '@/lib/waitlist/data'
 import { dayBounds, getReservationSettings, listReservations } from '@/lib/reservations/data'
 import { withUser } from '@/db'
@@ -60,6 +61,9 @@ export default async function FloorPage() {
   const waitlistOn =
     canManageWalkins(ctx.role) && (await hasEntitlement(ctx, 'module.waitlist')) && (await isWaitlistEnabled(ctx))
   const waitlistEntries = waitlistOn ? await listActiveWaitlist(ctx, branch.id) : []
+  // M20: floor sections / server assignment. Reassigning a running table is a front-of-house job.
+  const sectionsOn = canManageWalkins(ctx.role) && (await hasEntitlement(ctx, 'module.floor_sections'))
+  const servers = sectionsOn ? await listServers(ctx) : []
   const upcomingReservations = reservationsOn
     ? (await listReservations(ctx, branch.id, dayBounds(todayInZone(ctx.tenant.timezone), ctx.tenant.timezone)))
         .filter((r) => r.status === 'confirmed' && !r.seatedTableId && r.tableId)
@@ -165,6 +169,7 @@ export default async function FloorPage() {
       reservationsOn={reservationsOn}
       upcomingReservations={upcomingReservations}
       waitlistOn={waitlistOn}
+      servers={servers}
       waitlist={waitlistEntries.map((w) => ({ createdAt: w.createdAt.toISOString() }))}
       currency={ctx.tenant.currency}
       timeZone={ctx.tenant.timezone}
@@ -191,6 +196,11 @@ export default async function FloorPage() {
           billRequestedAt: t.billRequestedAt ? t.billRequestedAt.toISOString() : null,
           status,
           runningTotal: billing?.runningTotal ?? 0,
+          sectionId: t.sectionId,
+          sectionName: t.sectionName,
+          sectionSort: t.sectionSort,
+          sessionServerId: t.sessionServerId,
+          serverName: t.bookingId ? t.sessionServerName : t.assignedServerName,
         }
       })}
       categories={categories}

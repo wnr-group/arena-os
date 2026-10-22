@@ -216,6 +216,10 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // M20 (0152): the floor section this table sits in, and a server assigned to
+    // the table itself (overrides the section's).
+    sectionId: uuid('section_id').references((): AnyPgColumn => floorSections.id, { onDelete: 'set null' }),
+    assignedServerId: uuid('assigned_server_id').references(() => memberships.id, { onDelete: 'set null' }),
     // Unguessable public identifier for the QR-at-station ordering entry
     // point — see 0048_resource_qr_token.sql for why this can't just be id.
     qrToken: uuid('qr_token').notNull().defaultRandom(),
@@ -399,6 +403,8 @@ export const bookings = pgTable(
     // made for and its length. Kept after the party is seated.
     reservedFor: timestamp('reserved_for', { withTimezone: true }),
     reservedMinutes: integer('reserved_minutes'),
+    // M20 (0152): the server who worked this table session, stamped at seating.
+    serverId: uuid('server_id').references(() => memberships.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
     // M17 (0072): when the table's bill was requested. Null for every
     // non-restaurant booking.
@@ -3169,4 +3175,27 @@ export const waitlistEntries = pgTable(
     bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
   },
   (t) => [index('idx_waitlist_active').on(t.tenantId, t.branchId, t.createdAt)],
+)
+
+// M20 (0152): floor sections (Main dining, Patio, Bar). A server may be
+// assigned to a whole section; a table-level assignment overrides it.
+export const floorSections = pgTable(
+  'floor_sections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    assignedServerId: uuid('assigned_server_id').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('floor_sections_branch_name_key').on(t.branchId, t.name),
+    index('idx_floor_sections_branch').on(t.tenantId, t.branchId, t.sortOrder),
+  ],
 )

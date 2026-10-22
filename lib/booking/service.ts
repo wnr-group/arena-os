@@ -24,6 +24,7 @@ import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
 import { assertNoUpcomingReservation } from '@/lib/reservations/guard'
+import { resolveTableServer } from '@/lib/sections/resolve'
 import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
 import { getBookingSettingsCore } from './settings'
 import {
@@ -1272,6 +1273,8 @@ export async function seatTableSessionCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       checkedInAt: now,
+      // M20: the server assigned to this table/section (null when none is).
+      serverId: await resolveTableServer(tx, ctx.tenantId, input.resourceId),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -1842,6 +1845,14 @@ export async function splitTableCore(
       source: 'walk_in',
       createdBy: ctx.membershipId,
       checkedInAt: now,
+      // M20: same party, same server.
+      serverId: (
+        await tx
+          .select({ serverId: bookings.serverId })
+          .from(bookings)
+          .where(and(eq(bookings.id, input.sourceBookingId), eq(bookings.tenantId, ctx.tenantId)))
+          .limit(1)
+      )[0]?.serverId ?? null,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
