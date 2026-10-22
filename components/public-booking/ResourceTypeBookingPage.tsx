@@ -284,7 +284,11 @@ export function ResourceTypeBookingPage({
     // path lands on the confirmation page, whose panel offers Retry (reusing
     // this booking's pending order) or Start over. Legacy optional_full keeps
     // today's "already confirmed" toasts.
-    const toConfirmation = (paid: boolean) => router.push(paid && !legacy ? `/b/${token}?paid=1` : `/b/${token}`)
+    // ?new=1 arms the WhatsApp countdown, and only a submitted payment gets it:
+    // the unpaid exits omit it, and the confirmation page still holds the
+    // redirect until the webhook proves the deposit (awaitingPayment).
+    const toConfirmation = (paid: boolean) =>
+      router.push(paid ? `/b/${token}?${legacy ? '' : 'paid=1&'}new=1` : `/b/${token}`)
     const res = await createBookingPaymentIntent({ bookingId })
     if (res.error || !res.checkout) {
       if (legacy) {
@@ -359,7 +363,10 @@ export function ResourceTypeBookingPage({
         await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '', payment?.mode === 'optional_full')
         return
       }
-      router.push(`/b/${r.confirmationToken}`)
+      // ?new=1 marks the hand-off straight from a completed booking — the only
+      // arrival that arms the WhatsApp countdown. The unpaid exits inside
+      // payForBooking() deliberately omit it.
+      router.push(`/b/${r.confirmationToken}?new=1`)
     })
   }
 

@@ -285,7 +285,7 @@ export async function deleteMenuItem(id: string): Promise<Result> {
       await tx.delete(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.tenantId, ctx.tenant.id)))
       return existing
     })
-    if (row) void deleteImage(row.imageUrl)
+    if (row) void deleteImage(row.imageUrl, ctx.tenant.id)
     revalidatePath('/menu/items')
     return {}
   } catch (e) {
