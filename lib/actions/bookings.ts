@@ -39,13 +39,14 @@ import {
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { BillingError } from '@/lib/billing/invoice'
+import { ReservationConflictError } from '@/lib/reservations/guard'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
-type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
+type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string; reservationConflict?: boolean }
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
@@ -588,6 +589,8 @@ const seatTableInput = z.object({
     .optional()
     .refine((v) => !v || isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   notes: z.string().trim().optional(),
+  // M20: seat although a reservation is about to start at this table.
+  overrideReservation: z.boolean().optional(),
 })
 
 /**
@@ -619,6 +622,8 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
     revalidatePath('/floor')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
+    // M20: the one failure the floor answers with a "seat anyway" button.
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -802,6 +807,20 @@ export async function setBookingStatus<S extends BookingStatus>(
           .limit(1)
         if (cur?.status === 'pending_payment') {
           throw new BookingError('This booking is awaiting the customer’s online payment — it can only be cancelled until the payment arrives.')
+        }
+      }
+
+      // M20: an unseated table reservation has no table session yet, so a bare
+      // status flip would leave a checked-in booking with no table. Seating
+      // (seatReservation) is the only way to check one in.
+      if (status === 'checked_in') {
+        const [res] = await tx
+          .select({ reservedFor: bookings.reservedFor, resourceId: bookings.resourceId })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (res?.reservedFor && !res.resourceId) {
+          throw new BookingError('A table reservation is checked in by seating the party — use Seat on the Reservations page.')
         }
       }
 

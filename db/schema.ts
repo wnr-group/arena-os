@@ -395,6 +395,10 @@ export const bookings = pgTable(
     // resource link (in place of booking_slots — see that migration's
     // comment). Null for every timed booking in every other industry.
     coverCount: integer('cover_count'),
+    // M20 (0150): set only for a table reservation — the start time it was
+    // made for and its length. Kept after the party is seated.
+    reservedFor: timestamp('reserved_for', { withTimezone: true }),
+    reservedMinutes: integer('reserved_minutes'),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
     // M17 (0072): when the table's bill was requested. Null for every
     // non-restaurant booking.
@@ -3118,6 +3122,22 @@ export const bookingSettings = pgTable('booking_settings', {
     .references(() => tenants.id, { onDelete: 'cascade' }),
   /** Bookable dates are today … today + N − 1 in the tenant timezone. */
   maxAdvanceDays: integer('max_advance_days').notNull().default(7),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
+// M20 (0150): table-reservation settings. One row per tenant; a tenant with no
+// row behaves as disabled with the defaults below (lib/reservations/settings.ts).
+export const reservationSettings = pgTable('reservation_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  defaultDurationMinutes: integer('default_duration_minutes').notNull().default(90),
+  noShowGraceMinutes: integer('no_show_grace_minutes').notNull().default(15),
+  walkinBufferMinutes: integer('walkin_buffer_minutes').notNull().default(45),
+  publicEnabled: boolean('public_enabled').notNull().default(false),
+  maxPartySize: integer('max_party_size').notNull().default(12),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })

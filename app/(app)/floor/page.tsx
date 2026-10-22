@@ -1,7 +1,10 @@
 import { redirect } from 'next/navigation'
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
+import { canManageIncomingOrders, canManageKitchen, canManageWalkins } from '@/lib/auth/roles'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
+import { todayInZone } from '@/lib/booking/time'
+import { dayBounds, getReservationSettings, listReservations } from '@/lib/reservations/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
@@ -45,6 +48,24 @@ export default async function FloorPage() {
     listMenuItemModifierGroups(ctx),
   ])
   const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
+
+  // M20: today's still-to-come reservations, shown on their tables. Off (and
+  // no query beyond the settings read) unless the venue opted in on a plan that has it.
+  const reservationsOn =
+    canManageWalkins(ctx.role) &&
+    (await hasEntitlement(ctx, 'module.table_reservations')) &&
+    (await getReservationSettings(ctx)).enabled
+  const upcomingReservations = reservationsOn
+    ? (await listReservations(ctx, branch.id, dayBounds(todayInZone(ctx.tenant.timezone), ctx.tenant.timezone)))
+        .filter((r) => r.status === 'confirmed' && !r.seatedTableId && r.tableId)
+        .map((r) => ({
+          bookingId: r.bookingId,
+          tableId: r.tableId!,
+          guestName: r.customerName,
+          partySize: r.partySize,
+          reservedFor: r.reservedFor.toISOString(),
+        }))
+    : []
 
   const bookingIds = [...new Set(tables.map((t) => t.bookingId).filter((id): id is string => Boolean(id)))]
   const [orderRows, kotRows, billingStates] = await Promise.all([
@@ -136,6 +157,8 @@ export default async function FloorPage() {
   return (
     <FloorView
       branchId={branch.id}
+      reservationsOn={reservationsOn}
+      upcomingReservations={upcomingReservations}
       currency={ctx.tenant.currency}
       timeZone={ctx.tenant.timezone}
       tables={tables.map((t) => {

@@ -105,6 +105,8 @@ const NAV: NavItem[] = [
   },
   // Dine-in table service (M17) — restaurant tenants only.
   { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
+  // Table reservations (M20) — restaurant floor roles; the page itself checks the plan + opt-in.
+  { href: '/reservations', label: 'Reservations', icon: CalendarClock, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.

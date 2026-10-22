@@ -1,5 +1,7 @@
 import { Building2, Gamepad2, Glasses, Music4, Mic2, Radio, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import type { PublicTenant } from '@/lib/tenant/public'
+import { withPublicTenant } from '@/db'
+import { getReservationSettingsCore } from '@/lib/reservations/settings'
 import { getPublicBranch, getPublicResourceTypes } from '@/lib/booking/public-availability'
 import { getPublicMenu } from '@/lib/menu/public'
 import { getPublicActiveHappyHourRules } from '@/lib/happy-hours/public'
@@ -52,6 +54,12 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
   // itself is enough for them, so neither the navbar's Menu link nor a
   // Menu Highlights section belongs here. Every other industry keeps both.
   const isRestaurant = tenant.industry === 'restaurant'
+  // M20: a restaurant that opened online reservations gets "Book a table" as
+  // its primary call to action (the settings read is skipped for every other industry).
+  const reservationSettings = isRestaurant
+    ? await withPublicTenant(tenant.id, (tx) => getReservationSettingsCore(tx, tenant.id))
+    : null
+  const reservationsOpen = Boolean(reservationSettings?.enabled && reservationSettings.publicEnabled)
 
   // A business that has published its own homepage (M13) gets that instead of
   // the default below. Every tenant that hasn't touched the builder yet — i.e.
@@ -122,10 +130,10 @@ export async function TenantHome({ tenant }: { tenant: PublicTenant }) {
               {open && (
                 <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
                   <a
-                    href="/resources"
+                    href={reservationsOpen ? '/reserve' : '/resources'}
                     className="inline-flex items-center justify-center rounded-xl bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground shadow-lg shadow-primary/20 transition hover:-translate-y-0.5 active:translate-y-0 hover:shadow-primary/30"
                   >
-                    Book Now
+                    {reservationsOpen ? 'Book a table' : 'Book Now'}
                   </a>
                 </div>
               )}
