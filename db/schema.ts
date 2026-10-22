@@ -3216,6 +3216,8 @@ export const stockItems = pgTable(
     unit: text('unit').notNull().default('unit'),
     quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull().default('0'),
     reorderLevel: numeric('reorder_level', { precision: 14, scale: 3 }).notNull().default('0'),
+    /** M20 (0155): current cost of one unit; null = not costed. */
+    unitCost: numeric('unit_cost', { precision: 14, scale: 4 }),
     active: boolean('active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3260,4 +3262,20 @@ export const menuItemIngredients = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique('menu_item_ingredients_item_stock_key').on(t.menuItemId, t.stockItemId)],
+)
+
+// M20 (0155): optional recipe on a modifier option ("Extra cheese" uses 0.03 kg of Cheese).
+export const modifierOptionIngredients = pgTable(
+  'modifier_option_ingredients',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    optionId: uuid('option_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('modifier_option_ingredients_key').on(t.optionId, t.stockItemId)],
 )

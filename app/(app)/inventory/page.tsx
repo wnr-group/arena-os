@@ -6,7 +6,7 @@ import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { listMenuItems } from '@/lib/menu/data'
-import { listRecentMovements, listRecipeRows, listStockItems } from '@/lib/inventory/data'
+import { getModifierCostInputs, listRecentMovements, listRecipeRows, listStockItems } from '@/lib/inventory/data'
 import { InventoryManager } from '@/components/inventory/InventoryManager'
 
 /**
@@ -28,11 +28,12 @@ export default async function InventoryPage() {
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
 
-  const [items, recipes, menu, movements] = await Promise.all([
+  const [items, recipes, menu, movements, mods] = await Promise.all([
     listStockItems(ctx, branch.id),
     listRecipeRows(ctx),
     listMenuItems(ctx),
     listRecentMovements(ctx),
+    getModifierCostInputs(ctx),
   ])
 
   return (
@@ -44,9 +45,13 @@ export default async function InventoryPage() {
       <InventoryManager
         branchId={branch.id}
         timeZone={ctx.tenant.timezone}
+        currency={ctx.tenant.currency}
         items={items}
         recipes={recipes}
-        menu={menu.map((m) => ({ id: m.id, name: m.name }))}
+        options={mods.options}
+        optionRecipes={mods.optionRecipes}
+        menuGroups={mods.menuGroups}
+        menu={menu.map((m) => ({ id: m.id, name: m.name, price: Number(m.price) }))}
         movements={movements.map((m) => ({ id: m.id, stockItemId: m.stockItemId, delta: m.delta, reason: m.reason, sourceType: m.sourceType, at: m.createdAt.toISOString() }))}
       />
     </div>

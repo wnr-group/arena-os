@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { menuItemIngredients, stockItems, stockMovements } from '@/db/schema'
+import { menuItemIngredients, menuItemModifierGroups, menuItems, modifierGroups, modifierOptionIngredients, modifierOptions, stockItems, stockMovements } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 
 export type StockRow = {
@@ -10,6 +10,8 @@ export type StockRow = {
   unit: string
   quantity: number
   reorderLevel: number
+  /** Current cost of one unit; null = not costed. */
+  unitCost: number | null
   active: boolean
 }
 
@@ -22,12 +24,18 @@ export function listStockItems(ctx: ActiveContext, branchId: string): Promise<St
         unit: stockItems.unit,
         quantity: stockItems.quantity,
         reorderLevel: stockItems.reorderLevel,
+        unitCost: stockItems.unitCost,
         active: stockItems.active,
       })
       .from(stockItems)
       .where(and(eq(stockItems.tenantId, ctx.tenant.id), eq(stockItems.branchId, branchId)))
       .orderBy(desc(stockItems.active), asc(stockItems.name))
-    return rows.map((r) => ({ ...r, quantity: Number(r.quantity), reorderLevel: Number(r.reorderLevel) }))
+    return rows.map((r) => ({
+      ...r,
+      quantity: Number(r.quantity),
+      reorderLevel: Number(r.reorderLevel),
+      unitCost: r.unitCost === null ? null : Number(r.unitCost),
+    }))
   })
 }
 
@@ -62,5 +70,55 @@ export function listRecentMovements(ctx: ActiveContext, limit = 40): Promise<Mov
       .orderBy(desc(stockMovements.createdAt))
       .limit(limit)
     return rows.map((r) => ({ ...r, delta: Number(r.delta) }))
+  })
+}
+
+export type ModifierOptionRow = { optionId: string; groupId: string; groupName: string; optionName: string }
+export type OptionRecipeRow = { optionId: string; stockItemId: string; quantity: number }
+
+/** Every modifier option (with its group) plus which ones carry ingredients, and the menu→group links. */
+export function getModifierCostInputs(ctx: ActiveContext) {
+  return withUser(ctx.user.id, async (tx) => {
+    const options = await tx
+      .select({ optionId: modifierOptions.id, groupId: modifierOptions.groupId, groupName: modifierGroups.name, optionName: modifierOptions.name })
+      .from(modifierOptions)
+      .innerJoin(modifierGroups, eq(modifierGroups.id, modifierOptions.groupId))
+      .where(eq(modifierOptions.tenantId, ctx.tenant.id))
+      .orderBy(asc(modifierGroups.name), asc(modifierOptions.sortOrder), asc(modifierOptions.name))
+    const optionRecipes = await tx
+      .select({ optionId: modifierOptionIngredients.optionId, stockItemId: modifierOptionIngredients.stockItemId, quantity: modifierOptionIngredients.quantity })
+      .from(modifierOptionIngredients)
+      .where(eq(modifierOptionIngredients.tenantId, ctx.tenant.id))
+    const menuGroups = await tx
+      .select({ menuItemId: menuItemModifierGroups.menuItemId, groupId: menuItemModifierGroups.groupId })
+      .from(menuItemModifierGroups)
+      .where(eq(menuItemModifierGroups.tenantId, ctx.tenant.id))
+    return {
+      options: options as ModifierOptionRow[],
+      optionRecipes: optionRecipes.map((r) => ({ ...r, quantity: Number(r.quantity) })) as OptionRecipeRow[],
+      menuGroups,
+    }
+  })
+}
+
+export function listMenuPrices(ctx: ActiveContext) {
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
+      .select({ id: menuItems.id, name: menuItems.name, price: menuItems.price })
+      .from(menuItems)
+      .where(eq(menuItems.tenantId, ctx.tenant.id))
+      .orderBy(asc(menuItems.name))
+    return rows.map((r) => ({ id: r.id, name: r.name, price: Number(r.price) }))
+  })
+}
+
+/** Tenant-wide ingredient costs (any branch) — what the food-cost table prices recipes with. */
+export function listStockCosts(ctx: ActiveContext) {
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
+      .select({ id: stockItems.id, unitCost: stockItems.unitCost })
+      .from(stockItems)
+      .where(eq(stockItems.tenantId, ctx.tenant.id))
+    return rows.map((r) => ({ id: r.id, unitCost: r.unitCost === null ? null : Number(r.unitCost) }))
   })
 }

@@ -6,6 +6,8 @@ import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
 import { getSalesReport, type FoodSalesRow } from './sales'
+import { buildFoodCostRows, foodCostPct, type FoodCostRow } from '@/lib/inventory/rules'
+import { getModifierCostInputs, listMenuPrices, listRecipeRows, listStockCosts } from '@/lib/inventory/data'
 import type { DateRange } from './date-range'
 import {
   DAYPARTS,
@@ -89,6 +91,15 @@ export type VoidCompStaffRow = { staff: string; voids: number; voidAmount: numbe
 
 export type MenuMixRow = FoodSalesRow & { eightySixed: number }
 
+export type IngredientUseRow = {
+  name: string
+  unit: string
+  used: number
+  unitCost: number | null
+  /** used × unitCost; 0 when the ingredient has no cost yet. */
+  cost: number
+}
+
 export type RestaurantReport = {
   range: DateRange
   summary: {
@@ -116,6 +127,20 @@ export type RestaurantReport = {
     entries: VoidCompEntry[]
   }
   servers: ServerRow[]
+  foodCost: {
+    /** Ingredients deducted by sales in the range, priced at today's unit cost. */
+    ingredients: IngredientUseRow[]
+    /** Σ cost of the ingredients that have a cost. */
+    cogs: number
+    /** Ingredients used but not costed yet — COGS is a floor while this is above 0. */
+    uncosted: number
+    /** Paid food revenue in the range (same figure as Food & Memberships). */
+    foodRevenue: number
+    /** cogs ÷ foodRevenue; null with no revenue or nothing used. */
+    pct: number | null
+    /** Dishes that have a recipe, with cost per portion and food-cost %. */
+    dishes: FoodCostRow[]
+  }
 }
 
 const num = (v: unknown): number => Number(v ?? 0)
@@ -169,7 +194,7 @@ export async function getRestaurantReport(
   const { min, max } = SESSION_MINUTES_BOUNDS
   const finishedFilter = sql`status = 'completed' and completed_at is not null and minutes between ${min} and ${max}`
 
-  const [tablesRes, turnRes, hourRes, serverRes, vcRes, eightySixRes, sales] = await Promise.all([
+  const [tablesRes, turnRes, hourRes, serverRes, vcRes, eightySixRes, cogsRes, sales, stockCosts, recipeRows, menuPrices, modInputs] = await Promise.all([
     withUser(ctx.user.id, (tx) =>
       tx.execute<{ n: number }>(sql`
         select count(*)::int as n
@@ -254,7 +279,26 @@ export async function getRestaurantReport(
          group by 1
       `),
     ),
+    // Food cost: what sales actually deducted (the 'order' movements) in the range.
+    withUser(ctx.user.id, (tx) =>
+      tx.execute(sql`
+        select si.name, si.unit, si.unit_cost::float as unit_cost, (- sum(m.delta))::float as used
+          from public.stock_movements m
+          join public.stock_items si on si.id = m.stock_item_id and si.tenant_id = m.tenant_id
+          join public.tenants t on t.id = m.tenant_id
+         where m.tenant_id = ${tenantId}
+           and m.source_type = 'order'
+           and ((m.created_at at time zone t.timezone)::date) between ${range.start}::date and ${range.end}::date
+           ${branchId ? sql`and si.branch_id = ${branchId}` : sql``}
+         group by si.id, si.name, si.unit, si.unit_cost
+         order by used desc, si.name
+      `),
+    ),
     getSalesReport(ctx, { range, branchId }),
+    listStockCosts(ctx),
+    listRecipeRows(ctx),
+    listMenuPrices(ctx),
+    getModifierCostInputs(ctx),
   ])
 
   // ── turnover ──────────────────────────────────────────────────────────────
@@ -355,6 +399,25 @@ export async function getRestaurantReport(
     }
   }
 
+  // ── food cost ─────────────────────────────────────────────────────────────
+  const ingredients: IngredientUseRow[] = (cogsRes.rows as Record<string, unknown>[]).map((r) => {
+    const unitCost = r.unit_cost === null ? null : num(r.unit_cost)
+    const used = Math.round(num(r.used) * 1000) / 1000
+    return { name: String(r.name), unit: String(r.unit), used, unitCost, cost: unitCost === null ? 0 : round2(used * unitCost) }
+  })
+  const cogs = round2(ingredients.reduce((n, i) => n + i.cost, 0))
+  const foodRevenue = sales.totals.foodGrossRevenue
+  const dishes = buildFoodCostRows({
+    menu: menuPrices,
+    stock: stockCosts,
+    recipes: recipeRows,
+    options: modInputs.options,
+    optionRecipes: modInputs.optionRecipes,
+    menuGroups: modInputs.menuGroups,
+  })
+    .filter((d) => d.hasRecipe)
+    .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1))
+
   return {
     range,
     summary: {
@@ -381,5 +444,13 @@ export async function getRestaurantReport(
       entries,
     },
     servers,
+    foodCost: {
+      ingredients,
+      cogs,
+      uncosted: ingredients.filter((i) => i.unitCost === null).length,
+      foodRevenue,
+      pct: ingredients.length === 0 ? null : foodCostPct(cogs, foodRevenue),
+      dishes,
+    },
   }
 }

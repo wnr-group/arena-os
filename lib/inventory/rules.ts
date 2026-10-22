@@ -50,3 +50,106 @@ export function validateIngredient(i: { quantity: number }): string | null {
 export function consumption(soldQty: number, perPortion: number): number {
   return roundQty(soldQty * perPortion)
 }
+
+// ── food cost (M20 / AROS-180) ──────────────────────────────────────────────
+
+export const roundCost = (n: number): number => Math.round(n * 10_000) / 10_000
+const money2 = (n: number): number => Math.round(n * 100) / 100
+
+export function validateUnitCost(c: number | null | undefined): string | null {
+  if (c === null || c === undefined) return null
+  if (!Number.isFinite(c) || c < 0) return 'Cost must be zero or more.'
+  if (c > MAX_QTY) return 'That cost is too large.'
+  return null
+}
+
+export type CostedIngredient = { quantity: number; unitCost: number | null }
+
+/**
+ * What one portion costs to make at current ingredient prices.
+ *
+ * `complete` is false when ANY ingredient has no cost yet — the figure is then a
+ * floor, not the truth, and the UI says "partial" instead of presenting it as
+ * the dish's cost. `hasRecipe` is false for a dish with no ingredients (nothing
+ * to cost — shown as "no recipe", never as ₹0).
+ */
+export function recipeCost(ingredients: CostedIngredient[]): { cost: number; complete: boolean; hasRecipe: boolean } {
+  if (ingredients.length === 0) return { cost: 0, complete: false, hasRecipe: false }
+  let cost = 0
+  let complete = true
+  for (const i of ingredients) {
+    if (i.unitCost === null) {
+      complete = false
+      continue
+    }
+    cost += i.quantity * i.unitCost
+  }
+  return { cost: money2(cost), complete, hasRecipe: true }
+}
+
+/** Food-cost % = cost ÷ selling price. Null when there is no price to divide by. */
+export function foodCostPct(cost: number, price: number): number | null {
+  if (!(price > 0) || !Number.isFinite(cost)) return null
+  return Math.round((cost / price) * 10_000) / 100
+}
+
+/** Traffic light for a food-cost %: ≤30 healthy, ≤40 watch, above that high. */
+export function foodCostBand(pct: number | null): 'good' | 'watch' | 'high' | null {
+  if (pct === null) return null
+  return pct <= 30 ? 'good' : pct <= 40 ? 'watch' : 'high'
+}
+
+export type FoodCostRow = {
+  menuItemId: string
+  name: string
+  price: number
+  hasRecipe: boolean
+  complete: boolean
+  cost: number
+  pct: number | null
+  /** Extra cost each modifier option on this dish would add, dearest first. */
+  options: { optionId: string; groupName: string; optionName: string; extraCost: number; complete: boolean }[]
+}
+
+/**
+ * Per-dish cost table from already-loaded rows. Pure so the UI, the report and
+ * the tests share one definition. Modifier options are attached to the dishes
+ * whose modifier groups contain them; an option's extra cost is shown beside
+ * the base cost rather than folded in, because which option a guest picks
+ * varies per order.
+ */
+export function buildFoodCostRows(input: {
+  menu: { id: string; name: string; price: number }[]
+  stock: { id: string; unitCost: number | null }[]
+  recipes: { menuItemId: string; stockItemId: string; quantity: number }[]
+  options: { optionId: string; groupId: string; groupName: string; optionName: string }[]
+  optionRecipes: { optionId: string; stockItemId: string; quantity: number }[]
+  menuGroups: { menuItemId: string; groupId: string }[]
+}): FoodCostRow[] {
+  const cost = new Map(input.stock.map((s) => [s.id, s.unitCost]))
+  const ing = (rs: { stockItemId: string; quantity: number }[]) =>
+    rs.map((r) => ({ quantity: r.quantity, unitCost: cost.get(r.stockItemId) ?? null }))
+  return input.menu.map((m) => {
+    const base = recipeCost(ing(input.recipes.filter((r) => r.menuItemId === m.id)))
+    const groups = new Set(input.menuGroups.filter((g) => g.menuItemId === m.id).map((g) => g.groupId))
+    const options = input.options
+      .filter((o) => groups.has(o.groupId))
+      .map((o) => {
+        const rc = recipeCost(ing(input.optionRecipes.filter((r) => r.optionId === o.optionId)))
+        return { optionId: o.optionId, groupName: o.groupName, optionName: o.optionName, extraCost: rc.cost, complete: rc.complete || !rc.hasRecipe, hasRecipe: rc.hasRecipe }
+      })
+      .filter((o) => o.hasRecipe)
+      .map(({ hasRecipe: _h, ...o }) => o)
+      .sort((a, b) => b.extraCost - a.extraCost)
+    return {
+      menuItemId: m.id,
+      name: m.name,
+      price: m.price,
+      hasRecipe: base.hasRecipe,
+      complete: base.complete,
+      cost: base.cost,
+      pct: base.hasRecipe ? foodCostPct(base.cost, m.price) : null,
+      options,
+    }
+  })
+}

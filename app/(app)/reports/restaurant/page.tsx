@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
-import { Armchair, Ban, Clock3, UserRound, UtensilsCrossed } from 'lucide-react'
+import { Armchair, Ban, Clock3, Scale, UserRound, UtensilsCrossed } from 'lucide-react'
+import { foodCostBand } from '@/lib/inventory/rules'
 import { getActiveContext } from '@/lib/tenant/context'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
@@ -199,6 +200,53 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
         <Note>From the audit trail. “By” is whoever approved or applied it — a waiter’s request that a manager approves is recorded under the manager.</Note>
       </Section>
 
+      {/* ── food cost ── */}
+      <Section
+        icon={<Scale size={15} />}
+        title="Food cost"
+        action={r.foodCost.ingredients.length > 0 ? <ExportCsvButton rows={r.foodCost.ingredients} columns={ingredientCols} filename={file('food-cost')} /> : undefined}
+      >
+        {r.foodCost.ingredients.length === 0 ? (
+          <Empty>No ingredients were deducted by sales in this range. Link dishes to stock under Inventory → Recipes.</Empty>
+        ) : (
+          <>
+            <div className="grid gap-4 p-4 sm:grid-cols-3">
+              <StatCard label="Cost of ingredients used" value={money(r.foodCost.cogs)} hint={r.foodCost.uncosted > 0 ? `${r.foodCost.uncosted} ingredient${r.foodCost.uncosted === 1 ? '' : 's'} not costed yet — real cost is higher` : 'At today’s ingredient costs'} />
+              <StatCard label="Paid food revenue" value={money(r.foodCost.foodRevenue)} hint="Same as Food & Memberships" />
+              <StatCard label="Food cost %" value={r.foodCost.pct === null ? '—' : `${r.foodCost.pct}%`} hint="Ingredients used ÷ paid food revenue" />
+            </div>
+            <Table head={['Ingredient', 'Used', 'Cost / unit', 'Cost']} right={[1, 2, 3]}>
+              {r.foodCost.ingredients.map((i) => (
+                <tr key={i.name} className="border-b border-border last:border-0">
+                  <td className="px-4 py-3">{i.name}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{i.used} {i.unit}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{i.unitCost === null ? <span className="text-amber-600">not set</span> : money(i.unitCost)}</td>
+                  <td className="px-4 py-3 text-right font-medium tabular-nums">{i.unitCost === null ? '—' : money(i.cost)}</td>
+                </tr>
+              ))}
+            </Table>
+          </>
+        )}
+        {r.foodCost.dishes.length > 0 && (
+          <Table head={['Dish', 'Price', 'Cost to make', 'Food cost %']} right={[1, 2, 3]}>
+            {r.foodCost.dishes.map((d) => (
+              <tr key={d.menuItemId} className="border-b border-border last:border-0">
+                <td className="px-4 py-3">{d.name}</td>
+                <td className="px-4 py-3 text-right tabular-nums">{money(d.price)}</td>
+                <td className="px-4 py-3 text-right tabular-nums">{money(d.cost)}{!d.complete && <span className="ml-1.5 text-xs text-amber-600">partial</span>}</td>
+                <td className={`px-4 py-3 text-right font-medium tabular-nums ${d.complete && d.pct !== null ? { good: 'text-emerald-600', watch: 'text-amber-600', high: 'text-destructive' }[foodCostBand(d.pct)!] : 'text-muted-foreground'}`}>
+                  {d.pct === null ? '—' : `${d.pct}%`}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        )}
+        <Note>
+          Ingredients are what sales deducted from stock in this range (dish recipe plus chosen modifiers), priced at today’s cost per unit — change a
+          cost and past figures move with it. Revenue is paid food revenue, so the % is a guide, not an accounting ratio. Per-dish cost uses the menu price.
+        </Note>
+      </Section>
+
       {/* ── servers ── */}
       <Section
         icon={<UserRound size={15} />}
@@ -231,6 +279,13 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
   )
 }
 
+const ingredientCols: CsvColumn<Awaited<ReturnType<typeof getRestaurantReport>>['foodCost']['ingredients'][number]>[] = [
+  { key: 'name', label: 'Ingredient' },
+  { key: 'unit', label: 'Unit' },
+  { key: 'used', label: 'Used' },
+  { key: 'unitCost', label: 'Cost per unit' },
+  { key: 'cost', label: 'Cost' },
+]
 const turnoverCols: CsvColumn<Awaited<ReturnType<typeof getRestaurantReport>>['turnover'][number]>[] = [
   { key: 'tableName', label: 'Table' },
   { key: 'sessions', label: 'Sessions' },

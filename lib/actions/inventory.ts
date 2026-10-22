@@ -9,6 +9,7 @@ import {
   InventoryError,
   createStockItemCore,
   recordMovementCore,
+  setModifierRecipeCore,
   setRecipeCore,
   updateStockItemCore,
 } from '@/lib/inventory/service'
@@ -49,6 +50,7 @@ const createInput = z.object({
   unit: z.string().trim().min(1, 'Enter a unit.').max(20),
   reorderLevel: qty.min(0).default(0),
   openingQuantity: qty.min(0).optional(),
+  unitCost: qty.min(0).nullable().optional(),
 })
 
 export async function createStockItem(input: z.input<typeof createInput>) {
@@ -64,6 +66,8 @@ const updateInput = z.object({
   unit: z.string().trim().min(1).max(20),
   reorderLevel: qty.min(0),
   active: z.boolean(),
+  /** number sets, null clears, omitted leaves the cost alone */
+  unitCost: qty.min(0).nullable().optional(),
 })
 
 export async function updateStockItem(input: z.input<typeof updateInput>) {
@@ -97,5 +101,18 @@ export async function saveRecipe(input: z.input<typeof recipeInput>) {
   return run((ctx, a) => {
     const v = recipeInput.parse(input)
     return withUser(ctx.user.id, (tx) => setRecipeCore(tx, a, v.menuItemId, v.ingredients))
+  })
+}
+
+const modifierRecipeInput = z.object({
+  optionId: z.string().uuid(),
+  ingredients: z.array(z.object({ stockItemId: z.string().uuid(), quantity: qty })).max(50),
+})
+
+/** Replace a modifier option's ingredients; an empty list unlinks it. */
+export async function saveModifierRecipe(input: z.input<typeof modifierRecipeInput>) {
+  return run((ctx, a) => {
+    const v = modifierRecipeInput.parse(input)
+    return withUser(ctx.user.id, (tx) => setModifierRecipeCore(tx, a, v.optionId, v.ingredients))
   })
 }
