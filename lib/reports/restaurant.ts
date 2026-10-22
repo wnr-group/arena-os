@@ -257,13 +257,13 @@ export async function getRestaurantReport(
           from public.audit_log a
           join public.tenants t on t.id = a.tenant_id
           left join public.memberships m on m.id = a.actor_membership_id
-          left join public.bookings bk on bk.id = nullif(a.before->>'booking_id', '')::uuid
-          left join public.branches br on br.id = bk.branch_id
+          left join public.orders od on od.id = nullif(a.before->>'order_id', '')::uuid and od.tenant_id = a.tenant_id
+          left join public.branches br on br.id = od.branch_id
          where a.tenant_id = ${tenantId}
            and a.action in ('order_item.void', 'order_item.comp')
            and ((a.created_at at time zone coalesce(br.timezone, t.timezone))::date)
                between ${range.start}::date and ${range.end}::date
-           ${branchId ? sql`and bk.branch_id = ${branchId}` : sql``}
+           ${branchId ? sql`and od.branch_id = ${branchId}` : sql``}
          order by a.created_at desc
       `),
     ),

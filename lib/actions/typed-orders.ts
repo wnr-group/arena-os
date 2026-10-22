@@ -9,8 +9,9 @@ import { POS_PAYMENT_METHODS } from '@/lib/billing/payments'
 import { BillingError } from '@/lib/billing/invoice'
 import { PaymentError } from '@/lib/billing/payments'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
-import { OrderError, cancelOrderCore, findOrderByIdempotencyKey, MAX_SEAT_NO } from '@/lib/orders/service'
+import { OrderError, findOrderByIdempotencyKey, MAX_SEAT_NO } from '@/lib/orders/service'
 import {
+  cancelTypedOrderCore,
   collectTypedOrderPaymentCore,
   createTypedOrderCore,
   handoverTypedOrderCore,
@@ -151,7 +152,7 @@ export async function cancelTypedOrder(orderId: string): Promise<Result> {
   try {
     const ctx = await requireStaff()
     const id = z.string().uuid().parse(orderId)
-    await withUser(ctx.user.id, (tx) => cancelOrderCore(tx, { tenantId: ctx.tenant.id }, id))
+    await withUser(ctx.user.id, (tx) => cancelTypedOrderCore(tx, { tenantId: ctx.tenant.id }, id))
     revalidatePath('/orders/takeaway')
     revalidatePath('/kitchen')
     return {}

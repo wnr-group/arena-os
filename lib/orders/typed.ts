@@ -13,7 +13,7 @@ import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { auditLog, invoices, kots, orderItems, orderItemModifiers, orderSettings, orders } from '@/db/schema'
-import { OrderError, createOrderCore, type CreateOrderItemInput } from './service'
+import { OrderError, cancelOrderCore, createOrderCore, type CreateOrderItemInput } from './service'
 import { issueInvoiceForOrder } from '@/lib/billing/invoice'
 import { recordPaymentForInvoice, type RecordPaymentResult } from '@/lib/billing/payments'
 import type { PosPaymentMethod } from '@/lib/billing/payments'
@@ -174,6 +174,11 @@ export async function handoverTypedOrderCore(
   const stage = orderStage({ orderStatus: o.status, kotStatus: kot, handoverStatus: o.handoverStatus })
   const problem = validateHandover({ orderType: o.orderType, stage, to: input.to, driverName: input.driverName ?? o.driverName })
   if (problem) throw new OrderError(problem)
+  // A finished order leaves the board, taking "Take payment" with it — so it
+  // must be billed first, or it could never be invoiced (or deduct stock).
+  if ((input.to === 'collected' || input.to === 'delivered') && !o.invoiceId) {
+    throw new OrderError('Take payment before handing this order over.')
+  }
 
   const patch: Partial<typeof orders.$inferInsert> = { handoverStatus: input.to }
   if (input.to === 'out_for_delivery') {
@@ -201,6 +206,21 @@ export async function handoverTypedOrderCore(
     after: { handover_status: input.to, driver: patch.driverName ?? null },
   })
   return { stage: input.to }
+}
+
+/**
+ * Cancel a takeaway / delivery order that is still only "received" (the kitchen
+ * hasn't started it) and not handed over or billed. Enforced here, not just by
+ * hiding the button, and under the same row lock as the other moves.
+ */
+export async function cancelTypedOrderCore(tx: Db, a: { tenantId: string }, orderId: string): Promise<void> {
+  const o = await lockTypedOrder(tx, a.tenantId, orderId)
+  const kot = await kotStatusOf(tx, a.tenantId, o.id)
+  const stage = orderStage({ orderStatus: o.status, kotStatus: kot, handoverStatus: o.handoverStatus })
+  if (stage === 'cancelled') throw new OrderError('This order is already cancelled.')
+  if (o.invoiceId || o.status === 'billed') throw new OrderError('This order has already been billed and cannot be cancelled.')
+  if (stage !== 'received') throw new OrderError('The kitchen has already started this order, so it can’t be cancelled.')
+  await cancelOrderCore(tx, a, o.id)
 }
 
 export type CollectPaymentResult = {

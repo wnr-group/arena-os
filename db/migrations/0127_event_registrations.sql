@@ -349,7 +349,8 @@ $$;
 -- `pending_payment` with a 24-hour hold (longer than a checkout's 30 minutes,
 -- because the customer is not sitting at the page waiting), and only a verified
 -- webhook can turn it into `registered`. The hold means the place is genuinely
--- reserved for them meanwhile, and expires back to the queue if they never pay.
+-- reserved for them meanwhile, and is cancelled (expire_event_registration_holds)
+-- if they never pay, so they lose their queue position.
 --
 -- The loop cannot oversell: each pass re-reads occupancy, and every promotion
 -- increases it by one (a live hold occupies), so it stops exactly at capacity.

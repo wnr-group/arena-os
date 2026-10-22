@@ -174,6 +174,9 @@ export async function enqueueKitchenTicketsCore(
     const printer = mapped ?? fallback
     const bucket = perPrinter.get(printer.id) ?? { printer, stationName: mapped ? l.stationName : null, lines: [] }
     perPrinter.set(printer.id, bucket)
+    // Lines from a different station (or an unmapped one) landed on this paper:
+    // a single station title would be wrong, so drop it.
+    if (bucket.lines.length > 0 && bucket.stationName !== (mapped ? l.stationName : null)) bucket.stationName = null
     bucket.lines.push({
       qty: l.qty,
       name: l.name,
