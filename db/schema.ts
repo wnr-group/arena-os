@@ -3138,6 +3138,35 @@ export const reservationSettings = pgTable('reservation_settings', {
   walkinBufferMinutes: integer('walkin_buffer_minutes').notNull().default(45),
   publicEnabled: boolean('public_enabled').notNull().default(false),
   maxPartySize: integer('max_party_size').notNull().default(12),
+  /** M20 (0151): walk-in waitlist switch. */
+  waitlistEnabled: boolean('waitlist_enabled').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })
+
+// M20 (0151): walk-in waitlist. status: waiting | notified | seated | left.
+export const waitlistEntries = pgTable(
+  'waitlist_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    phone: text('phone'),
+    partySize: integer('party_size').notNull(),
+    quotedWaitMinutes: integer('quoted_wait_minutes'),
+    notes: text('notes'),
+    status: text('status').notNull().default('waiting'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    notifiedAt: timestamp('notified_at', { withTimezone: true }),
+    seatedAt: timestamp('seated_at', { withTimezone: true }),
+    leftAt: timestamp('left_at', { withTimezone: true }),
+    bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
+  },
+  (t) => [index('idx_waitlist_active').on(t.tenantId, t.branchId, t.createdAt)],
+)

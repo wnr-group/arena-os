@@ -9,12 +9,12 @@ export default async function ReservationSettingsPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null
   if (!isManager(ctx.role) || ctx.tenant.industry !== 'restaurant') redirect('/dashboard')
-  if (!(await hasEntitlement(ctx, 'module.table_reservations'))) redirect('/dashboard')
+  if (!(await hasEntitlement(ctx, 'module.table_reservations')) && !(await hasEntitlement(ctx, 'module.waitlist'))) redirect('/dashboard')
 
   const settings = await getReservationSettings(ctx)
   return (
     <div className="mx-auto max-w-2xl px-6 py-8">
-      <h1 className="text-2xl font-semibold">Table reservations</h1>
+      <h1 className="text-2xl font-semibold">Reservations &amp; waitlist</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         Let guests reserve a table for a time and party size. Everything stays off until you switch it on.
       </p>

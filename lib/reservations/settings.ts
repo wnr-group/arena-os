@@ -18,6 +18,7 @@ export async function getReservationSettingsCore(tx: DB, tenantId: string): Prom
       walkinBufferMinutes: reservationSettings.walkinBufferMinutes,
       publicEnabled: reservationSettings.publicEnabled,
       maxPartySize: reservationSettings.maxPartySize,
+      waitlistEnabled: reservationSettings.waitlistEnabled,
     })
     .from(reservationSettings)
     .where(eq(reservationSettings.tenantId, tenantId))

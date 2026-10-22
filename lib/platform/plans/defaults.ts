@@ -57,6 +57,7 @@ export const KNOWN_ENTITLEMENT_KEYS = [
   'module.kitchen_display',
   'module.printing',
   'module.table_reservations',
+  'module.waitlist',
 ] as const
 
 export const DEFAULT_PLANS: readonly PlanSeed[] = [
@@ -75,6 +76,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.kitchen_display': false,
       'module.printing': false,
       'module.table_reservations': false,
+      'module.waitlist': false,
     },
   },
   {
@@ -94,6 +96,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.kitchen_display': true,
       'module.printing': true,
       'module.table_reservations': true,
+      'module.waitlist': true,
     },
   },
   {
@@ -114,6 +117,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.kitchen_display': true,
       'module.printing': true,
       'module.table_reservations': true,
+      'module.waitlist': true,
     },
   },
 ] as const

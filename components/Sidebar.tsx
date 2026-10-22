@@ -46,6 +46,7 @@ import {
   Armchair,
   Layers,
   AlarmClock,
+  ListOrdered,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -107,6 +108,8 @@ const NAV: NavItem[] = [
   { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
   // Table reservations (M20) — restaurant floor roles; the page itself checks the plan + opt-in.
   { href: '/reservations', label: 'Reservations', icon: CalendarClock, can: canManageWalkins, industries: ['restaurant'] },
+  // Walk-in waitlist (M20) — same roles; the page checks the plan + opt-in.
+  { href: '/waitlist', label: 'Waitlist', icon: ListOrdered, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
   // The customer membership catalogue — manager-only, like Resources.

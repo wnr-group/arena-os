@@ -10,7 +10,7 @@ import { canManageWalkins } from '@/lib/auth/roles'
 import { BookingError } from '@/lib/booking/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
-import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
+import { EntitlementError, hasEntitlement, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import {
   createReservationCore,
   freeTablesForWindow,
@@ -242,6 +242,7 @@ const settingsInput = z.object({
   walkinBufferMinutes: z.coerce.number().int(),
   publicEnabled: z.boolean(),
   maxPartySize: z.coerce.number().int(),
+  waitlistEnabled: z.boolean(),
 })
 
 /** Turn reservations on/off and set the knobs — owner/manager only. */
@@ -249,7 +250,8 @@ export async function saveReservationSettings(input: z.input<typeof settingsInpu
   try {
     const ctx = await requireManager()
     if (ctx.tenant.industry !== 'restaurant') throw new AuthError('Table reservations are for restaurant venues.')
-    await requireEntitlement(ctx, MODULE)
+    // This screen also hosts the waitlist switch (M20 / 0151), so either plan module opens it.
+    if (!(await hasEntitlement(ctx, 'module.waitlist'))) await requireEntitlement(ctx, MODULE)
     const v: ReservationSettings = settingsInput.parse(input)
     const problem = validateReservationSettings(v)
     if (problem) return { error: problem }
@@ -257,6 +259,7 @@ export async function saveReservationSettings(input: z.input<typeof settingsInpu
       applyReservationSettings(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
     revalidatePath('/settings/reservations')
+    revalidatePath('/waitlist')
     revalidatePath('/reservations')
     revalidatePath('/floor')
     revalidatePath('/', 'layout')

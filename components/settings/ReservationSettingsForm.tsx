@@ -81,6 +81,13 @@ export function ReservationSettingsForm({ initial }: { initial: ReservationSetti
         hint="Shows “Book a table” on your public site. Guests are assigned the first free table."
       />
 
+      <Toggle
+        checked={s.waitlistEnabled}
+        onChange={(v) => setS((cur) => ({ ...cur, waitlistEnabled: v }))}
+        label="Run a walk-in waitlist"
+        hint="Adds the Waitlist screen so the host can queue walk-ins and tell them when a table is ready."
+      />
+
       <div className="grid gap-5 sm:grid-cols-2">
         <NumberField label="Reservation length" unit="minutes" min={L.defaultDurationMinutes.min} max={L.defaultDurationMinutes.max} value={s.defaultDurationMinutes} onChange={(n) => patch({ defaultDurationMinutes: n })} hint="How long a table is held for each booking." />
         <NumberField label="No-show grace" unit="minutes" min={L.noShowGraceMinutes.min} max={L.noShowGraceMinutes.max} value={s.noShowGraceMinutes} onChange={(n) => patch({ noShowGraceMinutes: n })} hint="After this long past the booked time, the table is released." />

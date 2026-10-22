@@ -4,6 +4,7 @@ import { getActiveContext } from '@/lib/tenant/context'
 import { canManageIncomingOrders, canManageKitchen, canManageWalkins } from '@/lib/auth/roles'
 import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { todayInZone } from '@/lib/booking/time'
+import { isWaitlistEnabled, listActiveWaitlist } from '@/lib/waitlist/data'
 import { dayBounds, getReservationSettings, listReservations } from '@/lib/reservations/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
@@ -55,6 +56,10 @@ export default async function FloorPage() {
     canManageWalkins(ctx.role) &&
     (await hasEntitlement(ctx, 'module.table_reservations')) &&
     (await getReservationSettings(ctx)).enabled
+  // M20: the host's waitlist headline (count + longest wait) for the floor header.
+  const waitlistOn =
+    canManageWalkins(ctx.role) && (await hasEntitlement(ctx, 'module.waitlist')) && (await isWaitlistEnabled(ctx))
+  const waitlistEntries = waitlistOn ? await listActiveWaitlist(ctx, branch.id) : []
   const upcomingReservations = reservationsOn
     ? (await listReservations(ctx, branch.id, dayBounds(todayInZone(ctx.tenant.timezone), ctx.tenant.timezone)))
         .filter((r) => r.status === 'confirmed' && !r.seatedTableId && r.tableId)
@@ -159,6 +164,8 @@ export default async function FloorPage() {
       branchId={branch.id}
       reservationsOn={reservationsOn}
       upcomingReservations={upcomingReservations}
+      waitlistOn={waitlistOn}
+      waitlist={waitlistEntries.map((w) => ({ createdAt: w.createdAt.toISOString() }))}
       currency={ctx.tenant.currency}
       timeZone={ctx.tenant.timezone}
       tables={tables.map((t) => {

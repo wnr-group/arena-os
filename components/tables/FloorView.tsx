@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeftRight, Ban, CalendarClock, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Ban, CalendarClock, ListOrdered, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
 import { TransferTableDialog } from './TransferTableDialog'
@@ -16,6 +16,7 @@ import { setBookingStatus, requestBill } from '@/lib/actions/bookings'
 import { formatMoney } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { OrderSummary } from '@/components/bookings/BookingsView'
+import { waitlistSummary } from '@/lib/waitlist/rules'
 import type { TableStatus } from '@/lib/booking/table-status'
 
 /** Poll for status changes from other terminals (another waiter, the kitchen,
@@ -104,6 +105,8 @@ export function FloorView({
   branchId,
   reservationsOn,
   upcomingReservations,
+  waitlistOn,
+  waitlist,
   currency,
   timeZone,
   tables,
@@ -119,6 +122,10 @@ export function FloorView({
   /** Reservations are enabled for this venue + plan (M20). */
   reservationsOn: boolean
   upcomingReservations: FloorReservation[]
+  /** The walk-in waitlist is enabled for this venue + plan (M20). */
+  waitlistOn: boolean
+  /** Active (waiting/notified) parties — only their join time is needed here. */
+  waitlist: { createdAt: string }[]
   currency: string
   timeZone: string
   tables: TableRow[]
@@ -216,6 +223,21 @@ export function FloorView({
               ))}
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+        {waitlistOn && (
+          <Link
+            href="/waitlist"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            <ListOrdered size={15} /> Waitlist
+            {waitlist.length > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {waitlist.length} waiting · longest{' '}
+                {waitlistSummary(waitlist.map((w) => ({ createdAt: new Date(w.createdAt) })), new Date(now)).longestMinutes}m
+              </span>
+            )}
+          </Link>
+        )}
         {reservationsOn && (
           <Link
             href="/reservations"
@@ -229,6 +251,7 @@ export function FloorView({
             )}
           </Link>
         )}
+        </div>
       </div>
 
       {tables.length === 0 ? (

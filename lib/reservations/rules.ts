@@ -10,6 +10,8 @@ export type ReservationSettings = {
   walkinBufferMinutes: number
   publicEnabled: boolean
   maxPartySize: number
+  /** M20 (0151): the walk-in waitlist. Independent of `enabled`. */
+  waitlistEnabled: boolean
 }
 
 /** What a tenant with no reservation_settings row gets — reservations off. */
@@ -20,6 +22,7 @@ export const RESERVATION_DEFAULTS: ReservationSettings = {
   walkinBufferMinutes: 45,
   publicEnabled: false,
   maxPartySize: 12,
+  waitlistEnabled: false,
 }
 
 /** Same bounds as the 0150 CHECK constraints — validated here so a bad value
