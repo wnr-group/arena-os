@@ -27,13 +27,15 @@ export function SeatTableDialog({
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // M20: a reservation is about to start here — offer "seat anyway".
+  const [conflict, setConflict] = useState(false)
   const [pending, start] = useTransition()
 
   const covers = Number(coverCount)
   const coversValid = Number.isInteger(covers) && covers > 0
   const phoneError = customerPhone.trim() && !isValidPhone(customerPhone) ? 'Enter a valid 10-digit phone number.' : null
 
-  function submit() {
+  function submit(overrideReservation = false) {
     setError(null)
     if (!coversValid) {
       setError('Guest count must be at least 1.')
@@ -47,8 +49,12 @@ export function SeatTableDialog({
         coverCount: covers,
         customerName: customerName.trim() || undefined,
         customerPhone: customerPhone.trim() || undefined,
+        overrideReservation: overrideReservation || undefined,
       })
-      if (r.error) setError(r.error)
+      if (r.error) {
+        setError(r.error)
+        setConflict(Boolean(r.reservationConflict))
+      }
       else if (r.bookingId) onSeated(r.bookingId, covers)
     })
   }
@@ -101,13 +107,22 @@ export function SeatTableDialog({
           {error && <p className="text-sm text-destructive">{error}</p>}
 
           <button
-            onClick={submit}
+            onClick={() => submit()}
             disabled={pending || !coversValid}
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             {pending && <Loader2 size={15} className="animate-spin" />}
             Seat party
           </button>
+          {conflict && (
+            <button
+              onClick={() => submit(true)}
+              disabled={pending}
+              className="w-full rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              Seat anyway
+            </button>
+          )}
         </div>
       </div>
     </div>

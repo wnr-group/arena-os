@@ -44,7 +44,7 @@ function atLeastZero(value: number): number {
 
 export type BillLine = {
   description: string
-  kind: 'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon'
+  kind: 'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon' | 'delivery'
   sourceId?: string
   qty: number
   unitPrice: number

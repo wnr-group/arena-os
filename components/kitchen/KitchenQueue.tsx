@@ -8,6 +8,7 @@ import { updateKotStatus } from '@/lib/actions/kots'
 import type { KotStatus } from '@/lib/kots/service'
 import { STATUS_LABEL } from '@/lib/kots/labels'
 import { EightySixPanel, type EightySixItem } from './EightySixPanel'
+import { OrderTypeBadge } from '@/components/orders/OrderTypeBadge'
 
 export type { KotStatus }
 export type KotTicketItem = {
@@ -26,6 +27,9 @@ export type KotTicket = {
   orderNumber: string
   channel: 'staff' | 'online'
   stationName: string | null
+  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  contactName: string | null
+  pickupAt: string | null
   items: KotTicketItem[]
 }
 
@@ -120,6 +124,7 @@ export function KitchenQueue({ tickets, menuItems }: { tickets: KotTicket[]; men
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-base font-semibold">{ticket.kotNumber}</span>
+                  <OrderTypeBadge orderType={ticket.orderType} contactName={ticket.contactName} pickupAt={ticket.pickupAt} />
                   {ticket.channel === 'online' && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
                       <Smartphone size={10} /> Online

@@ -36,6 +36,7 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
+import { deductStockForOrders } from '@/lib/inventory/deduct'
 import {
   computeServiceCharge,
   mergeTaxBreakup,
@@ -436,7 +437,7 @@ export async function loadOrderFoodLines(
     )
     .orderBy(orderItems.id)
 
-  return rows.map((r) => ({
+  const lines: BillLine[] = rows.map((r) => ({
     description: r.itemName,
     kind: 'food' as const,
     sourceId: r.id,
@@ -444,6 +445,26 @@ export async function loadOrderFoodLines(
     unitPrice: Number(r.unitPrice),
     taxPercent: Number(r.taxRate),
   }))
+
+  // M20 (0157): a delivery order's fee is a snapshot on the order and bills as
+  // its own 'delivery' line at its own GST rate. Built HERE so the gateway
+  // amount (order-payment.ts) and the invoice (issueInvoiceForOrder) can never
+  // disagree about whether the fee is in the total. Zero for every other order.
+  const [fee] = await tx
+    .select({ deliveryFee: orders.deliveryFee, taxRate: orders.deliveryFeeTaxRate })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .limit(1)
+  if (fee && Number(fee.deliveryFee) > 0) {
+    lines.push({
+      description: 'Delivery charge',
+      kind: 'delivery',
+      qty: 1,
+      unitPrice: Number(fee.deliveryFee),
+      taxPercent: Number(fee.taxRate),
+    })
+  }
+  return lines
 }
 
 /**
@@ -1205,6 +1226,9 @@ export async function issueInvoiceForBooking(
           inArray(orders.id, billedOrderIds),
         ),
       )
+    // M10: deduct linked ingredients for the food just billed — once per order
+    // (idempotent), never blocking the bill. No recipe, no movement.
+    await deductStockForOrders(tx, tenant.id, billedOrderIds)
   }
 
   // ── 7b. void anything still unreviewed ────────────────────────────────────

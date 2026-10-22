@@ -78,6 +78,16 @@ export function canManageKitchen(role: MemberRole | null | undefined): boolean {
 }
 
 /**
+ * Roles that may fire a held course — the waiters/cashiers who take the order
+ * plus the kitchen. Mirrors the role check inside fire_order_course (0147).
+ */
+export const COURSE_FIRE_ROLES: MemberRole[] = ['owner', 'manager', 'cashier', 'floor_staff', 'kitchen_staff']
+
+export function canFireCourse(role: MemberRole | null | undefined): boolean {
+  return !!role && COURSE_FIRE_ROLES.includes(role)
+}
+
+/**
  * Roles that may see and act on the incoming online-order queue (accept /
  * reject) — front-of-house roles, not kitchen staff: an online order isn't
  * kitchen business until it's been accepted, at which point it's just a KOT

@@ -23,6 +23,8 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
+import { assertNoUpcomingReservation } from '@/lib/reservations/guard'
+import { resolveTableServer } from '@/lib/sections/resolve'
 import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
 import { getBookingSettingsCore } from './settings'
 import {
@@ -109,6 +111,10 @@ export type CreateBookingInput = {
    *  confirmed) with this expiry, and flips to confirmed on the verified
    *  webhook. Never accepted from a client; every other caller leaves it unset. */
   pendingPaymentUntil?: Date
+  /** M20: set ONLY by createReservationCore (lib/reservations/service.ts) —
+   *  marks the booking as a table reservation (cover count + length) so it can
+   *  later be converted to a seated session. Never accepted from a client. */
+  reservation?: { coverCount: number; minutes: number }
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -886,6 +892,11 @@ export async function createBookingCore(
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
       backdated: input.backdated ?? false,
+      ...(input.reservation && {
+        coverCount: input.reservation.coverCount,
+        reservedFor: slotRows[0].startsAt,
+        reservedMinutes: input.reservation.minutes,
+      }),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -1180,6 +1191,10 @@ export type SeatTableSessionInput = {
   customerPhone?: string
   customerEmail?: string
   notes?: string
+  /** M20: seat anyway although a reservation is about to start at this table.
+   *  Absent/false keeps the guard on. Only consulted when the tenant has
+   *  reservations enabled. */
+  overrideReservation?: boolean
 }
 
 /**
@@ -1222,6 +1237,11 @@ export async function seatTableSessionCore(
   }
   if (resource.status !== 'available') throw new BookingError('This table is not available.')
 
+  // M20: a walk-in must not take a table a reservation is about to need.
+  // Short-circuits to a no-op unless the venue opted into reservations, so
+  // every existing restaurant seats exactly as before.
+  if (!input.overrideReservation) await assertNoUpcomingReservation(tx, ctx, input.resourceId)
+
   const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, {
     phone: input.customerPhone,
     name: input.customerName,
@@ -1253,6 +1273,8 @@ export async function seatTableSessionCore(
       notes: input.notes || null,
       createdBy: ctx.membershipId,
       checkedInAt: now,
+      // M20: the server assigned to this table/section (null when none is).
+      serverId: await resolveTableServer(tx, ctx.tenantId, input.resourceId),
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 
@@ -1823,6 +1845,14 @@ export async function splitTableCore(
       source: 'walk_in',
       createdBy: ctx.membershipId,
       checkedInAt: now,
+      // M20: same party, same server.
+      serverId: (
+        await tx
+          .select({ serverId: bookings.serverId })
+          .from(bookings)
+          .where(and(eq(bookings.id, input.sourceBookingId), eq(bookings.tenantId, ctx.tenantId)))
+          .limit(1)
+      )[0]?.serverId ?? null,
     })
     .returning({ id: bookings.id, confirmationToken: bookings.confirmationToken })
 

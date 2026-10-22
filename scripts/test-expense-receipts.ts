@@ -89,14 +89,20 @@ async function main() {
   console.log('\n── the deletion guard ──')
   const base = process.env.S3_PUBLIC_URL_BASE!.replace(/\/$/, '')
   check('a URL under our base yields its key',
-    objectKeyFromUrl(`${base}/tenants/t1/expense-receipts/abc.pdf`) === 'tenants/t1/expense-receipts/abc.pdf')
+    objectKeyFromUrl(`${base}/tenants/t1/expense-receipts/abc.pdf`, 't1') === 'tenants/t1/expense-receipts/abc.pdf')
   check('a URL on another host yields NOTHING',
-    objectKeyFromUrl('https://evil.example/tenants/t1/x.pdf') === null)
-  check('a bucket-root URL yields nothing', objectKeyFromUrl(base) === null)
-  check('a traversal attempt yields nothing', objectKeyFromUrl(`${base}/../../etc/passwd`) === null)
+    objectKeyFromUrl('https://evil.example/tenants/t1/x.pdf', 't1') === null)
+  check('a bucket-root URL yields nothing', objectKeyFromUrl(base, 't1') === null)
+  check('a traversal attempt yields nothing', objectKeyFromUrl(`${base}/../../etc/passwd`, 't1') === null)
   check('a base-prefix lookalike yields nothing',
-    objectKeyFromUrl(`${base}-other/tenants/t1/x.pdf`) === null)
-  check('null/empty yield nothing', objectKeyFromUrl(null) === null && objectKeyFromUrl('') === null)
+    objectKeyFromUrl(`${base}-other/tenants/t1/x.pdf`, 't1') === null)
+  check('null/empty yield nothing', objectKeyFromUrl(null, 't1') === null && objectKeyFromUrl('', 't1') === null)
+  check('ANOTHER tenant’s object yields nothing (cross-tenant delete guard)',
+    objectKeyFromUrl(`${base}/tenants/t2/events/b.png`, 't1') === null)
+  check('a tenant-id prefix lookalike yields nothing',
+    objectKeyFromUrl(`${base}/tenants/t10/events/b.png`, 't1') === null)
+  check('a missing tenant id yields nothing', objectKeyFromUrl(`${base}/tenants/t1/x.png`, '') === null)
+  check('a key outside tenants/ yields nothing', objectKeyFromUrl(`${base}/public/x.png`, 't1') === null)
 
   // ── database layer ────────────────────────────────────────────────────────
   const db = new Client({ connectionString: process.env.DATABASE_URL_OWNER })
@@ -157,7 +163,7 @@ async function main() {
     // Replace, then remove.
     await db.query(`update expenses set receipt_url=$2 where id=$1`, [withR, URL_NEW])
     check('replacing points the row at the new object', (await receiptOf(withR)) === URL_NEW)
-    check('…and the OLD url is derivable for cleanup', objectKeyFromUrl(URL_OLD) !== null)
+    check('…and the OLD url is derivable for cleanup', objectKeyFromUrl(URL_OLD, A.tenantId) !== null)
 
     await db.query(`update expenses set receipt_url=null where id=$1`, [withR])
     check('removing sets receipt_url to NULL', (await receiptOf(withR)) === null)
@@ -211,10 +217,10 @@ async function main() {
     // The prefix uploadExpenseReceipt() uses is `tenants/{ctx.tenant.id}/…`, so
     // a key can only ever land under the caller's own tenant. Asserting the
     // shape here documents the invariant the action depends on.
-    const key = objectKeyFromUrl(URL_OLD)
+    const key = objectKeyFromUrl(URL_OLD, A.tenantId)
     check('key is namespaced by tenant', key?.startsWith(`tenants/${A.tenantId}/expense-receipts/`) === true, key ?? 'null')
     check('B’s prefix is a different namespace',
-      objectKeyFromUrl(`${base}/tenants/${B.tenantId}/expense-receipts/b.pdf`)?.includes(A.tenantId) === false)
+      objectKeyFromUrl(`${base}/tenants/${B.tenantId}/expense-receipts/b.pdf`, A.tenantId) === null)
   }
 
   await db.end()

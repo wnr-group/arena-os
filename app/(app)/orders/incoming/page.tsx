@@ -55,6 +55,9 @@ function groupIntoOrders(
     orderNumber: string
     createdAt: Date
     stationName: string | null
+    orderType: 'dine_in' | 'takeaway' | 'delivery'
+    contactName: string | null
+    pickupAt: Date | null
     itemId: string | null
     itemName: string | null
     qty: number | null
@@ -71,6 +74,9 @@ function groupIntoOrders(
         orderNumber: row.orderNumber,
         createdAt: row.createdAt.toISOString(),
         stationName: row.stationName,
+        orderType: row.orderType,
+        contactName: row.contactName,
+        pickupAt: row.pickupAt ? row.pickupAt.toISOString() : null,
         items: [],
       }
       ordersById.set(row.orderId, order)
