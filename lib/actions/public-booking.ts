@@ -25,6 +25,7 @@ import {
 } from '@/lib/booking/service'
 import { dayRangeError, horizonMessage, horizonNow, isDateWithinHorizon } from '@/lib/booking/horizon'
 import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
 import { todayInZone } from '@/lib/booking/time'
 import { getPublicBookingPaymentState } from '@/lib/booking/public-confirmation'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
@@ -116,6 +117,8 @@ export type AvailabilityResult = {
    * single-resource page has had (getPublicResourceAvailability).
    */
   allStarts?: string[]
+  /** Venue booking time step (minutes) the start times are laid out on. */
+  slotMinutes?: number
   /** M22 #4: the effective hourly rate for the SELECTED date (weekday or
    *  weekend, per lib/booking/rate.ts:resolveDayRate) — the wizard prices its
    *  live estimate/deposit off this instead of a static, date-blind rate, so
@@ -160,6 +163,7 @@ export async function getPublicAvailability(
   return {
     starts: result.starts.map((s) => ({ startsAt: s.start.toISOString(), resourceId: s.resourceId })),
     allStarts: result.allStarts.map((d) => d.toISOString()),
+    slotMinutes: result.slotMinutes,
     rate: result.rate,
   }
 }
@@ -171,7 +175,7 @@ const resourceAvailabilityInput = z.object({
 })
 
 export type PublicResourceAvailabilityResult =
-  | { starts: string[]; allStarts: string[]; isClosed: boolean; rate: string }
+  | { starts: string[]; allStarts: string[]; slotMinutes: number; isClosed: boolean; rate: string }
   | { error: string }
 
 /** Same as getPublicAvailability, but for one specific resource unit rather
@@ -209,6 +213,7 @@ export async function getPublicResourceAvailability(
   return {
     starts: result.starts.map((d) => d.toISOString()),
     allStarts: result.allStarts.map((d) => d.toISOString()),
+    slotMinutes: result.slotMinutes,
     isClosed: result.isClosed,
     rate: result.rate,
   }
@@ -588,8 +593,9 @@ export async function createPublicBooking(
       }
     }
 
-    const result = await withPublicTenant(tenant.id, (tx) =>
-      createBookingCore(
+    const result = await withPublicTenant(tenant.id, async (tx) => {
+      await assertSlotsOnGrid(tx, { tenantId: tenant.id, timezone: tenant.timezone }, branch.id, slots)
+      return createBookingCore(
         tx,
         { tenantId: tenant.id, timezone: tenant.timezone, membershipId: null },
         {
@@ -605,8 +611,8 @@ export async function createPublicBooking(
           headCount,
           pendingPaymentUntil,
         },
-      ),
-    )
+      )
+    })
 
     revalidatePath('/bookings')
     return {

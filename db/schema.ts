@@ -3194,6 +3194,8 @@ export const bookingSettings = pgTable('booking_settings', {
     .references(() => tenants.id, { onDelete: 'cascade' }),
   /** Bookable dates are today … today + N − 1 in the tenant timezone. */
   maxAdvanceDays: integer('max_advance_days').notNull().default(7),
+  /** Grid step for bookable start times / durations, minutes (0162). */
+  slotStepMinutes: integer('slot_step_minutes').notNull().default(30),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })

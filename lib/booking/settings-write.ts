@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { DB } from '@/db'
 import { bookingSettings } from '@/db/schema'
 import { writeAudit } from '@/lib/billing/invoice'
-import { DEFAULT_MAX_ADVANCE_DAYS, isAdvanceWindowPreset } from './settings'
+import { DEFAULT_MAX_ADVANCE_DAYS, DEFAULT_SLOT_STEP_MINUTES, isAdvanceWindowPreset, isSlotStepPreset } from './settings'
 
 export class AdvanceWindowError extends Error {}
 
@@ -43,6 +43,43 @@ export async function applyBookingWindow(
     entityId: actor.tenantId,
     before: { maxAdvanceDays: old },
     after: { maxAdvanceDays: next },
+  })
+  return old
+}
+
+export class SlotStepError extends Error {}
+
+/**
+ * Upsert the venue's booking time step and audit old → new. Manager-only at the
+ * caller and again by RLS. Never touches existing bookings: it only changes
+ * which times NEW bookings can start at.
+ */
+export async function applySlotStep(
+  tx: DB,
+  actor: { tenantId: string; membershipId: string },
+  next: number,
+): Promise<number> {
+  if (!isSlotStepPreset(next)) throw new SlotStepError('Choose 5, 10, 15, 20, 30 or 60 minutes.')
+  const [row] = await tx
+    .select({ slotStepMinutes: bookingSettings.slotStepMinutes })
+    .from(bookingSettings)
+    .where(eq(bookingSettings.tenantId, actor.tenantId))
+    .limit(1)
+  const old = row?.slotStepMinutes ?? DEFAULT_SLOT_STEP_MINUTES
+  if (old === next) return old
+  await tx
+    .insert(bookingSettings)
+    .values({ tenantId: actor.tenantId, slotStepMinutes: next, updatedBy: actor.membershipId })
+    .onConflictDoUpdate({
+      target: bookingSettings.tenantId,
+      set: { slotStepMinutes: next, updatedBy: actor.membershipId },
+    })
+  await writeAudit(tx, actor, {
+    action: 'booking_settings.slot_step_changed',
+    entityType: 'booking_settings',
+    entityId: actor.tenantId,
+    before: { slotStepMinutes: old },
+    after: { slotStepMinutes: next },
   })
   return old
 }

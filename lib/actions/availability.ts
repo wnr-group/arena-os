@@ -1,6 +1,6 @@
 'use server'
 
-import { and, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNull, lt, ne, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { resources, resourceTypes, holidayRates, workingHours, bookingSlots } from '@/db/schema'
@@ -9,7 +9,7 @@ import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { availableStartTimes, dayWindow, type Interval } from '@/lib/booking/availability'
 import { todayInZone, weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
 import { dayRangeError, horizonMessage, horizonNow, isDateWithinHorizon } from '@/lib/booking/horizon'
-import { maxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settings-server'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { resolveDayRate } from '@/lib/booking/rate'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
@@ -19,11 +19,15 @@ const input = z.object({
   resourceId: z.string().uuid(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   durationMinutes: z.coerce.number().int().min(15).max(24 * 60),
+  /** Reschedule: leave this booking's own slot out so its current time reads as free. */
+  excludeBookingId: z.string().uuid().optional(),
 })
 
 export type AvailabilityResponse = {
   error?: string
   timeZone?: string
+  /** Venue booking time step (minutes) the start times are laid out on. */
+  slotMinutes?: number
   /** ISO start times that fit. */
   starts?: string[]
   /** Every candidate slot the working hours allow for this duration, ignoring
@@ -70,6 +74,7 @@ export async function getAvailableStarts(
     await sweepTenantHolds(ctx.tenant.id)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
+    const step = await slotStepOrDefault(ctx)
 
     return await withUser(ctx.user.id, async (tx) => {
       // buffer for this resource comes from its type
@@ -142,6 +147,10 @@ export async function getAvailableStarts(
           and(
             eq(bookingSlots.resourceId, v.resourceId),
             eq(bookingSlots.active, true),
+            // Event blocks have a null booking_id; `<>` alone would drop them (NULL), so keep them explicitly.
+            v.excludeBookingId
+              ? or(isNull(bookingSlots.bookingId), ne(bookingSlots.bookingId, v.excludeBookingId))
+              : undefined,
             // OVERLAP, not "starts on this day".
             //
             // Filtering on startsAt alone made every slot that begins BEFORE the
@@ -164,7 +173,7 @@ export async function getAvailableStarts(
       const resolvedHours = hours ?? DEFAULT_HOURS
       const starts = availableStartTimes(v.date, tz, resolvedHours, existing, {
         durationMinutes: v.durationMinutes,
-        slotMinutes: 30,
+        slotMinutes: step,
         bufferMinutes: res.buffer,
       })
 
@@ -172,11 +181,12 @@ export async function getAvailableStarts(
       // grid has none to sit beside — same as getAvailableStartsForType.
       const allStarts = availableStartTimes(v.date, tz, resolvedHours, [], {
         durationMinutes: v.durationMinutes,
-        slotMinutes: 30,
+        slotMinutes: step,
       })
 
       return {
         timeZone: tz,
+        slotMinutes: step,
         starts: starts.map((d) => d.toISOString()),
         allStarts: allStarts.map((d) => d.toISOString()),
         isClosed: resolvedHours.isClosed,
@@ -199,6 +209,8 @@ const typeInput = z.object({
 export type TypeAvailabilityResponse = {
   error?: string
   timeZone?: string
+  /** Venue booking time step (minutes) the start times are laid out on. */
+  slotMinutes?: number
   /** Each bookable start time, paired with the specific available unit it
    * would be assigned to — first-free-unit-wins, same rule the public
    * booking flow uses (getPublicAvailableStartsForType). */
@@ -239,6 +251,7 @@ export async function getAvailableStartsForType(
     await sweepTenantHolds(ctx.tenant.id)
     const tz = ctx.tenant.timezone
     const dow = weekdayInZone(v.date, tz)
+    const step = await slotStepOrDefault(ctx)
 
     return await withUser(ctx.user.id, async (tx) => {
       const resourceRows = await tx
@@ -348,7 +361,7 @@ export async function getAvailableStartsForType(
       for (const r of resourceRows) {
         const starts = availableStartTimes(v.date, tz, resolvedHours, existingByResource.get(r.id) ?? [], {
           durationMinutes: v.durationMinutes,
-          slotMinutes: 30,
+          slotMinutes: step,
           bufferMinutes: r.buffer,
         })
         for (const s of starts) {
@@ -365,11 +378,12 @@ export async function getAvailableStartsForType(
       // grid has none to sit beside — same as getPublicAvailableStartsForType.
       const allStarts = availableStartTimes(v.date, tz, resolvedHours, [], {
         durationMinutes: v.durationMinutes,
-        slotMinutes: 30,
+        slotMinutes: step,
       })
 
       return {
         timeZone: tz,
+        slotMinutes: step,
         starts,
         allStarts: allStarts.map((d) => d.toISOString()),
         isClosed: resolvedHours.isClosed,

@@ -9,6 +9,7 @@ import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { getActiveBookingForResource } from './attribution'
 import { industryHasStudioSetups } from './studio-setups'
 import { loadSetupImages } from './setup-images'
+import { getBookingSettingsCore } from './settings'
 
 export type PublicBranch = { id: string; name: string; address: string | null; phone: string | null }
 
@@ -185,7 +186,7 @@ export type PublicAvailabilityInput = {
  */
 export async function getPublicAvailableStarts(
   input: PublicAvailabilityInput,
-): Promise<{ starts: Date[]; allStarts: Date[]; isClosed: boolean; rate: string } | { error: string }> {
+): Promise<{ starts: Date[]; allStarts: Date[]; slotMinutes: number; isClosed: boolean; rate: string } | { error: string }> {
   const { tenantId, branchId, resourceId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
@@ -294,18 +295,19 @@ export async function getPublicAvailableStarts(
       )
       .then((rows) => rows.map((r) => ({ startsAt: r.startsAt, endsAt: r.endsAt ?? dayEnd })))
 
+    const step = (await getBookingSettingsCore(tx, tenantId)).slotStepMinutes
     const resolvedHours = hours ?? DEFAULT_HOURS
     const starts = availableStartTimes(date, timeZone, resolvedHours, existing, {
       durationMinutes,
-      slotMinutes: 30,
+      slotMinutes: step,
       bufferMinutes: res.buffer,
     })
     const allStarts = availableStartTimes(date, timeZone, resolvedHours, [], {
       durationMinutes,
-      slotMinutes: 30,
+      slotMinutes: step,
     })
 
-    return { starts, allStarts, isClosed: resolvedHours.isClosed, rate: rate.toFixed(2) }
+    return { starts, allStarts, slotMinutes: step, isClosed: resolvedHours.isClosed, rate: rate.toFixed(2) }
   })
 }
 
@@ -469,7 +471,7 @@ export type PublicTypeSlot = { start: Date; resourceId: string }
  */
 export async function getPublicAvailableStartsForType(
   input: PublicTypeAvailabilityInput,
-): Promise<{ starts: PublicTypeSlot[]; allStarts: Date[]; rate: string } | { error: string }> {
+): Promise<{ starts: PublicTypeSlot[]; allStarts: Date[]; slotMinutes: number; rate: string } | { error: string }> {
   const { tenantId, branchId, resourceTypeId, timeZone, date, durationMinutes } = input
 
   return withPublicTenant(tenantId, async (tx) => {
@@ -568,13 +570,14 @@ export async function getPublicAvailableStartsForType(
       existingByResource.set(row.resourceId, list)
     }
 
+    const step = (await getBookingSettingsCore(tx, tenantId)).slotStepMinutes
     // First-free-unit-wins, keyed by start-time ISO, so each shown time maps
     // to exactly one resource under the hood.
     const byStart = new Map<string, string>()
     for (const r of resourceRows) {
       const starts = availableStartTimes(date, timeZone, hours ?? DEFAULT_HOURS, existingByResource.get(r.id) ?? [], {
         durationMinutes,
-        slotMinutes: 30,
+        slotMinutes: step,
         bufferMinutes: r.buffer,
       })
       for (const s of starts) {
@@ -591,10 +594,10 @@ export async function getPublicAvailableStartsForType(
     // has none to sit beside. Passing one would shorten the day itself.
     const allStarts = availableStartTimes(date, timeZone, hours ?? DEFAULT_HOURS, [], {
       durationMinutes,
-      slotMinutes: 30,
+      slotMinutes: step,
     })
 
-    return { starts, allStarts, rate: rate.toFixed(2) }
+    return { starts, allStarts, slotMinutes: step, rate: rate.toFixed(2) }
   })
 }
 

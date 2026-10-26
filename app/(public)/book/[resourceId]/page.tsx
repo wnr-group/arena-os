@@ -10,7 +10,7 @@ import {
 } from '@/lib/booking/public-availability'
 import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { todayInZone } from '@/lib/booking/time'
-import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { publicMaxAdvanceDaysOrDefault, publicSlotStepOrDefault } from '@/lib/booking/settings-server'
 import { closedWeekdaysOf } from '@/lib/booking/closed-days'
 import { CHIP_STRIP_MAX_DAYS } from '@/lib/booking/horizon'
 import { getPublicMenu } from '@/lib/menu/public'
@@ -90,6 +90,7 @@ export default async function ResourceBookPage({
       ? await getPublicTypeAddons(tenant.id, branch.id, [resource.resourceTypeId])
       : []
   const maxAdvanceDays = await publicMaxAdvanceDaysOrDefault(tenant.id)
+  const slotMinutes = await publicSlotStepOrDefault(tenant.id)
   const closedWeekdays = branch && maxAdvanceDays > CHIP_STRIP_MAX_DAYS ? await closedWeekdaysOf(tenant.id, branch.id) : []
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
@@ -122,6 +123,7 @@ export default async function ResourceBookPage({
             addonCatalog={addonCatalog}
             today={todayInZone(tenant.timezone)}
             maxAdvanceDays={maxAdvanceDays}
+            slotMinutes={slotMinutes}
             closedWeekdays={closedWeekdays}
             initialDate={typeof dateParam === 'string' ? dateParam : undefined}
             razorpayConfigured={razorpayCredentials !== null}

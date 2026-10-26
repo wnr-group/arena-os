@@ -1,7 +1,7 @@
 import 'server-only'
 import { withPublicTenant, withUser } from '@/db'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { DEFAULT_MAX_ADVANCE_DAYS, getBookingSettingsCore, type BookingSettings } from './settings'
+import { DEFAULT_MAX_ADVANCE_DAYS, DEFAULT_SLOT_STEP_MINUTES, getBookingSettingsCore, type BookingSettings } from './settings'
 
 /** Staff path: the tenant context of a logged-in user. */
 export function getBookingSettings(ctx: ActiveContext): Promise<BookingSettings> {
@@ -32,5 +32,24 @@ export async function publicMaxAdvanceDaysOrDefault(tenantId: string): Promise<n
   } catch (e) {
     console.error('[booking-settings] public read failed, using default window:', e instanceof Error ? e.name : 'unknown')
     return DEFAULT_MAX_ADVANCE_DAYS
+  }
+}
+
+/** Time-step readers fail to the 30-minute default, never to a finer grid. */
+export async function slotStepOrDefault(ctx: ActiveContext): Promise<number> {
+  try {
+    return (await getBookingSettings(ctx)).slotStepMinutes
+  } catch (e) {
+    console.error('[booking-settings] step read failed, using default:', e instanceof Error ? e.name : 'unknown')
+    return DEFAULT_SLOT_STEP_MINUTES
+  }
+}
+
+export async function publicSlotStepOrDefault(tenantId: string): Promise<number> {
+  try {
+    return (await getPublicBookingSettings(tenantId)).slotStepMinutes
+  } catch (e) {
+    console.error('[booking-settings] public step read failed, using default:', e instanceof Error ? e.name : 'unknown')
+    return DEFAULT_SLOT_STEP_MINUTES
   }
 }

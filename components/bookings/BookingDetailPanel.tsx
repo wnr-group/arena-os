@@ -7,6 +7,7 @@ import { Ban, Loader2, Minus, Plus, ReceiptText, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { DepositButton } from './DepositButton'
 import { CancelBookingDialog } from './CancelBookingDialog'
+import { RescheduleBookingDialog } from './RescheduleBookingDialog'
 import { BookingAddonsDialog } from './BookingAddonsDialog'
 import { PAYMENT_LABELS, SOURCE_LABELS } from './bookingBadges'
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
@@ -165,6 +166,7 @@ export function BookingDetailPanel({
 }) {
   const router = useRouter()
   const [cancelTarget, setCancelTarget] = useState<PanelBooking | null>(null)
+  const [rescheduleTarget, setRescheduleTarget] = useState<PanelBooking | null>(null)
   // M33: the unbilled-booking add-ons correction dialog.
   const [addonsTarget, setAddonsTarget] = useState<PanelBooking | null>(null)
   const [voidTarget, setVoidTarget] = useState<{ itemId: string; itemName: string; qty: number } | null>(null)
@@ -421,6 +423,15 @@ export function BookingDetailPanel({
                   loading={actingAction === 'no_show'}
                 />
               )}
+              {/* Reschedule: moves a reserved booking's time. Hidden once billed or for a
+                  late entry. NOT keyed on `source`: staff-made counter bookings carry
+                  source 'walk_in' too. A real walk-in session (channel 'walkin') is refused
+                  by the action, which re-checks everything. */}
+              {(selected.status === 'confirmed' || selected.status === 'checked_in') &&
+                !selected.backdated &&
+                !paymentStates[selected.bookingId] && (
+                  <ActBtn label="Reschedule" variant="muted" onClick={() => setRescheduleTarget(selected)} pending={pending} />
+                )}
               {(selected.status === 'confirmed' || selected.status === 'checked_in') && (
                 <ActBtn label="Cancel" variant="danger" onClick={() => setCancelTarget(selected)} pending={pending} />
               )}
@@ -613,6 +624,21 @@ export function BookingDetailPanel({
           onSaved={() => {
             setAddonsTarget(null)
             router.refresh()
+          }}
+        />
+      )}
+
+      {rescheduleTarget && (
+        <RescheduleBookingDialog
+          bookingId={rescheduleTarget.bookingId}
+          currency={currency}
+          onClose={() => setRescheduleTarget(null)}
+          onDone={() => {
+            const number = rescheduleTarget.bookingNumber
+            setRescheduleTarget(null)
+            onClose()
+            router.refresh()
+            toast.success(`Booking ${number} rescheduled.`)
           }}
         />
       )}

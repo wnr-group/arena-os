@@ -46,6 +46,7 @@ export function BookingWizard({
   today,
   initialDate,
   maxAdvanceDays,
+  slotMinutes,
   closedWeekdays = [],
   canChangeSettings = false,
   initialTab,
@@ -62,6 +63,8 @@ export function BookingWizard({
   initialDate: string
   /** M37 #4: the venue's advance-booking window - applies to the Future tab only (walk-ins start now). */
   maxAdvanceDays: number
+  /** The venue's booking time step in minutes (0162). */
+  slotMinutes?: number
   closedWeekdays?: number[]
   canChangeSettings?: boolean
   initialTab: 'walkin' | 'future'
@@ -122,6 +125,7 @@ export function BookingWizard({
             today={today}
             initialDate={initialDate}
             maxAdvanceDays={maxAdvanceDays}
+            slotMinutes={slotMinutes}
             closedWeekdays={closedWeekdays}
             canChangeSettings={canChangeSettings}
             initialResourceTypeId={initialResourceTypeId}

@@ -34,7 +34,6 @@ import { openBookingCheckout } from './booking-checkout'
 import { BookingPaymentSummary, paymentFlow, type QuotePayment } from './BookingPaymentSummary'
 import { HoneypotField } from './HoneypotField'
 import {
-  DURATIONS,
   SLOT_MINUTES,
   prettyDateLong,
   durationLabel,
@@ -44,6 +43,7 @@ import {
   SummaryRow,
 } from './ResourceBookingPage'
 import { clampDateToWindow, dateOptions } from '@/lib/booking/horizon'
+import { buildDurations } from '@/lib/booking/settings'
 import { DatePicker } from '@/components/ui/DatePicker'
 
 type Step = 'select' | 'details'
@@ -63,6 +63,7 @@ export function ResourceTypeBookingPage({
   resourceType,
   today,
   maxAdvanceDays,
+  slotMinutes = SLOT_MINUTES,
   closedWeekdays = [],
   initialDate,
   razorpayConfigured,
@@ -74,6 +75,8 @@ export function ResourceTypeBookingPage({
   today: string
   /** M37 #3: the venue's advance-booking window — bookable dates are today … today + N − 1. */
   maxAdvanceDays: number
+  /** The venue's booking time step in minutes (0162); defaults to 30. */
+  slotMinutes?: number
   /** Weekdays (0 = Sunday) the venue is closed, from its working hours. */
   closedWeekdays?: number[]
   /** A prefilled date (?date=); clamped into the window with a notice when it falls outside. */
@@ -94,6 +97,7 @@ export function ResourceTypeBookingPage({
 }) {
   const router = useRouter()
   const dates = useMemo(() => dateOptions(today, maxAdvanceDays), [today, maxAdvanceDays])
+  const durations = useMemo(() => buildDurations(slotMinutes), [slotMinutes])
   const initial = useMemo(() => clampDateToWindow(initialDate, today, maxAdvanceDays), [initialDate, today, maxAdvanceDays])
 
   const [step, setStep] = useState<Step>('select')
@@ -431,7 +435,7 @@ export function ResourceTypeBookingPage({
                 <section>
                   <SectionLabel icon={Clock}>Duration</SectionLabel>
                   <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
-                    {DURATIONS.map((m) => {
+                    {durations.map((m) => {
                       const isSelected = duration === m
                       return (
                         <button
@@ -491,7 +495,7 @@ export function ResourceTypeBookingPage({
                               <span>
                                 {time12(s.startsAt, tenant.timezone)} –{' '}
                                 {time12(
-                                  new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString(),
+                                  new Date(new Date(s.startsAt).getTime() + slotMinutes * 60_000).toISOString(),
                                   tenant.timezone,
                                 )}
                               </span>
@@ -510,7 +514,7 @@ export function ResourceTypeBookingPage({
                           const startsAt = selectedSlot?.startsAt ?? null
                           const inRange =
                             !isSelected && startsAt && endsAt && s.startsAt >= startsAt && s.startsAt < endsAt
-                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
+                          const rangeEnd = new Date(new Date(s.startsAt).getTime() + slotMinutes * 60_000).toISOString()
                           return (
                             <button
                               key={s.startsAt}

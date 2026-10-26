@@ -431,6 +431,58 @@ export async function syncSlotAddonEnds(
 }
 
 /**
+ * Reschedule: move a slot's add-on rows to the slot's new window, re-check pooled
+ * stock for it (leaving this slot's own rows out — it is re-checked against
+ * everyone ELSE) and re-price each line from its frozen rate. Returns the sum of
+ * the line totals. `dryRun` prices without writing or checking stock (the quote).
+ * No-op (0) when the slot has no add-ons.
+ */
+export async function rescheduleSlotAddons(
+  tx: Db,
+  tenantId: string,
+  slotId: string,
+  startsAt: Date,
+  endsAt: Date,
+  opts: { dryRun?: boolean } = {},
+): Promise<number> {
+  const rows = await tx
+    .select({
+      id: bookingAddons.id,
+      addonId: bookingAddons.addonId,
+      rateUnit: bookingAddons.rateUnit,
+      rateApplied: bookingAddons.rateApplied,
+      quantity: bookingAddons.quantity,
+    })
+    .from(bookingAddons)
+    .where(and(eq(bookingAddons.tenantId, tenantId), eq(bookingAddons.bookingSlotId, slotId)))
+    .orderBy(asc(bookingAddons.addonId))
+  if (rows.length === 0) return 0
+
+  if (!opts.dryRun) {
+    const ids = [...new Set(rows.map((r) => r.addonId).filter((id): id is string => id !== null))]
+    const catalog = await lockAddonCatalog(tx, tenantId, ids)
+    for (const r of rows) {
+      const row = r.addonId ? catalog.get(r.addonId) : undefined
+      if (!row) continue
+      await assertStock(tx, tenantId, row, r.quantity, startsAt, endsAt, slotId)
+    }
+  }
+
+  let total = 0
+  for (const r of rows) {
+    const lineTotal = addonLineTotal(r.rateUnit, Number(r.rateApplied), r.quantity, startsAt, endsAt)
+    total += lineTotal
+    if (!opts.dryRun) {
+      await tx
+        .update(bookingAddons)
+        .set({ lineTotal: lineTotal.toFixed(2), startsAt, endsAt })
+        .where(eq(bookingAddons.id, r.id))
+    }
+  }
+  return round2(total)
+}
+
+/**
  * Walk-in checkout pricing: compute every add-on line on the booking's slot
  * from [slot start, priceEnd) and stamp ends_at (open tab) alongside.
  * Returns the sum written. No-op (0) when the walk-in has no add-ons.
