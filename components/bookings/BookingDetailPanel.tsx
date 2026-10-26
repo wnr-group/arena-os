@@ -224,7 +224,13 @@ export function BookingDetailPanel({
   return (
     <>
       {selected && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => onClose()}>
+        // While the reschedule view is open it takes this modal's place (same screen
+        // slot, "Back" returns here) instead of stacking a second modal on top. Kept
+        // mounted, just hidden, so nothing in the details view resets.
+        <div
+          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 ${rescheduleTarget ? 'hidden' : ''}`}
+          onClick={() => onClose()}
+        >
           <div
             className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-lg border bg-card p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}

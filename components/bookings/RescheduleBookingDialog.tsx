@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
-import { ArrowRight, CalendarDays, Loader2, Minus, Plus, X } from 'lucide-react'
+import { ArrowRight, CalendarDays, ChevronLeft, Loader2, Minus, Plus, X } from 'lucide-react'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import {
   getRescheduleContext,
@@ -207,7 +207,15 @@ function RescheduleForm({
   return (
     <>
       <div className="relative px-6 pb-4 pt-6">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">Reschedule</p>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={pending}
+          className="-ml-1.5 inline-flex items-center gap-0.5 rounded-lg px-1.5 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          <ChevronLeft size={14} /> Back to booking
+        </button>
+        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-primary">Reschedule</p>
         <h2 className="mt-0.5 text-xl font-semibold tracking-tight">{ctx.bookingNumber}</h2>
         <div className="mt-3 inline-flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm">
           {ctx.resourceName && <span className="font-medium">{ctx.resourceName}</span>}
