@@ -221,14 +221,16 @@ export function BookingDetailPanel({
     })
   }
 
+  const subDialogOpen = !!(rescheduleTarget || cancelTarget || addonsTarget || voidTarget)
+
   return (
     <>
       {selected && (
-        // While the reschedule view is open it takes this modal's place (same screen
+        // While reschedule / cancel / add-ons / void is open it takes this modal's place (same screen
         // slot, "Back" returns here) instead of stacking a second modal on top. Kept
         // mounted, just hidden, so nothing in the details view resets.
         <div
-          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 ${rescheduleTarget ? 'hidden' : ''}`}
+          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 ${subDialogOpen ? 'hidden' : ''}`}
           onClick={() => onClose()}
         >
           <div
