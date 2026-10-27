@@ -666,6 +666,69 @@ async function main() {
       ('starts' in restored ? restored.starts : []).some(inWindow))
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  section('12. a station that changes state keeps following the events that hold it')
+  {
+    const W = { from: T(60), to: T(64) }
+    const held = async (eventId: string, resourceId: string) =>
+      (await owner.query(`select 1 from booking_slots where event_id=$1 and resource_id=$2 and active`, [eventId, resourceId])).rows.length === 1
+
+    // 'specific': published while the selected station X is in maintenance.
+    const x = await makeResource(A, 'X-maint')
+    await owner.query(`update resources set status='maintenance' where id=$1`, [x])
+    const ev = await makeEvent(A, { scope: 'specific', status: 'published', ...W })
+    await withUser(A.userId, (tx) => setEventResources(tx, A.tenantId, ev, [x]))
+    check('a specific event does not block a station that is in maintenance…', (await held(ev, x)) === false)
+    await owner.query(`update resources set status='available' where id=$1`, [x])
+    check('…but picks it up when it comes back (trigger now covers specific scope)', await held(ev, x))
+    check('…so it cannot be booked through the event', (await book(A, x, T(61), T(62))) !== null)
+    await owner.query(`delete from bookings where tenant_id=$1`, [A.tenantId])
+    check('a station that was never selected is not blocked', !(await held(ev, r3)))
+
+    // Moved to another branch: the old branch's event no longer holds it.
+    const b2 = await owner.query<{ id: string }>(
+      `insert into branches (tenant_id,name,is_primary) values ($1,'Second',false) returning id`,
+      [A.tenantId],
+    )
+    const W2 = { from: T(66), to: T(70) }
+    const bev = await makeEvent(A, { scope: 'branch', status: 'published', ...W2 })
+    await withUser(A.userId, (tx) => syncEventBlocks(tx, A.tenantId, bev))
+    const mv = await makeResource(A, 'M-moves')
+    check('setup: the branch event holds the new station', await held(bev, mv))
+    const otherEv = await makeEvent({ tenantId: A.tenantId, branchId: b2.rows[0].id }, { scope: 'branch', status: 'published', ...W2 })
+    await owner.query(`update resources set branch_id=$2 where id=$1`, [mv, b2.rows[0].id])
+    check('a station moved out of the branch drops the old branch event’s block', !(await held(bev, mv)))
+    check('…and takes the new branch event’s block', await held(otherEv, mv))
+    check('…so it is blocked by the new branch’s event, not free',
+      (await book({ ...A, branchId: b2.rows[0].id }, mv, T(67), T(68))) !== null)
+    await owner.query(`delete from bookings where tenant_id=$1`, [A.tenantId])
+    await owner.query(`update resources set branch_id=$2 where id=$1`, [mv, A.branchId])
+    check('moving it back re-takes the first branch event’s block and releases the other', (await held(bev, mv)) && !(await held(otherEv, mv)))
+
+    // A backdated entry is not a conflict: the constraint ignores it.
+    const bd = await makeResource(A, 'B-backdated')
+    const win = { from: T(80), to: T(84) }
+    check('setup: a normal booking is made', (await book(A, bd, T(81), T(82))) === null)
+    await owner.query(`update booking_slots set backdated=true where resource_id=$1 and booking_id is not null`, [bd])
+    const bdEv = await makeEvent(A, { scope: 'specific', status: 'published', ...win })
+    const err = await refusal(() => withUser(A.userId, (tx) => setEventResources(tx, A.tenantId, bdEv, [bd])))
+    check('a backdated slot does not show as a conflict or block the sync', err === null, err ?? '')
+    check('…and the event holds the station', await held(bdEv, bd))
+    // …while a live (non-backdated) booking still does.
+    const live = await makeResource(A, 'L-live')
+    check('setup: a live booking is made', (await book(A, live, T(81), T(82))) === null)
+    const liveEv = await makeEvent(A, { scope: 'specific', status: 'published', ...win })
+    const liveErr = await refusal(() => withUser(A.userId, (tx) => setEventResources(tx, A.tenantId, liveEv, [live])))
+    check('a live booking still blocks publishing over it', !!liveErr && /already held/i.test(liveErr), liveErr ?? 'no error')
+
+    await owner.query(`delete from bookings where tenant_id=$1`, [A.tenantId])
+    await owner.query(`delete from booking_slots where tenant_id=$1 and event_id is not null`, [A.tenantId])
+    await owner.query(`delete from event_resources where tenant_id=$1`, [A.tenantId])
+    await owner.query(`delete from events where id = any($1)`, [[ev, bev, otherEv, bdEv, liveEv]])
+    await owner.query(`delete from resources where id = any($1)`, [[x, mv, bd, live]])
+    await owner.query(`delete from branches where id=$1`, [b2.rows[0].id])
+  }
+
   // ── cleanup ───────────────────────────────────────────────────────────────
   for (const t of [A, B]) {
     await owner.query(`delete from booking_slots where tenant_id=$1`, [t.tenantId])

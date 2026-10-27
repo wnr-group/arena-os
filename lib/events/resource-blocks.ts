@@ -253,6 +253,10 @@ export async function findBlockConflicts(
         eq(bookingSlots.tenantId, event.tenantId),
         inArray(bookingSlots.resourceId, targetIds),
         eq(bookingSlots.active, true),
+        // The exclusion constraint is `where (active and not backdated)` (0121): a
+        // backdated entry records a session that already happened and can never clash
+        // with a block, so reporting it would refuse a publish the database allows.
+        eq(bookingSlots.backdated, false),
         // This event's own rows are not conflicts with itself. On the
         // release-then-reapply path they are already gone; this makes the
         // reader correct when called on its own, for the UI's conflict preview.
