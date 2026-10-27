@@ -243,37 +243,51 @@ export async function deleteCachedGoogleReviews(
  * One tenant's failure never stops the loop — that is the reason
  * syncGoogleReviewsForTenant records errors instead of throwing.
  *
- * ── Overlap is the CALLER's problem, deliberately (0143) ────────────────────
+ * ── Overlap is the CALLER's problem, deliberately (0143, 0166) ──────────────
  *
  * Sequential also means this gets slower as venues connect, so once the sweep
  * outlasts the cron interval two runs overlap. The database survives that — the
  * unique constraint plus ON CONFLICT DO UPDATE cannot duplicate a row — but
- * both runs spend the same per-project Google quota on the same reviews and
- * interleave the sync bookkeeping, so a failure can look like it recovered.
+ * both runs spend the same per-project Google quota on the same reviews.
  *
- * The guard is deliberately NOT here, because `db` is a connection POOL. A
- * session-level advisory lock taken by one statement would be released on a
- * different connection than the one the next statement borrows, so the lock
- * would not mean what it says. Wrapping the whole sweep in one transaction to
- * get a transaction-scoped lock would be worse: it would hold a snapshot open
- * across every HTTP call to Google.
- *
- * So serialisation belongs to the process that runs the sweep, on a connection
- * it owns for its whole lifetime — see scripts/sync-google-reviews.ts, which
- * takes pg_try_advisory_lock on a dedicated client and exits quietly when a
- * previous run is still going.
+ * The guard is deliberately NOT here: serialisation belongs to the process that
+ * runs the sweep — see runGoogleReviewSweep() in lib/reviews/sweep.ts, which holds
+ * an expiring lease (lib/cron/lease.ts) around it.
  */
 export async function syncAllGoogleReviews(
   fetchReviews: FetchGoogleReviews,
   db: DB = ownerDb,
 ): Promise<SyncResult[]> {
+  return (await syncGoogleReviewsBatch(fetchReviews, db)).results
+}
+
+/**
+ * The sweep, optionally time-boxed.
+ *
+ * Tenants are visited least-recently-attempted first (never-attempted first of
+ * all), NOT in tenant-id order. A run cut at its deadline therefore hands the
+ * unvisited tenants to the next run — whose attempt stamps are the oldest — instead
+ * of starving the same tail of the id order every time. No new tenant is started
+ * once `deadline` has passed; the one in flight finishes. `deferred` is how many
+ * were left.
+ */
+export async function syncGoogleReviewsBatch(
+  fetchReviews: FetchGoogleReviews,
+  db: DB = ownerDb,
+  opts: { deadline?: number } = {},
+): Promise<{ results: SyncResult[]; deferred: number }> {
   const tenants = await db
     .select({ tenantId: googleBusinessCredentials.tenantId })
     .from(googleBusinessCredentials)
-    .orderBy(sql`${googleBusinessCredentials.tenantId}`)
+    .orderBy(sql`${googleBusinessCredentials.lastSyncAttempt} asc nulls first`, googleBusinessCredentials.tenantId)
 
   const results: SyncResult[] = []
-  for (const t of tenants) {
+  let deferred = 0
+  for (const [i, t] of tenants.entries()) {
+    if (opts.deadline !== undefined && i > 0 && Date.now() >= opts.deadline) {
+      deferred = tenants.length - i
+      break
+    }
     try {
       results.push(await syncGoogleReviewsForTenant(t.tenantId, fetchReviews, db))
     } catch (e) {
@@ -289,5 +303,5 @@ export async function syncAllGoogleReviews(
       })
     }
   }
-  return results
+  return { results, deferred }
 }

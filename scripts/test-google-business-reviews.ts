@@ -504,6 +504,50 @@ async function main() {
     )
     const allowed = await syncGoogleReviewsForTenant(B, counting, ownerDrizzle, { minIntervalMs: 60_000 })
     check('…and allowed again once the interval has passed', allowed.error === null && calls === 2)
+
+    // A run cut at its time budget must hand the rest to the NEXT run, not starve
+    // the same tail: least-recently-attempted first, and the order rotates.
+    const { syncGoogleReviewsBatch } = await import('../lib/reviews/sync')
+    const oldestFirst = async () =>
+      (
+        await owner.query<{ tenant_id: string }>(
+          'select tenant_id from google_business_credentials order by last_sync_attempt asc nulls first, tenant_id limit 1',
+        )
+      ).rows[0].tenant_id
+    const total = Number((await owner.query<{ n: string }>('select count(*) n from google_business_credentials')).rows[0].n)
+    const expectFirst = await oldestFirst()
+    const cut1 = await syncGoogleReviewsBatch(fake([review('cut1', 'FOUR')]), ownerDrizzle, { deadline: Date.now() - 1 })
+    check('a sweep past its deadline still does one tenant, then defers the rest',
+      cut1.results.length === 1 && cut1.deferred === total - 1, `${cut1.results.length}/${cut1.deferred}/${total}`)
+    check('…and the one it did is the least recently attempted', cut1.results[0]?.tenantId === expectFirst)
+    const cut2 = await syncGoogleReviewsBatch(fake([review('cut2', 'FOUR')]), ownerDrizzle, { deadline: Date.now() - 1 })
+    check('…so the next cut run starts with a different tenant (no starvation of the tail)',
+      total < 2 || cut2.results[0]?.tenantId !== cut1.results[0]?.tenantId)
+    const uncut = await syncGoogleReviewsBatch(fake([review('cut3', 'FOUR')]), ownerDrizzle, { deadline: Date.now() + 60_000 })
+    check('with budget to spare nothing is deferred', uncut.deferred === 0 && uncut.results.length === total)
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  section('3b. the sweep lease (pooler-safe, self-expiring)')
+  {
+    const { acquireLease, releaseLease } = await import('../lib/cron/lease')
+    const name = `test-lease-${Date.now()}`
+    const first = await acquireLease(name, 60_000, ownerDrizzle)
+    check('the first run takes the lease', first !== null)
+    check('an overlapping run is refused (skips) while it is held', (await acquireLease(name, 60_000, ownerDrizzle)) === null)
+    await releaseLease(first!, ownerDrizzle)
+    const second = await acquireLease(name, 60_000, ownerDrizzle)
+    check('releasing it lets the next run in', second !== null)
+
+    // A run that was killed never releases: the lease must lapse by itself.
+    await owner.query(`update job_leases set held_until = now() - interval '1 second' where name=$1`, [name])
+    const third = await acquireLease(name, 60_000, ownerDrizzle)
+    check('an expired lease (killed run) is taken over instead of skipping forever', third !== null)
+
+    // …and the dead run, waking late, must not free its successor's lease.
+    await releaseLease(second!, ownerDrizzle)
+    check('a stale holder cannot release the new holder’s lease', (await acquireLease(name, 60_000, ownerDrizzle)) === null)
+    await owner.query('delete from job_leases where name=$1', [name])
   }
 
   // ════════════════════════════════════════════════════════════════════════

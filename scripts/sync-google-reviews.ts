@@ -38,8 +38,8 @@
  *
  * The sweep is sequential, so it gets slower as venues connect. Once it
  * outlasts the schedule two runs would overlap and spend the same per-project
- * Google quota twice. runGoogleReviewSweep() takes pg_try_advisory_lock on a
- * dedicated client and reports `skipped` when a previous run holds it; this
+ * Google quota twice. runGoogleReviewSweep() holds an expiring lease row
+ * (job_leases, 0166) and reports `skipped` when a previous run holds it; this
  * script then exits quietly with status 0.
  *
  * ── SECURITY ────────────────────────────────────────────────────────────────
@@ -106,7 +106,8 @@ async function main() {
   const { runGoogleReviewSweep, summariseSweep } = await import('../lib/reviews/sweep')
 
   console.log('→ google reviews: syncing every connected tenant')
-  const outcome = await runGoogleReviewSweep()
+  // No 60s platform cut here, so a generous budget; the lease outlives it.
+  const outcome = await runGoogleReviewSweep({ budgetMs: 30 * 60_000 })
 
   if (outcome.skipped) {
     console.log('skipped — a previous sync is still running')
@@ -121,7 +122,9 @@ async function main() {
   console.log(
     `done — ${t.examined} tenant(s) examined, ${t.connected} connected, ` +
       `${t.notConnected} not connected, ${t.synced} review(s) cached, ` +
-      `${t.skipped} skipped, ${t.removed} removed, ${t.failed} failed (${outcome.ms}ms)`,
+      `${t.skipped} skipped, ${t.removed} removed, ${t.failed} failed` +
+      (outcome.deferred > 0 ? `, ${outcome.deferred} deferred to the next run` : '') +
+      ` (${outcome.ms}ms)`,
   )
 
   // Non-zero ONLY when a connected tenant actually errored, so a scheduler

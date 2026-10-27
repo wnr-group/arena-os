@@ -12,10 +12,11 @@ import { runGoogleReviewSweep, summariseSweep } from '@/lib/reviews/sweep'
  * counts only — never a tenant id, review, token or error message (those live
  * in google_business_credentials.last_sync_error for the owner to see).
  *
- * The sweep is sequential, so it takes longer as venues connect. If it outlasts
- * maxDuration the platform cuts the request; the next run simply repeats the
- * work, which is idempotent (ON CONFLICT DO UPDATE), and the advisory lock
- * stops overlapping runs from doubling the Google quota spend.
+ * The sweep is sequential, so it takes longer as venues connect. It stops
+ * starting new tenants after its time budget (inside maxDuration) and reports how
+ * many it `deferred`; the next run begins with the least recently attempted
+ * tenants, so nobody is starved. Work is idempotent (ON CONFLICT DO UPDATE), and
+ * an expiring lease stops overlapping runs from doubling the Google quota spend.
  */
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -27,7 +28,7 @@ async function handle(request: NextRequest): Promise<NextResponse> {
   try {
     const outcome = await runGoogleReviewSweep()
     if (outcome.skipped) return NextResponse.json({ skipped: true })
-    return NextResponse.json({ ...summariseSweep(outcome.results), ms: outcome.ms })
+    return NextResponse.json({ ...summariseSweep(outcome.results), deferred: outcome.deferred, ms: outcome.ms })
   } catch (e) {
     console.error('[cron] google review sync failed:', e instanceof Error ? e.message : e)
     return NextResponse.json({ error: 'Sync failed.' }, { status: 500 })
