@@ -280,6 +280,62 @@ async function main() {
   const vOf = (n: string) => ent.find((e) => e.n === n)?.v
   check('module.takeaway_delivery: Pro and Enterprise on, Starter off', vOf('pro') === 'true' && vOf('enterprise') === 'true' && vOf('starter') === 'false')
 
+  // ── 13. 0157 backfill leaves history alone ────────────────────────────────
+  // M14 pickups (online, no table, no booking) predate order_type. Seed them in the
+  // pre-migration shape (order_type defaults to dine_in), then run 0157 again — it is
+  // idempotent — and check only the in-flight one becomes a live takeaway.
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const seed = async (num: string, status: 'open' | 'billed' | 'cancelled', withInvoice = false) => {
+    const o = (
+      await q(
+        `insert into orders (tenant_id,branch_id,order_number,status,channel) values ($1,$2,$3,$4,'online') returning id`,
+        [A.tenantId, A.branchId, num, status],
+      )
+    )[0].id as string
+    const li = (
+      await q(
+        `insert into order_items (tenant_id,order_id,menu_item_id,item_name,unit_price,tax_rate,qty,line_total) values ($1,$2,$3,'Burger','200.00',5,1,'200.00') returning id`,
+        [A.tenantId, o, A.burger],
+      )
+    )[0].id as string
+    let invoiceId: string | null = null
+    if (withInvoice) {
+      invoiceId = (
+        await q(
+          `insert into invoices (tenant_id,branch_id,invoice_number,subtotal,tax_total,total,status,issued_at) values ($1,$2,$3,'200.00','10.00','210.00','paid',now()) returning id`,
+          [A.tenantId, A.branchId, `INV-${num}`],
+        )
+      )[0].id as string
+      await q(
+        `insert into invoice_items (tenant_id,invoice_id,kind,source_id,description,qty,unit_price,tax_rate,line_total) values ($1,$2,'food',$3,'Burger',1,'200.00',5,'210.00')`,
+        [A.tenantId, invoiceId, li],
+      )
+    }
+    return { id: o, invoiceId }
+  }
+  const hOpen = await seed('M14-OPEN', 'open')
+  const hBilledInv = await seed('M14-BILLED-INV', 'billed', true)
+  const hBilledNoInv = await seed('M14-BILLED-NOINV', 'billed')
+  const hCancelled = await seed('M14-CANCELLED', 'cancelled')
+  const staffNoTable = (await q(`insert into orders (tenant_id,branch_id,order_number,status,channel) values ($1,$2,'M14-STAFF','open','staff') returning id`, [A.tenantId, A.branchId]))[0].id as string
+  await q(`update orders set updated_at = now() - interval '30 days' where id = any($1)`, [[hBilledInv.id, hBilledNoInv.id, hCancelled.id, staffNoTable]])
+  const before = (await order(hCancelled.id)).updated_at as Date
+
+  await ownerPool.query(readFileSync(join(process.cwd(), 'db/migrations/0157_takeaway_delivery.sql'), 'utf8'))
+
+  const oOpen = await order(hOpen.id)
+  const oBilledInv = await order(hBilledInv.id)
+  const oBilledNoInv = await order(hBilledNoInv.id)
+  const oCancelled = await order(hCancelled.id)
+  check('0157 backfill: an in-flight online pickup becomes a takeaway still on the board', oOpen.order_type === 'takeaway' && oOpen.handover_status === null)
+  check('0157 backfill: a billed pickup is retyped but already collected', oBilledInv.order_type === 'takeaway' && oBilledInv.handover_status === 'collected' && oBilledNoInv.handover_status === 'collected')
+  check('0157 backfill: the invoice is derived from its food lines where one exists', oBilledInv.invoice_id === hBilledInv.invoiceId && oBilledNoInv.invoice_id === null)
+  check('0157 backfill: a cancelled pickup and a staff order are untouched', oCancelled.order_type === 'dine_in' && (await order(staffNoTable)).order_type === 'dine_in' && +(oCancelled.updated_at as Date) === +before)
+  const board13 = await as(A, 'manager', (tx) => typed.listActiveTypedOrdersCore(tx, A.tenantId, A.branchId))
+  const onBoard = new Set(board13.map((r) => r.orderId))
+  check('historical pickups are NOT on the takeaway board; the live one is', onBoard.has(hOpen.id) && !onBoard.has(hBilledInv.id) && !onBoard.has(hBilledNoInv.id) && !onBoard.has(hCancelled.id))
+
   for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
   await q('delete from bookings where tenant_id = any($1)', [ids])
   await q('delete from tenants where id = any($1)', [ids])

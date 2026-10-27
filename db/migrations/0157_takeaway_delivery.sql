@@ -66,10 +66,32 @@ do $$ begin
   );
 exception when duplicate_object then null; end $$;
 
--- Existing public pickups (no station, no booking) are takeaways.
-update public.orders
+-- Existing public pickups (no station, no booking) are takeaways — but only the
+-- ones still in flight. The live-orders board lists every accepted, non-cancelled
+-- takeaway whose handover_status is null, so retyping HISTORICAL pickups would
+-- put every past order on it as "active", where nothing could clear it (their
+-- invoice_id is unset and they are already billed). Pickups that were billed are
+-- finished: they are retyped but marked collected, with the invoice that billed
+-- them where exactly one can be derived from its food lines. Cancelled orders
+-- stay as they were.
+update public.orders o
    set order_type = 'takeaway'
- where booking_id is null and resource_id is null and channel = 'online' and order_type = 'dine_in';
+ where o.booking_id is null and o.resource_id is null and o.channel = 'online'
+   and o.order_type = 'dine_in' and o.status = 'open';
+
+update public.orders o
+   set order_type = 'takeaway',
+       handover_status = 'collected',
+       handed_over_at = coalesce(o.handed_over_at, o.updated_at),
+       invoice_id = coalesce(o.invoice_id, (
+         select min(ii.invoice_id::text)::uuid
+           from public.invoice_items ii
+           join public.order_items oi on oi.id = ii.source_id and oi.order_id = o.id
+          where ii.kind = 'food' and ii.tenant_id = o.tenant_id
+         having count(distinct ii.invoice_id) = 1
+       ))
+ where o.booking_id is null and o.resource_id is null and o.channel = 'online'
+   and o.order_type = 'dine_in' and o.status = 'billed';
 
 create index if not exists idx_orders_active_typed
   on public.orders(tenant_id, branch_id, created_at)
