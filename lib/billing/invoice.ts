@@ -587,6 +587,34 @@ export async function lockOpenFoodOrders(
 }
 
 /**
+ * Refuse to bill food the kitchen has not been asked to cook. A held course
+ * (migration 0147) is on the tab but not yet fired, so billing it would charge
+ * for food that is never made — and a later Fire would reopen a ticket for an
+ * already-paid order. Staff fire it, or void it, first. (Turning course firing
+ * off releases every held line, so this only ever trips while it is on.)
+ */
+export async function assertNoHeldCourses(tx: Db, tenantId: string, orderIds: readonly string[]): Promise<void> {
+  if (orderIds.length === 0) return
+  const held = await tx
+    .select({ course: orderItems.courseName, itemName: orderItems.itemName })
+    .from(orderItems)
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        inArray(orderItems.orderId, [...orderIds]),
+        eq(orderItems.fireStatus, 'held'),
+        eq(orderItems.voidStatus, 'active'),
+      ),
+    )
+    .limit(1)
+  if (held.length > 0) {
+    throw new BillingError(
+      `${held[0].course ?? 'A later course'} is still on hold (${held[0].itemName}). Fire it or void the item before billing.`,
+    )
+  }
+}
+
+/**
  * A live invoice's own line items, read back as BillLine — the frozen
  * snapshot, not a recomputation.
  *
@@ -896,6 +924,7 @@ export async function prepareBookingBill(
   // "whatever is open" and later flipping "whatever is open" are two different
   // sets under concurrency — see lockOpenFoodOrders() for what that cost.
   const billedOrderIds = await lockOpenFoodOrders(tx, tenant.id, booking.id)
+  await assertNoHeldCourses(tx, tenant.id, billedOrderIds)
 
   const lines = await loadBillLines(
     tx,

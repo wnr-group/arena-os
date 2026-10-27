@@ -19,6 +19,7 @@ import {
   reconcileKotAfterLineChange,
   saveKdsSettingsCore,
 } from '../lib/kots/kds'
+import { assertNoHeldCourses } from '../lib/billing/invoice'
 import { loadEnv } from './env'
 
 type Db = NodePgDatabase<typeof schema>
@@ -38,6 +39,7 @@ async function main() {
   loadEnv()
   // @/db opens its pool at import time, so it must load after loadEnv().
   const { getKdsBoard } = await import('../lib/kots/kds-data')
+  const { listActiveKots, getKotForPrint } = await import('../lib/kots/data')
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })
   const app = drizzle(appPool, { schema })
@@ -231,6 +233,34 @@ async function main() {
     tx.update(schema.kots).set({ status: 'ready' }).where(sql`id = ${ho.kotId}`).returning({ id: schema.kots.id }),
   )
   check('floor_staff still cannot UPDATE kots directly', direct.length === 0)
+  // ── 10. flag off with held lines (stranded courses) ───────────────────────
+  // Billing refuses to charge food that is still on hold…
+  const stranded = await place(A, [{ course: 2, hold: true }, { course: 1 }, { course: 3, hold: true }])
+  const guard = await attempt(() => withUser(A.members.owner.userId, (tx) => assertNoHeldCourses(tx as never, A.tenantId, [stranded.orderId])))
+  check('bill-time guard: a held course blocks billing', !guard.ok && /still on hold/i.test(guard.msg))
+  await q(`update order_items set void_status='voided' where id = any($1)`, [[stranded.lines[0], stranded.lines[1]]])
+  const guardVoided = await attempt(() => withUser(A.members.owner.userId, (tx) => assertNoHeldCourses(tx as never, A.tenantId, [stranded.orderId])))
+  check('bill-time guard: voided held lines do not block', guardVoided.ok)
+  await q(`update order_items set void_status='active' where id = any($1)`, [[stranded.lines[0], stranded.lines[1]]])
+
+  // …and switching courses (or the KDS) off releases them instead of stranding them.
+  await q(`update kots set status='ready' where id=$1`, [stranded.kotId])
+  await setSettings(A, { enabled: true, courses: false })
+  const afterOff = await Promise.all(stranded.lines.map(lineState))
+  check('courses turned off: every held line is released (fired)', afterOff.every((l) => l.fire_status === 'fired') && afterOff[0].fired_at !== null && afterOff[1].fired_at !== null)
+  check('courses turned off: a finished ticket is reopened for the released food', (await status(stranded.kotId)) === 'preparing')
+  check('courses turned off: no live held line remains', Number((await q(`select count(*) c from order_items where tenant_id=$1 and fire_status='held' and void_status<>'voided' and order_id in (select id from orders where status='open')`, [A.tenantId]))[0].c) === 0)
+  const legacy = (await listActiveKots(ctxOf(A, 'owner'), A.branchId)).filter((r) => r.kotId === stranded.kotId)
+  check('legacy queue shows the released lines', legacy.length === 3)
+  const printed = await getKotForPrint(ctxOf(A, 'owner'), stranded.kotId)
+  check('legacy print shows the released lines', printed?.items.length === 3)
+
+  // KDS switched off while courses stay flagged on: same release.
+  await setSettings(A, { enabled: true, courses: true })
+  const s2 = await place(A, [{ course: 2, hold: true }, { course: 1 }, {}])
+  await setSettings(A, { enabled: false, courses: true })
+  check('KDS turned off: held lines released too', (await lineState(s2.lines[0])).fire_status === 'fired')
+
   await setSettings(A, { enabled: true, courses: false })
   const hf = await attempt(() => place(A, [{ course: 2, hold: true }, {}, {}]))
   const ff = await attempt(() => fireAs(A, 'owner', ho.orderId, 3))

@@ -5,6 +5,7 @@ import { withUser } from '@/db'
 import { kots, orders, orderItems, orderItemModifiers, bookings, resources } from '@/db/schema'
 import type * as schema from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { getCourseConfigCore } from './kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -38,6 +39,9 @@ async function loadModifierNamesByItem(tx: Db, tenantId: string, itemIds: string
  *  order is always 'accepted' by default, so this filter never touches it. */
 export function listActiveKots(ctx: ActiveContext, branchId: string) {
   return withUser(ctx.user.id, async (tx) => {
+    // Held course lines (migration 0147) are hidden only while course firing is on;
+    // with it off nobody can fire them, so the queue must show everything billed.
+    const courses = await getCourseConfigCore(tx, ctx.tenant.id)
     const rows = await tx
       .select({
         kotId: kots.id,
@@ -58,8 +62,10 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
-      // Held course lines (migration 0147) aren't the kitchen's yet.
-      .leftJoin(orderItems, and(eq(orderItems.orderId, orders.id), eq(orderItems.fireStatus, 'fired')))
+      .leftJoin(
+        orderItems,
+        and(eq(orderItems.orderId, orders.id), courses.enabled ? eq(orderItems.fireStatus, 'fired') : undefined),
+      )
       .leftJoin(resources, eq(resources.id, orders.resourceId))
       .where(
         and(
@@ -152,6 +158,7 @@ export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise
       .limit(1)
     if (!head) return null
 
+    const courses = await getCourseConfigCore(tx, ctx.tenant.id)
     const itemRows = await tx
       .select({
         itemId: orderItems.id,
@@ -160,7 +167,7 @@ export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise
         specialInstructions: orderItems.specialInstructions,
       })
       .from(orderItems)
-      .where(and(eq(orderItems.orderId, head.orderId), eq(orderItems.fireStatus, 'fired')))
+      .where(and(eq(orderItems.orderId, head.orderId), courses.enabled ? eq(orderItems.fireStatus, 'fired') : undefined))
       .orderBy(asc(orderItems.id))
 
     const modifiersByItem = await loadModifierNamesByItem(

@@ -93,6 +93,43 @@ export async function saveKdsSettingsCore(
     .insert(orderSettings)
     .values({ tenantId, ...set })
     .onConflictDoUpdate({ target: orderSettings.tenantId, set })
+  // Course firing needs both flags. Once it can no longer run, nobody can fire a
+  // held course (fire_order_course refuses), so release what is still held rather
+  // than leave billed-but-never-cooked lines behind.
+  if (!(v.enabled && v.coursesEnabled)) await releaseHeldLinesCore(tx, tenantId)
+}
+
+/**
+ * Fire every still-held line on the tenant's open orders, and put a ticket the
+ * kitchen had finished / the floor had served back to `preparing` — the same
+ * effect as fireCourseCore, minus the flag check, for when course firing is
+ * being switched off. Returns the number of lines released.
+ */
+export async function releaseHeldLinesCore(tx: Db, tenantId: string): Promise<number> {
+  const openOrders = tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.status, 'open')))
+  const released = await tx
+    .update(orderItems)
+    .set({ fireStatus: 'fired', firedAt: new Date() })
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.fireStatus, 'held'),
+        ne(orderItems.voidStatus, 'voided'),
+        inArray(orderItems.orderId, openOrders),
+      ),
+    )
+    .returning({ orderId: orderItems.orderId })
+  const orderIds = [...new Set(released.map((r) => r.orderId))]
+  if (orderIds.length > 0) {
+    await tx
+      .update(kots)
+      .set({ status: 'preparing' })
+      .where(and(eq(kots.tenantId, tenantId), inArray(kots.orderId, orderIds), inArray(kots.status, ['ready', 'served'])))
+  }
+  return released.length
 }
 
 async function assertKdsEnabled(tx: Db, tenantId: string): Promise<void> {
