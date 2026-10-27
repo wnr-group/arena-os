@@ -8,6 +8,8 @@ import { eventSeries } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
+import { todayInZone } from '@/lib/booking/time'
+import { seriesStartError } from '@/lib/events/recurring'
 import { EventError, validateEventFields } from '@/lib/events/service'
 import { EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
 
@@ -101,6 +103,25 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
     }
     if (v.cadence === 'monthly' && (v.dayOfMonth === null || v.dayOfMonth === undefined)) {
       return { error: 'Choose which day of the month the series runs.' }
+    }
+
+    // A series must start today or later, in the venue's own calendar — see
+    // seriesStartError. An existing series may keep the next_run it already has.
+    {
+      const today = todayInZone(ctx.tenant.timezone)
+      const stored = v.id
+        ? (
+            await withUser(ctx.user.id, (tx) =>
+              tx
+                .select({ nextRun: eventSeries.nextRun })
+                .from(eventSeries)
+                .where(and(eq(eventSeries.id, v.id as string), eq(eventSeries.tenantId, ctx.tenant.id)))
+                .limit(1),
+            )
+          )[0]?.nextRun
+        : null
+      const pastError = seriesStartError(v.nextRun, today, stored)
+      if (pastError) return { error: pastError }
     }
 
     // The first occurrence must FALL ON the chosen day, because the job advances

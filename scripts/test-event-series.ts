@@ -488,6 +488,70 @@ async function main() {
     check('…they simply lose their provenance', survived.rows[0].series_id === null)
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  section('10. lead time, conflicts and past starts')
+  {
+    const C = await makeTenant('esc')
+    const days = async (n: number) =>
+      (await owner.query<{ d: string }>(`select ((now() at time zone 'Asia/Kolkata')::date + $1::int)::text d`, [n])).rows[0].d
+
+    // Lead time: generated ahead of the day, but not unboundedly far ahead.
+    const near = await makeSeries(C, { title: 'Ahead', nextRun: await days(10) })
+    const far = await makeSeries(C, { title: 'Too far', nextRun: await days(30) })
+    runGenerator()
+    check('a series due within the lead window is generated before its day', (await occurrencesOf(near)).length >= 1)
+    check('…one beyond the window is left alone', (await occurrencesOf(far)).length === 0)
+
+    // Conflict: a branch-wide series, with its first period already clashing.
+    const rt = await owner.query<{ id: string }>(
+      `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Court','100') returning id`,
+      [C.tenantId],
+    )
+    await owner.query(
+      `insert into resources (tenant_id,branch_id,resource_type_id,name,status) values ($1,$2,$3,'Court 1','available')`,
+      [C.tenantId, C.branchId, rt.rows[0].id],
+    )
+    const first = await days(1)
+    const second = await days(8)
+    const blocker = await owner.query<{ id: string }>(
+      `insert into events (tenant_id,branch_id,title,type,starts_at,ends_at,status,resource_scope)
+       values ($1,$2,'Existing hold','class',
+               ($3::date + time '19:00') at time zone 'Asia/Kolkata',
+               ($3::date + time '19:00') at time zone 'Asia/Kolkata' + interval '90 minutes',
+               'registration_open','branch') returning id`,
+      [C.tenantId, C.branchId, first],
+    )
+    const { syncEventBlocks } = await import('../lib/events/resource-blocks')
+    await syncEventBlocks(drizzle(owner, { schema }) as never, C.tenantId, blocker.rows[0].id)
+    check('setup: the blocker really holds the court', (await owner.query('select 1 from booking_slots where event_id=$1', [blocker.rows[0].id])).rowCount === 1)
+
+    const s = await makeSeries(C, { title: 'Clashing', nextRun: first })
+    await owner.query(`update event_series set resource_scope='branch' where id=$1`, [s])
+    const out = runGenerator()
+    const occ = await occurrencesOf(s)
+    const skips = (await owner.query<{ occurrence_period: string; reason: string }>(
+      'select occurrence_period::text, reason from event_series_skips where series_id=$1', [s])).rows
+    check('the clashing occurrence is not created', !occ.some((o) => o.occurrence_period === first))
+    check('…but the next period is, with its stations held', occ.some((o) => o.occurrence_period === second) &&
+      (await owner.query('select 1 from booking_slots where event_id=$1', [occ.find((o) => o.occurrence_period === second)!.id])).rowCount === 1)
+    check('…the skip is recorded with a reason', skips.length === 1 && skips[0].occurrence_period === first && skips[0].reason.length > 0)
+    const nr = (await owner.query<{ d: string }>('select next_run::text d from event_series where id=$1', [s])).rows[0].d
+    check('…and the series advanced instead of stalling on the head period', nr > second)
+    check('the run reports the conflict and no failure', /1 skipped for a resource conflict/.test(out) && /0 failed/.test(out))
+    runGenerator()
+    check('re-running does not duplicate the skip or the occurrences', (await owner.query('select 1 from event_series_skips where series_id=$1', [s])).rowCount === 1 && (await occurrencesOf(s)).length === occ.length)
+
+    // Past starts are refused (pure rule the manager action applies).
+    const { seriesStartError } = await import('../lib/events/recurring')
+    check('a first occurrence in the past is refused', !!seriesStartError('2020-01-01', '2026-10-27'))
+    check('today and the future are fine', seriesStartError('2026-10-27', '2026-10-27') === null && seriesStartError('2026-11-03', '2026-10-27') === null)
+    check('an existing series may keep its stored (past) next_run', seriesStartError('2026-10-20', '2026-10-27', '2026-10-20') === null)
+    check('…but not move it to a different past date', !!seriesStartError('2026-10-21', '2026-10-27', '2026-10-20'))
+    await owner.query('delete from event_series where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from booking_slots where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from events where tenant_id=$1', [C.tenantId])
+  }
+
   // ── cleanup ───────────────────────────────────────────────────────────────
   for (const t of [A, B, TZ]) {
     await owner.query('delete from event_series where tenant_id=$1', [t.tenantId])
