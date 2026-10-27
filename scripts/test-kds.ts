@@ -222,6 +222,25 @@ async function main() {
   }
   check('removing every line still cancels the ticket (existing behaviour)', (await status(rm2.kotId)) === 'cancelled')
 
+  // Removing the last outstanding line finishes the ticket whoever removes it —
+  // kots can't be locked/UPDATEd by waiters or cashiers (kots_update), so this goes
+  // through a SECURITY DEFINER function rather than silently doing nothing.
+  for (const role of ['owner', 'manager', 'kitchen_staff', 'floor_staff', 'cashier'] as const) {
+    const t = await fire(A, [1, 1, 1])
+    await bump(t.kotId, t.lines[0])
+    await bump(t.kotId, t.lines[1])
+    const res = await attempt(() => withUser(A.members[role].userId, (tx) => removeOrderItemCore(tx, actor(A, role), { orderItemId: t.lines[2] })))
+    check(`role ${role}: removing the last outstanding line → ticket ready`, res.ok && (await status(t.kotId)) === 'ready')
+  }
+  const vr = await fire(A, [1, 1, 1])
+  await bump(vr.kotId, vr.lines[0])
+  await bump(vr.kotId, vr.lines[1])
+  await q(`update order_items set void_status='voided' where id=$1`, [vr.lines[2]])
+  await withUser(A.members.cashier.userId, (tx) => reconcileKotAfterLineChange(tx, A.tenantId, vr.orderId))
+  check('role cashier: voiding the last outstanding line → ticket ready', (await status(vr.kotId)) === 'ready')
+  const foreignReconcile = await attempt(() => withUser(B.members.owner.userId, (tx) => tx.execute(sql`select public.reconcile_kot_after_line_change(${vr.orderId}::uuid)`)))
+  check("tenant B's owner cannot reconcile tenant A's order", !foreignReconcile.ok)
+
   // ── 6. role matrix (kot_items RLS) ────────────────────────────────────────
   for (const role of ROLES) {
     const t = await fire(A, [1, 1, 1])

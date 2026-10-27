@@ -289,34 +289,15 @@ export async function recallKotCore(tx: Db, actor: KdsActor, kotId: string): Pro
  */
 export async function reconcileKotAfterLineChange(tx: Db, tenantId: string, orderId: string): Promise<void> {
   if (!(await getKdsSettingsCore(tx, tenantId)).enabled) return
-  const open = await tx
-    .select({ id: kots.id })
-    .from(kots)
-    .where(
-      and(eq(kots.orderId, orderId), eq(kots.tenantId, tenantId), inArray(kots.status, ['pending', 'preparing'])),
-    )
-    .for('update')
-  if (open.length === 0) return
-  const [anyActive] = await tx
-    .select({ id: orderItems.id })
-    .from(orderItems)
-    .where(
-      and(
-        eq(orderItems.orderId, orderId),
-        eq(orderItems.tenantId, tenantId),
-        ne(orderItems.voidStatus, 'voided'),
-        eq(orderItems.fireStatus, 'fired'),
-      ),
-    )
-    .limit(1)
-  // Nothing fired and live: either nothing left at all (the caller cancels the
-  // ticket) or only held lines remain, which must NOT read as "done".
-  if (!anyActive) return
-  if ((await outstandingLineIds(tx, tenantId, orderId)).length > 0) return
-  await tx
-    .update(kots)
-    .set({ status: 'ready' })
-    .where(and(inArray(kots.id, open.map((k) => k.id)), eq(kots.tenantId, tenantId)))
+  // Through reconcile_kot_after_line_change (migration 0163): waiters and cashiers
+  // can't lock or UPDATE kots (kots_update), so done inline this silently did
+  // nothing for them and left the ticket 'preparing' forever.
+  try {
+    await tx.execute(sql`select public.reconcile_kot_after_line_change(${orderId}::uuid)`)
+  } catch (e) {
+    const err = (e as { cause?: { message?: string } }).cause ?? (e as { message?: string })
+    throw new KotError(err.message?.replace(/^error: /i, '') || 'Could not update the ticket.')
+  }
 }
 
 /** Course config as the order path sees it: usable only with the KDS on too. */
