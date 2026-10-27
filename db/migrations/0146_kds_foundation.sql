@@ -89,7 +89,10 @@ declare
   expected bigint;
   actual   bigint;
 begin
-  select count(*) into expected
+  -- DISTINCT lines, not kot x line pairs: kot_items is unique on order_item_id, so
+  -- an order with two finished KOTs still yields one row per line. Counting pairs
+  -- would make this raise and abort the migration chain on such an order.
+  select count(distinct oi.id) into expected
     from public.kots k
     join public.order_items oi on oi.order_id = k.order_id
    where k.status in ('ready', 'served');
