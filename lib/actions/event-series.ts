@@ -10,8 +10,9 @@ import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { todayInZone } from '@/lib/booking/time'
 import { seriesStartError } from '@/lib/events/recurring'
+import { resolveSeriesOptions } from '@/lib/events/series-options'
 import { EventError, validateEventFields } from '@/lib/events/service'
-import { EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
+import { EVENT_TYPES, TOURNAMENT_FORMATS, type TournamentFormat } from '@/lib/events/types'
 
 /**
  * RECURRING EVENT SERIES — manager actions (M15 #8).
@@ -80,8 +81,10 @@ const seriesInput = z.object({
     .or(z.literal('')),
   capacity: z.coerce.number().int().min(1).nullable().optional(),
   entryFee: z.coerce.number().min(0),
+  /** Omitted on an edit = keep the stored format; '' clears it. */
   tournamentFormat: z.enum(TOURNAMENT_FORMATS as [string, ...string[]]).optional().or(z.literal('')),
-  registrationMode: z.enum(['solo', 'team']).default('solo'),
+  /** Omitted on an edit = keep the stored mode; a new series defaults to solo. */
+  registrationMode: z.enum(['solo', 'team']).optional(),
   teamSize: z.coerce.number().int().min(2).max(20).nullable().optional(),
   /**
    * What every generated occurrence reserves (0139). 'specific' is absent on
@@ -89,7 +92,8 @@ const seriesInput = z.object({
    * named may not exist by the time an occurrence is generated. Mirrored by
    * event_series_resource_scope in the migration.
    */
-  resourceScope: z.enum(['none', 'branch']).default('none'),
+  /** Omitted on an edit = keep the stored scope; a new series defaults to none. */
+  resourceScope: z.enum(['none', 'branch']).optional(),
 })
 
 export async function upsertEventSeries(input: z.input<typeof seriesInput>): Promise<Result> {
@@ -105,22 +109,36 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
       return { error: 'Choose which day of the month the series runs.' }
     }
 
+    // On an edit, anything the caller did not send keeps its stored value — a form
+    // that only knows some fields must not silently reset the rest (the station
+    // scope above all: it would stop the series holding its courts).
+    const existing = v.id
+      ? (
+          await withUser(ctx.user.id, (tx) =>
+            tx
+              .select({
+                nextRun: eventSeries.nextRun,
+                resourceScope: eventSeries.resourceScope,
+                registrationMode: eventSeries.registrationMode,
+                teamSize: eventSeries.teamSize,
+                tournamentFormat: eventSeries.tournamentFormat,
+              })
+              .from(eventSeries)
+              .where(and(eq(eventSeries.id, v.id as string), eq(eventSeries.tenantId, ctx.tenant.id)))
+              .limit(1),
+          )
+        )[0]
+      : undefined
+    if (v.id && !existing) return { error: 'That series no longer exists.' }
+    const { resourceScope, registrationMode, teamSize, tournamentFormat } = resolveSeriesOptions(
+      { ...v, tournamentFormat: v.tournamentFormat as TournamentFormat | '' | undefined },
+      existing,
+    )
+
     // A series must start today or later, in the venue's own calendar — see
     // seriesStartError. An existing series may keep the next_run it already has.
     {
-      const today = todayInZone(ctx.tenant.timezone)
-      const stored = v.id
-        ? (
-            await withUser(ctx.user.id, (tx) =>
-              tx
-                .select({ nextRun: eventSeries.nextRun })
-                .from(eventSeries)
-                .where(and(eq(eventSeries.id, v.id as string), eq(eventSeries.tenantId, ctx.tenant.id)))
-                .limit(1),
-            )
-          )[0]?.nextRun
-        : null
-      const pastError = seriesStartError(v.nextRun, today, stored)
+      const pastError = seriesStartError(v.nextRun, todayInZone(ctx.tenant.timezone), existing?.nextRun)
       if (pastError) return { error: pastError }
     }
 
@@ -159,9 +177,9 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
       endsAt: end,
       capacity: v.capacity ?? null,
       entryFee: v.entryFee,
-      tournamentFormat: (v.tournamentFormat || null) as (typeof TOURNAMENT_FORMATS)[number] | null,
-      registrationMode: v.registrationMode,
-      teamSize: v.registrationMode === 'team' ? (v.teamSize ?? null) : null,
+      tournamentFormat,
+      registrationMode,
+      teamSize,
     })
     if (invalid) return { error: invalid }
 
@@ -180,10 +198,10 @@ export async function upsertEventSeries(input: z.input<typeof seriesInput>): Pro
       description: v.description ? v.description : null,
       capacity: v.capacity ?? null,
       entryFee: v.entryFee.toFixed(2),
-      tournamentFormat: (v.tournamentFormat || null) as (typeof TOURNAMENT_FORMATS)[number] | null,
-      registrationMode: v.registrationMode,
-      teamSize: v.registrationMode === 'team' ? (v.teamSize ?? null) : null,
-      resourceScope: v.resourceScope,
+      tournamentFormat,
+      registrationMode,
+      teamSize,
+      resourceScope,
     }
 
     await withUser(ctx.user.id, async (tx) => {

@@ -170,6 +170,7 @@ export async function listEventSeries(ctx: ActiveContext) {
         registrationMode: eventSeries.registrationMode,
         teamSize: eventSeries.teamSize,
         tournamentFormat: eventSeries.tournamentFormat,
+        resourceScope: eventSeries.resourceScope,
         description: eventSeries.description,
         occurrences: sql<number>`(
           select count(*) from public.events e where e.series_id = ${eventSeries.id}

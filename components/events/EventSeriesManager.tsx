@@ -9,7 +9,14 @@ import {
   setEventSeriesActive,
   upsertEventSeries,
 } from '@/lib/actions/event-series'
-import { EVENT_TYPES, EVENT_TYPE_LABELS, type EventType } from '@/lib/events/types'
+import {
+  EVENT_TYPES,
+  EVENT_TYPE_LABELS,
+  TOURNAMENT_FORMATS,
+  TOURNAMENT_FORMAT_LABELS,
+  type EventType,
+  type TournamentFormat,
+} from '@/lib/events/types'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 /**
@@ -45,6 +52,10 @@ type Series = {
   isActive: boolean
   capacity: number | null
   entryFee: string
+  registrationMode: 'solo' | 'team'
+  teamSize: number | null
+  tournamentFormat: TournamentFormat | null
+  resourceScope: 'none' | 'branch' | 'specific'
   occurrences: number
 }
 
@@ -128,6 +139,11 @@ export function EventSeriesManager({
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                     {EVENT_TYPE_LABELS[s.type]}
                   </span>
+                  {s.resourceScope === 'branch' && (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      Holds all stations
+                    </span>
+                  )}
                   {!s.isActive && (
                     <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
                       Paused
@@ -221,8 +237,13 @@ function SeriesForm({
   const [untilDate, setUntilDate] = useState('')
   const [capacity, setCapacity] = useState('')
   const [entryFee, setEntryFee] = useState('0')
+  const [tournamentFormat, setTournamentFormat] = useState<TournamentFormat>(TOURNAMENT_FORMATS[0])
+  const [teamEntry, setTeamEntry] = useState(false)
+  const [teamSize, setTeamSize] = useState('2')
+  const [holdStations, setHoldStations] = useState(false)
 
-  const invalid = !branchId || !title.trim() || !nextRun
+  const isTournament = type === 'tournament'
+  const invalid = !branchId || !title.trim() || !nextRun || (teamEntry && !teamSize)
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
@@ -252,12 +273,28 @@ function SeriesForm({
             <div>
               <label className={label} htmlFor="sr-type">Type</label>
               <select id="sr-type" className={input} value={type} onChange={(e) => setType(e.target.value as EventType)}>
-                {EVENT_TYPES.filter((t) => t !== 'tournament').map((t) => (
+                {EVENT_TYPES.map((t) => (
                   <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
                 ))}
               </select>
             </div>
           </div>
+
+          {isTournament && (
+            <div>
+              <label className={label} htmlFor="sr-format">Bracket format</label>
+              <select
+                id="sr-format"
+                className={input}
+                value={tournamentFormat}
+                onChange={(e) => setTournamentFormat(e.target.value as TournamentFormat)}
+              >
+                {TOURNAMENT_FORMATS.map((f) => (
+                  <option key={f} value={f}>{TOURNAMENT_FORMAT_LABELS[f]}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -330,6 +367,38 @@ function SeriesForm({
               <input id="sr-fee" type="number" min={0} step="0.01" className={input} value={entryFee} onChange={(e) => setEntryFee(e.target.value)} />
             </div>
           </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className={label} htmlFor="sr-mode">Entries</label>
+              <select id="sr-mode" className={input} value={teamEntry ? 'team' : 'solo'} onChange={(e) => setTeamEntry(e.target.value === 'team')}>
+                <option value="solo">Individuals</option>
+                <option value="team">Teams</option>
+              </select>
+            </div>
+            {teamEntry && (
+              <div>
+                <label className={label} htmlFor="sr-team">Team size</label>
+                <input id="sr-team" type="number" min={2} max={20} className={input} value={teamSize} onChange={(e) => setTeamSize(e.target.value)} />
+              </div>
+            )}
+          </div>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={holdStations}
+              onChange={(e) => setHoldStations(e.target.checked)}
+            />
+            <span>
+              <span className="font-medium">Hold every station at this venue</span>
+              <span className="block text-xs text-muted-foreground">
+                Each occurrence blocks bookings on all stations for its time. If a booking is already
+                there, that occurrence is skipped.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
@@ -354,7 +423,10 @@ function SeriesForm({
                 untilDate: untilDate || '',
                 capacity: capacity === '' ? null : Number(capacity),
                 entryFee: Number(entryFee),
-                registrationMode: 'solo',
+                registrationMode: teamEntry ? 'team' : 'solo',
+                teamSize: teamEntry ? Number(teamSize) : null,
+                tournamentFormat: isTournament ? tournamentFormat : '',
+                resourceScope: holdStations ? 'branch' : 'none',
               })
             }
           >

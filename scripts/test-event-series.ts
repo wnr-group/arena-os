@@ -503,6 +503,9 @@ async function main() {
     check('…one beyond the window is left alone', (await occurrencesOf(far)).length === 0)
 
     // Conflict: a branch-wide series, with its first period already clashing.
+    await owner.query('delete from booking_slots where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from resources where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from resource_types where tenant_id=$1', [C.tenantId])
     const rt = await owner.query<{ id: string }>(
       `insert into resource_types (tenant_id,name,hourly_rate) values ($1,'Court','100') returning id`,
       [C.tenantId],
@@ -547,9 +550,25 @@ async function main() {
     check('today and the future are fine', seriesStartError('2026-10-27', '2026-10-27') === null && seriesStartError('2026-11-03', '2026-10-27') === null)
     check('an existing series may keep its stored (past) next_run', seriesStartError('2026-10-20', '2026-10-27', '2026-10-20') === null)
     check('…but not move it to a different past date', !!seriesStartError('2026-10-21', '2026-10-27', '2026-10-20'))
+    // Editing through a form that does not send these must not reset them.
+    const { resolveSeriesOptions } = await import('../lib/events/series-options')
+    const stored = { resourceScope: 'branch' as const, registrationMode: 'team' as const, teamSize: 4, tournamentFormat: 'round_robin' as const }
+    const kept = resolveSeriesOptions({}, stored)
+    check('an edit that omits the options keeps scope, entry mode, team size and format',
+      kept.resourceScope === 'branch' && kept.registrationMode === 'team' && kept.teamSize === 4 && kept.tournamentFormat === 'round_robin')
+    const changed = resolveSeriesOptions({ resourceScope: 'none', registrationMode: 'solo', tournamentFormat: '' }, stored)
+    check('…while sent values (and an explicit clear) do change them',
+      changed.resourceScope === 'none' && changed.registrationMode === 'solo' && changed.teamSize === null && changed.tournamentFormat === null)
+    const fresh = resolveSeriesOptions({})
+    check('a new series defaults to no stations held, individual entries, no format',
+      fresh.resourceScope === 'none' && fresh.registrationMode === 'solo' && fresh.tournamentFormat === null)
+    const scoped = await owner.query<{ resource_scope: string }>('select resource_scope from event_series where id=$1', [s])
+    check('a series saved with branch scope really holds stations (generator)', scoped.rows[0].resource_scope === 'branch')
     await owner.query('delete from event_series where tenant_id=$1', [C.tenantId])
     await owner.query('delete from booking_slots where tenant_id=$1', [C.tenantId])
     await owner.query('delete from events where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from resources where tenant_id=$1', [C.tenantId])
+    await owner.query('delete from resource_types where tenant_id=$1', [C.tenantId])
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────
