@@ -25,6 +25,7 @@ type PayslipRow = {
   deductionsTotal: string
   advanceInstalment: string
   netPay: string
+  tipPayout: string
 }
 type PayrollPeriodSummary = { period: string; payslipCount: number; totalNetPay: number }
 
@@ -205,7 +206,10 @@ function PayslipTableRow({ row, money }: { row: PayslipRow; money: (n: number | 
         <td className="px-4 py-3 text-right tabular-nums">{money(row.gross)}</td>
         <td className="px-4 py-3 text-right tabular-nums text-destructive">{money(row.deductionsTotal)}</td>
         <td className="px-4 py-3 text-right tabular-nums text-amber-600">{money(row.advanceInstalment)}</td>
-        <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(row.netPay)}</td>
+        <td className="px-4 py-3 text-right font-semibold tabular-nums">
+          {money(row.netPay)}
+          {Number(row.tipPayout) > 0 && <span className="block text-xs font-normal text-muted-foreground">+ {money(row.tipPayout)} tips</span>}
+        </td>
         <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
           <Link
             href={`/payslips/${row.id}`}

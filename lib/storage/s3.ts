@@ -156,27 +156,37 @@ export async function uploadReceipt(file: File, keyPrefix: string): Promise<stri
 }
 
 /**
- * The object key a stored URL refers to, or null if it does not belong to us.
+ * The object key a stored URL refers to, or null if it is not THIS TENANT's.
  *
  * THIS IS THE DELETION GUARD, and the reason nothing else derives keys by hand.
- * A URL only yields a key when it starts with our configured public base, so a
- * caller passing an arbitrary URL — including one pointing at another bucket,
- * or `…/../../other` — gets null and deletes nothing. Exported so the guard
- * itself can be tested.
+ * A URL only yields a key when it starts with our configured public base AND
+ * the key sits under `tenants/${tenantId}/`. The tenant check matters because
+ * image URLs are stored from caller input and are public on the storefront: a
+ * manager could otherwise save another tenant's image URL on their own row,
+ * delete the row, and have the other tenant's object deleted. `tenantId` is
+ * required (not optional) so a caller cannot forget it. Arbitrary URLs, other
+ * buckets and `…/../../other` all yield null. Exported so the guard can be tested.
  */
-export function objectKeyFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null
+export function objectKeyFromUrl(
+  url: string | null | undefined,
+  tenantId: string,
+): string | null {
+  if (!url || !tenantId) return null
   const base = (process.env.S3_PUBLIC_URL_BASE ?? '').replace(/\/$/, '')
   if (!base || !url.startsWith(base + '/')) return null
   const key = url.slice(base.length + 1)
   // Refuse traversal or an empty remainder even inside our own base.
   if (!key || key.includes('..')) return null
+  if (!key.startsWith(`tenants/${tenantId}/`)) return null
   return key
 }
 
-/** Best-effort delete — never throws, so it's safe to call without awaiting the result. */
-export async function deleteObject(url: string | null | undefined): Promise<void> {
-  const key = objectKeyFromUrl(url)
+/** Best-effort delete of one of THIS TENANT's objects — never throws, so it's safe to call without awaiting the result. */
+export async function deleteObject(
+  url: string | null | undefined,
+  tenantId: string,
+): Promise<void> {
+  const key = objectKeyFromUrl(url, tenantId)
   if (!key) return
   try {
     await s3().send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }))

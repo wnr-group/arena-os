@@ -25,7 +25,9 @@ import {
 } from '@/lib/booking/service'
 import { dayRangeError, horizonMessage, horizonNow, isDateWithinHorizon } from '@/lib/booking/horizon'
 import { publicMaxAdvanceDaysOrDefault } from '@/lib/booking/settings-server'
+import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
 import { todayInZone } from '@/lib/booking/time'
+import { getPublicBookingPaymentState } from '@/lib/booking/public-confirmation'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { resolveOnlineCharge, OnlineChargeError, PAYMENT_HOLD_MINUTES, type OnlinePaymentPolicy } from '@/lib/booking/online-charge'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
@@ -115,6 +117,8 @@ export type AvailabilityResult = {
    * single-resource page has had (getPublicResourceAvailability).
    */
   allStarts?: string[]
+  /** Venue booking time step (minutes) the start times are laid out on. */
+  slotMinutes?: number
   /** M22 #4: the effective hourly rate for the SELECTED date (weekday or
    *  weekend, per lib/booking/rate.ts:resolveDayRate) — the wizard prices its
    *  live estimate/deposit off this instead of a static, date-blind rate, so
@@ -159,6 +163,7 @@ export async function getPublicAvailability(
   return {
     starts: result.starts.map((s) => ({ startsAt: s.start.toISOString(), resourceId: s.resourceId })),
     allStarts: result.allStarts.map((d) => d.toISOString()),
+    slotMinutes: result.slotMinutes,
     rate: result.rate,
   }
 }
@@ -170,7 +175,7 @@ const resourceAvailabilityInput = z.object({
 })
 
 export type PublicResourceAvailabilityResult =
-  | { starts: string[]; allStarts: string[]; isClosed: boolean; rate: string }
+  | { starts: string[]; allStarts: string[]; slotMinutes: number; isClosed: boolean; rate: string }
   | { error: string }
 
 /** Same as getPublicAvailability, but for one specific resource unit rather
@@ -208,6 +213,7 @@ export async function getPublicResourceAvailability(
   return {
     starts: result.starts.map((d) => d.toISOString()),
     allStarts: result.allStarts.map((d) => d.toISOString()),
+    slotMinutes: result.slotMinutes,
     isClosed: result.isClosed,
     rate: result.rate,
   }
@@ -587,8 +593,9 @@ export async function createPublicBooking(
       }
     }
 
-    const result = await withPublicTenant(tenant.id, (tx) =>
-      createBookingCore(
+    const result = await withPublicTenant(tenant.id, async (tx) => {
+      await assertSlotsOnGrid(tx, { tenantId: tenant.id, timezone: tenant.timezone }, branch.id, slots)
+      return createBookingCore(
         tx,
         { tenantId: tenant.id, timezone: tenant.timezone, membershipId: null },
         {
@@ -604,8 +611,8 @@ export async function createPublicBooking(
           headCount,
           pendingPaymentUntil,
         },
-      ),
-    )
+      )
+    })
 
     revalidatePath('/bookings')
     return {
@@ -776,4 +783,54 @@ export async function getPublicAddonAvailabilityForWindow(
   if (!branch) return { error: 'Online booking is not set up for this venue yet.' }
 
   return { addons: await getPublicAddonAvailability(tenant.id, branch.id, [v.data.resourceTypeId], startsAt, endsAt) }
+}
+
+/**
+ * Has this booking's deposit settled yet? (0129)
+ *
+ * Polled by WhatsappGroupRedirect while a just-paid booking waits for
+ * Razorpay's webhook. See getPublicBookingPaymentState() for why a second look
+ * is needed at all: the confirmation page renders before the webhook lands, so
+ * the answer it computed is almost always stale for an online payment.
+ *
+ * ── What a caller can learn from this ──────────────────────────────────────
+ *
+ * One boolean, about a booking they already hold the confirmation token for —
+ * the same token that renders the whole confirmation page, so this exposes
+ * strictly less than the page it sits on. The token is a capability: unguessable
+ * (a v4 uuid, see 0026) and never derived from the sequential booking number.
+ *
+ * Tenant comes from the subdomain via resolvePublicTenant(), never from the
+ * caller, and the read is pinned to it — so a token from venue A cannot be
+ * resolved against venue B.
+ *
+ * Rate-limited per IP because it is polled and public. The budget is generous
+ * enough for the real client (one call every 2.5s for at most a minute) and far
+ * too small to enumerate anything — which it could not do anyway, the token
+ * space being what it is.
+ */
+export async function getBookingPaymentState(
+  token: string,
+): Promise<{ awaitingPayment: boolean } | { error: string }> {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+      return { error: 'Unknown booking.' }
+    }
+    if (!rateLimit(`paystate:ip:${await callerIp()}`, 60, 5 * 60_000).ok) {
+      return { error: RATE_LIMIT_MESSAGE }
+    }
+
+    const tenant = await resolvePublicTenant()
+    if ('error' in tenant) return tenant
+
+    const state = await getPublicBookingPaymentState(tenant.id, token)
+    // Same answer for "no such booking" and "not this venue's booking".
+    if (!state) return { error: 'Unknown booking.' }
+    return state
+  } catch {
+    // Never surfaces a driver message to a public caller. The client treats any
+    // error as "still waiting", which is the safe direction: it means the
+    // countdown stays unarmed rather than firing on a guess.
+    return { error: 'Could not check the payment status.' }
+  }
 }

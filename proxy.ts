@@ -46,6 +46,15 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
+    // Public table reservations ("Book a table", app/(public)/reserve).
+    pathname === '/reserve' ||
+    // Public events listing and detail (M15 #2). Safe to open WHOLESALE because
+    // /events is now exclusively public — the manager screen lives at
+    // /settings/events, behind the staff gate below. Visibility of individual
+    // events is not this gate's job: events_public_select (0125) admits only
+    // published/registration_open rows of the subdomain's own tenant.
+    pathname === '/events' ||
+    pathname.startsWith('/events/') ||
     pathname.startsWith('/b/') ||
     pathname.startsWith('/order/') ||
     // Order status tracking (M14 #7, v2) — /o/[orderId] is the no-login
@@ -93,6 +102,9 @@ export function proxy(request: NextRequest) {
   // authenticate with a bearer CRON_SECRET inside the route (app/api/cron/*),
   // which refuses to run at all when the secret is unset.
   const isCron = pathname.startsWith('/api/cron/')
+  // Network printers (Star CloudPRNT) poll with no cookie; the printer id +
+  // secret in the path authenticate them inside the route (app/api/cloudprnt).
+  const isCloudPrint = pathname.startsWith('/api/cloudprnt/')
 
   // ── customer gate ─────────────────────────────────────────────────────────
   // Checked BEFORE the staff gate, and covering the /account tree exclusively.
@@ -138,6 +150,7 @@ export function proxy(request: NextRequest) {
     !isPublicRoute &&
     !isWebhook &&
     !isCron &&
+    !isCloudPrint &&
     !isPortalRoute
   if (needsSession && !hasSession) {
     const url = request.nextUrl.clone()

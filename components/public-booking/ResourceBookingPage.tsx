@@ -23,6 +23,7 @@ import {
 import type { PublicTenant } from '@/lib/tenant/public'
 import type { PublicResource, PublicResourceSetup, PublicTypeAddon } from '@/lib/booking/public-availability'
 import { daysInRange } from '@/lib/booking/availability'
+import { buildDurations, DEFAULT_SLOT_STEP_MINUTES } from '@/lib/booking/settings'
 import { clampDateToWindow, dateOptions, dayRangeError, lastBookableDate } from '@/lib/booking/horizon'
 import { DatePicker } from '@/components/ui/DatePicker'
 import {
@@ -48,12 +49,12 @@ import { FallbackImage } from './FallbackImage'
 // candidate to dayClose), so a duration that can't fit that day simply shows
 // "nothing free" — i.e. the options follow the owner's working hours, capped at
 // a full 24-hour day. The server accepts up to 24*60 minutes (lib/actions/availability.ts).
-export const DURATIONS = [
-  ...Array.from({ length: 8 }, (_, i) => (i + 1) * 30), // 30m … 4h
-  ...Array.from({ length: 20 }, (_, i) => (i + 5) * 60), // 5h … 24h
-]
-/** Grid step for candidate start times — matches the server's slotMinutes (see availableStartTimes). */
-export const SLOT_MINUTES = 30
+// The venue can pick a finer step (booking_settings.slot_step_minutes, 0162);
+// buildDurations(step) lays the list out on it. DURATIONS/SLOT_MINUTES are the
+// default 30-minute grid, kept for callers that have no venue step.
+export const DURATIONS = buildDurations(DEFAULT_SLOT_STEP_MINUTES)
+/** Default grid step for candidate start times (the venue's step overrides it via the slotMinutes prop). */
+export const SLOT_MINUTES = DEFAULT_SLOT_STEP_MINUTES
 
 type Slot = { startsAt: string; available: boolean }
 type QuoteAddonLine = {
@@ -124,6 +125,7 @@ export function ResourceBookingPage({
   addonCatalog = [],
   today,
   maxAdvanceDays,
+  slotMinutes = SLOT_MINUTES,
   closedWeekdays = [],
   initialDate,
   razorpayConfigured,
@@ -143,6 +145,8 @@ export function ResourceBookingPage({
   today: string
   /** M37 #3: the venue's advance-booking window — bookable dates are today … today + N − 1. */
   maxAdvanceDays: number
+  /** The venue's booking time step in minutes (0162); defaults to 30. */
+  slotMinutes?: number
   /** Weekdays (0 = Sunday) the venue is closed, from its working hours. */
   closedWeekdays?: number[]
   /** A prefilled date (?date=); clamped into the window with a notice when it falls outside. */
@@ -155,6 +159,7 @@ export function ResourceBookingPage({
   const router = useRouter()
   const dates = useMemo(() => dateOptions(today, maxAdvanceDays), [today, maxAdvanceDays])
   const lastDate = lastBookableDate(today, maxAdvanceDays)
+  const durations = useMemo(() => buildDurations(slotMinutes), [slotMinutes])
   const initial = useMemo(() => clampDateToWindow(initialDate, today, maxAdvanceDays), [initialDate, today, maxAdvanceDays])
 
   const [step, setStep] = useState<Step>('select')
@@ -490,7 +495,11 @@ export function ResourceBookingPage({
     // path lands on the confirmation page, whose panel offers Retry (reusing
     // this booking's pending order) or Start over. Legacy optional_full keeps
     // today's "already confirmed" toasts.
-    const toConfirmation = (paid: boolean) => router.push(paid && !legacy ? `/b/${token}?paid=1` : `/b/${token}`)
+    // ?new=1 arms the WhatsApp countdown, and only a submitted payment gets it:
+    // the unpaid exits omit it, and the confirmation page still holds the
+    // redirect until the webhook proves the deposit (awaitingPayment).
+    const toConfirmation = (paid: boolean) =>
+      router.push(paid ? `/b/${token}?${legacy ? '' : 'paid=1&'}new=1` : `/b/${token}`)
     const res = await createBookingPaymentIntent({ bookingId })
     if (res.error || !res.checkout) {
       if (legacy) {
@@ -567,7 +576,10 @@ export function ResourceBookingPage({
         await payForBooking(r.bookingId, r.confirmationToken, r.bookingNumber ?? '', payment?.mode === 'optional_full')
         return
       }
-      router.push(`/b/${r.confirmationToken}`)
+      // ?new=1 marks the hand-off straight from a completed booking — the only
+      // arrival that arms the WhatsApp countdown. The unpaid exits inside
+      // payForBooking() deliberately omit it.
+      router.push(`/b/${r.confirmationToken}?new=1`)
     })
   }
 
@@ -708,7 +720,7 @@ export function ResourceBookingPage({
                   <section>
                     <SectionLabel icon={Clock}>Duration</SectionLabel>
                     <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
-                      {DURATIONS.map((m) => {
+                      {durations.map((m) => {
                         const isSelected = duration === m
                         return (
                           <button
@@ -763,7 +775,7 @@ export function ResourceBookingPage({
                               const isSelected = startsAt === s.startsAt
                               const inRange =
                                 !isSelected && s.available && startsAt && endsAt && s.startsAt >= startsAt && s.startsAt < endsAt
-                              const rangeEnd = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
+                              const rangeEnd = new Date(new Date(s.startsAt).getTime() + slotMinutes * 60_000).toISOString()
                               return (
                                 <button
                                   key={s.startsAt}

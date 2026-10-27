@@ -168,8 +168,10 @@ export async function uploadExpenseReceipt(
 
 export async function createExpense(input: z.input<typeof expenseInput>): Promise<Result> {
   let v: z.output<typeof expenseInput> | undefined
+  let tenantId: string | undefined
   try {
     const ctx = await requireManager()
+    tenantId = ctx.tenant.id
     await requireEntitlement(ctx, 'module.expenses')
     v = expenseInput.parse(input)
 
@@ -182,7 +184,7 @@ export async function createExpense(input: z.input<typeof expenseInput>): Promis
   } catch (e) {
     // The row was never written, so the receipt uploaded moments ago is now an
     // orphan — bin it rather than leave it paid for and unreferenced.
-    if (v?.receiptUrl) void deleteObject(v.receiptUrl)
+    if (v?.receiptUrl && tenantId) void deleteObject(v.receiptUrl, tenantId)
     return fail(e)
   }
 }
@@ -202,8 +204,10 @@ export async function updateExpense(
   let v: z.output<typeof expenseInput> | undefined
   let previousReceipt: string | null = null
   let uploadedNew = false
+  let tenantId: string | undefined
   try {
     const ctx = await requireManager()
+    tenantId = ctx.tenant.id
     await requireEntitlement(ctx, 'module.expenses')
     const target = expenseId.parse(id)
     v = expenseInput.parse(input)
@@ -236,7 +240,7 @@ export async function updateExpense(
     // The row now points at the new value, so the object it USED to point at is
     // safe to bin. Covers both replace (new url) and remove (null). Best-effort
     // by design — a failed cleanup must not fail a save that already committed.
-    if (previousReceipt && previousReceipt !== v.receiptUrl) void deleteObject(previousReceipt)
+    if (previousReceipt && previousReceipt !== v.receiptUrl) void deleteObject(previousReceipt, ctx.tenant.id)
 
     revalidatePath('/expenses')
     return {}
@@ -244,7 +248,7 @@ export async function updateExpense(
     // The update did not commit. If a NEW file had just been uploaded for it,
     // that object is now orphaned — remove it, and leave the existing receipt
     // (still referenced by the unchanged row) alone.
-    if (uploadedNew && v?.receiptUrl) void deleteObject(v.receiptUrl)
+    if (uploadedNew && v?.receiptUrl && tenantId) void deleteObject(v.receiptUrl, tenantId)
     return fail(e)
   }
 }
@@ -275,7 +279,7 @@ export async function deleteExpense(id: string): Promise<Result> {
       return existing
     })
 
-    if (row) void deleteObject(row.receiptUrl)
+    if (row) void deleteObject(row.receiptUrl, ctx.tenant.id)
 
     revalidatePath('/expenses')
     return {}

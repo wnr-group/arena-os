@@ -165,7 +165,9 @@ async function main() {
   const baseRateOverlap = await createPublicBooking({
     resourceId,
     startsAt: range1.startsAt!,
-    endsAt: range1.endsAt!,
+    // A 2h slice inside working hours: a no-setup booking is grid-checked, so the
+    // setup's whole-day range would be refused for hours before it reached the overlap check.
+    endsAt: new Date(new Date(range1.startsAt!).getTime() + 2 * 60 * 60_000).toISOString(),
     customerName: 'Third Customer',
     customerPhone: `7${digits}`,
     website: '',

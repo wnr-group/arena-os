@@ -5,6 +5,7 @@ import { getPublicTenantBySlug } from '@/lib/tenant/public'
 import { getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingByToken } from '@/lib/booking/public-confirmation'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
+import { getPublicWhatsappGroupUrl } from '@/lib/booking/public-whatsapp'
 import { publicTenantUrl } from '@/lib/tenant/subdomain'
 import { generateQrSvg } from '@/lib/utils/qr'
 import { getPublicMenu } from '@/lib/menu/public'
@@ -49,11 +50,18 @@ export default async function BookingConfirmationPage({
   searchParams,
 }: {
   params: Promise<{ token: string }>
-  searchParams: Promise<{ paid?: string }>
+  searchParams: Promise<{ paid?: string; new?: string }>
 }) {
   const { token } = await params
-  const { paid } = await searchParams
+  const { paid, new: isNew } = await searchParams
   if (!UUID.test(token)) notFound()
+
+  // ?new=1 is the booking flow's hand-off, and the ONLY thing that arms the
+  // WhatsApp countdown. This page is also the check-in QR ("Show this code at
+  // the door") and is linked from My Bookings and the portal, so arriving here
+  // is not the same as having just booked — without this flag a customer at the
+  // counter would be redirected away from the QR they came to show.
+  const fromNewBooking = isNew === '1'
 
   const slug = await currentTenantSlug()
   if (!slug) notFound()
@@ -70,6 +78,10 @@ export default async function BookingConfirmationPage({
   const qrSvg = await generateQrSvg(confirmationUrl)
   const branding = await getPublishedBranding(tenant.id)
   const hasMenu = (await getPublicMenu(tenant.id)).some((c) => c.items.length > 0)
+  // Null whenever the venue has not enabled a group, has no link, or has one
+  // that no longer validates — the component is simply not rendered, and the
+  // booking flow is untouched either way.
+  const whatsappGroupUrl = await getPublicWhatsappGroupUrl(tenant.id)
 
   const industryLabel = INDUSTRY_LABELS[tenant.industry] ?? 'Business'
   const Icon = INDUSTRY_ICONS[tenant.industry] ?? Building2
@@ -90,6 +102,8 @@ export default async function BookingConfirmationPage({
             qrSvg={qrSvg}
             hasMenu={hasMenu}
             justPaid={paid === '1'}
+            whatsappGroupUrl={whatsappGroupUrl}
+            fromNewBooking={fromNewBooking}
           />
         </main>
 

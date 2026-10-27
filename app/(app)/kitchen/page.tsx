@@ -5,8 +5,23 @@ import { branches } from '@/db/schema'
 import { listActiveKots } from '@/lib/kots/data'
 import { listMenuItems } from '@/lib/menu/data'
 import { KitchenQueue, type KotTicket } from '@/components/kitchen/KitchenQueue'
+import Link from 'next/link'
+import { Printer } from 'lucide-react'
+import { PrintAlertBanner } from '@/components/kitchen/PrintAlertBanner'
+import { getPrintAlert } from '@/lib/printing/queue'
+import { KdsBoard } from '@/components/kitchen/KdsBoard'
+import { KdsSettings } from '@/components/kitchen/KdsSettings'
+import { getKdsBoard } from '@/lib/kots/kds-data'
+import { getKdsSettingsCore } from '@/lib/kots/kds'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
+import { canFireCourse, canManageKitchen, isManager } from '@/lib/auth/roles'
 
-export default async function KitchenPage() {
+export default async function KitchenPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ station?: string }>
+}) {
+  const sp = await searchParams
   const ctx = await getActiveContext()
   if (!ctx) return null
 
@@ -18,6 +33,58 @@ export default async function KitchenPage() {
       .limit(1),
   )
   if (!branch) return <div className="p-6 text-sm text-muted-foreground">No branch configured.</div>
+
+  // Network printing (M19 #4): a banner whenever paper is not coming out, and a
+  // way into printer setup. Null/absent for tenants without the module or printers.
+  const printing = ctx.tenant.industry === 'restaurant' && (await hasEntitlement(ctx, 'module.printing'))
+  const printAlert = printing ? await getPrintAlert(ctx) : null
+  const printHeader = printing && (
+    <>
+      <div className="mt-2 flex items-center gap-4 text-sm">
+        <Link
+          href="/kitchen/printers"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3.5 py-1.5 font-medium text-foreground shadow-sm transition hover:border-primary/40 hover:text-primary"
+        >
+          <Printer size={14} /> Printers &amp; print queue
+        </Link>
+      </div>
+      <PrintAlertBanner alert={printAlert} />
+    </>
+  )
+
+  // The KDS needs all three: a restaurant tenant, a plan that includes it, and
+  // the tenant's own opt-in. Anything less renders the unchanged ticket list.
+  const kdsEligible = ctx.tenant.industry === 'restaurant' && (await hasEntitlement(ctx, 'module.kitchen_display'))
+  const kdsSettings = kdsEligible
+    ? await withUser(ctx.user.id, (tx) => getKdsSettingsCore(tx, ctx.tenant.id))
+    : null
+
+  if (kdsEligible && kdsSettings?.enabled) {
+    // ?station=<uuid> = that station's screen, ?station=none = unrouted lines.
+    const scope =
+      sp.station === 'none'
+        ? { id: null }
+        : sp.station && /^[0-9a-f-]{36}$/i.test(sp.station)
+          ? { id: sp.station }
+          : undefined
+    const [board, menuItemRows] = await Promise.all([getKdsBoard(ctx, branch.id, scope), listMenuItems(ctx)])
+    return (
+      <div className="mx-auto max-w-[110rem] px-4 py-6 sm:px-6 lg:px-8">
+        <h1 className="text-3xl font-bold tracking-tight">Kitchen</h1>
+        {printHeader}
+        <KdsBoard
+          board={board}
+          canBump={canManageKitchen(ctx.role)}
+          canFire={canFireCourse(ctx.role)}
+          scope={board.settings.stationsEnabled ? scope : undefined}
+          menuItems={menuItemRows
+            .filter((i) => i.status !== 'hidden')
+            .map((i) => ({ id: i.id, name: i.name, categoryName: i.categoryName, status: i.status as 'available' | 'out_of_stock' }))}
+        />
+        {isManager(ctx.role) && <KdsSettings {...kdsSettings} />}
+      </div>
+    )
+  }
 
   const [rows, menuItemRows] = await Promise.all([listActiveKots(ctx, branch.id), listMenuItems(ctx)])
 
@@ -35,6 +102,9 @@ export default async function KitchenPage() {
         orderNumber: row.orderNumber,
         channel: row.channel,
         stationName: row.stationName,
+        orderType: row.orderType,
+        contactName: row.contactName,
+        pickupAt: row.pickupAt ? row.pickupAt.toISOString() : null,
         items: [],
       }
       ticketsById.set(row.kotId, ticket)
@@ -65,10 +135,12 @@ export default async function KitchenPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold">Kitchen</h1>
+      {printHeader}
       <p className="mt-1 text-sm text-muted-foreground">
         Active tickets — this screen updates itself every few seconds.
       </p>
       <KitchenQueue tickets={[...ticketsById.values()]} menuItems={eightySixItems} />
+      {kdsSettings && isManager(ctx.role) && <KdsSettings {...kdsSettings} />}
     </div>
   )
 }

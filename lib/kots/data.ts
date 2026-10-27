@@ -1,10 +1,11 @@
 import 'server-only'
-import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, ne, notInArray, or } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { withUser } from '@/db'
 import { kots, orders, orderItems, orderItemModifiers, bookings, resources } from '@/db/schema'
 import type * as schema from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
+import { getCourseConfigCore } from './kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -38,6 +39,9 @@ async function loadModifierNamesByItem(tx: Db, tenantId: string, itemIds: string
  *  order is always 'accepted' by default, so this filter never touches it. */
 export function listActiveKots(ctx: ActiveContext, branchId: string) {
   return withUser(ctx.user.id, async (tx) => {
+    // Held course lines (migration 0147) are hidden only while course firing is on;
+    // with it off nobody can fire them, so the queue must show everything billed.
+    const courses = await getCourseConfigCore(tx, ctx.tenant.id)
     const rows = await tx
       .select({
         kotId: kots.id,
@@ -48,6 +52,9 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
         orderNumber: orders.orderNumber,
         channel: orders.channel,
         stationName: resources.name,
+        orderType: orders.orderType,
+        contactName: orders.contactName,
+        pickupAt: orders.pickupAt,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
         qty: orderItems.qty,
@@ -55,7 +62,10 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
-      .leftJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .leftJoin(
+        orderItems,
+        and(eq(orderItems.orderId, orders.id), courses.enabled ? eq(orderItems.fireStatus, 'fired') : undefined),
+      )
       .leftJoin(resources, eq(resources.id, orders.resourceId))
       .where(
         and(
@@ -63,6 +73,10 @@ export function listActiveKots(ctx: ActiveContext, branchId: string) {
           eq(kots.branchId, branchId),
           notInArray(kots.status, ['served', 'cancelled']),
           eq(orders.acceptanceStatus, 'accepted'),
+          // M20: a takeaway / delivery order leaves the kitchen's screens once it is
+          // handed over or cancelled (the ticket itself may only be closed by kitchen
+          // roles, so the screens don't depend on it). Dine-in is never filtered here.
+          or(eq(orders.orderType, 'dine_in'), and(ne(orders.status, 'cancelled'), isNull(orders.handoverStatus))),
         ),
       )
       .orderBy(asc(kots.createdAt), asc(orderItems.id))
@@ -144,6 +158,7 @@ export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise
       .limit(1)
     if (!head) return null
 
+    const courses = await getCourseConfigCore(tx, ctx.tenant.id)
     const itemRows = await tx
       .select({
         itemId: orderItems.id,
@@ -152,7 +167,7 @@ export async function getKotForPrint(ctx: ActiveContext, kotId: string): Promise
         specialInstructions: orderItems.specialInstructions,
       })
       .from(orderItems)
-      .where(eq(orderItems.orderId, head.orderId))
+      .where(and(eq(orderItems.orderId, head.orderId), courses.enabled ? eq(orderItems.fireStatus, 'fired') : undefined))
       .orderBy(asc(orderItems.id))
 
     const modifiersByItem = await loadModifierNamesByItem(

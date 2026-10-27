@@ -12,7 +12,7 @@ import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney, prettyDate } from '@/lib/format'
 import Link from 'next/link'
 import { clampDateToWindow, dateOptions as windowDates, dayRangeError, lastBookableDate } from '@/lib/booking/horizon'
-import { advanceWindowLabel } from '@/lib/booking/settings'
+import { advanceWindowLabel, buildDurations } from '@/lib/booking/settings'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { daysInRange } from '@/lib/booking/availability'
 import {
@@ -20,7 +20,6 @@ import {
   time12,
   SectionLabel,
   EmptyNotice,
-  DURATIONS,
   SLOT_MINUTES,
 } from '@/components/public-booking/ResourceBookingPage'
 import { AdvanceTenderEditor } from './AdvanceTenderEditor'
@@ -76,6 +75,7 @@ export function FutureWizard({
   today,
   initialDate: requestedDate,
   maxAdvanceDays,
+  slotMinutes = SLOT_MINUTES,
   closedWeekdays = [],
   canChangeSettings = false,
   initialResourceTypeId,
@@ -91,6 +91,8 @@ export function FutureWizard({
   initialDate: string
   /** M37 #4: the venue's advance-booking window (same single setting as the storefront). */
   maxAdvanceDays: number
+  /** The venue's booking time step in minutes (0162); defaults to 30. */
+  slotMinutes?: number
   /** Weekdays (0 = Sunday) the branch is closed - struck out in the long picker. */
   closedWeekdays?: number[]
   /** Managers get a link to Settings -> Hours beside the limit hint. */
@@ -252,6 +254,7 @@ export function FutureWizard({
   }
 
   const dateOptions = useMemo(() => windowDates(today, maxAdvanceDays), [today, maxAdvanceDays])
+  const durations = useMemo(() => buildDurations(slotMinutes), [slotMinutes])
   const lastDate = lastBookableDate(today, maxAdvanceDays)
   // A ?date= outside the window (past, junk or beyond) is pulled in with a notice rather than erroring.
   const clampedStart = useMemo(
@@ -902,7 +905,7 @@ export function FutureWizard({
                   <section>
                     <SectionLabel icon={Clock}>Duration</SectionLabel>
                     <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
-                      {DURATIONS.map((m) => {
+                      {durations.map((m) => {
                         const isSelected = duration === m
                         return (
                           <button
@@ -961,7 +964,7 @@ export function FutureWizard({
                                 endsAtIso &&
                                 s.startsAt >= selectedSlot.startsAt &&
                                 s.startsAt < endsAtIso
-                              const rangeEndLabel = new Date(new Date(s.startsAt).getTime() + SLOT_MINUTES * 60_000).toISOString()
+                              const rangeEndLabel = new Date(new Date(s.startsAt).getTime() + slotMinutes * 60_000).toISOString()
                               return (
                                 <button
                                   key={s.startsAt}

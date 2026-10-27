@@ -20,6 +20,8 @@ export type PayslipRow = {
   deductionsTotal: string
   advanceInstalment: string
   netPay: string
+  /** Tips paid on this payslip, on top of net pay (M20). */
+  tipPayout: string
 }
 
 export type PayrollPeriodSummary = { period: string; payslipCount: number; totalNetPay: number }
@@ -60,6 +62,7 @@ const payslipColumns = {
   deductionsTotal: payslips.deductionsTotal,
   advanceInstalment: payslips.advanceInstalment,
   netPay: payslips.netPay,
+  tipPayout: payslips.tipPayout,
 }
 
 /** Every payslip generated for one period, across all staff. Owner/manager only, per payslips_manager_select RLS. */

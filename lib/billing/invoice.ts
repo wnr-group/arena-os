@@ -36,6 +36,7 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
+import { deductStockForOrders } from '@/lib/inventory/deduct'
 import {
   computeServiceCharge,
   mergeTaxBreakup,
@@ -436,7 +437,7 @@ export async function loadOrderFoodLines(
     )
     .orderBy(orderItems.id)
 
-  return rows.map((r) => ({
+  const lines: BillLine[] = rows.map((r) => ({
     description: r.itemName,
     kind: 'food' as const,
     sourceId: r.id,
@@ -444,6 +445,26 @@ export async function loadOrderFoodLines(
     unitPrice: Number(r.unitPrice),
     taxPercent: Number(r.taxRate),
   }))
+
+  // M20 (0157): a delivery order's fee is a snapshot on the order and bills as
+  // its own 'delivery' line at its own GST rate. Built HERE so the gateway
+  // amount (order-payment.ts) and the invoice (issueInvoiceForOrder) can never
+  // disagree about whether the fee is in the total. Zero for every other order.
+  const [fee] = await tx
+    .select({ deliveryFee: orders.deliveryFee, taxRate: orders.deliveryFeeTaxRate })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .limit(1)
+  if (fee && Number(fee.deliveryFee) > 0) {
+    lines.push({
+      description: 'Delivery charge',
+      kind: 'delivery',
+      qty: 1,
+      unitPrice: Number(fee.deliveryFee),
+      taxPercent: Number(fee.taxRate),
+    })
+  }
+  return lines
 }
 
 /**
@@ -563,6 +584,34 @@ export async function lockOpenFoodOrders(
     .for('update')
 
   return rows.map((r) => r.id)
+}
+
+/**
+ * Refuse to bill food the kitchen has not been asked to cook. A held course
+ * (migration 0147) is on the tab but not yet fired, so billing it would charge
+ * for food that is never made — and a later Fire would reopen a ticket for an
+ * already-paid order. Staff fire it, or void it, first. (Turning course firing
+ * off releases every held line, so this only ever trips while it is on.)
+ */
+export async function assertNoHeldCourses(tx: Db, tenantId: string, orderIds: readonly string[]): Promise<void> {
+  if (orderIds.length === 0) return
+  const held = await tx
+    .select({ course: orderItems.courseName, itemName: orderItems.itemName })
+    .from(orderItems)
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        inArray(orderItems.orderId, [...orderIds]),
+        eq(orderItems.fireStatus, 'held'),
+        eq(orderItems.voidStatus, 'active'),
+      ),
+    )
+    .limit(1)
+  if (held.length > 0) {
+    throw new BillingError(
+      `${held[0].course ?? 'A later course'} is still on hold (${held[0].itemName}). Fire it or void the item before billing.`,
+    )
+  }
 }
 
 /**
@@ -875,6 +924,7 @@ export async function prepareBookingBill(
   // "whatever is open" and later flipping "whatever is open" are two different
   // sets under concurrency — see lockOpenFoodOrders() for what that cost.
   const billedOrderIds = await lockOpenFoodOrders(tx, tenant.id, booking.id)
+  await assertNoHeldCourses(tx, tenant.id, billedOrderIds)
 
   const lines = await loadBillLines(
     tx,
@@ -1205,6 +1255,9 @@ export async function issueInvoiceForBooking(
           inArray(orders.id, billedOrderIds),
         ),
       )
+    // M10: deduct linked ingredients for the food just billed — once per order
+    // (idempotent), never blocking the bill. No recipe, no movement.
+    await deductStockForOrders(tx, tenant.id, billedOrderIds)
   }
 
   // ── 7b. void anything still unreviewed ────────────────────────────────────

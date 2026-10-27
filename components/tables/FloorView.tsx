@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeftRight, Ban, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Ban, CalendarClock, UserRound, ListOrdered, Clock3, Combine, Loader2, Plus, Receipt, ReceiptText, Split, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { SeatTableDialog } from './SeatTableDialog'
 import { TransferTableDialog } from './TransferTableDialog'
@@ -13,9 +13,12 @@ import { TakeOrderDialog, type CategoryOption, type MenuItemOption } from '@/com
 import { VoidCompDialog } from '@/components/orders/VoidCompDialog'
 import { CancelBookingDialog } from '@/components/bookings/CancelBookingDialog'
 import { setBookingStatus, requestBill } from '@/lib/actions/bookings'
+import { setSessionServer } from '@/lib/actions/sections'
+import { groupTablesBySection } from '@/lib/sections/rules'
 import { formatMoney } from '@/lib/format'
 import type { HappyHourRule } from '@/lib/happy-hours/apply'
 import type { OrderSummary } from '@/components/bookings/BookingsView'
+import { waitlistSummary } from '@/lib/waitlist/rules'
 import type { TableStatus } from '@/lib/booking/table-status'
 
 /** Poll for status changes from other terminals (another waiter, the kitchen,
@@ -25,6 +28,16 @@ import type { TableStatus } from '@/lib/booking/table-status'
 const POLL_MS = 5000
 /** How often the "seated Xm" label re-renders between polls. */
 const CLOCK_MS = 15000
+
+/** A confirmed, not-yet-seated reservation for today (M20). */
+export type FloorReservation = {
+  bookingId: string
+  tableId: string
+  guestName: string | null
+  partySize: number | null
+  /** ISO */
+  reservedFor: string
+}
 
 export type TableRow = {
   id: string
@@ -40,6 +53,14 @@ export type TableRow = {
   billRequestedAt: string | null
   status: TableStatus
   runningTotal: number
+  /** M20 (0152): floor section (null = unsectioned). */
+  sectionId: string | null
+  sectionName: string | null
+  sectionSort: number | null
+  /** The server on the running session (null if none / table is free). */
+  sessionServerId: string | null
+  /** Session's server, or for a free table whoever is assigned to it. */
+  serverName: string | null
 }
 
 const STATUS_LABEL: Record<TableStatus, string> = {
@@ -92,6 +113,11 @@ function elapsedLabel(since: string, now: number): string {
 /** Restaurant floor plan: table statuses, occupancy, and quick actions per table. */
 export function FloorView({
   branchId,
+  reservationsOn,
+  upcomingReservations,
+  waitlistOn,
+  waitlist,
+  servers,
   currency,
   timeZone,
   tables,
@@ -104,6 +130,15 @@ export function FloorView({
   canToggle86,
 }: {
   branchId: string
+  /** Reservations are enabled for this venue + plan (M20). */
+  reservationsOn: boolean
+  upcomingReservations: FloorReservation[]
+  /** The walk-in waitlist is enabled for this venue + plan (M20). */
+  waitlistOn: boolean
+  /** Active (waiting/notified) parties — only their join time is needed here. */
+  waitlist: { createdAt: string }[]
+  /** Servers a front-of-house user may reassign a running table to (M20); empty hides the control. */
+  servers: { id: string; name: string }[]
   currency: string
   timeZone: string
   tables: TableRow[]
@@ -152,6 +187,13 @@ export function FloorView({
   // marked it served) is reflected without the waiter having to reopen it.
   const liveSelected = selected ? (tables.find((t) => t.id === selected.id) ?? null) : null
   const freeTables = tables.filter((t) => !t.bookingId)
+  // Earliest still-to-come reservation per table (M20), for the tile badge.
+  const nextReservationByTable = new Map<string, FloorReservation>()
+  for (const r of [...upcomingReservations].sort((a, b) => a.reservedFor.localeCompare(b.reservedFor))) {
+    if (!nextReservationByTable.has(r.tableId)) nextReservationByTable.set(r.tableId, r)
+  }
+  const reservedTime = (iso: string) =>
+    new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso))
 
   function act(action: string, fn: () => Promise<{ error?: string }>) {
     setActingAction(action)
@@ -194,6 +236,35 @@ export function FloorView({
               ))}
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+        {waitlistOn && (
+          <Link
+            href="/waitlist"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            <ListOrdered size={15} /> Waitlist
+            {waitlist.length > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {waitlist.length} waiting · longest{' '}
+                {waitlistSummary(waitlist.map((w) => ({ createdAt: new Date(w.createdAt) })), new Date(now)).longestMinutes}m
+              </span>
+            )}
+          </Link>
+        )}
+        {reservationsOn && (
+          <Link
+            href="/reservations"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            <CalendarClock size={15} /> Reservations
+            {upcomingReservations.length > 0 && (
+              <span className="rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground tabular-nums">
+                {upcomingReservations.length}
+              </span>
+            )}
+          </Link>
+        )}
+        </div>
       </div>
 
       {tables.length === 0 ? (
@@ -202,9 +273,19 @@ export function FloorView({
           add tables to it.
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
-          {tables.map((t) => {
+        <div className="mt-6 space-y-7">
+          {groupTablesBySection(tables).map((group) => (
+            <div key={group.sectionId ?? 'none'}>
+              {group.name && (
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.name}
+                  <span className="text-xs font-normal normal-case text-muted-foreground/70">{group.tables.length} tables</span>
+                </h2>
+              )}
+              <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
+          {group.tables.map((t) => {
             const isOccupied = Boolean(t.bookingId)
+            const nextRes = nextReservationByTable.get(t.id)
             return (
               <button
                 key={t.id}
@@ -244,6 +325,17 @@ export function FloorView({
                   </div>
                 )}
 
+                {nextRes && (
+                  <div className="mt-3 flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                    <CalendarClock size={12} className="shrink-0" />
+                    <span className="truncate">
+                      {reservedTime(nextRes.reservedFor)}
+                      {nextRes.guestName ? ` · ${nextRes.guestName}` : ''}
+                      {nextRes.partySize ? ` · ${nextRes.partySize}` : ''}
+                    </span>
+                  </div>
+                )}
+
                 {isOccupied && t.runningTotal > 0 && (
                   <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5">
                     <span className="text-[11px] uppercase tracking-wide text-muted-foreground/60">Running total</span>
@@ -252,9 +344,19 @@ export function FloorView({
                     </span>
                   </div>
                 )}
+
+                {t.serverName && (
+                  <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <UserRound size={12} className="shrink-0" />
+                    <span className="truncate">{t.serverName}</span>
+                  </div>
+                )}
               </button>
             )
           })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -308,6 +410,26 @@ export function FloorView({
                 <dt className="text-muted-foreground">Guests</dt>
                 <dd className="text-right font-medium">{liveSelected.coverCount ?? '—'}</dd>
               </div>
+              {servers.length > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <dt className="text-muted-foreground">Server</dt>
+                  <dd>
+                    <select
+                      className="rounded-md border bg-background px-2 py-1 text-sm"
+                      value={liveSelected.sessionServerId ?? ''}
+                      disabled={pending}
+                      onChange={(e) => act('set_server', () => setSessionServer(liveSelected.bookingId!, e.target.value || null))}
+                    >
+                      <option value="">Unassigned</option>
+                      {servers.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </dd>
+                </div>
+              )}
               {liveSelected.customerName && (
                 <div className="flex justify-between gap-4">
                   <dt className="text-muted-foreground">Customer</dt>

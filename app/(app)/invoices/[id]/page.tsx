@@ -6,6 +6,7 @@ import { isManager } from '@/lib/auth/roles'
 import { getInvoice } from '@/lib/billing/data'
 import { round2 } from '@/lib/billing/pricing'
 import { PrintButton } from '@/components/invoices/PrintButton'
+import { PrintReceiptButton } from '@/components/invoices/PrintReceiptButton'
 import { InvoiceActions } from '@/components/invoices/InvoiceActions'
 import { formatMoney, prettyDate } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
@@ -100,6 +101,7 @@ export default async function InvoiceReceiptPage({
               bookingId={invoice.bookingId}
             />
           )}
+          {ctx.tenant.industry === 'restaurant' && <PrintReceiptButton invoiceId={invoice.id} />}
           <PrintButton />
         </div>
       </div>

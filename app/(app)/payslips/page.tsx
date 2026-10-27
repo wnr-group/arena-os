@@ -50,7 +50,12 @@ export default async function MyPayslipsPage() {
                   <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                     {row.daysPresent}/{row.daysInPeriod}
                   </td>
-                  <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(row.netPay)}</td>
+                  <td className="px-4 py-3 text-right font-semibold tabular-nums">
+                    {money(row.netPay)}
+                    {Number(row.tipPayout) > 0 && (
+                      <span className="block text-xs font-normal text-muted-foreground">+ {money(row.tipPayout)} tips</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <Link
                       href={`/payslips/${row.id}`}

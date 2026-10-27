@@ -25,6 +25,7 @@ import {
   index,
   primaryKey,
   foreignKey,
+  customType,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 
@@ -215,6 +216,10 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // M20 (0152): the floor section this table sits in, and a server assigned to
+    // the table itself (overrides the section's).
+    sectionId: uuid('section_id').references((): AnyPgColumn => floorSections.id, { onDelete: 'set null' }),
+    assignedServerId: uuid('assigned_server_id').references(() => memberships.id, { onDelete: 'set null' }),
     // Unguessable public identifier for the QR-at-station ordering entry
     // point — see 0048_resource_qr_token.sql for why this can't just be id.
     qrToken: uuid('qr_token').notNull().defaultRandom(),
@@ -394,6 +399,12 @@ export const bookings = pgTable(
     // resource link (in place of booking_slots — see that migration's
     // comment). Null for every timed booking in every other industry.
     coverCount: integer('cover_count'),
+    // M20 (0150): set only for a table reservation — the start time it was
+    // made for and its length. Kept after the party is seated.
+    reservedFor: timestamp('reserved_for', { withTimezone: true }),
+    reservedMinutes: integer('reserved_minutes'),
+    // M20 (0152): the server who worked this table session, stamped at seating.
+    serverId: uuid('server_id').references(() => memberships.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'restrict' }),
     // M17 (0072): when the table's bill was requested. Null for every
     // non-restaurant booking.
@@ -452,9 +463,19 @@ export const bookingSlots = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    bookingId: uuid('booking_id')
-      .notNull()
-      .references(() => bookings.id, { onDelete: 'cascade' }),
+    /**
+     * Null when this row is an EVENT RESOURCE BLOCK (M15 #4, migration 0130).
+     * `booking_slots_one_owner` CHECKs that exactly one of bookingId/eventId is
+     * set, so a slot always has exactly one lifecycle that releases it.
+     */
+    bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'cascade' }),
+    /**
+     * Set when this row reserves a resource for an EVENT rather than a
+     * customer (0130). The booking_slots_no_overlap exclusion constraint treats
+     * both identically — which is the whole mechanism by which an event and a
+     * booking cannot occupy one resource at the same time.
+     */
+    eventId: uuid('event_id'),
     resourceId: uuid('resource_id')
       .notNull()
       .references(() => resources.id, { onDelete: 'restrict' }),
@@ -822,6 +843,8 @@ export const payslips = pgTable(
       .notNull()
       .default('0'),
     netPay: numeric('net_pay', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** M20 (0156): tips paid on this payslip — NOT part of gross / net_pay. */
+    tipPayout: numeric('tip_payout', { precision: 10, scale: 2 }).notNull().default('0'),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -871,6 +894,8 @@ export const menuCategories = pgTable(
     name: text('name').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     isActive: boolean('is_active').notNull().default(true),
+    // Default station for the category's dishes (migration 0148).
+    stationId: uuid('station_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -895,6 +920,8 @@ export const menuItems = pgTable(
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
     happyHourEligible: boolean('happy_hour_eligible').notNull().default(false),
+    // Where this dish is made (migration 0148); falls back to the category's.
+    stationId: uuid('station_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1029,6 +1056,23 @@ export const orders = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     resourceId: uuid('resource_id').references(() => resources.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    // M20 (0157): what kind of order this is. Every pre-existing and every
+    // table/booking order is 'dine_in'; takeaway and delivery have no table.
+    orderType: text('order_type').$type<'dine_in' | 'takeaway' | 'delivery'>().notNull().default('dine_in'),
+    // Post-kitchen handover only; the earlier steps are the kitchen ticket's status.
+    handoverStatus: text('handover_status').$type<'out_for_delivery' | 'collected' | 'delivered'>(),
+    contactName: text('contact_name'),
+    contactPhone: text('contact_phone'),
+    pickupAt: timestamp('pickup_at', { withTimezone: true }),
+    deliveryAddress: text('delivery_address'),
+    deliveryFee: numeric('delivery_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    deliveryFeeTaxRate: numeric('delivery_fee_tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    driverName: text('driver_name'),
+    driverPhone: text('driver_phone'),
+    handedOverAt: timestamp('handed_over_at', { withTimezone: true }),
+    /** The invoice that billed this (standalone) order. */
+    invoiceId: uuid('invoice_id'),
+    notes: text('notes'),
     // Idempotency (migration 0065, column type fixed in 0068) — a
     // client-generated key (lib/utils/idempotency-key.ts's newIdempotencyKey,
     // NOT crypto.randomUUID — see 0068 for why), reused verbatim on any retry
@@ -1094,6 +1138,17 @@ export const orderItems = pgTable(
     // time so a bill can later be split "by who ordered what". Null =
     // unassigned/shared. Snapshot only; never read by pricing.
     seatNo: smallint('seat_no'),
+    // Course firing (migration 0147, M19 #2). course_name is a snapshot, like
+    // the price columns. 'held' lines are invisible to the cook until fired
+    // (fire_order_course); every pre-existing / non-opted-in line is 'fired'.
+    courseNo: smallint('course_no').notNull().default(1),
+    courseName: text('course_name'),
+    fireStatus: text('fire_status', { enum: ['fired', 'held'] }).notNull().default('fired'),
+    firedAt: timestamp('fired_at', { withTimezone: true }),
+    // Station snapshot (migration 0148): where this line is cooked, frozen at
+    // order time so later menu re-mapping never re-routes a live ticket.
+    stationId: uuid('station_id'),
+    stationName: text('station_name'),
   },
   (t) => [index('idx_order_items_order').on(t.orderId)],
 )
@@ -1192,6 +1247,102 @@ export const kots = pgTable(
   ],
 )
 
+// ── kitchen_stations (migration 0148) ────────────────────────────────────────
+export const kitchenStations = pgTable('kitchen_stations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isActive: boolean('is_active').notNull().default(true),
+  // Kitchen printer for this station's tickets (migration 0149); null = default.
+  printerId: uuid('printer_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ── printers + print_jobs (migration 0149) ───────────────────────────────────
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea'
+  },
+})
+
+export const printers = pgTable('printers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  kind: text('kind', { enum: ['kitchen', 'receipt'] }).notNull(),
+  isDefault: boolean('is_default').notNull().default(false),
+  paperChars: integer('paper_chars').notNull().default(42),
+  mediaType: text('media_type').notNull().default('application/vnd.star.starprnt'),
+  secretHash: text('secret_hash').notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  deviceMac: text('device_mac'),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  lastStatus: text('last_status'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const printJobs = pgTable('print_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  printerId: uuid('printer_id')
+    .notNull()
+    .references(() => printers.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['kitchen_ticket', 'receipt', 'test'] }).notNull(),
+  title: text('title').notNull(),
+  kotId: uuid('kot_id'),
+  invoiceId: uuid('invoice_id'),
+  payload: bytea('payload').notNull(),
+  status: text('status', { enum: ['pending', 'sent', 'printed', 'failed', 'cancelled'] })
+    .notNull()
+    .default('pending'),
+  error: text('error'),
+  attempts: integer('attempts').notNull().default(0),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+})
+
+// ── kot_items (migration 0146) ───────────────────────────────────────────────
+// Sparse item-level kitchen state: a row = this order line was bumped (cooked);
+// no row = still outstanding. Written only by the KDS (lib/kots/kds.ts).
+export const kotItems = pgTable(
+  'kot_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    kotId: uuid('kot_id')
+      .notNull()
+      .references(() => kots.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id')
+      .notNull()
+      .references(() => orderItems.id, { onDelete: 'cascade' }),
+    bumpedAt: timestamp('bumped_at', { withTimezone: true }).notNull().defaultNow(),
+    bumpedBy: uuid('bumped_by').references(() => memberships.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    unique('kot_items_order_item_key').on(t.orderItemId),
+    index('idx_kot_items_kot').on(t.tenantId, t.kotId),
+  ],
+)
+
 // ── notifications (migration 0061) ───────────────────────────────────────────
 // A minimal outbox, forward-compatible with the roadmap's eventual M3-C
 // design (notification_settings + notifications + retry) — see
@@ -1247,6 +1398,14 @@ export const customers = pgTable(
      */
     smsOptIn: boolean('sms_opt_in').notNull().default(true),
     emailOptIn: boolean('email_opt_in').notNull().default(true),
+  /**
+   * When this customer said they had left a Google review (0141).
+   *
+   * SELF-DECLARED. Google provides no per-customer submission signal for a
+   * review-link flow, so this records the customer's own confirmation and
+   * nothing stronger. Null = the prompt is still pending.
+   */
+  googleReviewPromptCompletedAt: timestamp('google_review_prompt_completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1405,6 +1564,18 @@ export const businessProfiles = pgTable('business_profiles', {
   // M22 #1 (0095): weekday numbers (0=Sun...6=Sat, JS getDay convention)
   // this tenant treats as weekend for pricing. Default {0,6} (Sat+Sun).
   weekendDays: smallint('weekend_days').array().notNull().default([0, 6]),
+  /**
+   * Canonical WhatsApp group invite, or null (migration 0140). Host-pinned by a
+   * CHECK because the public confirmation page redirects to it automatically —
+   * see lib/settings/whatsapp-group.ts for the one shared rule.
+   */
+  whatsappGroupUrl: text('whatsapp_group_url'),
+  /** Whether the confirmation page offers the group. Never true without a URL. */
+  whatsappGroupEnabled: boolean('whatsapp_group_enabled').notNull().default(false),
+  /** Canonical Google review link, or null (0141). Host-pinned by CHECK. */
+  googleReviewUrl: text('google_review_url'),
+  /** Whether eligible customers see the review prompt. Never true without a URL. */
+  googleReviewEnabled: boolean('google_review_enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -1501,6 +1672,9 @@ export const paymentIntentStatus = pgEnum('payment_intent_status', [
 export const paymentIntentPurpose = pgEnum('payment_intent_purpose', [
   'booking_deposit',
   'order_payment',
+  // An event entry fee (migration 0128) — the third target, same table, same
+  // webhook, same tenant BYO credentials.
+  'event_registration',
 ])
 
 export const paymentIntents = pgTable(
@@ -1518,6 +1692,9 @@ export const paymentIntents = pgTable(
     // standalone order's pay-now, never both, never neither.
     bookingId: uuid('booking_id'),
     orderId: uuid('order_id'),
+    // The third target (migration 0128) — an event entry fee. Same one-of-N
+    // rule: payment_intents_exactly_one_target now counts three columns.
+    eventRegistrationId: uuid('event_registration_id'),
     purpose: paymentIntentPurpose('purpose').notNull().default('booking_deposit'),
     gateway: text('gateway').notNull().default('razorpay'),
     /** Razorpay `order_…`. Written only after the gateway call returns. */
@@ -1561,8 +1738,12 @@ export const paymentIntents = pgTable(
     uniqueIndex('idx_payment_intents_gateway_payment')
       .on(t.gateway, t.gatewayPaymentId)
       .where(sql`${t.gatewayPaymentId} is not null`),
+    uniqueIndex('idx_payment_intents_one_pending_event_registration')
+      .on(t.tenantId, t.eventRegistrationId, t.purpose)
+      .where(sql`${t.status} = 'pending' and ${t.eventRegistrationId} is not null`),
     index('idx_payment_intents_booking').on(t.tenantId, t.bookingId),
     index('idx_payment_intents_order').on(t.tenantId, t.orderId),
+    index('idx_payment_intents_event_registration').on(t.tenantId, t.eventRegistrationId),
   ],
 )
 
@@ -1704,6 +1885,20 @@ export const orderSettings = pgTable('order_settings', {
     .primaryKey()
     .references(() => tenants.id, { onDelete: 'cascade' }),
   autoAcceptOnlineOrders: boolean('auto_accept_online_orders').notNull().default(false),
+  // Kitchen Display System opt-in + timer colour thresholds (migration 0146).
+  kdsEnabled: boolean('kds_enabled').notNull().default(false),
+  kdsWarnMinutes: integer('kds_warn_minutes').notNull().default(8),
+  kdsLateMinutes: integer('kds_late_minutes').notNull().default(15),
+  // Course firing opt-in (migration 0147); only effective with kdsEnabled.
+  coursesEnabled: boolean('courses_enabled').notNull().default(false),
+  courseNames: text('course_names').array().notNull().default(['Starters', 'Mains', 'Desserts']),
+  // Station routing opt-in (migration 0148); only effective with kdsEnabled.
+  stationsEnabled: boolean('stations_enabled').notNull().default(false),
+  // Takeaway / delivery (migration 0157): staff-created typed orders, default off.
+  takeawayEnabled: boolean('takeaway_enabled').notNull().default(false),
+  deliveryEnabled: boolean('delivery_enabled').notNull().default(false),
+  defaultDeliveryFee: numeric('default_delivery_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+  deliveryFeeTaxRate: numeric('delivery_fee_tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -1944,7 +2139,7 @@ export const invoiceItems = pgTable(
     // own add-on, kept distinct from 'adjustment' so reporting can separate
     // "what did we sell" from "what did we add on top".
     kind: text('kind')
-      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon'>()
+      .$type<'booking' | 'food' | 'membership' | 'adjustment' | 'wallet_topup' | 'service_charge' | 'addon' | 'delivery'>()
       .notNull(),
     sourceId: uuid('source_id'),
     description: text('description').notNull(),
@@ -2445,6 +2640,8 @@ export const websiteSectionType = pgEnum('website_section_type', [
   'menu',
   'hours',
   'map',
+  // 'events' (migration 0126) — the M15 upcoming-events section.
+  'events',
 ])
 
 /** Draft content — the future editor (AROS-C/D) mutates these rows directly. */
@@ -2997,6 +3194,674 @@ export const bookingSettings = pgTable('booking_settings', {
     .references(() => tenants.id, { onDelete: 'cascade' }),
   /** Bookable dates are today … today + N − 1 in the tenant timezone. */
   maxAdvanceDays: integer('max_advance_days').notNull().default(7),
+  /** Grid step for bookable start times / durations, minutes (0162). */
+  slotStepMinutes: integer('slot_step_minutes').notNull().default(30),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })
+
+// M20 (0150): table-reservation settings. One row per tenant; a tenant with no
+// row behaves as disabled with the defaults below (lib/reservations/settings.ts).
+export const reservationSettings = pgTable('reservation_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  defaultDurationMinutes: integer('default_duration_minutes').notNull().default(90),
+  noShowGraceMinutes: integer('no_show_grace_minutes').notNull().default(15),
+  walkinBufferMinutes: integer('walkin_buffer_minutes').notNull().default(45),
+  publicEnabled: boolean('public_enabled').notNull().default(false),
+  maxPartySize: integer('max_party_size').notNull().default(12),
+  /** M20 (0151): walk-in waitlist switch. */
+  waitlistEnabled: boolean('waitlist_enabled').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
+// M20 (0151): walk-in waitlist. status: waiting | notified | seated | left.
+export const waitlistEntries = pgTable(
+  'waitlist_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    phone: text('phone'),
+    partySize: integer('party_size').notNull(),
+    quotedWaitMinutes: integer('quoted_wait_minutes'),
+    notes: text('notes'),
+    status: text('status').notNull().default('waiting'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    notifiedAt: timestamp('notified_at', { withTimezone: true }),
+    seatedAt: timestamp('seated_at', { withTimezone: true }),
+    leftAt: timestamp('left_at', { withTimezone: true }),
+    bookingId: uuid('booking_id').references(() => bookings.id, { onDelete: 'set null' }),
+  },
+  (t) => [index('idx_waitlist_active').on(t.tenantId, t.branchId, t.createdAt)],
+)
+
+// M20 (0152): floor sections (Main dining, Patio, Bar). A server may be
+// assigned to a whole section; a table-level assignment overrides it.
+export const floorSections = pgTable(
+  'floor_sections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    assignedServerId: uuid('assigned_server_id').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('floor_sections_branch_name_key').on(t.branchId, t.name),
+    index('idx_floor_sections_branch').on(t.tenantId, t.branchId, t.sortOrder),
+  ],
+)
+
+// M10 (0153): inventory. stock_movements is the append-only ledger; `quantity`
+// on stock_items is kept equal to its sum by a trigger (arena_app cannot write it).
+export const stockItems = pgTable(
+  'stock_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    unit: text('unit').notNull().default('unit'),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull().default('0'),
+    reorderLevel: numeric('reorder_level', { precision: 14, scale: 3 }).notNull().default('0'),
+    /** M20 (0155): current cost of one unit; null = not costed. */
+    unitCost: numeric('unit_cost', { precision: 14, scale: 4 }),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('stock_items_tenant_id_key').on(t.tenantId, t.id),
+    unique('stock_items_branch_name_key').on(t.branchId, t.name),
+    index('idx_stock_items_branch').on(t.tenantId, t.branchId),
+  ],
+)
+
+export const stockMovements = pgTable(
+  'stock_movements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    stockItemId: uuid('stock_item_id').notNull(),
+    delta: numeric('delta', { precision: 14, scale: 3 }).notNull(),
+    reason: text('reason'),
+    /** opening | purchase | adjustment | wastage | order */
+    sourceType: text('source_type').notNull().default('adjustment'),
+    sourceId: uuid('source_id'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_stock_movements_item').on(t.tenantId, t.stockItemId, t.createdAt)],
+)
+
+// M10 (0154): optional recipe — one portion of a menu item consumes `quantity` of a stock item.
+export const menuItemIngredients = pgTable(
+  'menu_item_ingredients',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    menuItemId: uuid('menu_item_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('menu_item_ingredients_item_stock_key').on(t.menuItemId, t.stockItemId)],
+)
+
+// M20 (0155): optional recipe on a modifier option ("Extra cheese" uses 0.03 kg of Cheese).
+export const modifierOptionIngredients = pgTable(
+  'modifier_option_ingredients',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    optionId: uuid('option_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('modifier_option_ingredients_key').on(t.optionId, t.stockItemId)],
+)
+
+// M20 (0156): tips. tip_settings = the tenant's rules; tip_periods = a closed
+// month's frozen rules + totals; tip_payouts = the per-person ledger payroll pays.
+export const tipSettings = pgTable('tip_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  mode: text('mode').$type<'direct' | 'pooled'>().notNull().default('direct'),
+  tipOutPct: numeric('tip_out_pct', { precision: 5, scale: 2 }).notNull().default('0'),
+  poolRoles: text('pool_roles').array().notNull().default(sql`array['floor_staff']`),
+  tipOutRoles: text('tip_out_roles').array().notNull().default(sql`array[]::text[]`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
+export const tipPeriods = pgTable(
+  'tip_periods',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    period: text('period').notNull(),
+    settings: jsonb('settings').$type<Record<string, unknown>>().notNull(),
+    totalTips: numeric('total_tips', { precision: 12, scale: 2 }).notNull(),
+    distributed: numeric('distributed', { precision: 12, scale: 2 }).notNull(),
+    undistributed: numeric('undistributed', { precision: 12, scale: 2 }).notNull().default('0'),
+    finalizedBy: uuid('finalized_by').references(() => memberships.id, { onDelete: 'set null' }),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.period] })],
+)
+
+export const tipPayouts = pgTable(
+  'tip_payouts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    period: text('period').notNull(),
+    membershipId: uuid('membership_id').notNull(),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    breakdown: jsonb('breakdown').$type<Record<string, number>>().notNull().default({}),
+    status: text('status').$type<'pending' | 'paid'>().notNull().default('pending'),
+    payslipId: uuid('payslip_id').references(() => payslips.id, { onDelete: 'set null' }),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('tip_payouts_period_member_key').on(t.tenantId, t.period, t.membershipId)],
+)
+
+// ── events (migration 0124) ──────────────────────────────────────────────────
+// M15 tournaments & events. One table for all five kinds; `type` carries the
+// meaning and `tournamentFormat` is constrained to tournaments in the database.
+export const eventType = pgEnum('event_type', ['tournament', 'class', 'meetup', 'watch_party', 'party'])
+export const tournamentFormat = pgEnum('tournament_format', [
+  'single_elim',
+  'double_elim',
+  'round_robin',
+  'points',
+])
+// Does one person enter, or one team? (migration 0127) — the question neither
+// `type` nor `tournamentFormat` answers.
+export const eventRegistrationMode = pgEnum('event_registration_mode', ['solo', 'team'])
+export const eventStatus = pgEnum('event_status', [
+  'draft',
+  'published',
+  'registration_open',
+  'full',
+  'in_progress',
+  'completed',
+  'cancelled',
+])
+
+/** What an event reserves. See migration 0130. */
+export const eventResourceScope = pgEnum('event_resource_scope', ['none', 'branch', 'specific'])
+
+export const events = pgTable(
+  'events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Tenant-safe composite FK in SQL — (tenant_id, branch_id) references
+    // branches(tenant_id, id), so an event can never point at another tenant's
+    // branch. Drizzle models the column; the constraint lives in 0124.
+    branchId: uuid('branch_id').notNull(),
+    title: text('title').notNull(),
+    type: eventType('type').notNull(),
+    description: text('description'),
+    // Public URL from lib/storage/s3.ts uploadImage().
+    bannerUrl: text('banner_url'),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+    endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+    // NULL = unlimited.
+    capacity: integer('capacity'),
+    entryFee: numeric('entry_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    tournamentFormat: tournamentFormat('tournament_format'),
+    // Solo vs team entry (migration 0127). `teamSize` is players per team and
+    // is NULL exactly when the mode is 'solo' — the events_team_size CHECK.
+    registrationMode: eventRegistrationMode('registration_mode').notNull().default('solo'),
+    teamSize: integer('team_size'),
+    status: eventStatus('status').notNull().default('draft'),
+    /**
+     * What the event reserves (M15 #4, migration 0130). 'none' by default, so
+     * every event written before 0130 keeps behaving exactly as it did.
+     * 'branch' blocks every bookable resource in the branch; 'specific' blocks
+     * the stations listed in `eventResources`.
+     */
+    resourceScope: eventResourceScope('resource_scope').notNull().default('none'),
+    /**
+     * Which recurring series produced this occurrence, and for which LOCAL date
+     * (M15 #8, migration 0136). Both null for a hand-created event. The unique
+     * index on the pair is what makes generation idempotent.
+     */
+    seriesId: uuid('series_id'),
+    occurrencePeriod: date('occurrence_period'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('idx_events_tenant_starts').on(t.tenantId, t.startsAt),
+    index('idx_events_branch').on(t.branchId),
+  ],
+)
+
+// ── recurring event series (migration 0136, M15 #8) ─────────────────────────
+// A TEMPLATE. scripts/run-recurring-events.ts copies its snapshot fields onto
+// ordinary `events` rows, so a generated occurrence works with registration,
+// check-in, resource blocking, brackets and the public pages with no special
+// case anywhere. Editing a series never alters an occurrence already generated.
+export const eventCadence = pgEnum('event_cadence', ['weekly', 'monthly'])
+
+export const eventSeries = pgTable(
+  'event_series',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Tenant-safe composite FK to branches(tenant_id, id) lives in 0136.
+    branchId: uuid('branch_id').notNull(),
+    cadence: eventCadence('cadence').notNull(),
+    /** 0 = Sunday … 6 = Saturday, matching EXTRACT(dow). Null for monthly. */
+    weekday: integer('weekday'),
+    /** 1–31, clamped to the month's last day by the job. Null for weekly. */
+    dayOfMonth: integer('day_of_month'),
+    /** Local wall-clock start in the TENANT's timezone — survives DST. */
+    startTime: time('start_time').notNull(),
+    durationMinutes: integer('duration_minutes').notNull(),
+    nextRun: date('next_run').notNull(),
+    /** Generation stops after this local date. Null = indefinite. */
+    untilDate: date('until_date'),
+    isActive: boolean('is_active').notNull().default(true),
+    /**
+     * What each generated occurrence RESERVES (migration 0139). Copied onto
+     * the occurrence, which then materialises booking_slots through the same
+     * syncEventBlocks() a hand-created event uses — one implementation of
+     * "what does this event hold", not a second one in the job.
+     *
+     * 'none' or 'branch' only, CHECK-enforced: 'specific' names individual
+     * stations and a template has nowhere to keep that list.
+     */
+    resourceScope: eventResourceScope('resource_scope').notNull().default('none'),
+    // ── the snapshot copied onto each occurrence ──────────────────────────
+    title: text('title').notNull(),
+    type: eventType('type').notNull(),
+    description: text('description'),
+    bannerUrl: text('banner_url'),
+    capacity: integer('capacity'),
+    entryFee: numeric('entry_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    tournamentFormat: tournamentFormat('tournament_format'),
+    registrationMode: eventRegistrationMode('registration_mode').notNull().default('solo'),
+    teamSize: integer('team_size'),
+    createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('event_series_tenant_id_key').on(t.tenantId, t.id),
+    index('idx_event_series_tenant').on(t.tenantId, t.createdAt.desc()),
+  ],
+)
+
+// ── event matches (migration 0134, M15 #6) ──────────────────────────────────
+// The bracket ENGINE is pure TypeScript in lib/events/bracket.ts; this is only
+// where its output lives. Participants are event_registrations ids — the same
+// identity the check-in list returns — so a team match and a solo match have
+// the same shape and no participant data is duplicated here.
+export const eventMatchSide = pgEnum('event_match_side', [
+  'winners',
+  'losers',
+  'final',
+  'round_robin',
+  'points',
+])
+
+export const eventMatchStatus = pgEnum('event_match_status', [
+  'pending',
+  'ready',
+  'completed',
+  'bye',
+  'void',
+])
+
+export const eventMatches = pgTable(
+  'event_matches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Composite FKs to (tenant_id, id) on events / event_registrations live in
+    // 0134 — Drizzle models the columns, the database makes cross-tenant
+    // impossible.
+    eventId: uuid('event_id').notNull(),
+    side: eventMatchSide('side').notNull(),
+    round: integer('round').notNull(),
+    position: integer('position').notNull(),
+    participantA: uuid('participant_a'),
+    participantB: uuid('participant_b'),
+    status: eventMatchStatus('status').notNull().default('pending'),
+    scoreA: integer('score_a'),
+    scoreB: integer('score_b'),
+    winner: uuid('winner'),
+    /**
+     * The topology, written once at generation. Advancement FOLLOWS these
+     * pointers rather than recomputing bracket maths at result time, so a
+     * winner cannot land in the wrong slot.
+     */
+    winnerNextMatchId: uuid('winner_next_match_id'),
+    winnerNextSlot: text('winner_next_slot'),
+    /** Non-null only in double elimination (and the grand final → reset). */
+    loserNextMatchId: uuid('loser_next_match_id'),
+    loserNextSlot: text('loser_next_slot'),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('event_matches_tenant_id_key').on(t.tenantId, t.id),
+    // ONE match per coordinate — the database half of idempotent generation.
+    unique('event_matches_coordinate_key').on(t.eventId, t.side, t.round, t.position),
+    index('idx_event_matches_event').on(t.eventId, t.side, t.round, t.position),
+    index('idx_event_matches_tenant').on(t.tenantId),
+  ],
+)
+
+// ── event resource selection (migration 0130, M15 #4) ───────────────────────
+// WHICH stations a 'specific'-scope event claims. This is the SELECTION, not
+// the reservation: the reservation lives in `bookingSlots` rows carrying
+// `eventId`, and only exists while the event status blocks. Keeping them apart
+// is what lets a DRAFT event have a chosen line-up and reserve nothing.
+export const eventResources = pgTable(
+  'event_resources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Composite FKs to (tenant_id, id) on events / resources live in 0130 —
+    // Drizzle models the columns, the database makes cross-tenant impossible.
+    eventId: uuid('event_id').notNull(),
+    resourceId: uuid('resource_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('event_resources_event_id_resource_id_key').on(t.eventId, t.resourceId),
+    index('idx_event_resources_event').on(t.eventId),
+    index('idx_event_resources_resource').on(t.tenantId, t.resourceId),
+  ],
+)
+
+// ── event registrations, teams (migration 0127, M15 #3) ──────────────────────
+// Capacity counts REGISTRATIONS: one entry per person for a solo event, one
+// entry per TEAM for a team event. See the migration header for why, and for
+// why every customer write goes through the SECURITY DEFINER functions rather
+// than through a row policy — the rule is a table-level count under a lock,
+// which no WITH CHECK can express.
+export const eventRegistrationStatus = pgEnum('event_registration_status', [
+  // Holds a place while the entrant pays; expires and releases it.
+  'pending_payment',
+  'registered',
+  // Holds nothing, is never charged.
+  'waitlisted',
+  'cancelled',
+  'checked_in',
+])
+
+export const eventTeamStatus = pgEnum('event_team_status', ['active', 'withdrawn'])
+
+export const eventTeams = pgTable(
+  'event_teams',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Composite FKs to (tenant_id, id) on events / customers live in 0127 —
+    // Drizzle models the columns, the database makes cross-tenant impossible.
+    eventId: uuid('event_id').notNull(),
+    name: text('name').notNull(),
+    captainCustomerId: uuid('captain_customer_id').notNull(),
+    status: eventTeamStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('event_teams_tenant_id_key').on(t.tenantId, t.id),
+    // The target event_team_members FKs onto, so a member's team and a member's
+    // event are provably the same event.
+    unique('event_teams_event_id_key').on(t.tenantId, t.eventId, t.id),
+    foreignKey({
+      name: 'event_teams_event_fk',
+      columns: [t.tenantId, t.eventId],
+      foreignColumns: [events.tenantId, events.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'event_teams_captain_fk',
+      columns: [t.tenantId, t.captainCustomerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }).onDelete('restrict'),
+    index('idx_event_teams_event').on(t.tenantId, t.eventId),
+  ],
+)
+
+export const eventTeamMembers = pgTable(
+  'event_team_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Carried here as well as on the team: it is what the three-column FK below
+    // needs, and what makes "one team per event per customer" expressible.
+    eventId: uuid('event_id').notNull(),
+    teamId: uuid('team_id').notNull(),
+    customerId: uuid('customer_id').notNull(),
+    isCaptain: boolean('is_captain').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'event_team_members_team_fk',
+      columns: [t.tenantId, t.eventId, t.teamId],
+      foreignColumns: [eventTeams.tenantId, eventTeams.eventId, eventTeams.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'event_team_members_customer_fk',
+      columns: [t.tenantId, t.customerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }).onDelete('cascade'),
+    uniqueIndex('idx_event_team_members_unique').on(t.teamId, t.customerId),
+    uniqueIndex('idx_event_team_members_one_per_event').on(t.tenantId, t.eventId, t.customerId),
+    uniqueIndex('idx_event_team_members_captain').on(t.teamId).where(sql`${t.isCaptain}`),
+    index('idx_event_team_members_customer').on(t.tenantId, t.customerId),
+  ],
+)
+
+export const eventRegistrations = pgTable(
+  'event_registrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    eventId: uuid('event_id').notNull(),
+    /** The M9 customer. There is no second registrant identity. */
+    customerId: uuid('customer_id').notNull(),
+    /** NULL for a solo entry; the team this entry IS, for a team event. */
+    teamId: uuid('team_id'),
+    status: eventRegistrationStatus('status').notNull(),
+    /** Money RECEIVED, not money owed. The fee owed is always events.entryFee. */
+    paidAmount: numeric('paid_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Razorpay `pay_…`, written only by the verified-webhook path. */
+    paymentReference: text('payment_reference'),
+    /** The capacity hold; set exactly while status is 'pending_payment'. */
+    paymentHoldExpiresAt: timestamp('payment_hold_expires_at', { withTimezone: true }),
+    /** Money arrived, place could not be honoured. Twin of bookings.depositReviewRequired. */
+    refundRequired: boolean('refund_required').notNull().default(false),
+    registeredAt: timestamp('registered_at', { withTimezone: true }),
+    waitlistedAt: timestamp('waitlisted_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
+    /**
+     * Unguessable bearer credential for day-of QR check-in (M15 #5, migration
+     * 0131). Same pattern as bookings.confirmationToken (0026): a v4 uuid,
+     * never derived from any id, resolved only as (tenantId, checkInToken)
+     * under a staff session. The QR encodes this and nothing else.
+     */
+    checkInToken: uuid('check_in_token').notNull().defaultRandom(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('event_registrations_tenant_id_key').on(t.tenantId, t.id),
+    unique('event_registrations_tenant_token_key').on(t.tenantId, t.checkInToken),
+    foreignKey({
+      name: 'event_registrations_event_fk',
+      columns: [t.tenantId, t.eventId],
+      foreignColumns: [events.tenantId, events.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'event_registrations_customer_fk',
+      columns: [t.tenantId, t.customerId],
+      foreignColumns: [customers.tenantId, customers.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'event_registrations_team_fk',
+      columns: [t.tenantId, t.eventId, t.teamId],
+      foreignColumns: [eventTeams.tenantId, eventTeams.eventId, eventTeams.id],
+    }).onDelete('cascade'),
+    // THE duplicate-registration rule: at most one LIVE entry per customer per
+    // event. Partial, so a cancelled entry does not block re-registering.
+    uniqueIndex('idx_event_registrations_active')
+      .on(t.tenantId, t.eventId, t.customerId)
+      .where(sql`${t.status} in ('pending_payment','registered','waitlisted','checked_in')`),
+    index('idx_event_registrations_event_status').on(t.eventId, t.status),
+    index('idx_event_registrations_waitlist')
+      .on(t.eventId, t.createdAt, t.id)
+      .where(sql`${t.status} = 'waitlisted'`),
+    index('idx_event_registrations_customer').on(t.tenantId, t.customerId, t.createdAt),
+  ],
+)
+
+export const eventTeamsRelations = relations(eventTeams, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [eventTeams.tenantId], references: [tenants.id] }),
+  event: one(events, { fields: [eventTeams.eventId], references: [events.id] }),
+  members: many(eventTeamMembers),
+}))
+
+export const eventTeamMembersRelations = relations(eventTeamMembers, ({ one }) => ({
+  team: one(eventTeams, { fields: [eventTeamMembers.teamId], references: [eventTeams.id] }),
+  customer: one(customers, { fields: [eventTeamMembers.customerId], references: [customers.id] }),
+}))
+
+export const eventRegistrationsRelations = relations(eventRegistrations, ({ one }) => ({
+  tenant: one(tenants, { fields: [eventRegistrations.tenantId], references: [tenants.id] }),
+  event: one(events, { fields: [eventRegistrations.eventId], references: [events.id] }),
+  customer: one(customers, { fields: [eventRegistrations.customerId], references: [customers.id] }),
+  team: one(eventTeams, { fields: [eventRegistrations.teamId], references: [eventTeams.id] }),
+}))
+
+// ── Google Business Profile: connection + review cache (migration 0142) ──────
+//
+// FEATURE B, and unrelated to the customer review prompt on business_profiles
+// (0141). That one is a link we send a customer TO; this is reading what
+// Google already holds. Separate tables because they have opposite exposure:
+// the credentials are never public, the reviews are public by design.
+
+export const googleBusinessCredentials = pgTable('google_business_credentials', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** Google's own ids. The API parent is accounts/{a}/locations/{l}. Opaque. */
+  googleAccountId: text('google_account_id').notNull(),
+  googleLocationId: text('google_location_id').notNull(),
+  /** The VENUE'S OWN OAuth client. Its Cloud project, its quota, its verification. */
+  oauthClientId: text('oauth_client_id').notNull(),
+  /** SECRET. Sealed with the same tenant-id AAD as the refresh token. */
+  oauthClientSecretEncrypted: text('oauth_client_secret_encrypted').notNull(),
+  /**
+   * SECRET. AES-256-GCM sealed with the TENANT ID as AAD, so a row copied
+   * between tenants fails to decrypt rather than authorising as the wrong
+   * venue. Read ONLY by lib/reviews/google-credentials.ts.
+   */
+  /** Null until the owner completes Google's consent flow. See migration 0128. */
+  refreshTokenEncrypted: text('refresh_token_encrypted'),
+  connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastSyncError: text('last_sync_error'),
+  lastSyncAttempt: timestamp('last_sync_attempt', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const googleReviews = pgTable(
+  'google_reviews',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** Google's review id — THE idempotency key a re-sync updates on. */
+    googleReviewId: text('google_review_id').notNull(),
+    /** Null when the reviewer chose anonymity; Google really returns this. */
+    reviewerName: text('reviewer_name'),
+    /**
+     * OPTIONAL (0143). Stored when Google supplies one, rendered by nothing:
+     * the homepage draws initials, because an <img> here would hotlink
+     * googleusercontent on every render and leak each visitor's IP to Google.
+     * Kept so an avatar UI stays a rendering decision rather than a re-sync.
+     */
+    reviewerPhotoUrl: text('reviewer_photo_url'),
+    /** 1–5. Google's ONE..FIVE enum is mapped at the API edge. CHECKed in SQL. */
+    rating: smallint('rating').notNull(),
+    /** Null for a rating with no words. */
+    comment: text('comment'),
+    /** Google's createTime, not our sync time — ordering must not reshuffle. */
+    reviewCreatedAt: timestamp('review_created_at', { withTimezone: true }).notNull(),
+    syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('google_reviews_tenant_review_key').on(t.tenantId, t.googleReviewId),
+    index('idx_google_reviews_tenant_recent').on(t.tenantId, t.reviewCreatedAt.desc()),
+  ],
+)
+
+export const googleBusinessCredentialsRelations = relations(googleBusinessCredentials, ({ one }) => ({
+  tenant: one(tenants, { fields: [googleBusinessCredentials.tenantId], references: [tenants.id] }),
+}))
+
+export const googleReviewsRelations = relations(googleReviews, ({ one }) => ({
+  tenant: one(tenants, { fields: [googleReviews.tenantId], references: [tenants.id] }),
+}))

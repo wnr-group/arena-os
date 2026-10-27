@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { menuCategories, menuItems, taxRates, menuItemModifierGroups, modifierGroups } from '@/db/schema'
+import { auditLog, menuCategories, menuItems, taxRates, menuItemModifierGroups, modifierGroups } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageKitchen } from '@/lib/auth/roles'
 import { uploadImage, deleteImage } from '@/lib/storage/s3'
@@ -235,13 +235,33 @@ export async function setMenuItemAvailability(input: z.input<typeof availability
       throw new AuthError('Only kitchen staff, managers and owners can 86 an item.')
     }
     const v = availabilityInput.parse(input)
-    const updated = await withUser(ctx.user.id, (tx) =>
-      tx
+    const updated = await withUser(ctx.user.id, async (tx) => {
+      const [before] = await tx
+        .select({ status: menuItems.status })
+        .from(menuItems)
+        .where(and(eq(menuItems.id, v.id), eq(menuItems.tenantId, ctx.tenant.id)))
+        .limit(1)
+      const rows = await tx
         .update(menuItems)
         .set({ status: v.status, updatedAt: new Date() })
         .where(and(eq(menuItems.id, v.id), eq(menuItems.tenantId, ctx.tenant.id), ne(menuItems.status, 'hidden')))
-        .returning({ id: menuItems.id }),
-    )
+        .returning({ id: menuItems.id, name: menuItems.name })
+      // M20 reporting: record each real 86 / un-86 so the menu-mix report can
+      // say how often an item ran out. A no-op toggle (already in that state)
+      // writes nothing, so the count is genuine "ran out" events.
+      if (rows[0] && before && before.status !== v.status) {
+        await tx.insert(auditLog).values({
+          tenantId: ctx.tenant.id,
+          actorMembershipId: ctx.membershipId,
+          action: v.status === 'out_of_stock' ? 'menu_item.86' : 'menu_item.un86',
+          entityType: 'menu_item',
+          entityId: v.id,
+          before: { status: before.status },
+          after: { status: v.status, item_name: rows[0].name },
+        })
+      }
+      return rows
+    })
     if (updated.length === 0) return { error: 'Item not found, or it is hidden from the menu.' }
     revalidatePath('/menu/items')
     revalidatePath('/kitchen')
@@ -265,7 +285,7 @@ export async function deleteMenuItem(id: string): Promise<Result> {
       await tx.delete(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.tenantId, ctx.tenant.id)))
       return existing
     })
-    if (row) void deleteImage(row.imageUrl)
+    if (row) void deleteImage(row.imageUrl, ctx.tenant.id)
     revalidatePath('/menu/items')
     return {}
   } catch (e) {

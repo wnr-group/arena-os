@@ -1,7 +1,12 @@
 import { redirect } from 'next/navigation'
 import { and, eq } from 'drizzle-orm'
 import { getActiveContext } from '@/lib/tenant/context'
-import { canManageIncomingOrders, canManageKitchen } from '@/lib/auth/roles'
+import { canManageIncomingOrders, canManageKitchen, canManageWalkins } from '@/lib/auth/roles'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
+import { todayInZone } from '@/lib/booking/time'
+import { listServers } from '@/lib/sections/data'
+import { isWaitlistEnabled, listActiveWaitlist } from '@/lib/waitlist/data'
+import { dayBounds, getReservationSettings, listReservations } from '@/lib/reservations/data'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
 import { listTables } from '@/lib/booking/data'
@@ -46,6 +51,31 @@ export default async function FloorPage() {
   ])
   const modifierGroupsByItem = groupModifierGroupsByMenuItem(menuItemGroupRows)
 
+  // M20: today's still-to-come reservations, shown on their tables. Off (and
+  // no query beyond the settings read) unless the venue opted in on a plan that has it.
+  const reservationsOn =
+    canManageWalkins(ctx.role) &&
+    (await hasEntitlement(ctx, 'module.table_reservations')) &&
+    (await getReservationSettings(ctx)).enabled
+  // M20: the host's waitlist headline (count + longest wait) for the floor header.
+  const waitlistOn =
+    canManageWalkins(ctx.role) && (await hasEntitlement(ctx, 'module.waitlist')) && (await isWaitlistEnabled(ctx))
+  const waitlistEntries = waitlistOn ? await listActiveWaitlist(ctx, branch.id) : []
+  // M20: floor sections / server assignment. Reassigning a running table is a front-of-house job.
+  const sectionsOn = canManageWalkins(ctx.role) && (await hasEntitlement(ctx, 'module.floor_sections'))
+  const servers = sectionsOn ? await listServers(ctx) : []
+  const upcomingReservations = reservationsOn
+    ? (await listReservations(ctx, branch.id, dayBounds(todayInZone(ctx.tenant.timezone), ctx.tenant.timezone)))
+        .filter((r) => r.status === 'confirmed' && !r.seatedTableId && r.tableId)
+        .map((r) => ({
+          bookingId: r.bookingId,
+          tableId: r.tableId!,
+          guestName: r.customerName,
+          partySize: r.partySize,
+          reservedFor: r.reservedFor.toISOString(),
+        }))
+    : []
+
   const bookingIds = [...new Set(tables.map((t) => t.bookingId).filter((id): id is string => Boolean(id)))]
   const [orderRows, kotRows, billingStates] = await Promise.all([
     listOrdersForBookings(ctx, bookingIds),
@@ -83,6 +113,9 @@ export default async function FloorPage() {
         voidReason: row.voidReason,
         pendingVoidMode: row.pendingVoidMode,
         modifiers: modifiersByOrderItem.get(row.itemId) ?? [],
+        courseNo: row.courseNo!,
+        courseName: row.courseName,
+        held: row.fireStatus === 'held',
       })
     }
   }
@@ -133,6 +166,11 @@ export default async function FloorPage() {
   return (
     <FloorView
       branchId={branch.id}
+      reservationsOn={reservationsOn}
+      upcomingReservations={upcomingReservations}
+      waitlistOn={waitlistOn}
+      servers={servers}
+      waitlist={waitlistEntries.map((w) => ({ createdAt: w.createdAt.toISOString() }))}
       currency={ctx.tenant.currency}
       timeZone={ctx.tenant.timezone}
       tables={tables.map((t) => {
@@ -158,6 +196,11 @@ export default async function FloorPage() {
           billRequestedAt: t.billRequestedAt ? t.billRequestedAt.toISOString() : null,
           status,
           runningTotal: billing?.runningTotal ?? 0,
+          sectionId: t.sectionId,
+          sectionName: t.sectionName,
+          sectionSort: t.sectionSort,
+          sessionServerId: t.sessionServerId,
+          serverName: t.bookingId ? t.sessionServerName : t.assignedServerName,
         }
       })}
       categories={categories}

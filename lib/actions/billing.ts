@@ -8,6 +8,7 @@ import { bookings } from '@/db/schema'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canBill, canBillBooking, isManager, type MemberRole } from '@/lib/auth/roles'
 import { previewPromoForBooking } from '@/lib/billing/data'
+import { printInvoice } from '@/lib/printing/auto'
 import { BillingError, issueInvoiceForBooking, loadBillLines } from '@/lib/billing/invoice'
 import { BookingError, loadBookingChannel, updateBookingHeadCountCore, completeBookingIfFullySettled } from '@/lib/booking/service'
 import { resolveMembershipBenefit } from '@/lib/billing/membership-benefit'
@@ -176,6 +177,15 @@ export async function createInvoiceForBooking(
       await completeBookingIfFullySettled(tx, ctx.tenant.id, v.bookingId)
       return inv
     })
+
+    // Print the bill at the counter if a receipt printer is set up (M19 #4).
+    // After commit and fully best-effort: the bill is already raised, and the
+    // invoice page's "Print on receipt printer" button is the manual path.
+    try {
+      await printInvoice(ctx, issued.invoiceId)
+    } catch (e) {
+      console.error('[print] auto-print of bill failed:', e instanceof Error ? e.message : e)
+    }
 
     revalidatePath('/bookings')
     return { invoiceId: issued.invoiceId, invoiceNumber: issued.invoiceNumber }

@@ -19,6 +19,7 @@ import {
   orderItemModifiers,
   orderItemVoidRequests,
   menuItems,
+  menuCategories,
   modifierGroups,
   modifierOptions,
   menuItemModifierGroups,
@@ -33,6 +34,8 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
+import { enqueueKitchenTicketsCore, enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
+import { getCourseConfigCore, getStationRoutingCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -62,6 +65,12 @@ export type CreateOrderItemInput = {
   // guest count is finalised, and a stale/absent cover_count must never
   // block placing food. Pure bookkeeping — never affects pricing.
   seatNo?: number
+  // Course firing (migration 0147, M19 #2). Only accepted for tenants that
+  // turned courses on (and the KDS); `course` is 1-based into their course
+  // names, `hold` keeps the line off the cook's board until it's fired. Both
+  // absent = fired immediately, i.e. exactly the pre-courses behaviour.
+  course?: number
+  hold?: boolean
 }
 
 export type CreateOrderInput = {
@@ -87,6 +96,21 @@ export type CreateOrderInput = {
   // or an impatient double-tap on "Place order"), but changes for every new
   // attempt. See the early return below.
   idempotencyKey?: string
+  /**
+   * M20 (0157): a takeaway or delivery order — no table, no booking. Absent =
+   * a dine-in order, byte-for-byte the pre-M20 behaviour. Validated by the
+   * callers (lib/orders/typed.ts); the DB's CHECK constraints are the backstop.
+   */
+  typed?: {
+    orderType: 'takeaway' | 'delivery'
+    contactName: string
+    contactPhone?: string | null
+    pickupAt?: Date | null
+    deliveryAddress?: string | null
+    deliveryFee?: number
+    deliveryFeeTaxRate?: number
+    notes?: string | null
+  }
   items: CreateOrderItemInput[]
 }
 
@@ -171,9 +195,12 @@ export async function createOrderCore(
       price: menuItems.price,
       status: menuItems.status,
       taxPercent: taxRates.percent,
+      stationId: menuItems.stationId,
+      categoryStationId: menuCategories.stationId,
     })
     .from(menuItems)
     .leftJoin(taxRates, eq(taxRates.id, menuItems.taxRateId))
+    .leftJoin(menuCategories, eq(menuCategories.id, menuItems.categoryId))
     .where(and(eq(menuItems.tenantId, ctx.tenantId), inArray(menuItems.id, ids)))
 
   const byId = new Map(rows.map((r) => [r.id, r]))
@@ -377,6 +404,16 @@ export async function createOrderCore(
       resourceId: input.resourceId ?? null,
       createdBy: ctx.membershipId,
       idempotencyKey: input.idempotencyKey ?? null,
+      ...(input.typed && {
+        orderType: input.typed.orderType,
+        contactName: input.typed.contactName.trim(),
+        contactPhone: input.typed.contactPhone?.trim() || null,
+        pickupAt: input.typed.pickupAt ?? null,
+        deliveryAddress: input.typed.orderType === 'delivery' ? (input.typed.deliveryAddress?.trim() ?? null) : null,
+        deliveryFee: (input.typed.orderType === 'delivery' ? (input.typed.deliveryFee ?? 0) : 0).toFixed(2),
+        deliveryFeeTaxRate: (input.typed.orderType === 'delivery' ? (input.typed.deliveryFeeTaxRate ?? 0) : 0).toFixed(2),
+        notes: input.typed.notes?.trim() || null,
+      }),
     })
     .returning({ id: orders.id })
 
@@ -398,8 +435,28 @@ export async function createOrderCore(
     }
   }
 
+  // Only read the course config when the caller actually sent course info —
+  // KOT creation is a hot path and most tenants never will.
+  const usesCourses = input.items.some((i) => i.course !== undefined || i.hold !== undefined)
+  const courseCfg = usesCourses ? await getCourseConfigCore(tx, ctx.tenantId) : null
+  if (courseCfg && !courseCfg.enabled) {
+    throw new OrderError('Course firing is not turned on for this venue.')
+  }
+  for (const i of input.items) {
+    if (courseCfg && i.course !== undefined && (!Number.isInteger(i.course) || i.course < 1 || i.course > courseCfg.names.length)) {
+      throw new OrderError('Pick one of the configured courses.')
+    }
+  }
+
+  // Station routing (M19 #3): null unless the venue opted in. When on, each
+  // line snapshots the item's station (own, else its category's) — a station
+  // that has since been deactivated/deleted routes to nothing.
+  const stations = await getStationRoutingCore(tx, ctx.tenantId)
+
   const preparedItems = input.items.map((i) => {
     const m = byId.get(i.menuItemId)!
+    const stationId = stations ? (m.stationId ?? m.categoryStationId) : null
+    const stationName = stationId ? (stations?.get(stationId) ?? null) : null
     const basePrice = Number(m.price)
     // Every item is in scope: a live rule discounts whatever is ordered
     // inside its time window, with no per-item opt-in required. Only the
@@ -434,6 +491,11 @@ export async function createOrderCore(
         happyHourDiscountType: applied?.rule.discountType ?? null,
         happyHourDiscountValue: applied ? Number(applied.rule.discountValue).toFixed(2) : null,
         seatNo: i.seatNo ?? null,
+        courseNo: courseCfg ? (i.course ?? 1) : 1,
+        courseName: courseCfg ? courseCfg.names[(i.course ?? 1) - 1] : null,
+        fireStatus: (i.hold ? 'held' : 'fired') as 'held' | 'fired',
+        stationId: stationName ? stationId : null,
+        stationName,
       },
       modifiers: selected.map((o) => ({
         tenantId: ctx.tenantId,
@@ -471,6 +533,21 @@ export async function createOrderCore(
     kotNumber,
     status: 'pending',
   })
+
+  // Kitchen paper (M19 #4): same transaction, so the ticket exists iff the
+  // order does. Staff-placed, already-accepted orders only — an online order
+  // awaiting review prints on accept (acceptOrderCore), and the anonymous
+  // online path has no member to own a print job under RLS. A branch with no
+  // printer makes this a single cheap query.
+  if (ctx.membershipId && (input.acceptanceStatus ?? 'accepted') === 'accepted') {
+    await enqueueKitchenTicketsCore(tx, {
+      tenantId: ctx.tenantId,
+      branchId: input.branchId,
+      orderId: order.id,
+      reason: 'new',
+      membershipId: ctx.membershipId,
+    })
+  }
 
   return { id: order.id, orderNumber, kotNumber }
 }
@@ -541,6 +618,9 @@ export async function acceptOrderCore(tx: Db, ctx: { tenantId: string }, orderId
     .update(orders)
     .set({ acceptanceStatus: 'accepted' })
     .where(and(eq(orders.id, order.id), eq(orders.tenantId, ctx.tenantId)))
+
+  // Now it is the kitchen's: print its ticket (no-op without a printer).
+  await enqueueKitchenTicketsForOrderCore(tx, ctx.tenantId, order.id, 'new')
 }
 
 /**
@@ -840,6 +920,10 @@ async function applyVoidDecision(
         .set({ status: 'cancelled' })
         .where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
       await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+    } else {
+      // KDS tenants: the voided line may have been the only one still
+      // outstanding, which makes the ticket done (no-op without the KDS).
+      await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
     }
   }
 
@@ -952,6 +1036,8 @@ export async function removeOrderItemCore(
   if (!somethingLeft) {
     await tx.update(orders).set({ status: 'cancelled' }).where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
     await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
+  } else {
+    await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
   }
 
   await writeAudit(tx, actor, {

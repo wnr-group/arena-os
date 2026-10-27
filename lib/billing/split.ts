@@ -15,6 +15,7 @@
  * bill) — no promo code, no loyalty redemption, no online-deposit carry-over.
  * A cashier who needs those keys in a normal (unsplit) bill instead.
  */
+import { deductStockForOrders } from '@/lib/inventory/deduct'
 import { randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
@@ -585,6 +586,8 @@ export async function issueSplitBillForBooking(
           inArray(orders.id, billedOrderIds),
         ),
       )
+    // M10: same once-per-order stock deduction as issueInvoiceForBooking.
+    await deductStockForOrders(tx, tenant.id, billedOrderIds)
   }
   await cancelPendingOrdersForBilledBooking(tx, { tenantId: tenant.id }, booking.id)
 

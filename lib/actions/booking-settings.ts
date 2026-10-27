@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
-import { AdvanceWindowError, applyBookingWindow } from '@/lib/booking/settings-write'
+import { AdvanceWindowError, SlotStepError, applyBookingWindow, applySlotStep } from '@/lib/booking/settings-write'
 
 type Result = { error?: string; success?: true; reduced?: boolean }
 
@@ -27,5 +27,24 @@ export async function saveBookingSettings(maxAdvanceDays: number): Promise<Resul
     if (e instanceof AuthError || e instanceof AdvanceWindowError) return { error: e.message }
     console.error('[booking-settings] save failed', e)
     return { error: 'Could not save the booking window.' }
+  }
+}
+
+/** Save the venue-wide booking time step (manager only). Existing bookings are untouched. */
+export async function saveSlotStep(minutes: number): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await withUser(ctx.user.id, (tx) =>
+      applySlotStep(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, minutes),
+    )
+    revalidatePath('/settings/hours')
+    revalidatePath('/bookings/new')
+    revalidatePath('/book', 'layout')
+    revalidatePath('/book-type', 'layout')
+    return { success: true }
+  } catch (e) {
+    if (e instanceof AuthError || e instanceof SlotStepError) return { error: e.message }
+    console.error('[booking-settings] step save failed', e)
+    return { error: 'Could not save the booking time step.' }
   }
 }

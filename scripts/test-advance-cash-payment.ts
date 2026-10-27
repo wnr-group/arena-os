@@ -118,7 +118,7 @@ async function main() {
 
   let daySeq = 0
   const nextSlot = () => {
-    const start = new Date(Date.UTC(2048, 0, 1 + ++daySeq, 4, 0, 0))
+    const start = new Date(Date.UTC(2048, 0, 1 + ++daySeq, 5, 0, 0)) // 10:30 IST: inside the default 10:00–22:00 hours, on the 30-min grid
     return { start, end: new Date(start.getTime() + 2 * 3600_000) } // 2h @ 500/hr => 1000.00
   }
   let phoneSeq = 0

@@ -8,6 +8,10 @@ import { withUser } from '@/db'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
+import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
+import { planReschedule, rescheduleBookingCore } from '@/lib/booking/reschedule'
+import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settings-server'
+import { todayInZone } from '@/lib/booking/time'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
@@ -39,13 +43,14 @@ import {
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { BillingError } from '@/lib/billing/invoice'
+import { ReservationConflictError } from '@/lib/reservations/guard'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
-type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string }
+type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string; reservationConflict?: boolean }
 type Result = { error?: string }
 
 function fail(e: unknown): Result {
@@ -124,9 +129,12 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
     // here so a lapsed hold never blocks staff (best-effort, never throws).
     await sweepTenantHolds(ctx.tenant.id)
 
-    const result = await withUser(ctx.user.id, (tx) =>
-      createBookingCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }, v),
-    )
+    const bookingCtx = { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }
+    const result = await withUser(ctx.user.id, async (tx) => {
+      // The wizard only ever offers grid times; refuse a hand-built request that isn't on it.
+      await assertSlotsOnGrid(tx, bookingCtx, v.branchId, v.slots)
+      return createBookingCore(tx, bookingCtx, v)
+    })
 
     revalidatePath('/bookings')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
@@ -588,6 +596,8 @@ const seatTableInput = z.object({
     .optional()
     .refine((v) => !v || isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   notes: z.string().trim().optional(),
+  // M20: seat although a reservation is about to start at this table.
+  overrideReservation: z.boolean().optional(),
 })
 
 /**
@@ -619,6 +629,8 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
     revalidatePath('/floor')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
+    // M20: the one failure the floor answers with a "seat anyway" button.
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -805,6 +817,20 @@ export async function setBookingStatus<S extends BookingStatus>(
         }
       }
 
+      // M20: an unseated table reservation has no table session yet, so a bare
+      // status flip would leave a checked-in booking with no table. Seating
+      // (seatReservation) is the only way to check one in.
+      if (status === 'checked_in') {
+        const [res] = await tx
+          .select({ reservedFor: bookings.reservedFor, resourceId: bookings.resourceId })
+          .from(bookings)
+          .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+          .limit(1)
+        if (res?.reservedFor && !res.resourceId) {
+          throw new BookingError('A table reservation is checked in by seating the party — use Seat on the Reservations page.')
+        }
+      }
+
       if (status === 'completed') {
         await assertBookingFullyPaid(tx, ctx.tenant.id, id)
       }
@@ -942,6 +968,172 @@ export type CheckInResult = Result & {
     resourceName: string | null
     startsAt: string | null
     alreadyCheckedIn: boolean
+  }
+}
+
+/* ── Reschedule ──────────────────────────────────────────────────────────── */
+
+const rescheduleInput = z.object({
+  bookingId: z.string().uuid(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  /** The slot start the dialog loaded; a mismatch means the booking changed underneath. */
+  expectedStartsAt: z.string().datetime(),
+  reason: z.string().trim().max(500).optional(),
+})
+
+export type RescheduleContext = {
+  error?: string
+  bookingId?: string
+  bookingNumber?: string
+  status?: 'confirmed' | 'checked_in'
+  branchId?: string
+  resourceId?: string
+  resourceName?: string
+  startsAt?: string
+  endsAt?: string
+  total?: string
+  timeZone?: string
+  today?: string
+  maxAdvanceDays?: number
+  slotMinutes?: number
+}
+
+/** What the Reschedule dialog needs to open. Eligibility is re-decided by the quote and the save. */
+export async function getRescheduleContext(bookingId: string): Promise<RescheduleContext> {
+  try {
+    const ctx = await requireContext()
+    const id = z.string().uuid().parse(bookingId)
+    const row = await withUser(ctx.user.id, async (tx) => {
+      const [b] = await tx
+        .select({
+          id: bookings.id,
+          bookingNumber: bookings.bookingNumber,
+          status: bookings.status,
+          branchId: bookings.branchId,
+          total: bookings.total,
+          channel: bookings.channel,
+          backdated: bookings.backdated,
+          reservedFor: bookings.reservedFor,
+          tableResourceId: bookings.resourceId,
+        })
+        .from(bookings)
+        .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+        .limit(1)
+      if (!b) return null
+      const slots = await tx
+        .select({
+          resourceId: bookingSlots.resourceId,
+          resourceName: bookingSlots.resourceName,
+          startsAt: bookingSlots.startsAt,
+          endsAt: bookingSlots.endsAt,
+        })
+        .from(bookingSlots)
+        .where(and(eq(bookingSlots.bookingId, id), eq(bookingSlots.tenantId, ctx.tenant.id), eq(bookingSlots.active, true)))
+      return { b, slots }
+    })
+    if (!row) return { error: 'Booking not found.' }
+    const { b, slots } = row
+    if (b.status !== 'confirmed' && b.status !== 'checked_in') {
+      return { error: 'Only an upcoming or in-progress booking can be rescheduled.' }
+    }
+    if (b.channel === 'walkin') {
+      return { error: 'A walk-in cannot be rescheduled - use Extend or Correct end time instead.' }
+    }
+    if (b.backdated) return { error: 'A late-entered booking cannot be rescheduled.' }
+    if (b.reservedFor || b.tableResourceId) {
+      return { error: 'A table reservation is rescheduled from the Reservations page.' }
+    }
+    if (slots.length !== 1 || slots[0].endsAt === null) {
+      return { error: 'Only a booking with a single time slot can be rescheduled for now.' }
+    }
+    const [maxAdvanceDays, slotMinutes] = await Promise.all([maxAdvanceDaysOrDefault(ctx), slotStepOrDefault(ctx)])
+    return {
+      bookingId: b.id,
+      bookingNumber: b.bookingNumber,
+      status: b.status,
+      branchId: b.branchId,
+      resourceId: slots[0].resourceId,
+      resourceName: slots[0].resourceName ?? undefined,
+      startsAt: slots[0].startsAt.toISOString(),
+      endsAt: slots[0].endsAt.toISOString(),
+      total: b.total,
+      timeZone: ctx.tenant.timezone,
+      today: todayInZone(ctx.tenant.timezone),
+      maxAdvanceDays,
+      slotMinutes,
+    }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export type RescheduleQuote = {
+  error?: string
+  oldTotal?: string
+  newTotal?: string
+  /** newTotal - oldTotal, 2dp; negative when the booking gets cheaper. */
+  difference?: string
+  needsRefundReview?: boolean
+}
+
+/** Read-only: validate the proposed window and price it, without writing anything. */
+export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Promise<RescheduleQuote> {
+  try {
+    const ctx = await requireContext()
+    const v = rescheduleInput.parse(raw)
+    const plan = await withUser(ctx.user.id, (tx) =>
+      planReschedule(
+        tx,
+        { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone },
+        {
+          bookingId: v.bookingId,
+          newStartsAt: new Date(v.startsAt),
+          newEndsAt: new Date(v.endsAt),
+          expectedStartsAt: new Date(v.expectedStartsAt),
+        },
+        { lock: false },
+      ),
+    )
+    return {
+      oldTotal: plan.oldTotal.toFixed(2),
+      newTotal: plan.newTotal.toFixed(2),
+      difference: (plan.newTotal - plan.oldTotal).toFixed(2),
+      needsRefundReview: plan.needsRefundReview,
+    }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Move a booking to a new window. Any staff member, like cancel: the server
+ * re-validates everything (status, bill, grid, hours, window, overlap) and audits
+ * the change; hiding the button is convenience, not authorization.
+ */
+export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): Promise<Result & { newTotal?: string }> {
+  try {
+    const ctx = await requireContext()
+    const v = rescheduleInput.parse(raw)
+    const plan = await withUser(ctx.user.id, (tx) =>
+      rescheduleBookingCore(
+        tx,
+        { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+        {
+          bookingId: v.bookingId,
+          newStartsAt: new Date(v.startsAt),
+          newEndsAt: new Date(v.endsAt),
+          expectedStartsAt: new Date(v.expectedStartsAt),
+          reason: v.reason,
+        },
+      ),
+    )
+    revalidatePath('/bookings')
+    revalidatePath('/sessions')
+    revalidatePath('/floor')
+    return { newTotal: plan.newTotal.toFixed(2) }
+  } catch (e) {
+    return fail(e)
   }
 }
 

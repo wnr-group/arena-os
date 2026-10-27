@@ -53,6 +53,9 @@ export function listOrdersForBookings(ctx: ActiveContext, bookingIds: string[]) 
         happyHourDiscountValue: orderItems.happyHourDiscountValue,
         voidStatus: orderItems.voidStatus,
         voidReason: orderItems.voidReason,
+        courseNo: orderItems.courseNo,
+        courseName: orderItems.courseName,
+        fireStatus: orderItems.fireStatus,
         // Set only while a void/comp request on this line is awaiting
         // manager approval — at most one per item (idx_order_item_void_
         // requests_one_pending, migration 0074), so this left join never
@@ -146,6 +149,9 @@ export function listIncomingOnlineOrders(ctx: ActiveContext, branchId: string) {
         orderNumber: orders.orderNumber,
         createdAt: orders.createdAt,
         stationName: resources.name,
+        orderType: orders.orderType,
+        contactName: orders.contactName,
+        pickupAt: orders.pickupAt,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
         qty: orderItems.qty,
@@ -180,6 +186,9 @@ export function listAwaitingPaymentOrders(ctx: ActiveContext, branchId: string) 
         orderNumber: orders.orderNumber,
         createdAt: orders.createdAt,
         stationName: resources.name,
+        orderType: orders.orderType,
+        contactName: orders.contactName,
+        pickupAt: orders.pickupAt,
         itemId: orderItems.id,
         itemName: orderItems.itemName,
         qty: orderItems.qty,

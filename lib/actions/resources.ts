@@ -198,7 +198,7 @@ export async function upsertResourceType(input: z.input<typeof resourceTypeInput
         await tx.insert(resourceTypes).values(values)
       }
     })
-    if (oldImageUrl) void deleteImage(oldImageUrl)
+    if (oldImageUrl) void deleteImage(oldImageUrl, ctx.tenant.id)
     revalidatePath('/settings/resources')
     // A type's own rate/pricingMode/minPlayers feed straight into the New
     // Booking wizard (listResources() joins resourceTypes) — without this,
@@ -224,7 +224,7 @@ export async function deleteResourceType(id: string): Promise<Result> {
       await tx.delete(resourceTypes).where(and(eq(resourceTypes.id, id), eq(resourceTypes.tenantId, ctx.tenant.id)))
       return existing
     })
-    if (row) void deleteImage(row.imageUrl)
+    if (row) void deleteImage(row.imageUrl, ctx.tenant.id)
     revalidatePath('/settings/resources')
     return {}
   } catch (e) {
@@ -320,7 +320,7 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
         await tx.insert(resources).values(values)
       }
     })
-    if (oldImageUrl) void deleteImage(oldImageUrl)
+    if (oldImageUrl) void deleteImage(oldImageUrl, ctx.tenant.id)
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     return {}
@@ -349,8 +349,8 @@ export async function deleteResource(id: string): Promise<Result> {
       return existing.map((r) => ({ ...r, setupImageUrls: setupImages.map((i) => i.url) }))
     })
     if (row) {
-      void deleteImage(row.imageUrl)
-      await deleteImages(row.setupImageUrls)
+      void deleteImage(row.imageUrl, ctx.tenant.id)
+      await deleteImages(row.setupImageUrls, ctx.tenant.id)
     }
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
@@ -457,7 +457,7 @@ export async function deleteResourceSetup(id: string): Promise<Result> {
       await tx.delete(resourceSetups).where(and(eq(resourceSetups.id, id), eq(resourceSetups.tenantId, ctx.tenant.id)))
       return images.map((i) => i.url)
     })
-    await deleteImages(urls)
+    await deleteImages(urls, ctx.tenant.id)
     revalidatePath('/settings/resources')
     revalidatePath('/bookings')
     revalidateSetupPages()
@@ -479,8 +479,8 @@ class SetupImageError extends Error {}
 
 /** Best-effort removal of storage objects; deleteImage itself never throws and
  *  only ever deletes URLs that pass objectKeyFromUrl (our own bucket/base). */
-async function deleteImages(urls: string[]): Promise<void> {
-  await Promise.all(urls.map((u) => deleteImage(u)))
+async function deleteImages(urls: string[], tenantId: string): Promise<void> {
+  await Promise.all(urls.map((u) => deleteImage(u, tenantId)))
 }
 
 function revalidateSetupPages() {
@@ -520,8 +520,10 @@ export async function uploadSetupImage(
   formData: FormData,
 ): Promise<Result & { id?: string; url?: string; position?: number }> {
   let uploadedUrl: string | null = null
+  let uploadTenantId: string | null = null
   try {
     const ctx = await requireManager()
+    uploadTenantId = ctx.tenant.id
     requireStudio(ctx.tenant.industry)
     const id = z.string().uuid().parse(setupId)
     const file = formData.get('file')
@@ -586,7 +588,7 @@ export async function uploadSetupImage(
     return { id: saved.id, url, position: saved.position }
   } catch (e) {
     // Rejected after the object was written (cap race, bad setup): don't leave an orphan.
-    if (uploadedUrl) await deleteImages([uploadedUrl])
+    if (uploadedUrl && uploadTenantId) await deleteImages([uploadedUrl], uploadTenantId)
     return failImage(e)
   }
 }
@@ -622,7 +624,7 @@ export async function removeSetupImage(imageId: string): Promise<Result> {
       }
       return img.url
     })
-    await deleteImages([removedUrl])
+    await deleteImages([removedUrl], ctx.tenant.id)
     revalidatePath('/settings/resources')
     revalidateSetupPages()
     return {}

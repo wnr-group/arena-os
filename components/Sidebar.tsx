@@ -13,11 +13,13 @@ import {
   CalendarDays,
   LayoutDashboard,
   Settings,
+  Trophy,
   Boxes,
   Clock,
   Users,
   UtensilsCrossed,
   HandCoins,
+  ShoppingBag,
   ChevronDown,
   Contact,
   ChefHat,
@@ -46,6 +48,7 @@ import {
   Armchair,
   Layers,
   AlarmClock,
+  ListOrdered,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -105,8 +108,22 @@ const NAV: NavItem[] = [
   },
   // Dine-in table service (M17) — restaurant tenants only.
   { href: '/floor', label: 'Tables', icon: Armchair, industries: ['restaurant'] },
+  // Table reservations (M20) — restaurant floor roles; the page itself checks the plan + opt-in.
+  { href: '/reservations', label: 'Reservations', icon: CalendarClock, can: canManageWalkins, industries: ['restaurant'] },
+  // Walk-in waitlist (M20) — same roles; the page checks the plan + opt-in.
+  // Floor sections + server assignment (M20) — manager-only setup; the page checks the plan.
+  { href: '/settings/sections', label: 'Floor sections', icon: Layers, can: isManager, industries: ['restaurant'] },
+  { href: '/settings/takeaway-delivery', label: 'Takeaway settings', icon: ShoppingBag, can: isManager, industries: ['restaurant'] },
+  // How tips are shared + the monthly payout that payroll pays (M20) — manager-only; the page checks the plan.
+  { href: '/settings/tips', label: 'Tip payouts', icon: HandCoins, can: isManager, industries: ['restaurant'] },
+  // Takeaway & delivery orders — no table (M20). Same roles as walk-ins; the page checks the plan + opt-in.
+  { href: '/orders/takeaway', label: 'Takeaway & Delivery', icon: ShoppingBag, can: canManageWalkins, industries: ['restaurant'] },
+  { href: '/waitlist', label: 'Waitlist', icon: ListOrdered, can: canManageWalkins, industries: ['restaurant'] },
   { href: '/bookings/scan', label: 'Check-in Scan', icon: ScanLine },
   { href: '/customers', label: 'Customers', icon: Contact, can: canViewCustomers },
+  // Tournaments, classes, meetups and parties (M15) — manager-only, matching
+  // the events_manager_write policy in migration 0110.
+  { href: '/settings/events', label: 'Events', icon: Trophy, can: isManager },
   // The customer membership catalogue — manager-only, like Resources.
   { href: '/settings/memberships', label: 'Memberships', icon: BadgeCheck, can: isManager },
   {
@@ -129,6 +146,8 @@ const NAV: NavItem[] = [
       { href: '/menu/items', label: 'Items', icon: ClipboardList },
       // Modifier groups (M17 #8) — restaurant tenants only, same scoping as
       // Tables/Void-Comp Requests below.
+      // Stock + recipes (M10) — manager-only; the page checks the plan.
+      { href: '/inventory', label: 'Inventory', icon: Boxes },
       { href: '/menu/modifiers', label: 'Modifiers', icon: Layers, industries: ['restaurant'] },
     ],
   },
@@ -174,9 +193,15 @@ const NAV: NavItem[] = [
     children: [
       { href: '/reports', label: 'Revenue & Bookings', icon: TrendingUp, can: isManager },
       { href: '/reports/sales', label: 'Food & Memberships', icon: UtensilsCrossed, can: isManager },
+      // Turnover, spend per cover, dayparts, menu-mix, void/comp, servers (M20) — restaurants only.
+      { href: '/reports/restaurant', label: 'Restaurant', icon: Armchair, can: isManager, industries: ['restaurant'] },
+      // Tips by server and day (M20) — restaurants only.
+      { href: '/reports/tips', label: 'Tips', icon: HandCoins, can: isManager, industries: ['restaurant'] },
       // Revenue − expenses − payroll (AROS-86). The page redirects a non-manager
       // and getPnlReport() throws for one; this entry only decides visibility.
       { href: '/reports/pnl', label: 'Profit & Loss', icon: Scale, can: isManager },
+      // M15 #8 — attendance and entry-fee revenue per event.
+      { href: '/reports/events', label: 'Events', icon: CalendarDays, can: isManager },
     ],
   },
   { href: '/settings/hours', label: 'Working Hours', icon: Clock, can: isManager },

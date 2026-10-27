@@ -34,14 +34,48 @@ export function advanceWindowLabel(days: number): string {
   return ADVANCE_WINDOW_PRESETS.find((p) => p.days === days)?.label ?? `${days} days`
 }
 
-export type BookingSettings = { maxAdvanceDays: number }
+export const DEFAULT_SLOT_STEP_MINUTES = 30
+
+/** The only steps the UI offers and the action accepts (all divide 60). */
+export const SLOT_STEP_PRESETS = [
+  { minutes: 5, label: '5 min' },
+  { minutes: 10, label: '10 min' },
+  { minutes: 15, label: '15 min' },
+  { minutes: 20, label: '20 min' },
+  { minutes: 30, label: '30 min' },
+  { minutes: 60, label: '1 hour' },
+] as const
+
+export function isSlotStepPreset(n: unknown): n is number {
+  return typeof n === 'number' && SLOT_STEP_PRESETS.some((p) => p.minutes === n)
+}
+
+/** Shortest bookable session in the picker, whatever the step. */
+const MIN_PICKER_DURATION = 30
+
+/**
+ * Duration choices for a step: every multiple of the step from 30 minutes to
+ * 4 hours, then hourly to 24 hours. At the default step of 30 this is exactly
+ * the list the booking pages always offered.
+ */
+export function buildDurations(step: number = DEFAULT_SLOT_STEP_MINUTES): number[] {
+  const out: number[] = []
+  for (let m = step; m <= 240; m += step) if (m >= MIN_PICKER_DURATION) out.push(m)
+  for (let h = 5; h <= 24; h++) out.push(h * 60)
+  return out
+}
+
+export type BookingSettings = { maxAdvanceDays: number; slotStepMinutes: number }
 
 /** One cheap read per page load. Missing row ⇒ 7. */
 export async function getBookingSettingsCore(tx: DB, tenantId: string): Promise<BookingSettings> {
   const [row] = await tx
-    .select({ maxAdvanceDays: bookingSettings.maxAdvanceDays })
+    .select({ maxAdvanceDays: bookingSettings.maxAdvanceDays, slotStepMinutes: bookingSettings.slotStepMinutes })
     .from(bookingSettings)
     .where(eq(bookingSettings.tenantId, tenantId))
     .limit(1)
-  return { maxAdvanceDays: row?.maxAdvanceDays ?? DEFAULT_MAX_ADVANCE_DAYS }
+  return {
+    maxAdvanceDays: row?.maxAdvanceDays ?? DEFAULT_MAX_ADVANCE_DAYS,
+    slotStepMinutes: row?.slotStepMinutes ?? DEFAULT_SLOT_STEP_MINUTES,
+  }
 }

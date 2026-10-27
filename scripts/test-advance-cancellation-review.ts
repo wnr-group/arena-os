@@ -92,7 +92,7 @@ async function main() {
 
   const future = new Date()
   future.setUTCDate(future.getUTCDate() + 5)
-  future.setUTCHours(6, 0, 0, 0)
+  future.setUTCHours(4, 30, 0, 0) // 10:00 IST: the default opening, on the step grid
 
   type Tender = { method: 'cash' | 'card' | 'upi'; amount: number }
   async function makeBooking(t: typeof G, advance: number | Tender[]) {
@@ -101,7 +101,7 @@ async function main() {
     g.__ARENA_TEST_SESSION = t.userToken
     const startsAt = new Date(future)
     const endsAt = new Date(startsAt.getTime() + 60 * 60_000)
-    future.setUTCHours(future.getUTCHours() + 2) // keep each booking's window free of the last
+    future.setUTCHours(future.getUTCHours() + 1) // keep each booking's window free of the last (and inside working hours)
     const r = await createBooking({
       branchId: t.branchId,
       customerName: 'Test Customer',
