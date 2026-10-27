@@ -46,6 +46,8 @@ export function proxy(request: NextRequest) {
     pathname.startsWith('/book/') ||
     pathname.startsWith('/book-type/') ||
     pathname.startsWith('/resources') ||
+    // Public table reservations ("Book a table", app/(public)/reserve).
+    pathname === '/reserve' ||
     // Public events listing and detail (M15 #2). Safe to open WHOLESALE because
     // /events is now exclusively public — the manager screen lives at
     // /settings/events, behind the staff gate below. Visibility of individual
