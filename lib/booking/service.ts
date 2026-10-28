@@ -115,6 +115,9 @@ export type CreateBookingInput = {
    *  marks the booking as a table reservation (cover count + length) so it can
    *  later be converted to a seated session. Never accepted from a client. */
   reservation?: { coverCount: number; minutes: number }
+  /** Public double-submit guard (0173): a second create with the same key hits
+   *  the unique index (23505) instead of making a second booking. */
+  idempotencyKey?: string
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -892,6 +895,7 @@ export async function createBookingCore(
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
       backdated: input.backdated ?? false,
+      idempotencyKey: input.idempotencyKey ?? null,
       ...(input.reservation && {
         coverCount: input.reservation.coverCount,
         reservedFor: slotRows[0].startsAt,

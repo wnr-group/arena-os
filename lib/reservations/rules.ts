@@ -144,3 +144,25 @@ export function validateReservationSettings(s: ReservationSettings): string | nu
   if (s.publicEnabled && !s.enabled) return 'Turn reservations on before opening them to the public.'
   return null
 }
+
+/** Most future, unseated reservations one phone number may hold on the public
+ *  site. The phone is unverified, so this bounds how many tables a single
+ *  caller can sit on; staff are not subject to it. */
+export const PUBLIC_MAX_OPEN_RESERVATIONS_PER_PHONE = 3
+
+export type TableSeats = { minSeats: number | null; maxSeats: number | null }
+
+/** Whether a party of `partySize` may be put on a table. A NULL bound is "no
+ *  limit" on that side, so a table with no seats set takes any party. */
+export function tableFitsParty(t: TableSeats, partySize: number): boolean {
+  if (t.minSeats !== null && partySize < t.minSeats) return false
+  if (t.maxSeats !== null && partySize > t.maxSeats) return false
+  return true
+}
+
+/** Whether `start` lies on the venue's start-time grid — every
+ *  RESERVATION_SLOT_MINUTES from opening, the same grid the picker offers. */
+export function isOnSlotGrid(start: Date, open: Date): boolean {
+  const step = RESERVATION_SLOT_MINUTES * 60_000
+  return (start.getTime() - open.getTime()) % step === 0
+}

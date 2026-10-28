@@ -82,6 +82,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         typeImageUrl: resourceTypes.imageUrl,
         typeDescription: resourceTypes.description,
         qrToken: resources.qrToken,
+        minSeats: resources.minSeats,
+        maxSeats: resources.maxSeats,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))

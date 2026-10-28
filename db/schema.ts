@@ -216,6 +216,9 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // 0173: party sizes a table takes; NULL = no limit on that side.
+    minSeats: integer('min_seats'),
+    maxSeats: integer('max_seats'),
     // M20 (0152): the floor section this table sits in, and a server assigned to
     // the table itself (overrides the section's).
     sectionId: uuid('section_id').references((): AnyPgColumn => floorSections.id, { onDelete: 'set null' }),
@@ -440,6 +443,9 @@ export const bookings = pgTable(
     // session already happened (backdated entry). Explicit flag, never inferred
     // from timestamps. False for every booking created any other way.
     backdated: boolean('backdated').notNull().default(false),
+    // 0173: client-supplied key that makes a double-submitted public reservation
+    // resolve to the first booking. Unique per tenant (partial index in the DB).
+    idempotencyKey: text('idempotency_key'),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),

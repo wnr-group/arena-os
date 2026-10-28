@@ -246,6 +246,9 @@ export async function uploadResourceTypeImage(formData: FormData): Promise<{ url
 }
 
 // ── resources ────────────────────────────────────────────────────────────────
+const seatsField = z
+  .preprocess((v) => (v === '' ? null : v), z.union([z.null(), z.coerce.number().int().min(1).max(100)]))
+  .optional()
 const resourceInput = z.object({
   id: z.string().uuid().optional(),
   branchId: z.string().uuid(),
@@ -268,6 +271,14 @@ const resourceInput = z.object({
   imageUrl: z.string().trim().optional(),
   description: z.string().trim().optional(),
   sortOrder: z.coerce.number().int().default(0),
+  // Party sizes a table takes (restaurants). null = no limit on that side;
+  // undefined = leave as stored, so callers that don't know about seats (every
+  // non-restaurant form) never wipe them.
+  minSeats: seatsField,
+  maxSeats: seatsField,
+}).refine((v) => !v.minSeats || !v.maxSeats || v.minSeats <= v.maxSeats, {
+  message: 'Minimum seats can’t exceed maximum seats.',
+  path: ['minSeats'],
 })
 
 export async function upsertResource(input: z.input<typeof resourceInput>): Promise<Result> {
@@ -290,6 +301,8 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
         imageUrl: newImageUrl,
         description: v.description || null,
         sortOrder: v.sortOrder,
+        ...(v.minSeats !== undefined && { minSeats: v.minSeats }),
+        ...(v.maxSeats !== undefined && { maxSeats: v.maxSeats }),
       }
       if (v.id) {
         const [existing] = await tx

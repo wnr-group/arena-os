@@ -20,6 +20,7 @@ import {
 } from '@/lib/payments/event-registration-payment'
 import { createRazorpayOrder, RazorpayApiError } from '@/lib/payments/razorpay'
 import { loadRazorpayCredentialsForTenant } from '@/lib/settings/razorpay-credentials'
+import { hasPublicEntitlement } from '@/lib/platform/entitlement-guard'
 import { rateLimit } from '@/lib/security/rate-limit'
 import { ipFromHeaders } from '@/lib/security/ip'
 
@@ -57,6 +58,14 @@ import { ipFromHeaders } from '@/lib/security/ip'
 
 const RATE_LIMIT_MESSAGE = 'Too many requests. Please slow down and try again shortly.'
 const SIGN_IN_MESSAGE = 'Please sign in to register for this event.'
+const EVENTS_UNAVAILABLE = 'Event registration is not available right now.'
+
+/** A downgraded tenant keeps its events but takes no new entries. Taking part
+ *  in the plan's events module is checked on every entry point that ADDS a
+ *  participant or payment; cancelling stays open. */
+async function eventsEntitled(tenantId: string): Promise<boolean> {
+  return hasPublicEntitlement(tenantId, 'module.events')
+}
 
 async function callerIp(): Promise<string> {
   return ipFromHeaders(await headers())
@@ -108,6 +117,8 @@ export async function registerForEvent(
     return { error: RATE_LIMIT_MESSAGE }
   }
 
+  if (!(await eventsEntitled(customer.tenantId))) return { error: EVENTS_UNAVAILABLE }
+
   const parsed = registerInput.safeParse(raw)
   if (!parsed.success) return { error: 'That event could not be found.' }
 
@@ -144,6 +155,8 @@ export async function joinEventTeam(
   if (!rateLimit(`event-join:customer:${customer.id}`, 10, 10 * 60_000).ok) {
     return { error: RATE_LIMIT_MESSAGE }
   }
+
+  if (!(await eventsEntitled(customer.tenantId))) return { error: EVENTS_UNAVAILABLE }
 
   const parsed = joinInput.safeParse(raw)
   if (!parsed.success) return { error: 'That team could not be found.' }
@@ -244,6 +257,8 @@ export async function createEventRegistrationCheckout(
     if (!rateLimit(`event-pay:customer:${customer.id}`, 8, 10 * 60_000).ok) {
       return { error: RATE_LIMIT_MESSAGE }
     }
+
+    if (!(await eventsEntitled(customer.tenantId))) return { error: EVENTS_UNAVAILABLE }
 
     const v = createEventRegistrationPaymentInputSchema.parse(input)
 

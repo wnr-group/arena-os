@@ -1,5 +1,5 @@
 import 'server-only'
-import type { DB } from '@/db'
+import { ownerDb, type DB } from '@/db'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { getEntitlements, readEntitlements, type EntitlementValue } from './entitlements'
 
@@ -147,6 +147,19 @@ export async function requireEntitlementIn(tx: DB, tenantId: string, key: string
 /** Non-throwing form inside a transaction the caller has already opened. */
 export async function hasEntitlementIn(tx: DB, tenantId: string, key: string): Promise<boolean> {
   return moduleGranted(await resolveFromTx(tx, tenantId), key)
+}
+
+/**
+ * Module check for a request with no signed-in staff member — the anonymous
+ * storefront or a customer session. Those identities cannot read
+ * tenant_subscriptions under RLS, so hasEntitlementIn() on their transaction
+ * would see "no plan" and refuse every tenant. This reads on the owner
+ * connection instead; `tenantId` MUST come from the resolved host or the
+ * validated customer session, never from the request body. Same fail-closed
+ * rule as every other check here.
+ */
+export async function hasPublicEntitlement(tenantId: string, key: string): Promise<boolean> {
+  return moduleGranted(await resolveFromTx(ownerDb, tenantId), key)
 }
 
 /**

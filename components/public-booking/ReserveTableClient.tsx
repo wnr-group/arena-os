@@ -40,6 +40,9 @@ export function ReserveTableClient({
   const [email, setEmail] = useState('')
   const [notes, setNotes] = useState('')
   const [website, setWebsite] = useState('')
+  // One key per form: a double-click or a retry after a dropped response
+  // resolves to the first booking instead of creating another.
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [pending, start] = useTransition()
@@ -83,6 +86,7 @@ export function ReserveTableClient({
         customerEmail: email || undefined,
         notes: notes || undefined,
         website,
+        idempotencyKey,
       })
       if (r.error) setError(r.error)
       else if (r.confirmation) setDone(r.confirmation)
