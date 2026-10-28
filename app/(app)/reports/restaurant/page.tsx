@@ -52,7 +52,7 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Table sessions" value={String(r.summary.sessions)} hint={`${r.summary.covers} guests billed`} />
         <StatCard label="Billed sales" value={money(r.summary.billed)} hint="Invoices incl. GST, excl. tips" />
-        <StatCard label="Spend per guest" value={money(r.summary.spendPerCover)} hint="Billed sales ÷ guests" />
+        <StatCard label="Spend per guest" value={money(r.summary.spendPerCover)} hint="Billed sales ÷ guests, for tables where the guest count was recorded" />
         <StatCard
           label="Avg. table time"
           value={mins(r.summary.avgSessionMinutes)}
