@@ -47,6 +47,30 @@ export function dateTimeIn(tz: string, d: Date): string {
   }).format(d)
 }
 
+const PRINTING_MODULE = 'module.printing'
+
+/**
+ * A short, log-safe reason. A drizzle error's own message embeds the whole failed
+ * query with its parameters, which here includes the ticket payload, so only the
+ * underlying database message is kept.
+ */
+export function describeError(e: unknown): string {
+  const cause = (e as { cause?: { message?: string } } | null)?.cause?.message
+  const msg = cause ?? (e instanceof Error ? e.message : String(e))
+  return msg.split('\n')[0].slice(0, 200)
+}
+
+/**
+ * Whether the plan still includes cloud printing. Printers keep existing after a
+ * downgrade, so every producer checks this before queuing paper. Loaded on demand:
+ * the guard pulls in the app's DB pool, and this module is imported by standalone
+ * scripts that must set their environment first.
+ */
+async function printingEntitled(tx: Db, tenantId: string): Promise<boolean> {
+  const { hasEntitlementIn } = await import('@/lib/platform/entitlement-guard')
+  return hasEntitlementIn(tx, tenantId, PRINTING_MODULE)
+}
+
 async function activePrinters(tx: Db, tenantId: string, branchId: string, kind: 'kitchen' | 'receipt'): Promise<Printer[]> {
   return tx
     .select()
@@ -105,6 +129,8 @@ export async function enqueueKitchenTicketsCore(
 ): Promise<number> {
   const kitchenPrinters = await activePrinters(tx, a.tenantId, a.branchId, 'kitchen')
   if (kitchenPrinters.length === 0) return 0
+  // Checked only once a printer exists, so a venue with none pays nothing extra.
+  if (!(await printingEntitled(tx, a.tenantId))) return 0
 
   const [head] = await tx
     .select({
@@ -237,6 +263,68 @@ export async function enqueueKitchenTicketsForOrderCore(
   return enqueueKitchenTicketsCore(tx, { tenantId, branchId: o.branchId, orderId, reason, membershipId, lineIds })
 }
 
+type KitchenTicketArgs = Parameters<typeof enqueueKitchenTicketsCore>[1]
+
+/**
+ * enqueueKitchenTicketsCore that can never fail its caller. Paper is a side
+ * effect of an order (or a webhook), so a print problem (the printer deleted at
+ * that moment, a payload error) must not abort the order. Runs in a savepoint so
+ * a database error inside it is rolled back on its own instead of poisoning the
+ * surrounding transaction, then is logged. Returns jobs created (0 on failure).
+ */
+export async function enqueueKitchenTicketsBestEffort(tx: Db, a: KitchenTicketArgs): Promise<number> {
+  try {
+    return await tx.transaction((sp) => enqueueKitchenTicketsCore(sp as unknown as Db, a))
+  } catch (e) {
+    console.error('[printing] kitchen ticket enqueue failed:', describeError(e))
+    return 0
+  }
+}
+
+/** Best-effort form of enqueueKitchenTicketsForOrderCore (see above). */
+export async function enqueueKitchenTicketsForOrderBestEffort(
+  tx: Db,
+  tenantId: string,
+  orderId: string,
+  reason: 'new' | 'fire' | 'reprint',
+  membershipId?: string | null,
+  lineIds?: string[],
+): Promise<number> {
+  try {
+    return await tx.transaction((sp) =>
+      enqueueKitchenTicketsForOrderCore(sp as unknown as Db, tenantId, orderId, reason, membershipId, lineIds),
+    )
+  } catch (e) {
+    console.error('[printing] kitchen ticket enqueue failed:', describeError(e))
+    return 0
+  }
+}
+
+/**
+ * Print an order's first kitchen ticket, at most once. For the paths that hand an
+ * order to the kitchen without a staff member (auto-accept, a pay-now webhook) and
+ * for staff accept: a replayed request or a redelivered webhook finds the ticket
+ * already queued and does nothing, rather than printing the order twice.
+ */
+export async function enqueueNewOrderTicketOnce(tx: Db, tenantId: string, orderId: string): Promise<number> {
+  try {
+    return await tx.transaction(async (sp) => {
+      const db = sp as unknown as Db
+      const [already] = await db
+        .select({ id: printJobs.id })
+        .from(printJobs)
+        .innerJoin(kots, eq(kots.id, printJobs.kotId))
+        .where(and(eq(printJobs.tenantId, tenantId), eq(printJobs.kind, 'kitchen_ticket'), eq(kots.orderId, orderId)))
+        .limit(1)
+      if (already) return 0
+      return enqueueKitchenTicketsForOrderCore(db, tenantId, orderId, 'new')
+    })
+  } catch (e) {
+    console.error('[printing] kitchen ticket enqueue failed:', describeError(e))
+    return 0
+  }
+}
+
 /** The branch a bill belongs to: its booking's, else the tenant's primary. */
 async function branchForBill(tx: Db, tenantId: string, bookingId: string | null): Promise<string | null> {
   if (bookingId) {
@@ -264,6 +352,7 @@ export async function enqueueReceiptCore(
   if (!branchId) return 'no_printer'
   const [printer] = await activePrinters(tx, a.tenantId, branchId, 'receipt')
   if (!printer) return 'no_printer'
+  if (!(await printingEntitled(tx, a.tenantId))) return 'no_printer'
   await insertJob(tx, {
     tenantId: a.tenantId,
     branchId,

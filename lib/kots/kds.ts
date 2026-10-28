@@ -19,7 +19,7 @@ import { and, eq, inArray, isNull, ne, notExists, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { kitchenStations, kots, kotItems, orderItems, orderSettings, orders } from '@/db/schema'
-import { enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
+import { enqueueKitchenTicketsForOrderBestEffort } from '@/lib/printing/jobs'
 import { KotError, type KotOrderRef } from './service'
 
 /** The plan module that includes the KDS and course firing. */
@@ -149,7 +149,7 @@ export async function releaseHeldLinesCore(
   }
   // Kitchen paper for exactly the lines just released (no-op without a printer).
   for (const [orderId, lineIds] of byOrder) {
-    await enqueueKitchenTicketsForOrderCore(tx, tenantId, orderId, 'fire', opts.membershipId ?? null, lineIds)
+    await enqueueKitchenTicketsForOrderBestEffort(tx, tenantId, orderId, 'fire', opts.membershipId ?? null, lineIds)
   }
   return released.length
 }

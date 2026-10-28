@@ -18,7 +18,7 @@ import {
   type KdsResult,
 } from '@/lib/kots/kds'
 import { requireEntitlement, EntitlementError } from '@/lib/platform/entitlement-guard'
-import { enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
+import { enqueueKitchenTicketsForOrderBestEffort } from '@/lib/printing/jobs'
 import { sendOrderReadyNotification } from '@/lib/notifications/service'
 
 type Result = { error?: string }
@@ -106,7 +106,7 @@ export async function fireCourse(orderId: string, course: number): Promise<Resul
     await withUser(ctx.user.id, async (tx) => {
       const lineIds = await fireCourseCore(tx, orderId, course)
       // Kitchen paper for exactly the lines just fired (no-op without a printer).
-      await enqueueKitchenTicketsForOrderCore(tx, ctx.tenant.id, orderId, 'fire', ctx.membershipId, lineIds)
+      await enqueueKitchenTicketsForOrderBestEffort(tx, ctx.tenant.id, orderId, 'fire', ctx.membershipId, lineIds)
     })
     revalidatePath('/kitchen')
     revalidatePath('/bookings')

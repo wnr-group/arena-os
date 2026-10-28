@@ -34,7 +34,7 @@ import { todayInZone } from '@/lib/booking/time'
 import { getActiveBookingForResource, ACTIVE_BOOKING_STATUSES } from '@/lib/booking/attribution'
 import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
-import { enqueueKitchenTicketsCore, enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
+import { enqueueKitchenTicketsBestEffort, enqueueNewOrderTicketOnce } from '@/lib/printing/jobs'
 import { getCourseConfigCore, getStationRoutingCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
 import type { KotOrderRef } from '@/lib/kots/service'
 
@@ -537,11 +537,12 @@ export async function createOrderCore(
 
   // Kitchen paper (M19 #4): same transaction, so the ticket exists iff the
   // order does. Staff-placed, already-accepted orders only — an online order
-  // awaiting review prints on accept (acceptOrderCore), and the anonymous
-  // online path has no member to own a print job under RLS. A branch with no
-  // printer makes this a single cheap query.
+  // awaiting review prints on accept (acceptOrderCore); an auto-accepted one
+  // prints from the public action once it has committed, because the anonymous
+  // path has no member to own a print job under RLS. Best-effort: a print problem
+  // never fails the order. A branch with no printer makes this one cheap query.
   if (ctx.membershipId && (input.acceptanceStatus ?? 'accepted') === 'accepted') {
-    await enqueueKitchenTicketsCore(tx, {
+    await enqueueKitchenTicketsBestEffort(tx, {
       tenantId: ctx.tenantId,
       branchId: input.branchId,
       orderId: order.id,
@@ -620,8 +621,9 @@ export async function acceptOrderCore(tx: Db, ctx: { tenantId: string }, orderId
     .set({ acceptanceStatus: 'accepted' })
     .where(and(eq(orders.id, order.id), eq(orders.tenantId, ctx.tenantId)))
 
-  // Now it is the kitchen's: print its ticket (no-op without a printer).
-  await enqueueKitchenTicketsForOrderCore(tx, ctx.tenantId, order.id, 'new')
+  // Now it is the kitchen's: print its ticket (no-op without a printer, never
+  // fails the accept, and never prints the same order twice).
+  await enqueueNewOrderTicketOnce(tx, ctx.tenantId, order.id)
 }
 
 /**
