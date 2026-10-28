@@ -135,8 +135,27 @@ async function main() {
   await q('delete from order_settings where tenant_id = any($1)', [ids])
   await q('delete from printers where tenant_id = any($1)', [ids])
   await setSettings(A, { enabled: true, courses: true })
-  const entitle = () => entitleTenant(ownerPool, A.tenantId)
-  const dropPlan = () => q('delete from tenant_subscriptions where tenant_id = $1', [A.tenantId])
+  // A downgrade that loses the KDS but keeps cloud printing: the tenant moves to a
+  // hidden plan without module.kitchen_display, then back to the fixture plan.
+  const fixturePlanId = (await q('select plan_id from tenant_subscriptions where tenant_id = $1', [A.tenantId]))[0].plan_id as string
+  const entitle = async () => {
+    await q('update tenant_subscriptions set plan_id = $2 where tenant_id = $1', [A.tenantId, fixturePlanId])
+  }
+  const dropKds = async () => {
+    const plan = await q(
+      `insert into public.plans (name, monthly_price, annual_price, active)
+       values ('Test Fixture (no KDS)', 0, 0, false)
+       on conflict (lower(btrim(name))) do update set active = false returning id`,
+    )
+    for (const [key, value] of [['module.kitchen_display', 'false'], ['module.printing', 'true']]) {
+      await q(
+        `insert into public.plan_entitlements (plan_id, key, value) values ($1, $2, $3::jsonb)
+         on conflict (plan_id, key) do update set value = excluded.value`,
+        [plan[0].id, key, value],
+      )
+    }
+    await q('update tenant_subscriptions set plan_id = $2 where tenant_id = $1', [A.tenantId, plan[0].id])
+  }
 
   // ── 1+2. plan downgrade: held lines must not strand ─────────────────────
   check('entitled + flags on: courses are usable', (await withUser(A.members.owner.userId, (tx) => getCourseConfigCore(tx, A.tenantId))).enabled)
@@ -150,7 +169,7 @@ async function main() {
   const printerId = printer[0].id as string
   const jobsFor = async (kotId: string) => (await q('select id from print_jobs where kot_id=$1', [kotId])).length
 
-  await dropPlan()
+  await dropKds()
   const cfg = await withUser(A.members.owner.userId, (tx) => getCourseConfigCore(tx, A.tenantId))
   check('plan lost the KDS: courses read as off even though the flags are on', !cfg.enabled)
   const legacy = (await listActiveKots(ctxOf(A, 'owner'), A.branchId)).filter((r) => r.kotId === held.kotId)
