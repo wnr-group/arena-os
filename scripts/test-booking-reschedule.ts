@@ -266,8 +266,8 @@ async function main() {
   for (let i = 0; i < RUNS; i++) {
     const rd = [1, 2, 4, 5][i]
     const bx = await book(at(rd, '19:00'), at(rd, '20:00'), `90000001${i}0`)
-    console.log('   setStatus'); await setBookingStatus(bx, 'checked_in')
-    console.log('   race', i); const [inv, mv] = await Promise.all([
+    await setBookingStatus(bx, 'checked_in')
+    const [inv, mv] = await Promise.all([
       createInvoiceForBooking({ bookingId: bx }),
       rescheduleBooking({ bookingId: bx, startsAt: iso(at(rd, '19:00')), endsAt: iso(at(rd, '21:00')), expectedStartsAt: iso(at(rd, '19:00')) }),
     ])
