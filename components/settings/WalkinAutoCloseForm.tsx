@@ -2,8 +2,10 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { AlarmClockOff } from 'lucide-react'
 import { saveWalkinAutoClose } from '@/lib/actions/booking-settings'
 import { WALKIN_AUTO_CLOSE_PRESETS } from '@/lib/booking/settings'
+import { ChoiceChips, SaveBar, SettingsCard, Switch } from '@/components/settings/SettingsCard'
 
 const DEFAULT_MINUTES = 240
 
@@ -51,89 +53,61 @@ export function WalkinAutoCloseForm({
   }
 
   return (
-    <div className="mt-8 rounded-xl border border-border bg-card p-5 shadow-sm">
-      <h2 className="text-base font-semibold">Auto-close forgotten walk-ins</h2>
-      <p className="mt-0.5 text-sm text-muted-foreground">
-        A walk-in with no end time keeps running until staff check it out. Turn on a rule below to close a forgotten one
-        automatically. It is billed up to the moment it closes and left unpaid for staff to settle, and you can still
-        correct the end time afterwards. If both rules are on, whichever comes first applies.
-      </p>
-
-      <fieldset className="mt-3 space-y-3" disabled={pending}>
-        <legend className="sr-only">Auto-close rules</legend>
-
+    <SettingsCard
+      icon={AlarmClockOff}
+      title="Auto-close forgotten walk-ins"
+      description="A walk-in with no end time keeps running until staff check it out. Turn on a rule to close a forgotten one automatically. It is billed up to the moment it closes and left unpaid for staff to settle, and you can still correct the end time afterwards."
+      footer={
+        <SaveBar onSave={submit} disabled={!dirty} pending={pending} saved={justSaved} error={error} label="Save rules" />
+      }
+    >
+      <div className="space-y-5">
         <div>
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={minutes !== null}
-              onChange={(e) => {
-                touch()
-                setMinutes(e.target.checked ? lastMinutes : null)
-              }}
-            />
-            Close after a set time
-          </label>
+          <Switch
+            checked={minutes !== null}
+            disabled={pending}
+            onChange={(on) => {
+              touch()
+              setMinutes(on ? lastMinutes : null)
+            }}
+            label="Close after a set time"
+            description="Closes a walk-in once it has been running this long."
+          />
           {minutes !== null && (
-            <div className="mt-2 flex flex-wrap gap-2 pl-6">
-              {WALKIN_AUTO_CLOSE_PRESETS.map((p) => (
-                <label
-                  key={p.minutes}
-                  className={`cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-                    minutes === p.minutes
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'border-border bg-background hover:bg-muted'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="walkin-auto-close-minutes"
-                    value={p.minutes}
-                    checked={minutes === p.minutes}
-                    onChange={() => {
-                      touch()
-                      setMinutes(p.minutes)
-                      setLastMinutes(p.minutes)
-                    }}
-                    className="sr-only"
-                  />
-                  {p.label}
-                </label>
-              ))}
+            <div className="mt-3 pl-14">
+              <ChoiceChips
+                name="walkin-auto-close-minutes"
+                legend="Close after"
+                options={WALKIN_AUTO_CLOSE_PRESETS.map((p) => ({ value: p.minutes, label: p.label }))}
+                value={minutes}
+                disabled={pending}
+                onChange={(v) => {
+                  touch()
+                  setMinutes(v)
+                  setLastMinutes(v)
+                }}
+              />
             </div>
           )}
         </div>
 
-        <div>
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={atClosing}
-              onChange={(e) => {
-                touch()
-                setAtClosing(e.target.checked)
-              }}
-            />
-            Close at closing time
-          </label>
-          <p className="mt-1 pl-6 text-xs text-muted-foreground">
-            Uses the working hours above. A walk-in started on a 24-hour day has no closing time, so only the set time
-            applies to it.
-          </p>
-        </div>
-      </fieldset>
+        <Switch
+          checked={atClosing}
+          disabled={pending}
+          onChange={(on) => {
+            touch()
+            setAtClosing(on)
+          }}
+          label="Close at closing time"
+          description="Uses the opening hours above. A walk-in started on a 24-hour day has no closing time, so only the set time applies to it."
+        />
 
-      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          onClick={submit}
-          disabled={pending || !dirty}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-        >
-          {pending ? 'Saving…' : 'Save'}
-        </button>
-        {justSaved && !pending && <span className="text-sm text-muted-foreground">Saved.</span>}
+        {minutes !== null && atClosing && (
+          <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+            With both on, a walk-in is closed at whichever comes first.
+          </p>
+        )}
       </div>
-    </div>
+    </SettingsCard>
   )
 }
