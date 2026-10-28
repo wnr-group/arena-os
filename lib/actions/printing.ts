@@ -202,7 +202,7 @@ export async function retryPrintJob(jobId: string): Promise<Result> {
     const rows = await withUser(ctx.user.id, (tx) =>
       tx
         .update(printJobs)
-        .set({ status: 'pending', error: null, sentAt: null, finishedAt: null })
+        .set({ status: 'pending', error: null, sentAt: null, finishedAt: null, attempts: 0 })
         .where(
           and(eq(printJobs.id, jobId), eq(printJobs.tenantId, ctx.tenant.id), inArray(printJobs.status, ['failed', 'sent', 'pending'])),
         )

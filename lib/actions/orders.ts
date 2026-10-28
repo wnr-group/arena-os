@@ -47,7 +47,7 @@ const createInput = z.object({
       z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1),
-        specialInstructions: z.string().trim().optional(),
+        specialInstructions: z.string().trim().max(300).optional(),
         // Structured choices (M17 #8) — see CreateOrderItemInput's doc
         // comment (lib/orders/service.ts) for what createOrderCore does
         // with these.

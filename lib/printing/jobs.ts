@@ -148,6 +148,8 @@ export async function enqueueKitchenTicketsCore(
     .innerJoin(tenants, eq(tenants.id, orders.tenantId))
     .leftJoin(resources, eq(resources.id, orders.resourceId))
     .where(and(eq(kots.orderId, a.orderId), eq(kots.tenantId, a.tenantId), ne(kots.status, 'cancelled')))
+    // An order normally has one ticket, but never leave which one prints to chance.
+    .orderBy(asc(kots.createdAt), asc(kots.id))
     .limit(1)
   if (!head) return 0
 

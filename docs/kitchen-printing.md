@@ -54,6 +54,44 @@ code, e.g. paper out), **not confirmed** (sent > 2 min, no confirmation),
 *Printers & print queue* lists them with **Retry**, **Dismiss** and a
 *Print in browser* link. Nothing retries automatically (avoids double prints).
 
+## Delivery guarantee: at most twice
+
+`print_jobs.attempts` counts every delivery of the bytes to the device (migration
+0170). The first fetch marks the job `sent`; if the printer prints but its
+confirmation is lost, the job is re-offered **once** (a second fetch), then
+never again — so a lost confirmation costs at most one duplicate, not one per
+poll for five minutes. After that the job stays `sent` and shows as **not
+confirmed** for staff to **Retry** (which resets the count) or **Dismiss**.
+
+## Bounds and retention
+
+* Every free-text field is capped (1,000 characters, 12 printed lines), runs of
+  blank lines collapse, and one job is capped at 32 KB (`escpos.ts`). Over the
+  cap the job is cut at a line boundary and ends with `*** TICKET TRUNCATED -
+  SEE SCREEN ***` — staff see it and check the screen, nothing half-written is
+  sent to the printer. Order notes are limited to 300 characters on entry.
+* Finished jobs (printed / cancelled / failed) older than 30 days are deleted by
+  the daily cron (`/api/cron/generate-events`, `lib/printing/retention.ts`).
+  Pending and sent jobs are never pruned.
+
+## Decisions
+
+* **Non-Latin text prints as `?`.** Item, modifier and customer names in
+  Devanagari, Tamil, other Indic scripts and emoji are not rendered; Latin
+  accents and ₹ are transliterated. Chosen deliberately: the printer's code
+  page is unknowable from the server and none of the common ones carry Indic
+  scripts, so the only correct fixes are rasterising the ticket as an image (a
+  second encoder, bigger jobs, slower print) or a per-model code page. Revisit
+  as a separate feature if a venue needs it; until then enter item names in
+  Latin script (the on-screen KDS shows the original text).
+* **Media type is unconfirmed — open item, needs the pilot-venue spike.** The
+  default is `application/vnd.star.starprnt` but the encoder emits ESC/POS
+  (`GS ! n`, `GS V B`, `ESC d`). On a printer genuinely in StarPRNT mode those
+  differ (bad sizing / cut). It has not been tested on hardware; do not ship to
+  a venue without printing one real ticket and one receipt on their model and,
+  if it garbles, switching that printer's media type (Setup → printer) or
+  adding a StarPRNT encoder. This is not decided by code.
+
 ## Known limits / follow-ups
 
 * **Spike with the pilot venue before committing hardware.** `media_type`
@@ -62,8 +100,12 @@ code, e.g. paper out), **not confirmed** (sent > 2 min, no confirmation),
   common ESC/POS core (`ESC @/a/E/d`, `GS !/V`) and plain ASCII (₹ → "Rs").
 * Star CloudPRNT only. Epson Server Direct Print polls with a different
   (XML) protocol — a second adapter on the same queue, not done.
-* Anonymous online orders (`placeOnlineOrder`, and pay-now orders released by the
-  payment webhook) don't auto-print: there is no member to own a job under RLS,
-  and the money path must not gain a print dependency. They print when staff
-  accept (if review is on) or via the KDS / browser print.
-* No cash-drawer kick, logo/QR, or non-ASCII scripts.
+* Online orders print without a member: an auto-accepted order prints from the
+  public action after it commits, and a pay-now order from the payment webhook,
+  both as the system, best-effort and at most once per order (a print problem
+  never fails the order or the webhook).
+* Not done (tracked separately): the receipt omits tip / IGST / round-off and
+  does not net refunds; the printer secret is in the URL path (HTTP Basic would
+  keep it out of logs) and bad secrets are not rate-limited; `print_jobs`
+  printer/kot/invoice foreign keys are not tenant-composite.
+* No cash-drawer kick, logo/QR, or non-ASCII scripts (see Decisions).

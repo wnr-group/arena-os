@@ -285,10 +285,12 @@ async function main() {
   check("another printer cannot fetch this printer's job", (await fetchJ(pDefault, 'secret-default-aaaaaaaaaaaa', pj)).b === null)
   const got = (await fetchJ(pGrill, SG, pj)).b!
   check('fetch returns the exact stored bytes and marks the job sent (attempt 1)', Buffer.compare(got, jg.payload) === 0 && (await jstate(pj)).status === 'sent' && (await jstate(pj)).attempts === 1)
-  await fetchJ(pGrill, SG, pj)
-  check('re-fetching a sent job (lost response) is idempotent — still attempt 1', (await jstate(pj)).attempts === 1)
   const again = await poll(pGrill, SG)
-  check('an in-flight (sent) job keeps being offered until confirmed', again.job_id === pj)
+  check('an in-flight (sent) job is re-offered once (a lost confirmation)', again.job_id === pj)
+  await fetchJ(pGrill, SG, pj)
+  check('the re-fetch is the second and last delivery (attempt 2)', (await jstate(pj)).attempts === 2)
+  check('after two deliveries it is no longer offered', (await poll(pGrill, SG)).job_id === null)
+  check('…and a third fetch returns nothing', (await fetchJ(pGrill, SG, pj)).b === null && (await jstate(pj)).attempts === 2)
 
   check('ack with another printer secret does nothing', (await ack(pDefault, 'secret-default-aaaaaaaaaaaa', pj, 'OK')).ok === false && (await jstate(pj)).status === 'sent')
   await ack(pGrill, SG, pj, 'OK')
