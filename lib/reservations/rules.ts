@@ -72,6 +72,35 @@ export function reservationBlocksWalkin(
   return r.startsAt.getTime() < now.getTime() + bufferMinutes * MIN
 }
 
+/** An open session that has overrun its expected length still holds its table
+ *  for at least this much longer — the same "can't plausibly be vacated" window
+ *  freeTablesForWindow always used. */
+export const OVERRUN_HOLD_MINUTES = 30
+
+/** A table with a party seated (an open table session): when it was seated and
+ *  how long it was expected to last (reserved_minutes; walk-ins have none). */
+export type OpenSession = { checkedInAt: Date; reservedMinutes: number | null }
+
+/**
+ * When an open session is expected to free its table: seated time + the
+ * reservation length (or the venue default for a walk-in), but never earlier
+ * than OVERRUN_HOLD_MINUTES from now — a party still seated past their time has
+ * not left yet.
+ */
+export function openSessionOccupiedUntil(s: OpenSession, now: Date, defaultMinutes: number): Date {
+  const expected = s.checkedInAt.getTime() + (s.reservedMinutes ?? defaultMinutes) * MIN
+  return new Date(Math.max(expected, now.getTime() + OVERRUN_HOLD_MINUTES * MIN))
+}
+
+/**
+ * Seated parties have no booking_slots row (a table session has no time window),
+ * so the slot exclusion constraint can't see them. This is the rule that does:
+ * does the open session still hold the table during [start, end)?
+ */
+export function openSessionBlocksWindow(s: OpenSession, start: Date, end: Date, now: Date, defaultMinutes: number): boolean {
+  return start.getTime() < openSessionOccupiedUntil(s, now, defaultMinutes).getTime() && end.getTime() > s.checkedInAt.getTime()
+}
+
 export type ReservationStatusLabel = 'upcoming' | 'due' | 'late' | 'seated' | 'no_show' | 'cancelled' | 'completed'
 
 /**

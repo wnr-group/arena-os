@@ -101,6 +101,7 @@ export async function markWaitlistNotifiedCore(
   entryId: string,
   venueName: string,
 ): Promise<{ id: string; name: string; phone: string | null; message: string; whatsappUrl: string | null }> {
+  await requireWaitlistEnabled(tx, ctx.tenantId)
   const e = await lockActiveEntry(tx, ctx.tenantId, entryId)
   await tx
     .update(waitlistEntries)
@@ -170,6 +171,7 @@ export async function seatWaitlistEntryCore(
   ctx: Ctx,
   input: SeatWaitlistInput,
 ): Promise<{ bookingId: string; bookingNumber: string }> {
+  await requireWaitlistEnabled(tx, ctx.tenantId)
   const e = await lockActiveEntry(tx, ctx.tenantId, input.entryId)
   const created = await seatTableSessionCore(tx, ctx, {
     branchId: e.branchId,

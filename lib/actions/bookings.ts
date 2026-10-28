@@ -43,7 +43,8 @@ import {
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { BillingError } from '@/lib/billing/invoice'
-import { ReservationConflictError } from '@/lib/reservations/guard'
+import { ReservationConflictError, assertCanOverride } from '@/lib/reservations/guard'
+import { seatReservationCore } from '@/lib/reservations/service'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
@@ -51,7 +52,7 @@ import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
 type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string; reservationConflict?: boolean }
-type Result = { error?: string }
+type Result = { error?: string; reservationConflict?: boolean }
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError) return { error: e.message }
@@ -614,6 +615,7 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = seatTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     // An expired unpaid online hold still occupies its slot until swept; release it
     // here so a lapsed hold never blocks staff (best-effort, never throws).
     await sweepTenantHolds(ctx.tenant.id)
@@ -663,6 +665,7 @@ export async function requestBill(bookingId: string): Promise<Result> {
 const transferTableInput = z.object({
   bookingId: z.string().uuid(),
   targetResourceId: z.string().uuid(),
+  overrideReservation: z.boolean().optional(),
 })
 
 /** Move a table session to a different table (M17 #5) — its orders follow
@@ -674,12 +677,14 @@ export async function transferTable(input: z.input<typeof transferTableInput>): 
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = transferTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     await withUser(ctx.user.id, (tx) =>
       transferTableCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
     revalidatePath('/floor')
     return {}
   } catch (e) {
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -714,6 +719,7 @@ const splitTableInput = z.object({
   targetResourceId: z.string().uuid(),
   orderIds: z.array(z.string().uuid()),
   coverCount: z.coerce.number().int().positive('Guest count must be at least 1.'),
+  overrideReservation: z.boolean().optional(),
 })
 
 /** Split a subset of a table session's open orders onto a brand-new session
@@ -726,6 +732,7 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = splitTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     // An expired unpaid online hold still occupies its slot until swept; release it
     // here so a lapsed hold never blocks staff (best-effort, never throws).
     await sweepTenantHolds(ctx.tenant.id)
@@ -735,6 +742,7 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
     revalidatePath('/floor')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -1157,6 +1165,8 @@ export async function checkInBookingByToken(raw: string): Promise<CheckInResult>
           bookingNumber: bookings.bookingNumber,
           customerName: bookings.customerName,
           status: bookings.status,
+          reservedFor: bookings.reservedFor,
+          resourceId: bookings.resourceId,
         })
         .from(bookings)
         .where(and(eq(bookings.tenantId, ctx.tenant.id), eq(bookings.confirmationToken, token)))
@@ -1173,6 +1183,20 @@ export async function checkInBookingByToken(raw: string): Promise<CheckInResult>
       if (row.status === 'checked_in') {
         return { row, slot, alreadyCheckedIn: true }
       }
+      // A table reservation is not an ordinary booking: checking it in must seat the
+      // party (its slot goes, the table session starts) exactly as the staff action
+      // does. A bare status flip left a checked-in reservation with no table session
+      // and a live slot — one that could be neither seated, cancelled nor lapsed.
+      // A late arrival (no_show) is seated the same way.
+      if (row.reservedFor && !row.resourceId && (row.status === 'confirmed' || row.status === 'no_show')) {
+        await seatReservationCore(
+          tx,
+          { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+          { bookingId: row.id },
+        )
+        return { row, slot, alreadyCheckedIn: false }
+      }
+
       if (row.status !== 'confirmed') {
         throw new BookingError(`This booking is ${row.status.replace('_', ' ')} — it can't be checked in.`)
       }

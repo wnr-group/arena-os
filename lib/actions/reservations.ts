@@ -4,9 +4,10 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { bookings } from '@/db/schema'
+import { auditLog, bookings } from '@/db/schema'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
+import { assertCanOverride } from '@/lib/reservations/guard'
 import { BookingError } from '@/lib/booking/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
@@ -107,6 +108,7 @@ export async function seatReservation(
   try {
     const ctx = await requireReservationStaff()
     const v = seatInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     const r = await withUser(ctx.user.id, (tx) =>
       seatReservationCore(
         tx,
@@ -146,6 +148,15 @@ export async function cancelReservation(input: z.input<typeof cancelInput>): Pro
         .update(bookings)
         .set({ status: 'cancelled', cancelledAt: new Date(), cancellationReason: v.reason })
         .where(and(eq(bookings.id, b.id), eq(bookings.tenantId, ctx.tenant.id)))
+      await tx.insert(auditLog).values({
+        tenantId: ctx.tenant.id,
+        actorMembershipId: ctx.membershipId,
+        action: 'reservation.cancelled',
+        entityType: 'booking',
+        entityId: b.id,
+        before: { status: b.status },
+        after: { status: 'cancelled', reason: v.reason },
+      })
     })
     revalidatePath('/reservations')
     revalidatePath('/floor')
@@ -173,6 +184,15 @@ export async function markReservationNoShow(bookingId: string): Promise<Result> 
         .update(bookings)
         .set({ status: 'no_show' })
         .where(and(eq(bookings.id, id), eq(bookings.tenantId, ctx.tenant.id)))
+      await tx.insert(auditLog).values({
+        tenantId: ctx.tenant.id,
+        actorMembershipId: ctx.membershipId,
+        action: 'reservation.no_show',
+        entityType: 'booking',
+        entityId: id,
+        before: { status: 'confirmed' },
+        after: { status: 'no_show', marked: 'manual' },
+      })
     })
     revalidatePath('/reservations')
     revalidatePath('/floor')
