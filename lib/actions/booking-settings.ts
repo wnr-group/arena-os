@@ -3,7 +3,14 @@
 import { revalidatePath } from 'next/cache'
 import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
-import { AdvanceWindowError, SlotStepError, applyBookingWindow, applySlotStep } from '@/lib/booking/settings-write'
+import {
+  AdvanceWindowError,
+  SlotStepError,
+  WalkinAutoCloseError,
+  applyBookingWindow,
+  applySlotStep,
+  applyWalkinAutoClose,
+} from '@/lib/booking/settings-write'
 
 type Result = { error?: string; success?: true; reduced?: boolean }
 
@@ -46,5 +53,21 @@ export async function saveSlotStep(minutes: number): Promise<Result> {
     if (e instanceof AuthError || e instanceof SlotStepError) return { error: e.message }
     console.error('[booking-settings] step save failed', e)
     return { error: 'Could not save the booking time step.' }
+  }
+}
+
+/** Save the walk-in auto-close rules: max session length and/or closing time (manager only). */
+export async function saveWalkinAutoClose(value: { minutes: number | null; atClosing: boolean }): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await withUser(ctx.user.id, (tx) =>
+      applyWalkinAutoClose(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, value),
+    )
+    revalidatePath('/settings/hours')
+    return { success: true }
+  } catch (e) {
+    if (e instanceof AuthError || e instanceof WalkinAutoCloseError) return { error: e.message }
+    console.error('[booking-settings] walk-in auto-close save failed', e)
+    return { error: 'Could not save the auto-close setting.' }
   }
 }

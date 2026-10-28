@@ -65,17 +65,45 @@ export function buildDurations(step: number = DEFAULT_SLOT_STEP_MINUTES): number
   return out
 }
 
-export type BookingSettings = { maxAdvanceDays: number; slotStepMinutes: number }
+/** Session lengths an owner can auto-close open-tab walk-ins after (minutes). */
+export const WALKIN_AUTO_CLOSE_PRESETS = [
+  { minutes: 120, label: '2 hours' },
+  { minutes: 180, label: '3 hours' },
+  { minutes: 240, label: '4 hours' },
+  { minutes: 360, label: '6 hours' },
+  { minutes: 480, label: '8 hours' },
+  { minutes: 720, label: '12 hours' },
+] as const
+
+export function isWalkinAutoClosePreset(n: unknown): n is number {
+  return typeof n === 'number' && WALKIN_AUTO_CLOSE_PRESETS.some((p) => p.minutes === n)
+}
+
+export type BookingSettings = {
+  maxAdvanceDays: number
+  slotStepMinutes: number
+  /** null = auto-close is off. */
+  walkinAutoCloseMinutes: number | null
+  /** Also close open walk-ins at the branch's closing time. */
+  walkinAutoCloseAtClosing: boolean
+}
 
 /** One cheap read per page load. Missing row ⇒ 7. */
 export async function getBookingSettingsCore(tx: DB, tenantId: string): Promise<BookingSettings> {
   const [row] = await tx
-    .select({ maxAdvanceDays: bookingSettings.maxAdvanceDays, slotStepMinutes: bookingSettings.slotStepMinutes })
+    .select({
+      maxAdvanceDays: bookingSettings.maxAdvanceDays,
+      slotStepMinutes: bookingSettings.slotStepMinutes,
+      walkinAutoCloseMinutes: bookingSettings.walkinAutoCloseMinutes,
+      walkinAutoCloseAtClosing: bookingSettings.walkinAutoCloseAtClosing,
+    })
     .from(bookingSettings)
     .where(eq(bookingSettings.tenantId, tenantId))
     .limit(1)
   return {
     maxAdvanceDays: row?.maxAdvanceDays ?? DEFAULT_MAX_ADVANCE_DAYS,
     slotStepMinutes: row?.slotStepMinutes ?? DEFAULT_SLOT_STEP_MINUTES,
+    walkinAutoCloseMinutes: row?.walkinAutoCloseMinutes ?? null,
+    walkinAutoCloseAtClosing: row?.walkinAutoCloseAtClosing ?? false,
   }
 }

@@ -3196,6 +3196,10 @@ export const bookingSettings = pgTable('booking_settings', {
   maxAdvanceDays: integer('max_advance_days').notNull().default(7),
   /** Grid step for bookable start times / durations, minutes (0162). */
   slotStepMinutes: integer('slot_step_minutes').notNull().default(30),
+  /** Auto-close an open-tab walk-in after this many minutes (0167). Null = off. */
+  walkinAutoCloseMinutes: integer('walkin_auto_close_minutes'),
+  /** Also auto-close an open-tab walk-in at the branch's closing time (0168). */
+  walkinAutoCloseAtClosing: boolean('walkin_auto_close_at_closing').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })

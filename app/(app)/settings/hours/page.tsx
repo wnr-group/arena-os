@@ -9,6 +9,7 @@ import { getBookingSettings } from '@/lib/booking/settings-server'
 import { WorkingHoursForm } from '@/components/settings/WorkingHoursForm'
 import { BookingWindowForm } from '@/components/settings/BookingWindowForm'
 import { SlotStepForm } from '@/components/settings/SlotStepForm'
+import { WalkinAutoCloseForm } from '@/components/settings/WalkinAutoCloseForm'
 
 export default async function HoursSettingsPage() {
   const ctx = await getActiveContext()
@@ -49,6 +50,12 @@ export default async function HoursSettingsPage() {
       <WorkingHoursForm branchId={branch.id} initialDays={days} />
       <BookingWindowForm initialDays={bookingSettings.maxAdvanceDays} />
       <SlotStepForm initialMinutes={bookingSettings.slotStepMinutes} />
+      {ctx.tenant.industry !== 'restaurant' && (
+        <WalkinAutoCloseForm
+          initialMinutes={bookingSettings.walkinAutoCloseMinutes}
+          initialAtClosing={bookingSettings.walkinAutoCloseAtClosing}
+        />
+      )}
     </div>
   )
 }

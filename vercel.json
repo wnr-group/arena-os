@@ -3,6 +3,7 @@
   "regions": ["bom1"],
   "crons": [
     { "path": "/api/cron/sync-google-reviews", "schedule": "17 3 * * *" },
-    { "path": "/api/cron/generate-events", "schedule": "37 2 * * *" }
+    { "path": "/api/cron/generate-events", "schedule": "37 2 * * *" },
+    { "path": "/api/cron/auto-close-walkins", "schedule": "*/15 * * * *" }
   ]
 }
