@@ -12,7 +12,8 @@ import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
 import { planReschedule, rescheduleBookingCore } from '@/lib/booking/reschedule'
 import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settings-server'
 import { todayInZone } from '@/lib/booking/time'
-import { requireContext, AuthError } from '@/lib/auth/guard'
+import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
+import { sendBookingRescheduledNotification } from '@/lib/notifications/booking-reschedule'
 import { canManageWalkins } from '@/lib/auth/roles'
 import {
   createBookingCore,
@@ -987,8 +988,10 @@ const rescheduleInput = z.object({
   endsAt: z.string().datetime(),
   /** The slot start the dialog loaded; a mismatch means the booking changed underneath. */
   expectedStartsAt: z.string().datetime(),
-  reason: z.string().trim().max(500).optional(),
+  reason: z.string().trim().min(1, 'Give a reason for the change.').max(500),
 })
+
+const quoteInput = rescheduleInput.omit({ reason: true })
 
 export type RescheduleContext = {
   error?: string
@@ -1010,7 +1013,7 @@ export type RescheduleContext = {
 /** What the Reschedule dialog needs to open. Eligibility is re-decided by the quote and the save. */
 export async function getRescheduleContext(bookingId: string): Promise<RescheduleContext> {
   try {
-    const ctx = await requireContext()
+    const ctx = await requireManager()
     const id = z.string().uuid().parse(bookingId)
     const row = await withUser(ctx.user.id, async (tx) => {
       const [b] = await tx
@@ -1050,7 +1053,7 @@ export async function getRescheduleContext(bookingId: string): Promise<Reschedul
     }
     if (b.backdated) return { error: 'A late-entered booking cannot be rescheduled.' }
     if (b.reservedFor || b.tableResourceId) {
-      return { error: 'A table reservation is rescheduled from the Reservations page.' }
+      return { error: 'A table reservation can’t be rescheduled here - cancel it and book a new one.' }
     }
     if (slots.length !== 1 || slots[0].endsAt === null) {
       return { error: 'Only a booking with a single time slot can be rescheduled for now.' }
@@ -1083,13 +1086,16 @@ export type RescheduleQuote = {
   /** newTotal - oldTotal, 2dp; negative when the booking gets cheaper. */
   difference?: string
   needsRefundReview?: boolean
+  /** The fixed discount would exceed the new price, so it is reduced to `newDiscount`. */
+  discountClamped?: boolean
+  newDiscount?: string
 }
 
 /** Read-only: validate the proposed window and price it, without writing anything. */
-export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Promise<RescheduleQuote> {
+export async function quoteReschedule(raw: z.input<typeof quoteInput>): Promise<RescheduleQuote> {
   try {
-    const ctx = await requireContext()
-    const v = rescheduleInput.parse(raw)
+    const ctx = await requireManager()
+    const v = quoteInput.parse(raw)
     const plan = await withUser(ctx.user.id, (tx) =>
       planReschedule(
         tx,
@@ -1108,6 +1114,8 @@ export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Pro
       newTotal: plan.newTotal.toFixed(2),
       difference: (plan.newTotal - plan.oldTotal).toFixed(2),
       needsRefundReview: plan.needsRefundReview,
+      discountClamped: plan.discountClamped,
+      newDiscount: plan.newDiscount.toFixed(2),
     }
   } catch (e) {
     return fail(e)
@@ -1115,13 +1123,14 @@ export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Pro
 }
 
 /**
- * Move a booking to a new window. Any staff member, like cancel: the server
- * re-validates everything (status, bill, grid, hours, window, overlap) and audits
+ * Move a booking to a new window. Owners and managers only: it re-prices the
+ * booking and can leave money to refund, and RLS is tenant-wide so this check is
+ * the only role gate. The server also re-validates everything (status, bill, grid, hours, window, overlap) and audits
  * the change; hiding the button is convenience, not authorization.
  */
 export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): Promise<Result & { newTotal?: string }> {
   try {
-    const ctx = await requireContext()
+    const ctx = await requireManager()
     const v = rescheduleInput.parse(raw)
     const plan = await withUser(ctx.user.id, (tx) =>
       rescheduleBookingCore(
@@ -1136,6 +1145,15 @@ export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): P
         },
       ),
     )
+    // After commit, best-effort: a failed text must never undo the move.
+    if (plan.oldStartsAt.getTime() !== plan.newStartsAt.getTime()) {
+      await sendBookingRescheduledNotification(ctx.tenant.id, plan.bookingId, {
+        oldStartsAt: plan.oldStartsAt,
+        newStartsAt: plan.newStartsAt,
+        newEndsAt: plan.newEndsAt,
+        timeZone: ctx.tenant.timezone,
+      })
+    }
     revalidatePath('/bookings')
     revalidatePath('/sessions')
     revalidatePath('/floor')

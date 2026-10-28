@@ -8,7 +8,10 @@
  *   - refused outside working hours, in the past, beyond the advance window
  *   - stale expectedStartsAt refused (someone else changed it)
  *   - checked_in: end only; cancelled / completed refused
- *   - quote is read-only; save writes an audit row; any staff role may reschedule
+ *   - quote is read-only; save writes an audit row; owner/manager only (cashier refused)
+ *   - a reason is required; the customer is texted the old and new time
+ *   - discount is capped at the new subtotal; advance below the new total flags a refund review
+ *   - invoice creation vs reschedule race: never an invoice on the old slot
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-booking-reschedule.ts
  */
@@ -36,7 +39,11 @@ const at = (daysAhead: number, hhmm: string) => {
 const iso = (d: Date) => d.toISOString()
 
 async function main() {
-  const { createBooking, setBookingStatus, rescheduleBooking, quoteReschedule } = await import('../lib/actions/bookings')
+  const { createBooking, setBookingStatus, rescheduleBooking: rescheduleRaw, quoteReschedule, getRescheduleContext } = await import('../lib/actions/bookings')
+  const { createInvoiceForBooking } = await import('../lib/actions/billing')
+  // The action now requires a reason; most checks do not care what it is.
+  const rescheduleBooking = (a: Omit<Parameters<typeof rescheduleRaw>[0], 'reason'> & { reason?: string }) =>
+    rescheduleRaw({ reason: 'test', ...a })
 
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const tag = randomBytes(3).toString('hex')
@@ -62,10 +69,11 @@ async function main() {
   )
   const resourceId = res.rows[0].id
 
-  // A cashier - deliberately NOT a manager: any staff role may reschedule.
-  const email = `cashier-${tag}@example.test`
+  // Reschedule is owner/manager only: the main session is a manager, and a
+  // cashier session (below) proves the action refuses everyone else.
+  const email = `manager-${tag}@example.test`
   const u = await owner.query<{ id: string }>(
-    `insert into users (email, password_hash, full_name) values ($1,'x','cashier') returning id`,
+    `insert into users (email, password_hash, full_name) values ($1,'x','manager') returning id`,
     [email],
   )
   const token = randomBytes(32).toString('hex')
@@ -74,8 +82,21 @@ async function main() {
     u.rows[0].id,
   ])
   await owner.query(
-    `insert into memberships (tenant_id,user_id,branch_id,role,status,full_name) values ($1,$2,$3,'cashier','active','cashier')`,
+    `insert into memberships (tenant_id,user_id,branch_id,role,status,full_name) values ($1,$2,$3,'manager','active','manager')`,
     [tenantId, u.rows[0].id, branchId],
+  )
+  const cashierUser = await owner.query<{ id: string }>(
+    `insert into users (email, password_hash, full_name) values ($1,'x','cashier') returning id`,
+    [`cashier-${tag}@example.test`],
+  )
+  const cashierToken = randomBytes(32).toString('hex')
+  await owner.query(`insert into sessions (id, user_id, expires_at) values ($1,$2, now() + interval '1 day')`, [
+    createHash('sha256').update(cashierToken).digest('hex'),
+    cashierUser.rows[0].id,
+  ])
+  await owner.query(
+    `insert into memberships (tenant_id,user_id,branch_id,role,status,full_name) values ($1,$2,$3,'cashier','active','cashier')`,
+    [tenantId, cashierUser.rows[0].id, branchId],
   )
   const g = globalThis as { __ARENA_TEST_SESSION?: string; __ARENA_TEST_HEADERS?: Record<string, string> }
   g.__ARENA_TEST_HEADERS = { 'x-tenant-slug': slug }
@@ -113,7 +134,7 @@ async function main() {
   check('quote is read-only (slot unchanged)', (await slotOf(b1)).starts_at.getTime() === at(DAY, '12:00').getTime())
 
   const r1 = await rescheduleBooking({ bookingId: b1, startsAt: iso(at(DAY, '14:00')), endsAt: iso(at(DAY, '15:30')), expectedStartsAt: iso(at(DAY, '12:00')), reason: 'Customer asked' })
-  check('cashier (no manager role) can reschedule', !r1.error, r1)
+  check('manager can reschedule', !r1.error, r1)
   const s1 = await slotOf(b1)
   check('slot moved to 14:00-15:30', s1.starts_at.getTime() === at(DAY, '14:00').getTime() && s1.ends_at.getTime() === at(DAY, '15:30').getTime(), s1)
   check('slot_total re-priced to 150.00', Number(s1.slot_total) === 150, s1)
@@ -176,6 +197,92 @@ async function main() {
   if (cancel.error) throw new Error(cancel.error)
   const onCancelled = await rescheduleBooking({ bookingId: b4, startsAt: iso(at(DAY + 2, '14:00')), endsAt: iso(at(DAY + 2, '15:00')), expectedStartsAt: iso(at(DAY + 2, '12:00')) })
   check('a cancelled booking cannot be rescheduled', /upcoming or in-progress/i.test(onCancelled.error ?? ''), onCancelled)
+
+
+  // ══ 6. role gate ═════════════════════════════════════════════════════════
+  console.log('\n── role gate ──')
+  const b5 = await book(at(DAY + 3, '12:00'), at(DAY + 3, '13:00'), '9000000005')
+  const mgrToken = g.__ARENA_TEST_SESSION
+  g.__ARENA_TEST_SESSION = cashierToken
+  const cashierMove = await rescheduleBooking({ bookingId: b5, startsAt: iso(at(DAY + 3, '14:00')), endsAt: iso(at(DAY + 3, '15:00')), expectedStartsAt: iso(at(DAY + 3, '12:00')) })
+  check('cashier cannot reschedule', /owners and managers/i.test(cashierMove.error ?? ''), cashierMove)
+  const cashierQuote = await quoteReschedule({ bookingId: b5, startsAt: iso(at(DAY + 3, '14:00')), endsAt: iso(at(DAY + 3, '15:00')), expectedStartsAt: iso(at(DAY + 3, '12:00')) })
+  check('cashier cannot quote a reschedule either', /owners and managers/i.test(cashierQuote.error ?? ''), cashierQuote)
+  const cashierCtx = await getRescheduleContext(b5)
+  check('cashier cannot open the reschedule dialog data', /owners and managers/i.test(cashierCtx.error ?? ''), cashierCtx)
+  g.__ARENA_TEST_SESSION = mgrToken
+  check('...and the booking did not move', (await slotOf(b5)).starts_at.getTime() === at(DAY + 3, '12:00').getTime())
+
+  // ══ 7. reason required + customer notified ═══════════════════════════════
+  console.log('\n── reason + notification ──')
+  const noReason = await rescheduleRaw({ bookingId: b5, startsAt: iso(at(DAY + 3, '14:00')), endsAt: iso(at(DAY + 3, '15:00')), expectedStartsAt: iso(at(DAY + 3, '12:00')), reason: '  ' })
+  check('a blank reason is refused', /reason/i.test(noReason.error ?? ''), noReason)
+  const moved = await rescheduleBooking({ bookingId: b5, startsAt: iso(at(DAY + 3, '14:00')), endsAt: iso(at(DAY + 3, '15:00')), expectedStartsAt: iso(at(DAY + 3, '12:00')), reason: 'Venue maintenance' })
+  check('with a reason the move succeeds', !moved.error, moved)
+  const note = await owner.query<{ message_body: string; kind: string; recipient_phone: string }>(
+    `select message_body, kind, recipient_phone from notifications where tenant_id=$1 and kind='booking_rescheduled'`,
+    [tenantId],
+  )
+  const fmt = (d: Date) => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+  check(
+    'the customer is texted with the old and new time',
+    note.rows.length >= 1 && note.rows.some((n) => n.recipient_phone?.endsWith('9000000005') && n.message_body.includes(fmt(at(DAY + 3, '12:00'))) && n.message_body.includes(fmt(at(DAY + 3, '14:00')))),
+    note.rows,
+  )
+
+  // ══ 8. discount rule ═════════════════════════════════════════════════════
+  console.log('\n── discount ──')
+  const b6 = await book(at(1, '12:00'), at(1, '14:00'), '9000000006') // 200
+  await owner.query(`update bookings set discount=120, total=80 where id=$1`, [b6])
+  const q6 = await quoteReschedule({ bookingId: b6, startsAt: iso(at(1, '12:00')), endsAt: iso(at(1, '13:00')), expectedStartsAt: iso(at(1, '12:00')) })
+  check('quote: discount within the new price is carried (100 - 100 capped? no: 120 > 100 clamps)', q6.discountClamped === true && q6.newDiscount === '100.00' && q6.newTotal === '0.00', q6)
+  const r6 = await rescheduleBooking({ bookingId: b6, startsAt: iso(at(1, '12:00')), endsAt: iso(at(1, '13:00')), expectedStartsAt: iso(at(1, '12:00')) })
+  const row6 = (await owner.query<{ discount: string; total: string }>(`select discount, total from bookings where id=$1`, [b6])).rows[0]
+  check('clamped: stored discount reduced to the new subtotal, total 0', !r6.error && Number(row6.discount) === 100 && Number(row6.total) === 0, row6)
+  const b7 = await book(at(2, '12:00'), at(2, '13:00'), '9000000007') // 100
+  await owner.query(`update bookings set discount=30, total=70 where id=$1`, [b7])
+  const r7 = await rescheduleBooking({ bookingId: b7, startsAt: iso(at(2, '12:00')), endsAt: iso(at(2, '14:00')), expectedStartsAt: iso(at(2, '12:00')) })
+  const row7 = (await owner.query<{ discount: string; total: string }>(`select discount, total from bookings where id=$1`, [b7])).rows[0]
+  check('within range: fixed discount carried over unchanged (200 - 30 = 170)', !r7.error && Number(row7.discount) === 30 && Number(row7.total) === 170, row7)
+
+  // ══ 9. M26/M30 advance below the new total ═══════════════════════════════
+  console.log('\n── advance ──')
+  const flag = async (id: string) => (await owner.query<{ f: boolean }>(`select deposit_review_required f from bookings where id=$1`, [id])).rows[0].f
+  const b8 = await book(at(1, '15:00'), at(1, '17:00'), '9000000008') // 200
+  await owner.query(`insert into advance_payments (tenant_id,branch_id,booking_id,method,amount) values ($1,$2,$3,'cash',150)`, [tenantId, branchId, b8])
+  const q8 = await quoteReschedule({ bookingId: b8, startsAt: iso(at(1, '15:00')), endsAt: iso(at(1, '16:00')), expectedStartsAt: iso(at(1, '15:00')) })
+  check('quote warns: new total 100 is below the 150 advance', q8.needsRefundReview === true, q8)
+  await rescheduleBooking({ bookingId: b8, startsAt: iso(at(1, '15:00')), endsAt: iso(at(1, '16:00')), expectedStartsAt: iso(at(1, '15:00')) })
+  check('advance above the new total flags a refund review', (await flag(b8)) === true)
+  const b9 = await book(at(2, '15:00'), at(2, '17:00'), '9000000009')
+  await owner.query(`insert into advance_payments (tenant_id,branch_id,booking_id,method,amount) values ($1,$2,$3,'cash',50)`, [tenantId, branchId, b9])
+  await rescheduleBooking({ bookingId: b9, startsAt: iso(at(2, '15:00')), endsAt: iso(at(2, '16:00')), expectedStartsAt: iso(at(2, '15:00')) })
+  check('advance still covered by the new total: no flag', (await flag(b9)) === false)
+
+  // ══ 10. invoice creation vs reschedule ═══════════════════════════════════
+  console.log('\n── invoice vs reschedule race ──')
+  let consistent = 0
+  const RUNS = 4
+  for (let i = 0; i < RUNS; i++) {
+    const rd = [1, 2, 4, 5][i]
+    const bx = await book(at(rd, '19:00'), at(rd, '20:00'), `90000001${i}0`)
+    console.log('   setStatus'); await setBookingStatus(bx, 'checked_in')
+    console.log('   race', i); const [inv, mv] = await Promise.all([
+      createInvoiceForBooking({ bookingId: bx }),
+      rescheduleBooking({ bookingId: bx, startsAt: iso(at(rd, '19:00')), endsAt: iso(at(rd, '21:00')), expectedStartsAt: iso(at(rd, '19:00')) }),
+    ])
+    const invs = await owner.query<{ subtotal: string }>(`select subtotal from invoices where booking_id=$1 and status <> 'void'`, [bx])
+    const slot = await slotOf(bx)
+    const slotHours = (slot.ends_at.getTime() - slot.starts_at.getTime()) / 3_600_000
+    // Either the move won (bill is raised at the new length) or the bill won (move refused, slot untouched).
+    const billedAt = invs.rows.length === 1 ? Number(invs.rows[0].subtotal) : -1
+    const ok =
+      (!inv.error && invs.rows.length === 1 && billedAt === slotHours * 100 && (!mv.error ? slotHours === 2 : slotHours === 1)) ||
+      (!!inv.error && invs.rows.length === 0)
+    if (ok) consistent++
+    else console.log('   inconsistent run', i, { inv, mv, billedAt, slotHours })
+  }
+  check(`invoice and reschedule never disagree about the slot (${RUNS} races)`, consistent === RUNS, { consistent })
 
   await owner.query('delete from tenants where id = $1', [tenantId])
   await owner.query(`delete from users where email like $1`, [`%-${tag}@example.test`])

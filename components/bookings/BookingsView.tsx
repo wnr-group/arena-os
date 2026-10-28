@@ -140,6 +140,7 @@ export function BookingsView({
   activeRange = null,
   hasExplicitDate = false,
   canEditAddons = false,
+  canReschedule = false,
 }: {
   branchId: string
   branchName: string
@@ -203,6 +204,8 @@ export function BookingsView({
   hasExplicitDate?: boolean
   /** M33 — shows the "Add-ons" correction button. setBookingSlotAddons re-checks the role server-side. */
   canEditAddons?: boolean
+  /** Owner/manager only — shows "Reschedule". rescheduleBooking re-checks the role server-side. */
+  canReschedule?: boolean
 }) {
   const router = useRouter()
   const [view, setView] = useState<View>('timeline')
@@ -798,6 +801,7 @@ export function BookingsView({
         ordersByBooking={ordersByBooking}
         canRequestVoidComp={canRequestVoidComp}
         canEditAddons={canEditAddons}
+        canReschedule={canReschedule}
         showFoodOrdering={showFoodOrdering}
         addOrder={{
           disabled: menuItems.length === 0,

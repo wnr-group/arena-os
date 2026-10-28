@@ -1697,7 +1697,8 @@ export async function transferTableCore(
   // by lib/actions/bookings.ts:fail(), same as seatTable's race.
   await tx
     .update(bookings)
-    .set({ resourceId: target.id })
+    // The server follows the table the party ends up at, as on seating.
+    .set({ resourceId: target.id, serverId: await resolveTableServer(tx, ctx.tenantId, target.id) })
     .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, ctx, {

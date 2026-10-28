@@ -146,6 +146,7 @@ export function BookingDetailPanel({
   ordersByBooking,
   canRequestVoidComp,
   canEditAddons = false,
+  canReschedule = false,
   showFoodOrdering,
   addOrder,
   onClose,
@@ -159,6 +160,7 @@ export function BookingDetailPanel({
   ordersByBooking: Record<string, OrderSummary[]>
   canRequestVoidComp: boolean
   canEditAddons?: boolean
+  canReschedule?: boolean
   showFoodOrdering: boolean
   /** Omit to hide "Add order" (the host has no menu loaded). */
   addOrder?: { disabled: boolean; onClick: (b: { bookingId: string; bookingLabel: string }) => void }
@@ -435,7 +437,8 @@ export function BookingDetailPanel({
                   late entry. NOT keyed on `source`: staff-made counter bookings carry
                   source 'walk_in' too. A real walk-in session (channel 'walkin') is refused
                   by the action, which re-checks everything. */}
-              {(selected.status === 'confirmed' || selected.status === 'checked_in') &&
+              {canReschedule &&
+                (selected.status === 'confirmed' || selected.status === 'checked_in') &&
                 !selected.backdated &&
                 !paymentStates[selected.bookingId] && (
                   <ActBtn label="Reschedule" variant="muted" onClick={() => setRescheduleTarget(selected)} pending={pending} />

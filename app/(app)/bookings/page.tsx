@@ -173,6 +173,7 @@ export default async function BookingsPage({
           ordersByBooking={ordersByBooking}
           canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
           canEditAddons={canManageWalkins(ctx.role)}
+          canReschedule={isManager(ctx.role)}
           showFoodOrdering={showFoodOrdering}
           footer={
             <Pager
@@ -301,6 +302,7 @@ export default async function BookingsPage({
       showFoodOrdering={showFoodOrdering}
       canRecordBackdated={isManager(ctx.role)}
       canEditAddons={canManageWalkins(ctx.role)}
+      canReschedule={isManager(ctx.role)}
     />
   )
 }
