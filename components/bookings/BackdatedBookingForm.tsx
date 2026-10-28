@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { quoteBackdatedBooking, recordBackdatedBooking } from '@/lib/actions/backdated-bookings'
+import { lookupCustomerByPhone } from '@/lib/actions/bookings'
 import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney } from '@/lib/format'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
@@ -59,6 +60,8 @@ export function BackdatedBookingForm({
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
+  const nameTypedRef = useRef(false)
+  const [nameLoading, setNameLoading] = useState(false)
   const [notes, setNotes] = useState('')
   const [method, setMethod] = useState<'cash' | 'card' | 'upi'>('cash')
   // null = follow the preview total until the manager types their own figure.
@@ -104,6 +107,34 @@ export function BackdatedBookingForm({
   const chargeNum = chargeText === null || chargeText.trim() === '' ? undefined : Number(chargeText)
   const chargeValid = chargeNum === undefined || (Number.isFinite(chargeNum) && chargeNum >= 0)
   const sessionCharge = chargeNum !== undefined && chargeValid ? chargeNum : undefined
+
+  // Fill the name for a returning customer once a full phone number is typed.
+  // A name the manager typed themselves is never overwritten.
+  useEffect(() => {
+    if (!isValidPhone(customerPhone)) {
+      setNameLoading(false)
+      return
+    }
+    let cancelled = false
+    setNameLoading(true)
+    const timer = setTimeout(() => {
+      lookupCustomerByPhone(customerPhone)
+        .then((r) => {
+          if (cancelled) return
+          setNameLoading(false)
+          if (nameTypedRef.current) return
+          // Unknown number: drop a name we filled for the previous number.
+          setCustomerName(r.found && r.name ? r.name : '')
+        })
+        .catch(() => {
+          if (!cancelled) setNameLoading(false)
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [customerPhone])
 
   // A different session means a different computed price: drop the old override.
   useEffect(() => {
@@ -309,7 +340,22 @@ export function BackdatedBookingForm({
             <label htmlFor="bd-name" className={wizardLabel}>
               Customer name
             </label>
-            <input id="bd-name" className={`${wizardInput} mt-1`} value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+            <div className="relative">
+              <input
+                id="bd-name"
+                className={`${wizardInput} mt-1 ${nameLoading ? 'pr-9' : ''}`}
+                value={customerName}
+                placeholder={nameLoading ? 'Looking up customer…' : undefined}
+                aria-busy={nameLoading}
+                onChange={(e) => {
+                  nameTypedRef.current = e.target.value !== ''
+                  setCustomerName(e.target.value)
+                }}
+              />
+              {nameLoading && (
+                <Loader2 size={15} className="absolute right-3 top-1/2 mt-0.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+              )}
+            </div>
           </div>
           <div>
             <label htmlFor="bd-email" className={wizardLabel}>
