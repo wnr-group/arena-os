@@ -275,7 +275,7 @@ async function main() {
   const rm = await as(A, 'cashier', (tx) => removeOrderItemCore(tx, act(A, 'cashier'), { orderItemId: line2 }))
   check('removing the added line gives its 1.5 back (3.0)', rm.removed && near(await consumed(), 3, 0.0005))
   await as(A, 'cashier', (tx) => editOrderItemQuantityCore(tx, act(A, 'cashier'), { orderItemId: line1, newQty: 1 }))
-  check('cutting line 1 from 2 to 1 gives 1.5 back: ends at 1.5 consumed', near(await consumed(), 1.5, 0.0005), await consumed())
+  check('cutting line 1 from 2 to 1 gives 1.5 back: ends at 1.5 consumed', near(await consumed(), 1.5, 0.0005))
   const noop = await as(A, 'cashier', (tx) => restoreStockForOrders(tx, A.tenantId, [saleR.orderId]))
   check('restoring again is a no-op', noop.movements === 0 && near(await consumed(), 1.5, 0.0005))
 
@@ -304,7 +304,7 @@ async function main() {
   await q(`update invoices set status='void' where booking_id=$1`, [saleR.bookingId])
   await q(`update orders set status='open' where id=$1`, [saleR.orderId])
   await as(A, 'cashier', (tx) => issueInvoiceForBooking(tx, { id: A.tenantId, timezone: TZ }, { bookingId: saleR.bookingId }))
-  check('raising the recipe 1.5 -> 3 does not charge the extra to already-sold portions', near(await consumed(), beforeRaise, 0.0005), [beforeRaise, await consumed()])
+  check('raising the recipe 1.5 -> 3 does not charge the extra to already-sold portions', near(await consumed(), beforeRaise, 0.0005))
   await billAndPay(A, saleU.bookingId)
   check('...a line billed AFTER the change uses the new recipe (2 x 3 = 6)', near(await consumed(), beforeRaise + 6, 0.0005))
 
@@ -313,16 +313,16 @@ async function main() {
   const rr = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
   const riceRow = rr.foodCost.ingredients.find((i) => i.name === 'Rice')
   const riceUsed = riceRow?.used ?? 0
-  check('rice priced at its sale-time cost (10), not today\'s 99', !!riceRow && near(riceRow.cost, riceUsed * 10, 0.02), riceRow)
+  check('rice priced at its sale-time cost (10), not today\'s 99', !!riceRow && near(riceRow.cost, riceUsed * 10, 0.02))
   const lastMove = (await q(`select unit_cost from stock_movements where stock_item_id=$1 and delta > 0 and source_type='order' limit 1`, [rice.id]))[0]
-  check('a restore movement carries the order\'s average deducted cost', Number(lastMove?.unit_cost) === 10, lastMove)
+  check('a restore movement carries the order\'s average deducted cost', Number(lastMove?.unit_cost) === 10)
 
   // tax basis: ingredient cost has no GST, so revenue is compared ex-GST
   await q(`update invoice_items set tax_rate = 5 where invoice_id in (select id from invoices where booking_id=$1 and status <> 'void')`, [saleU.bookingId])
   const sales = await (await import('../lib/reports/sales')).getSalesReport(cx(A), { range: { start: today, end: today } })
   const saladPaid = Number((await q(`select total from invoices where booking_id=$1 and status <> 'void'`, [saleU.bookingId]))[0].total)
   check('food revenue ex-GST is below the GST-inclusive figure', sales.totals.foodNetRevenue < sales.totals.foodGrossRevenue)
-  check('...by exactly the tax inside the 5% lines (paid x 0.05 / 1.05)', near(sales.totals.foodGrossRevenue - sales.totals.foodNetRevenue, saladPaid * 0.05 / 1.05, 0.05), [sales.totals.foodGrossRevenue, sales.totals.foodNetRevenue, saladPaid])
+  check('...by exactly the tax inside the 5% lines (paid x 0.05 / 1.05)', near(sales.totals.foodGrossRevenue - sales.totals.foodNetRevenue, saladPaid * 0.05 / 1.05, 0.05))
   const rt = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
   check('food cost % divides cost by the ex-GST revenue', near(rt.foodCost.pct, (rt.foodCost.cogs / sales.totals.foodNetRevenue) * 100, 0.02) && rt.foodCost.foodRevenue === sales.totals.foodNetRevenue)
 
@@ -337,7 +337,7 @@ async function main() {
       as(B, 'cashier', (tx) => deductStockForOrders(tx, B.tenantId, [saleB.orderId])).then((r) => r.movements),
       new Promise<string>((res) => setTimeout(() => res('blocked'), 4000)),
     ])
-    check('a tenant with no recipes returns without waiting on the order lock', raced === 0, raced)
+    check('a tenant with no recipes returns without waiting on the order lock', raced === 0)
   } finally {
     await holder.query('rollback')
     holder.release()
