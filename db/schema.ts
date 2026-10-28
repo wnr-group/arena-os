@@ -3320,10 +3320,27 @@ export const stockMovements = pgTable(
     /** opening | purchase | adjustment | wastage | order */
     sourceType: text('source_type').notNull().default('adjustment'),
     sourceId: uuid('source_id'),
+    /** 0174: the item's unit cost when an 'order' movement was written (null = not costed / pre-0174). */
+    unitCost: numeric('unit_cost', { precision: 14, scale: 4 }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('idx_stock_movements_item').on(t.tenantId, t.stockItemId, t.createdAt)],
+)
+
+// 0174: per order line, what one portion consumed when it was deducted (frozen).
+export const orderItemStockUsage = pgTable(
+  'order_item_stock_usage',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    perPortion: numeric('per_portion', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orderItemId, t.stockItemId] })],
 )
 
 // M10 (0154): optional recipe — one portion of a menu item consumes `quantity` of a stock item.

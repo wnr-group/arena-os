@@ -10,6 +10,7 @@
  * never be shown a ticket for an order that failed to save.
  */
 import { randomUUID } from 'node:crypto'
+import { restoreStockForOrders } from '@/lib/inventory/deduct'
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
@@ -931,6 +932,10 @@ async function applyVoidDecision(
     }
   }
 
+  // A voided line never left the kitchen: give back any stock an earlier bill
+  // (since voided and re-opened) already took for it. A comp keeps its stock.
+  if (input.mode === 'void') await restoreStockForOrders(tx, actor.tenantId, [row.orderId])
+
   await writeAudit(tx, actor, {
     action: input.mode === 'void' ? 'order_item.void' : 'order_item.comp',
     entityType: 'order_item',
@@ -1010,6 +1015,8 @@ export async function editOrderItemQuantityCore(
     .update(orderItems)
     .set({ qty: input.newQty, lineTotal: newLineTotal })
     .where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+  // Fewer portions than were deducted: give the difference back.
+  await restoreStockForOrders(tx, actor.tenantId, [row.orderId])
 
   await writeAudit(tx, actor, {
     action: 'order_item.edit',
@@ -1038,6 +1045,8 @@ export async function removeOrderItemCore(
   await assertKotNotServed(tx, actor.tenantId, row.orderId)
 
   await tx.delete(orderItems).where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
+  // The line's usage snapshot went with it, so what it consumed is restored.
+  await restoreStockForOrders(tx, actor.tenantId, [row.orderId])
 
   let kotReady: KotOrderRef | null = null
   const [somethingLeft] = await tx

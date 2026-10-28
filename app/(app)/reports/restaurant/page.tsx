@@ -211,9 +211,9 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
         ) : (
           <>
             <div className="grid gap-4 p-4 sm:grid-cols-3">
-              <StatCard label="Cost of ingredients used" value={money(r.foodCost.cogs)} hint={r.foodCost.uncosted > 0 ? `${r.foodCost.uncosted} ingredient${r.foodCost.uncosted === 1 ? '' : 's'} not costed yet — real cost is higher` : 'At today’s ingredient costs'} />
-              <StatCard label="Paid food revenue" value={money(r.foodCost.foodRevenue)} hint="Same as Food & Memberships" />
-              <StatCard label="Food cost %" value={r.foodCost.pct === null ? '—' : `${r.foodCost.pct}%`} hint="Ingredients used ÷ paid food revenue" />
+              <StatCard label="Cost of ingredients used" value={money(r.foodCost.cogs)} hint={r.foodCost.uncosted > 0 ? `${r.foodCost.uncosted} ingredient${r.foodCost.uncosted === 1 ? '' : 's'} not costed yet — real cost is higher` : 'At each ingredient’s cost when it was sold'} />
+              <StatCard label="Paid food revenue (ex-GST)" value={money(r.foodCost.foodRevenue)} hint="Food & Memberships figure with GST taken out" />
+              <StatCard label="Food cost %" value={r.foodCost.pct === null ? '—' : `${r.foodCost.pct}%`} hint="Ingredient cost ÷ food revenue, both before GST" />
             </div>
             <Table head={['Ingredient', 'Used', 'Cost / unit', 'Cost']} right={[1, 2, 3]}>
               {r.foodCost.ingredients.map((i) => (

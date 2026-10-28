@@ -128,13 +128,13 @@ export type RestaurantReport = {
   }
   servers: ServerRow[]
   foodCost: {
-    /** Ingredients deducted by sales in the range, priced at today's unit cost. */
+    /** Ingredients deducted by sales in the range, priced at the unit cost recorded at sale time. */
     ingredients: IngredientUseRow[]
     /** Σ cost of the ingredients that have a cost. */
     cogs: number
     /** Ingredients used but not costed yet — COGS is a floor while this is above 0. */
     uncosted: number
-    /** Paid food revenue in the range (same figure as Food & Memberships). */
+    /** Paid food revenue in the range EXCLUDING GST (the GST-inclusive figure is on Food & Memberships). */
     foodRevenue: number
     /** cogs ÷ foodRevenue; null with no revenue or nothing used. */
     pct: number | null
@@ -282,7 +282,12 @@ export async function getRestaurantReport(
     // Food cost: what sales actually deducted (the 'order' movements) in the range.
     withUser(ctx.user.id, (tx) =>
       tx.execute(sql`
-        select si.name, si.unit, si.unit_cost::float as unit_cost, (- sum(m.delta))::float as used
+        select si.name, si.unit,
+               (- sum(m.delta))::float as used,
+               -- Priced at the cost recorded when each movement was written; movements
+               -- from before that was recorded (0174) fall back to today's cost.
+               coalesce(sum(- m.delta * coalesce(m.unit_cost, si.unit_cost)), 0)::float as cost_sum,
+               coalesce(sum(- m.delta) filter (where coalesce(m.unit_cost, si.unit_cost) is not null), 0)::float as costed_used
           from public.stock_movements m
           join public.stock_items si on si.id = m.stock_item_id and si.tenant_id = m.tenant_id
           join public.tenants t on t.id = m.tenant_id
@@ -290,7 +295,7 @@ export async function getRestaurantReport(
            and m.source_type = 'order'
            and ((m.created_at at time zone t.timezone)::date) between ${range.start}::date and ${range.end}::date
            ${branchId ? sql`and si.branch_id = ${branchId}` : sql``}
-         group by si.id, si.name, si.unit, si.unit_cost
+         group by si.id, si.name, si.unit
          order by used desc, si.name
       `),
     ),
@@ -395,18 +400,21 @@ export async function getRestaurantReport(
   // An item that was 86'd but sold nothing in the window still belongs here.
   for (const [name, n] of eightySix) {
     if (!menuMix.some((m) => m.itemName === name)) {
-      menuMix.push({ itemName: name, quantity: 0, grossRevenue: 0, invoices: 0, eightySixed: n })
+      menuMix.push({ itemName: name, quantity: 0, grossRevenue: 0, netRevenue: 0, invoices: 0, eightySixed: n })
     }
   }
 
   // ── food cost ─────────────────────────────────────────────────────────────
   const ingredients: IngredientUseRow[] = (cogsRes.rows as Record<string, unknown>[]).map((r) => {
-    const unitCost = r.unit_cost === null ? null : num(r.unit_cost)
     const used = Math.round(num(r.used) * 1000) / 1000
-    return { name: String(r.name), unit: String(r.unit), used, unitCost, cost: unitCost === null ? 0 : round2(used * unitCost) }
+    const costedUsed = num(r.costed_used)
+    // Average cost per unit over the costed usage; null when nothing was costed.
+    const unitCost = costedUsed > 0 ? num(r.cost_sum) / costedUsed : null
+    return { name: String(r.name), unit: String(r.unit), used, unitCost, cost: round2(num(r.cost_sum)) }
   })
   const cogs = round2(ingredients.reduce((n, i) => n + i.cost, 0))
-  const foodRevenue = sales.totals.foodGrossRevenue
+  // Like with like: ingredient costs carry no GST, so compare against revenue with the GST taken out.
+  const foodRevenue = sales.totals.foodNetRevenue
   const dishes = buildFoodCostRows({
     menu: menuPrices,
     stock: stockCosts,
