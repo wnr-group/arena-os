@@ -37,6 +37,7 @@
     "test:typed-orders-rules": "tsx scripts/test-typed-orders-rules.ts",
     "test:typed-orders": "tsx --import ./scripts/server-only-hook.mjs scripts/test-typed-orders.ts",
     "test:tips-rules": "tsx scripts/test-tips-rules.ts",
+    "test:tenant-fk-hardening": "tsx --import ./scripts/server-only-hook.mjs scripts/verify-tenant-fk-hardening.ts",
     "test:tips": "tsx --import ./scripts/server-only-hook.mjs scripts/test-tips.ts",
     "test:inventory-rules": "tsx scripts/test-inventory-rules.ts",
     "test:inventory": "tsx --import ./scripts/server-only-hook.mjs scripts/test-inventory.ts",
