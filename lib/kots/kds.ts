@@ -15,7 +15,7 @@
  * A voided line never counts as outstanding, and a removed line takes its
  * kot_items row with it (ON DELETE CASCADE).
  */
-import { and, eq, inArray, isNull, ne, notExists, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, notExists, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { kitchenStations, kots, kotItems, orderItems, orderSettings, orders } from '@/db/schema'
@@ -202,6 +202,32 @@ async function lockKot(tx: Db, tenantId: string, kotId: string) {
  *  = lines with no station, undefined = every line on the ticket. */
 export type StationScope = { id: string | null } | undefined
 
+/**
+ * Which order lines a station screen owns.
+ *
+ *   `{ id: S }`     lines routed to S, PLUS every unrouted line
+ *   `{ id: null }`  unrouted lines (the "Unassigned" screen)
+ *   undefined       everything (all stations / expo)
+ *
+ * "Unrouted" means no station, or a station that has since been deactivated or
+ * deleted (delete clears station_id) — work no tab would otherwise own. Showing it
+ * on every station screen means it can never be cooked by nobody; whoever bumps it
+ * clears it everywhere, because the bump is per line, not per screen.
+ */
+export function stationLineFilter(tx: Db, station: StationScope) {
+  if (station === undefined) return undefined
+  const unrouted = or(
+    isNull(orderItems.stationId),
+    notExists(
+      tx
+        .select({ one: sql`1` })
+        .from(kitchenStations)
+        .where(and(eq(kitchenStations.id, orderItems.stationId), eq(kitchenStations.isActive, true))),
+    ),
+  )
+  return station.id === null ? unrouted : or(eq(orderItems.stationId, station.id), unrouted)
+}
+
 /** Not-voided, fired lines on the order with no bump row (optionally one station's). */
 async function outstandingLineIds(tx: Db, tenantId: string, orderId: string, station?: StationScope): Promise<string[]> {
   const rows = await tx
@@ -214,11 +240,7 @@ async function outstandingLineIds(tx: Db, tenantId: string, orderId: string, sta
         ne(orderItems.voidStatus, 'voided'),
         // Held lines aren't the cook's yet — they never block "ready".
         eq(orderItems.fireStatus, 'fired'),
-        station === undefined
-          ? undefined
-          : station.id === null
-            ? isNull(orderItems.stationId)
-            : eq(orderItems.stationId, station.id),
+        stationLineFilter(tx, station),
         notExists(tx.select({ one: sql`1` }).from(kotItems).where(eq(kotItems.orderItemId, orderItems.id))),
       ),
     )
@@ -392,9 +414,10 @@ export async function fireCourseCore(tx: Db, orderId: string, course: number): P
 export async function getStationRoutingCore(tx: Db, tenantId: string): Promise<Map<string, string> | null> {
   const s = await getKdsSettingsCore(tx, tenantId)
   if (!(s.enabled && s.stationsEnabled)) return null
-  const rows = await tx
-    .select({ id: kitchenStations.id, name: kitchenStations.name })
-    .from(kitchenStations)
-    .where(and(eq(kitchenStations.tenantId, tenantId), eq(kitchenStations.isActive, true)))
-  return new Map(rows.map((r) => [r.id, r.name]))
+  // Through station_routing() (migration 0171), not the table: an anonymous online
+  // order runs under the public-tenant context, where kitchen_stations is
+  // invisible, so every online line used to be stored unrouted. Staff and online
+  // orders now resolve routing identically.
+  const r = await tx.execute(sql`select id, name from public.station_routing(${tenantId}::uuid)`)
+  return new Map((r.rows as { id: string; name: string }[]).map((row) => [row.id, row.name]))
 }

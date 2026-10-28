@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, isNull, ne, or } from 'drizzle-orm'
 import { withUser } from '@/db'
 import { kitchenStations, kots, kotItems, orders, orderItems, orderItemModifiers, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
-import { getKdsSettingsCore, type KdsSettings } from './kds'
+import { getKdsSettingsCore, stationLineFilter, type KdsSettings } from './kds'
 
 export type KdsItem = {
   itemId: string
@@ -18,6 +18,8 @@ export type KdsItem = {
   /** Station snapshot (M19 #3); null = unrouted. */
   stationId: string | null
   stationName: string | null
+  /** No station, or its station was deactivated/deleted: shown on every station screen. */
+  unrouted: boolean
 }
 
 /** Lines of one course that are on the ticket but not yet sent to the cook. */
@@ -116,12 +118,14 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
         firedAt: orderItems.firedAt,
         stationId: orderItems.stationId,
         stationName: orderItems.stationName,
+        stationActive: kitchenStations.isActive,
       })
       .from(kots)
       .innerJoin(orders, eq(orders.id, kots.orderId))
       .innerJoin(orderItems, and(eq(orderItems.orderId, orders.id), ne(orderItems.voidStatus, 'voided')))
       .leftJoin(kotItems, eq(kotItems.orderItemId, orderItems.id))
       .leftJoin(resources, eq(resources.id, orders.resourceId))
+      .leftJoin(kitchenStations, eq(kitchenStations.id, orderItems.stationId))
       .where(
         and(
           eq(kots.tenantId, ctx.tenant.id),
@@ -132,11 +136,7 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
           // handed over or cancelled (the ticket itself may only be closed by kitchen
           // roles, so the screens don't depend on it). Dine-in is never filtered here.
           or(eq(orders.orderType, 'dine_in'), and(ne(orders.status, 'cancelled'), isNull(orders.handoverStatus))),
-          scope === undefined
-            ? undefined
-            : scope.id === null
-              ? isNull(orderItems.stationId)
-              : eq(orderItems.stationId, scope.id),
+          stationLineFilter(tx, scope),
         ),
       )
       .orderBy(asc(kots.createdAt), asc(kots.id), asc(orderItems.id))
@@ -205,6 +205,7 @@ export function getKdsBoard(ctx: ActiveContext, branchId: string, station?: Stat
         courseName: r.courseName,
         stationId: r.stationId,
         stationName: r.stationName,
+        unrouted: r.stationId === null || r.stationActive !== true,
       })
       if (!bumped && t.status !== 'ready') {
         const key = r.menuItemId ?? `name:${r.name}`
