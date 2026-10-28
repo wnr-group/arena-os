@@ -21,6 +21,7 @@ import {
 } from '../lib/kots/kds'
 import { assertNoHeldCourses } from '../lib/billing/invoice'
 import { loadEnv } from './env'
+import { entitleTenant } from './entitle-fixture'
 
 type Db = NodePgDatabase<typeof schema>
 let pass = 0,
@@ -57,6 +58,8 @@ async function main() {
       [slug, `${slug} co`, TZ],
     )
     const tenantId = t[0].id as string
+    // Course firing / the KDS are plan-gated: the fixture is a paying tenant.
+    await entitleTenant(ownerPool, tenantId)
     const b = await q(
       `insert into branches (tenant_id,name,is_primary) values ($1,'Main',true)
        on conflict (tenant_id,name) do update set is_primary=true returning id`,

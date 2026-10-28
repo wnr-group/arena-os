@@ -8,10 +8,12 @@ import { KotError } from '@/lib/kots/service'
 import {
   bumpKotCore,
   bumpKotItemCore,
+  KDS_MODULE,
   fireCourseCore,
   getCourseConfigCore,
   recallKotCore,
   recallKotItemCore,
+  releaseHeldLinesIfCoursesOff,
   saveKdsSettingsCore,
   type KdsResult,
 } from '@/lib/kots/kds'
@@ -20,8 +22,6 @@ import { enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
 import { sendOrderReadyNotification } from '@/lib/notifications/service'
 
 type Result = { error?: string }
-
-const KDS_MODULE = 'module.kitchen_display'
 
 function fail(e: unknown): Result {
   if (e instanceof AuthError || e instanceof KotError || e instanceof EntitlementError) return { error: e.message }
@@ -84,7 +84,7 @@ export async function saveKdsSettings(v: {
     const ctx = await requireManager()
     await requireEntitlement(ctx, KDS_MODULE)
     if (ctx.tenant.industry !== 'restaurant') throw new AuthError('The kitchen display is for restaurant venues.')
-    await withUser(ctx.user.id, (tx) => saveKdsSettingsCore(tx, ctx.tenant.id, v))
+    await withUser(ctx.user.id, (tx) => saveKdsSettingsCore(tx, ctx.tenant.id, v, ctx.membershipId))
     revalidatePath('/kitchen')
     return {}
   } catch (e) {
@@ -123,7 +123,13 @@ export async function getCourseOptions(): Promise<string[] | null> {
   try {
     const ctx = await requireContext()
     if (ctx.tenant.industry !== 'restaurant') return null
-    const cfg = await withUser(ctx.user.id, (tx) => getCourseConfigCore(tx, ctx.tenant.id))
+    const cfg = await withUser(ctx.user.id, async (tx) => {
+      const c = await getCourseConfigCore(tx, ctx.tenant.id)
+      // Courses can't run (flags off, or the plan lost the KDS): free any line
+      // still held so it cooks and bills, rather than strand it. Best-effort.
+      if (!c.enabled) await releaseHeldLinesIfCoursesOff(tx, ctx.tenant.id, { membershipId: ctx.membershipId })
+      return c
+    })
     return cfg.enabled ? cfg.names : null
   } catch {
     return null

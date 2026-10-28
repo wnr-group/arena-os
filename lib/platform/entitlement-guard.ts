@@ -144,6 +144,11 @@ export async function requireEntitlementIn(tx: DB, tenantId: string, key: string
   if (!moduleGranted(r, key)) throw moduleRefusal(r, key)
 }
 
+/** Non-throwing form inside a transaction the caller has already opened. */
+export async function hasEntitlementIn(tx: DB, tenantId: string, key: string): Promise<boolean> {
+  return moduleGranted(await resolveFromTx(tx, tenantId), key)
+}
+
 /**
  * Non-throwing form, for PRESENTATION only — deciding whether to render a page
  * or redirect. Never the enforcement point: a page that checks this and forgets

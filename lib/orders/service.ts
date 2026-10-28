@@ -36,6 +36,7 @@ import { isManager, type MemberRole } from '@/lib/auth/roles'
 import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { enqueueKitchenTicketsCore, enqueueKitchenTicketsForOrderCore } from '@/lib/printing/jobs'
 import { getCourseConfigCore, getStationRoutingCore, reconcileKotAfterLineChange } from '@/lib/kots/kds'
+import type { KotOrderRef } from '@/lib/kots/service'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -866,8 +867,9 @@ async function applyVoidDecision(
     requestId: string
     requestedBy: string | null
   },
-): Promise<{ orderId: string; bookingId: string | null }> {
+): Promise<{ orderId: string; bookingId: string | null; kotReady: KotOrderRef | null }> {
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
+  let kotReady: KotOrderRef | null = null
   const newStatus = input.mode === 'void' ? 'voided' : 'comped'
 
   await tx
@@ -923,7 +925,7 @@ async function applyVoidDecision(
     } else {
       // KDS tenants: the voided line may have been the only one still
       // outstanding, which makes the ticket done (no-op without the KDS).
-      await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
+      kotReady = await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
     }
   }
 
@@ -952,12 +954,19 @@ async function applyVoidDecision(
     },
   })
 
-  return { orderId: row.orderId, bookingId: row.bookingId }
+  return { orderId: row.orderId, bookingId: row.bookingId, kotReady }
 }
 
 export type EditOrderItemQuantityInput = { orderItemId: string; newQty: number }
 export type RemoveOrderItemInput = { orderItemId: string }
-export type OrderLineCorrectionResult = { orderId: string; bookingId: string | null; removed: boolean }
+export type OrderLineCorrectionResult = {
+  orderId: string
+  bookingId: string | null
+  removed: boolean
+  /** Set when this change finished the kitchen ticket (the removed line was the
+   *  last one still cooking) — the caller sends the order-ready notification. */
+  kotReady: KotOrderRef | null
+}
 
 /**
  * M25 #3 — in-place correction of an order line's quantity (or its removal),
@@ -1008,7 +1017,7 @@ export async function editOrderItemQuantityCore(
     after: { qty: input.newQty, line_total: newLineTotal, item_name: row.itemName, order_id: row.orderId, booking_id: row.bookingId },
   })
 
-  return { orderId: row.orderId, bookingId: row.bookingId, removed: false }
+  return { orderId: row.orderId, bookingId: row.bookingId, removed: false, kotReady: null }
 }
 
 /**
@@ -1028,6 +1037,7 @@ export async function removeOrderItemCore(
 
   await tx.delete(orderItems).where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
 
+  let kotReady: KotOrderRef | null = null
   const [somethingLeft] = await tx
     .select({ id: orderItems.id })
     .from(orderItems)
@@ -1037,7 +1047,7 @@ export async function removeOrderItemCore(
     await tx.update(orders).set({ status: 'cancelled' }).where(and(eq(orders.id, row.orderId), eq(orders.tenantId, actor.tenantId)))
     await cancelKotsForOrders(tx, actor.tenantId, [row.orderId])
   } else {
-    await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
+    kotReady = await reconcileKotAfterLineChange(tx, actor.tenantId, row.orderId)
   }
 
   await writeAudit(tx, actor, {
@@ -1048,7 +1058,7 @@ export async function removeOrderItemCore(
     after: { removed: true, order_id: row.orderId, booking_id: row.bookingId },
   })
 
-  return { orderId: row.orderId, bookingId: row.bookingId, removed: true }
+  return { orderId: row.orderId, bookingId: row.bookingId, removed: true, kotReady }
 }
 
 export type RequestVoidOrderItemInput = {
@@ -1068,6 +1078,8 @@ export type VoidRequestResult = {
    *  immediately, in the same transaction as the request. 'pending' when it
    *  is now sitting in the manager approval queue. */
   status: 'pending' | 'approved'
+  /** Set when an immediately-applied void finished the kitchen ticket. */
+  kotReady?: KotOrderRef | null
 }
 
 /**
@@ -1135,7 +1147,7 @@ export async function requestVoidOrderItemCore(
   })
 
   if (isManager(actor.role)) {
-    const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+    const { orderId, bookingId, kotReady } = await applyVoidDecision(tx, actor, {
       orderItemId: row.itemId,
       mode: input.mode,
       reason,
@@ -1146,7 +1158,7 @@ export async function requestVoidOrderItemCore(
       .update(orderItemVoidRequests)
       .set({ status: 'approved', decidedBy: actor.membershipId, decidedAt: new Date() })
       .where(eq(orderItemVoidRequests.id, request.id))
-    return { requestId: request.id, orderItemId: row.itemId, orderId, bookingId, mode: input.mode, status: 'approved' }
+    return { requestId: request.id, orderItemId: row.itemId, orderId, bookingId, mode: input.mode, status: 'approved', kotReady }
   }
 
   return {
@@ -1173,6 +1185,8 @@ export type DecidedVoidRequest = {
   bookingId: string | null
   mode: 'void' | 'comp'
   decision: 'approve' | 'reject'
+  /** Set when approving finished the kitchen ticket. */
+  kotReady?: KotOrderRef | null
 }
 
 /**
@@ -1245,7 +1259,7 @@ export async function decideVoidRequestCore(
     }
   }
 
-  const { orderId, bookingId } = await applyVoidDecision(tx, actor, {
+  const { orderId, bookingId, kotReady } = await applyVoidDecision(tx, actor, {
     orderItemId: request.orderItemId,
     mode: request.mode,
     reason: request.reason,
@@ -1265,5 +1279,6 @@ export async function decideVoidRequestCore(
     bookingId,
     mode: request.mode,
     decision: 'approve',
+    kotReady,
   }
 }
