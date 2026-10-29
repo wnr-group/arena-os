@@ -11,6 +11,8 @@ import { isValidPhone } from '@/lib/customers/phone'
 import { formatMoney } from '@/lib/format'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
 import { addDays, zonedTimeToUtc } from '@/lib/booking/time'
+import { BACKDATED_MAX_DAYS as MAX_DAYS_BACK, isPriorMonthDate } from '@/lib/booking/backdated-window'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { wizardInput, wizardLabel } from '@/components/bookings/new/wizard-ui'
 
 export type BackdatedResource = {
@@ -26,12 +28,11 @@ export type BackdatedResource = {
 
 type Preview = { subtotal: number; discount: number; tax: number; total: number; computedSubtotal: number }
 
-const MAX_DAYS_BACK = 7
 
 /**
  * The owner/manager "Record a past booking" form (M28 #3). The date limits
  * here are a convenience matching the server's rule; recordBackdatedBooking
- * enforces the real 7-day / already-ended window itself.
+ * enforces the real 45-day / already-ended window itself.
  */
 export function BackdatedBookingForm({
   branchId,
@@ -47,6 +48,7 @@ export function BackdatedBookingForm({
   resources: BackdatedResource[]
 }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [pending, startSubmit] = useTransition()
   // One key per form, so a double-click or retry of the same submission dedupes.
   const [idempotencyKey] = useState(() => newIdempotencyKey())
@@ -197,9 +199,19 @@ export function BackdatedBookingForm({
     Number.isFinite(amountNum) &&
     amountNum >= 0
 
-  function submit() {
+  async function submit() {
     if (!slots || !canSubmit) return
     setError(null)
+    // A date in an earlier calendar month may belong to a tax period that is
+    // already filed. Not a block - a manager can always continue.
+    if (isPriorMonthDate(date, today)) {
+      const yes = await confirm({
+        title: 'This date is in a previous month',
+        description: 'Some tax periods may already be filed. Continue?',
+        confirmText: 'Continue',
+      })
+      if (!yes) return
+    }
     startSubmit(async () => {
       const r = await recordBackdatedBooking({
         branchId,

@@ -8,7 +8,7 @@
  *   - pricing needs no new code: a holiday_rates row on the claimed date is
  *     billed; a weekend rate on a claimed weekend day is billed
  *   - per-head: headCount threads through and multiplies the rate
- *   - the 7-day / already-ended window is refused (server-side), and a
+ *   - the 45-day / already-ended window is refused (server-side), and a
  *     refused call leaves nothing behind (no booking, no invoice)
  *   - a short payment leaves the booking confirmed with a live "part paid" balance
  *   - a restaurant backdated booking lands completed, while the shared
@@ -21,7 +21,7 @@
  *   - an audit_log row records the actor and claimed times
  *   - the manager gate, via the REAL actions behind the REAL requireManager()
  *     (cashier / floor_staff / signed-out refused; manager / owner succeed)
- *   - 7 days back (to the minute) succeeds; the claimed day's weekend, happy-hour
+ *   - 45 days back (to the minute) succeeds; the claimed day's weekend, happy-hour
  *     and holiday rules are what bill, never today's config
  *   - ordinary bookings still default to backdated=false
  *
@@ -209,11 +209,11 @@ async function main() {
 
     let refused = ''
     try {
-      await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, base(ps5.resourceId, new Date(now.getTime() - 9 * DAY), new Date(now.getTime() - 9 * DAY + 3600_000)))
+      await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, base(ps5.resourceId, new Date(now.getTime() - 47 * DAY), new Date(now.getTime() - 47 * DAY + 3600_000)))
     } catch (e) {
       refused = e instanceof BookingError ? e.message : 'other'
     }
-    check('preview surfaces the window refusal', refused.includes('7 days'), refused)
+    check('preview surfaces the window refusal', refused.includes('45 days'), refused)
   }
 
   // ══ 3. per-head ══════════════════════════════════════════════════════════
@@ -225,6 +225,9 @@ async function main() {
     check('head_count = 3 stored', b.head_count === 3, b)
     check('total = ₹150 (1h × 3 × ₹50)', Number(b.total) === 150, b.total)
     check('completed', r.completed === true)
+    const recent = (await owner.query(`select after from audit_log where entity_id=$1 and action='booking.backdated_entry'`, [r.bookingId])).rows[0]?.after
+    const { isPriorMonthDate } = await import('../lib/booking/backdated-window')
+    check('a current-month entry is NOT flagged priorMonthEntry (flag matches the tenant calendar)', recent?.priorMonthEntry === isPriorMonthDate(d, today), recent)
   }
 
   // ══ 4. window enforced server-side ═══════════════════════════════════════
@@ -240,7 +243,7 @@ async function main() {
       }
       check(label, msg !== '' && !msg.startsWith('non-BookingError'), msg)
     }
-    await attempt('older than 7 days is refused', new Date(now.getTime() - 8 * DAY), new Date(now.getTime() - 8 * DAY + 3600_000))
+    await attempt('older than 45 days (46 back) is refused', new Date(now.getTime() - 46 * DAY), new Date(now.getTime() - 46 * DAY + 3600_000))
     await attempt('a session still in the future is refused', new Date(now.getTime() + 3600_000), new Date(now.getTime() + 2 * 3600_000))
     await attempt('a session that ends in the future (started past) is refused', new Date(now.getTime() - 3600_000), new Date(now.getTime() + 3600_000))
     await attempt('end before start is refused', new Date(now.getTime() - 3600_000), new Date(now.getTime() - 2 * 3600_000))
@@ -249,11 +252,11 @@ async function main() {
 
     let ok = true
     try {
-      assertBackdatedWindow([{ startsAt: new Date(now.getTime() - 6.9 * DAY).toISOString(), endsAt: new Date(now.getTime() - 6.8 * DAY).toISOString() }], now)
+      assertBackdatedWindow([{ startsAt: new Date(now.getTime() - 44.9 * DAY).toISOString(), endsAt: new Date(now.getTime() - 44.8 * DAY).toISOString() }], now)
     } catch {
       ok = false
     }
-    check('6.9 days back is accepted by the window check', ok)
+    check('44.9 days back is accepted by the window check', ok)
   }
 
   // ══ 5. short payment ═════════════════════════════════════════════════════
@@ -381,17 +384,19 @@ async function main() {
   }
 
   // ══ 7b. the window's inner edge ══════════════════════════════════════════
-  console.log('\n── just inside 7 days back ──')
+  console.log('\n── just inside 45 days back ──')
   {
     const ps5C = await makeResource(A, 'PS5 Backdated3', '100.00')
     // Fresh clock + a few minutes' margin: the suite itself takes a while to get here.
-    const start = new Date(Date.now() - 7 * DAY + 5 * 60_000)
+    const start = new Date(Date.now() - 45 * DAY + 5 * 60_000)
     const input = base(ps5C.resourceId, start, new Date(start.getTime() + 3600_000))
     const pv = await previewBackdatedBooking((fn) => withUser(A.userId, fn), ctxA, input)
     const r = await record({ ...input, amountCollected: pv.total })
-    check('a session 7 days back (to the minute) succeeds and lands completed', r.completed === true)
+    check('a session 45 days back (to the minute) succeeds and lands completed', r.completed === true)
     const inv = (await owner.query(`select status from invoices where id=$1`, [r.invoiceId])).rows[0]
     check('...with a real, paid invoice', inv.status === 'paid', inv)
+    const edgeAudit = (await owner.query(`select after from audit_log where entity_id=$1 and action='booking.backdated_entry'`, [r.bookingId])).rows[0]?.after
+    check('...a 45-day-old entry is flagged priorMonthEntry in the audit row', edgeAudit?.priorMonthEntry === true, edgeAudit)
   }
 
   // ══ 7c. historical pricing: the claimed day's rules, not today's ═════════
@@ -516,8 +521,8 @@ async function main() {
     check('...and nothing was written', (await bookingCount()) === 0)
 
     signedInAs('manager')
-    const old = await recordBackdatedBooking(input(new Date(now.getTime() - 8 * DAY), new Date(now.getTime() - 8 * DAY + 3600_000)))
-    check('manager: 8 days back is refused by the action', /7 days/.test(old.error ?? ''), old)
+    const old = await recordBackdatedBooking(input(new Date(now.getTime() - 46 * DAY), new Date(now.getTime() - 46 * DAY + 3600_000)))
+    check('manager: 46 days back is refused by the action', /45 days/.test(old.error ?? ''), old)
     const fut = await recordBackdatedBooking(input(new Date(now.getTime() - 3600_000), new Date(now.getTime() + 3600_000)))
     check('manager: a session that ends in the future is refused', /already ended/.test(fut.error ?? ''), fut)
     check('...refusals wrote nothing', (await bookingCount()) === 0)
@@ -604,8 +609,8 @@ async function main() {
       const rc = await recordBackdatedBooking(mkInput(localAt(d, '19:00'), localAt(d, '20:00')))
       check('restaurant: cashier still refused', /owners and managers/i.test(rc.error ?? ''), rc)
       g.__ARENA_TEST_SESSION = tokens.manager
-      const rold = await recordBackdatedBooking(mkInput(new Date(now.getTime() - 8 * DAY), new Date(now.getTime() - 8 * DAY + 3600_000)))
-      check('restaurant: 8 days back still refused', /7 days/.test(rold.error ?? ''), rold)
+      const rold = await recordBackdatedBooking(mkInput(new Date(now.getTime() - 46 * DAY), new Date(now.getTime() - 46 * DAY + 3600_000)))
+      check('restaurant: 46 days back still refused', /45 days/.test(rold.error ?? ''), rold)
       check('restaurant: refusals wrote nothing', (await cnt()) === 0)
       const rok = await recordBackdatedBooking(mkInput(localAt(d, '19:00'), localAt(d, '20:00')))
       const rrow = (await owner.query(`select status, backdated from bookings where id=$1`, [rok.bookingId])).rows[0]

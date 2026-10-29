@@ -70,7 +70,7 @@ function fail(e: unknown): RecordResult {
 }
 
 /**
- * Owner/manager back-fill of a session that already happened (up to 7 days
+ * Owner/manager back-fill of a session that already happened (up to 45 days
  * back): creates, bills and settles the booking in one transaction. The window
  * is enforced server-side inside recordBackdatedBookingCore. Overlap with other
  * bookings is deliberately NOT checked (the slots are exempt from the exclusion
