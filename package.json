@@ -99,6 +99,7 @@
     "test:holiday-pricing": "tsx --import ./scripts/server-only-hook.mjs scripts/test-holiday-pricing.ts",
     "test:holiday-rates-settings": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-holiday-rates-settings.ts",
     "test:holiday-estimate-consistency": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-holiday-estimate-consistency.ts",
+    "test:backdated-window-qa": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-backdated-window-qa.ts",
     "test:backdated-booking": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-backdated-booking.ts",
     "test:m28": "npm run test:backdated-booking",
     "test:board-surcharge-settings": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-board-surcharge-settings.ts",
