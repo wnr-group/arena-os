@@ -242,8 +242,9 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
           </Table>
         )}
         <Note>
-          Ingredients are what sales deducted from stock in this range (dish recipe plus chosen modifiers), priced at today’s cost per unit — change a
-          cost and past figures move with it. Revenue is paid food revenue, so the % is a guide, not an accounting ratio. Per-dish cost uses the menu price.
+          Ingredients are what sales deducted from stock in this range (dish recipe plus chosen modifiers), priced at each ingredient’s cost when it was
+          sold — changing a cost later does not move past figures. Revenue is paid food revenue with GST taken out, so the % is a guide, not an accounting
+          ratio. Per-dish cost uses today’s costs and the menu price.
         </Note>
       </Section>
 

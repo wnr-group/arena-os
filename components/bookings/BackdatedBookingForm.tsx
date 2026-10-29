@@ -192,6 +192,9 @@ export function BackdatedBookingForm({
     !!slots &&
     !!preview &&
     !previewLoading &&
+    // The name lookup for a newly typed phone may still be in flight: submitting
+    // then would carry the PREVIOUS customer's auto-filled name.
+    !nameLoading &&
     chargeValid &&
     customerName.trim() !== '' &&
     isValidPhone(customerPhone) &&

@@ -312,6 +312,13 @@ export async function enqueueNewOrderTicketOnce(tx: Db, tenantId: string, orderI
   try {
     return await tx.transaction(async (sp) => {
       const db = sp as unknown as Db
+      // Serialise concurrent callers on the order row BEFORE the existence check,
+      // so two replays/webhooks cannot both see "no ticket yet" and both enqueue.
+      await db
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+        .for('update')
       const [already] = await db
         .select({ id: printJobs.id })
         .from(printJobs)

@@ -224,24 +224,29 @@ export async function planReschedule(
   // a paid intent exists; an M26/M30 advance counts from the ledger (a booking
   // with an invoice is refused above, so every tender here is unconsumed).
   // Over-flagging is safe; under-flagging is not.
+  // The two can both be collected on one booking, so compare their SUM with the
+  // new total, not each on its own: a ₹300 advance plus a ₹300 deposit against a
+  // ₹500 total is ₹100 over, though neither exceeds it alone.
   let needsRefundReview = false
-  if (newTotal < oldTotal - 0.004 && (await advancePaidTotal(tx, ctx.tenantId, booking.id)) > newTotal + 0.004) {
-    needsRefundReview = true
-  }
-  if (!needsRefundReview && newTotal < oldTotal - 0.004 && deposit > newTotal + 0.004) {
-    const [paid] = await tx
-      .select({ id: paymentIntents.id })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, ctx.tenantId),
-          eq(paymentIntents.bookingId, booking.id),
-          eq(paymentIntents.purpose, 'booking_deposit'),
-          eq(paymentIntents.status, 'paid'),
-        ),
-      )
-      .limit(1)
-    needsRefundReview = !!paid
+  if (newTotal < oldTotal - 0.004) {
+    const advance = await advancePaidTotal(tx, ctx.tenantId, booking.id)
+    if (advance > newTotal + 0.004) needsRefundReview = true
+    // Only a PAID deposit intent counts as collected (below).
+    if (!needsRefundReview && deposit > 0.004 && advance + deposit > newTotal + 0.004) {
+      const [paidDeposit] = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, ctx.tenantId),
+            eq(paymentIntents.bookingId, booking.id),
+            eq(paymentIntents.purpose, 'booking_deposit'),
+            eq(paymentIntents.status, 'paid'),
+          ),
+        )
+        .limit(1)
+      if (paidDeposit) needsRefundReview = true
+    }
   }
 
   return {

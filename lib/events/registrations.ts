@@ -527,7 +527,14 @@ export async function cancelRegistrationsForCancelledEvent(
       status: 'cancelled',
       cancelledAt: new Date(),
       paymentHoldExpiresAt: null,
-      refundRequired: sql`${eventRegistrations.paidAmount} > 0`,
+      refundRequired: sql`(${eventRegistrations.refundRequired} or ${eventRegistrations.paidAmount} > 0)`,
+      // A registration that already owed money back (a duplicate capture) owes
+      // that PLUS its original payment once cancelled. The refund trigger only
+      // sets the amount on a false -> true flip, so add it here when the flag
+      // was already raised.
+      refundDueAmount: sql`case when ${eventRegistrations.refundRequired} and ${eventRegistrations.paidAmount} > 0
+        then ${eventRegistrations.refundDueAmount} + ${eventRegistrations.paidAmount}
+        else ${eventRegistrations.refundDueAmount} end`,
     })
     .where(
       and(
