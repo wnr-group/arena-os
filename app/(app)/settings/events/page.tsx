@@ -7,6 +7,7 @@ import {
   listBookableResources,
   listEventResourceSelections,
   listEventSeries,
+  listEventSeriesSkips,
 } from '@/lib/events/data'
 import { getEventEntrantCounts } from '@/lib/events/registrations'
 import { EventsManager } from '@/components/events/EventsManager'
@@ -25,7 +26,7 @@ export default async function EventsPage() {
   if (!ctx) return null
   if (!isManager(ctx.role)) redirect('/dashboard')
 
-  const [events, branches, entrantCounts, bookableResources, selections, series] = await Promise.all([
+  const [events, branches, entrantCounts, bookableResources, selections, series, skips] = await Promise.all([
     listEvents(ctx),
     listEventBranches(ctx),
     // Counted with the SAME occupancy rule the capacity guard uses, so the
@@ -37,6 +38,8 @@ export default async function EventsPage() {
     // M15 #8 — the recurring templates. Occurrences are ordinary events and
     // already appear in the list above; this manages what generates them.
     listEventSeries(ctx),
+    // Occurrences the job skipped for a station clash — otherwise invisible.
+    listEventSeriesSkips(ctx),
   ])
 
   return (
@@ -72,7 +75,16 @@ export default async function EventsPage() {
         }))}
       />
 
-      <EventSeriesManager series={series} branches={branches} />
+      <EventSeriesManager
+        series={series}
+        branches={branches}
+        skips={skips.map((k) => ({
+          id: k.id,
+          seriesTitle: k.seriesTitle,
+          occurrencePeriod: k.occurrencePeriod,
+          reason: k.reason,
+        }))}
+      />
     </div>
   )
 }

@@ -112,7 +112,7 @@ async function main() {
 
   async function session(
     t: T,
-    o: { table: number; covers: number; server: string | null; in: string; out?: string; status?: string; date?: string },
+    o: { table: number; covers: number | null; server: string | null; in: string; out?: string; status?: string; date?: string },
   ) {
     const date = o.date ?? DAY
     const r = await q(
@@ -122,7 +122,7 @@ async function main() {
     )
     return r[0].id as string
   }
-  async function invoice(t: T, bookingId: string, o: { total: number; tip?: number; status?: string; items?: { name: string; qty: number; line: number }[]; at?: string }) {
+  async function invoice(t: T, bookingId: string, o: { total: number; tip?: number; status?: string; items?: { name: string; qty: number; line: number }[]; at?: string; payStatus?: string; tipTo?: string }) {
     const inv = await q(
       `insert into invoices (tenant_id,branch_id,invoice_number,booking_id,subtotal,total,tip_amount,status)
        values ($1,$2,$3,$4,$5,$5,$6,$7) returning id`,
@@ -135,8 +135,8 @@ async function main() {
       )
     }
     if ((o.status ?? 'paid') === 'paid') {
-      await q(`insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at) values ($1,$2,$3,'cash',$4,'captured',$5)`, [
-        t.tenantId, t.branchId, inv[0].id, o.total, o.at ?? ist(DAY, '15:00'),
+      await q(`insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at,tip_amount,tip_recipient_membership_id) values ($1,$2,$3,'cash',$4,$5,$6,$7,$8)`, [
+        t.tenantId, t.branchId, inv[0].id, o.total, o.payStatus ?? 'captured', o.at ?? ist(DAY, '15:00'), o.tip ?? 0, o.tipTo ?? null,
       ])
     }
     return inv[0].id as string
@@ -157,7 +157,7 @@ async function main() {
   await invoice(A, b2, { total: 1000, tip: 50 })
   await invoice(A, b3, { total: 1500, tip: 0 })
   await invoice(A, b3, { total: 500, status: 'void' }) // struck off: must not count
-  await invoice(A, bPrev, { total: 9999, tip: 999 })
+  await invoice(A, bPrev, { total: 9999, tip: 999, at: ist(PREV, '15:00') })
 
   await audit(A, 'order_item.void', A.members.manager.membershipId, { amount: '100', item_name: 'Fries', qty: 1, booking_id: b1 }, { reason: 'Wrong order' }, ist(DAY, '13:30'))
   await audit(A, 'order_item.void', A.members.manager.membershipId, { amount: '50', item_name: 'Cola', qty: 2, booking_id: b2 }, { reason: 'Spilled' }, ist(DAY, '20:30'))
@@ -241,6 +241,50 @@ async function main() {
   const nextDay = await rep.getRestaurantReport(ctxOf(A, 'owner'), { range: { start: '2026-09-16', end: '2026-09-16' } })
   check('a 23:50 IST seating is dated by the venue day (not UTC) and is late night', edge.summary.sessions === 5 && nextDay.summary.sessions === 0 && edge.daypart.find((d) => d.key === 'late_night')!.sessions === 1)
   void lateEdge
+
+
+  // ── per-cover ignores sessions with unknown guest counts ──────────────────
+  const D2 = '2026-09-20'
+  const pcA = await session(A, { table: 0, covers: 4, server: s1, in: '13:00', out: '14:00', date: D2 })
+  const pcB = await session(A, { table: 1, covers: null, server: s1, in: '13:30', out: '14:30', date: D2 })
+  await invoice(A, pcA, { total: 400, at: ist(D2, '15:00') })
+  await invoice(A, pcB, { total: 600, at: ist(D2, '15:00') })
+  const pc = await rep.getRestaurantReport(ctxOf(A, 'manager'), { range: { start: D2, end: D2 } })
+  check('unknown covers: all 1000 is still billed', near(pc.summary.billed, 1000) && pc.summary.sessions === 2)
+  check('unknown covers: spend per guest = 400 / 4 = 100 (not 1000 / 4 = 250)', pc.summary.covers === 4 && near(pc.summary.spendPerCover, 100))
+  check('unknown covers: the daypart row uses the same basis', near(pc.daypart.find((d) => d.key === 'lunch')!.spendPerCover, 100))
+  check('unknown covers: the server row uses the same basis', near(pc.servers.find((x) => x.serverId === s1)!.spendPerCover, 100) && near(pc.servers.find((x) => x.serverId === s1)!.billed, 1000))
+
+  // ── server tips reconcile with the tips report (incl. a refunded tip) ─────
+  const D3 = '2026-09-21'
+  const tipsRep = await import('../lib/reports/tips')
+  const t1 = await session(A, { table: 0, covers: 2, server: s1, in: '13:00', out: '14:00', date: D3 })
+  const t2 = await session(A, { table: 1, covers: 2, server: s1, in: '14:00', out: '15:00', date: D3 })
+  const t3 = await session(A, { table: 2, covers: 2, server: s1, in: '20:00', out: '21:00', date: D3 })
+  await invoice(A, t1, { total: 1000, tip: 100, at: ist(D3, '14:30') }) // s1's table
+  await invoice(A, t2, { total: 500, tip: 40, at: ist(D3, '15:30'), payStatus: 'refunded' }) // refunded: not paid out
+  await invoice(A, t3, { total: 800, tip: 30, at: ist(D3, '21:30'), tipTo: s2 }) // cashier named s2
+  const tr = await tipsRep.getTipsReport(ctxOf(A, 'manager'), { range: { start: D3, end: D3 } })
+  const sr = await rep.getRestaurantReport(ctxOf(A, 'manager'), { range: { start: D3, end: D3 } })
+  const tipOf = (id: string) => sr.servers.find((x) => x.serverId === id)?.tips ?? 0
+  check('tips: the refunded tipped payment is out of the total (100 + 30)', near(tr.total, 130))
+  check('tips: server performance total equals the tips report total', near(sr.servers.reduce((n, x) => n + x.tips, 0), tr.total) && near(sr.summary.tips, tr.total))
+  check('tips: each server matches the tips report (s1 = 100, s2 = 30 named by the cashier)', tr.byServer.every((x) => near(tipOf(x.serverId ?? ''), x.tips)) && near(tipOf(s1), 100) && near(tipOf(s2), 30))
+  check('tips: a tipped person with no table that day still gets a row', sr.servers.some((x) => x.serverId === s2 && x.sessions === 0))
+
+  // ── revenue by kind sums to net with a delivery fee ───────────────────────
+  const D4 = '2026-09-22'
+  const dr = await import('../lib/reports/daily-revenue')
+  const dv = await q(
+    `insert into invoices (tenant_id,branch_id,invoice_number,subtotal,tax_total,total,status) values ($1,$2,$3,130,6.5,136.5,'paid') returning id`,
+    [A.tenantId, A.branchId, `INV-R-${++seq}`],
+  )
+  await q(`insert into invoice_items (tenant_id,invoice_id,kind,description,qty,unit_price,line_total,tax_rate) values ($1,$2,'food','Burger',1,100,100,5),($1,$2,'delivery','Delivery fee',1,30,30,5)`, [A.tenantId, dv[0].id])
+  await q(`insert into payments (tenant_id,branch_id,invoice_id,method,amount,status,created_at) values ($1,$2,$3,'cash',136.5,'captured',$4)`, [A.tenantId, A.branchId, dv[0].id, ist(D4, '13:00')])
+  const rev = { totals: dr.sumDailyRevenue(await dr.getDailyRevenue(ctxOf(A, 'owner'), { range: { start: D4, end: D4 } })) }
+  const kinds = rev.totals.bookingRevenue + rev.totals.foodRevenue + rev.totals.membershipRevenue + rev.totals.serviceChargeRevenue
+  check('delivery: net is 136.50', near(rev.totals.net, 136.5))
+  check('delivery: booking + food + membership + service charge = net (the fee is folded into food)', near(kinds, rev.totals.net, 0.02) && near(rev.totals.foodRevenue, 136.5, 0.02))
 
   // ── gates ─────────────────────────────────────────────────────────────────
   for (const role of ['cashier', 'floor_staff', 'kitchen_staff'] as const) {

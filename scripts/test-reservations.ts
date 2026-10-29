@@ -346,6 +346,67 @@ async function main() {
   const vOf = (n: string) => ent.find((e) => e.n === n)?.v
   check('module.table_reservations: Pro and Enterprise on, Starter off', vOf('pro') === 'true' && vOf('enterprise') === 'true' && vOf('starter') === 'false')
 
+  // ── 12. seats, grid, per-phone cap, idempotency (0173) ───────────────────
+  await q('delete from bookings where tenant_id=$1', [A.tenantId])
+  await setSettings(A, { enabled: true, publicEnabled: true, max: 12 })
+  await q('update resources set min_seats=null, max_seats=2 where id=$1', [A.tables[0]])
+  await q('update resources set min_seats=3, max_seats=6 where id=$1', [A.tables[1]])
+  await q('update resources set min_seats=null, max_seats=null where id=$1', [A.tables[2]])
+  const bigOnTwoTop = await attempt(() => reserve(A, 0, tomorrow('20:00'), { partySize: 8 }))
+  check('party of 8 is never put on a 2-top', !bigOnTwoTop.ok && /doesn’t seat/i.test(bigOnTwoTop.msg))
+  const smallOnBig = await attempt(() => reserve(A, 1, tomorrow('20:00'), { partySize: 2 }))
+  check('party under a table’s minimum is refused', !smallOnBig.ok && /doesn’t seat/i.test(smallOnBig.msg))
+  const fits = await attempt(() => reserve(A, 1, tomorrow('20:00'), { partySize: 4 }))
+  check('party within min/max is accepted', fits.ok)
+  await q('delete from bookings where tenant_id=$1', [A.tenantId])
+  const w = tomorrow('20:00')
+  const win = new Date(w.getTime() + 90 * MIN)
+  const ftIds = async (n?: number) => (await as(A, 'receptionist', (tx) => svc.freeTablesForWindow(tx, A.tenantId, A.branchId, w, win, new Date(), n))).map((t) => t.id)
+  check('free tables for a party of 8 is only the unrestricted table', JSON.stringify(await ftIds(8)) === JSON.stringify([A.tables[2]]))
+  check('free tables for a party of 5 skips the 2-top', JSON.stringify(await ftIds(5)) === JSON.stringify([A.tables[1], A.tables[2]]))
+  check('free tables for a party of 2 skips the 3+ table', JSON.stringify(await ftIds(2)) === JSON.stringify([A.tables[0], A.tables[2]]))
+  check('no party size = every table (unchanged)', (await ftIds()).length === 3)
+  const optsFor = (n?: number) => as(A, 'receptionist', (tx) => svc.getReservationStartOptionsCore(tx, { id: A.tenantId, timezone: TZ }, { branchId: A.branchId, date: addDays(todayInZone(TZ), 1), partySize: n }, 'staff'))
+  const o8 = (await optsFor(8)).options.find((o) => o.startsAt === iso(w))
+  const o5 = (await optsFor(5)).options.find((o) => o.startsAt === iso(w))
+  check('picker counts only tables that fit (8 → 1, 5 → 2)', o8?.freeTables === 1 && o5?.freeTables === 2)
+
+  const offGrid = await attempt(() => reserve(A, 2, tomorrow('20:07'), { partySize: 3 }, 'receptionist', 'public'))
+  check('public time off the slot grid refused', !offGrid.ok && /times offered/i.test(offGrid.msg))
+  const staffOffGrid = await attempt(() => reserve(A, 2, tomorrow('20:07'), { partySize: 3 }))
+  check('staff may still enter an off-grid time', staffOffGrid.ok)
+  await q('delete from bookings where tenant_id=$1', [A.tenantId])
+
+  const pub = (hhmm: string, extra: Partial<Parameters<typeof svc.createReservationCore>[2]> = {}) =>
+    reserve(A, 2, tomorrow(hhmm), { partySize: 3, customerPhone: '9123456780', ...extra }, 'receptionist', 'public')
+  for (const hh of ['10:00', '12:00', '14:00']) check(`public reservation ${hh} within the per-phone cap`, (await attempt(() => pub(hh))).ok)
+  const capped = await attempt(() => pub('16:00'))
+  check('4th open reservation for one phone refused', !capped.ok && /upcoming reservations/i.test(capped.msg))
+  const otherPhone = await attempt(() => pub('16:00', { customerPhone: '9123456781' }))
+  check('a different phone is unaffected', otherPhone.ok)
+  const rows = await q("select id from bookings where tenant_id=$1 and reserved_for = $2", [A.tenantId, tomorrow('10:00')])
+  await q("update bookings set status='cancelled' where id=$1", [rows[0].id])
+  check('cancelling frees a slot under the cap', (await attempt(() => pub('20:00'))).ok)
+  await q('delete from bookings where tenant_id=$1', [A.tenantId])
+
+  const key = '11111111-1111-4111-8111-111111111111'
+  const first = await attempt(() => pub('18:00', { idempotencyKey: key }))
+  const dup = await attempt(() => pub('18:30', { idempotencyKey: key }))
+  check('same idempotency key twice → one booking', first.ok && !dup.ok && dup.constraint === 'bookings_idempotency_key_uniq')
+  check('...and only one row exists', (await q('select 1 from bookings where tenant_id=$1 and idempotency_key=$2', [A.tenantId, key])).length === 1)
+  const seen = await app.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.public_tenant_id', ${A.tenantId}, true)`)
+    return (await tx.execute(sql`select booking_number from public.reservation_by_idempotency_key(${A.tenantId}::uuid, ${key})`)).rows
+  })
+  check('storefront can recover the first confirmation by key', seen.length === 1 && first.ok && (seen[0] as { booking_number: string }).booking_number === first.v.bookingNumber)
+  const otherTenantSees = await app.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.public_tenant_id', ${B.tenantId}, true)`)
+    return (await tx.execute(sql`select 1 from public.reservation_by_idempotency_key(${A.tenantId}::uuid, ${key})`)).rows
+  })
+  check('...but not from another tenant’s storefront', otherTenantSees.length === 0)
+  const badSeats = await attempt(() => q('update resources set min_seats=5, max_seats=2 where id=$1', [A.tables[0]]))
+  check('min_seats above max_seats violates the CHECK', !badSeats.ok)
+
   await q('delete from bookings where tenant_id = any($1)', [ids])
   await q('delete from tenants where id = any($1)', [ids])
   console.log(`\n${pass} passed, ${fail} failed`)

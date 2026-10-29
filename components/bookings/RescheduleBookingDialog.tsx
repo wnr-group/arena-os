@@ -188,7 +188,7 @@ function RescheduleForm({
         startsAt,
         endsAt,
         expectedStartsAt: oldStart,
-        reason: reason.trim() || undefined,
+        reason: reason.trim(),
       })
       if (r.error) setError(r.error)
       else onDone(r.newTotal)
@@ -196,7 +196,7 @@ function RescheduleForm({
   }
 
   const diff = quote?.difference ? Number(quote.difference) : 0
-  const canSave = !!startsAt && !!endsAt && !unchanged && !!quote && !quoting && !pending
+  const canSave = !!startsAt && !!endsAt && !unchanged && !!quote && !quoting && !pending && reason.trim().length > 0
 
   const durIdx = durations.indexOf(duration)
   const fmtDur = (m: number) => (m % 60 === 0 ? `${m / 60} hr` : m > 60 ? `${Math.floor(m / 60)} hr ${m % 60} min` : `${m} min`)
@@ -346,18 +346,30 @@ function RescheduleForm({
                 )}
               </div>
             )}
-            {quote?.needsRefundReview && (
-              <p className="mt-2 text-xs text-amber-600">
-                The new total is lower than the deposit already paid online. The booking will be flagged so the difference
-                can be refunded.
+            {quote && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Re-priced at today’s rates for the new time (weekend, happy-hour and holiday rules apply), even if the
+                length is unchanged.
               </p>
             )}
+            {quote?.discountClamped && (
+              <p className="mt-2 text-xs text-amber-600">
+                The booking’s discount is larger than the new price, so it is reduced to {formatMoney(quote.newDiscount!, currency)}.
+              </p>
+            )}
+            {quote?.needsRefundReview && (
+              <p className="mt-2 text-xs text-amber-600">
+                The new total is lower than the money already collected (online deposit or advance). The booking will be
+                flagged so the difference can be refunded.
+              </p>
+            )}
+            <p className="mt-2 text-xs text-muted-foreground">The customer will be sent a text with the old and new time.</p>
           </div>
         )}
 
         <div>
           <p className={label}>
-            Reason <span className="font-normal normal-case tracking-normal">(optional)</span>
+            Reason <span className="font-normal normal-case tracking-normal">(required — saved in the audit log)</span>
           </p>
           <input
             type="text"

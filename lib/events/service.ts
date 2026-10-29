@@ -53,6 +53,29 @@ export async function updateEventStatusCore(
     )
   }
 
+  // Starting an event closes it to payments (0158): a capture that lands
+  // afterwards cancels the entry and owes the money back. So do not start it
+  // over people who are mid-checkout — the database refuses it too (0177).
+  if (newStatus === 'in_progress') {
+    const [{ holds }] = await tx
+      .select({ holds: sql<number>`count(*)`.mapWith(Number) })
+      .from(eventRegistrations)
+      .where(
+        and(
+          eq(eventRegistrations.tenantId, ctx.tenantId),
+          eq(eventRegistrations.eventId, eventId),
+          eq(eventRegistrations.status, 'pending_payment'),
+          sql`${eventRegistrations.paymentHoldExpiresAt} > now()`,
+        ),
+      )
+    if (holds > 0) {
+      throw new EventError(
+        `${holds} ${holds === 1 ? 'person is' : 'people are'} part-way through paying. ` +
+          'Wait for those payments to finish or expire (or cancel those entries) before starting the event.',
+      )
+    }
+  }
+
   await tx
     .update(events)
     .set({ status: newStatus })

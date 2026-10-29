@@ -129,6 +129,16 @@ export const REGISTRATION_REFUSALS: Record<string, string> = {
   team_withdrawn: 'That team is no longer entered in this event.',
   already_cancelled: 'This registration has already been cancelled.',
   checked_in: 'You are already checked in — please speak to the venue.',
+  too_late: 'This event has already started, so the entry can no longer be cancelled online — please speak to the venue.',
+}
+
+/** Refusals from mark_event_registration_refunded(). */
+export const REFUND_REFUSALS: Record<string, string> = {
+  not_found: 'That registration could not be found.',
+  not_flagged: 'No refund is outstanding on this registration.',
+  reference_required: 'Enter the refund reference (e.g. the UPI or bank transaction id).',
+  invalid_amount: 'Enter the amount refunded.',
+  amount_exceeds_due: 'That is more than the refund owed on this registration.',
 }
 
 export function refusalMessage(code: string): string {

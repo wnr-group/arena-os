@@ -2,6 +2,7 @@ import 'server-only'
 import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
+import { enqueueNewOrderTicketOnce } from '@/lib/printing/jobs'
 import type * as schema from '@/db/schema'
 import {
   bookings,
@@ -616,6 +617,10 @@ export async function applyVerifiedPaymentWebhook(
     // M10: an online order is a sale the moment it is paid — deduct its linked
     // ingredients (once per order, never failing the webhook).
     await deductStockForOrders(tx, verifiedTenantId, [order!.id])
+    // The order just reached the kitchen: print its ticket. Runs as the system
+    // (this is the owner connection), best-effort and at most once, so a printer
+    // problem or a redelivered webhook can never fail or repeat the order.
+    await enqueueNewOrderTicketOnce(tx, verifiedTenantId, order!.id)
 
     return {
       kind: 'processed',

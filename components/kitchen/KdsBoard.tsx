@@ -157,6 +157,7 @@ export function KdsBoard({
                   canFire={canFire}
                   scope={scope}
                   showStation={scope === undefined && settings.stationsEnabled}
+                  flagUnrouted={settings.stationsEnabled}
                   run={run}
                 />
               ))}
@@ -267,6 +268,7 @@ function TicketCard({
   canFire,
   scope,
   showStation,
+  flagUnrouted,
   run,
 }: {
   ticket: KdsTicket
@@ -279,6 +281,8 @@ function TicketCard({
   scope?: { id: string | null }
   /** Tag each line with its station (the all-stations view only). */
   showStation: boolean
+  /** Badge lines no station owns, so a cook on any screen knows to take them. */
+  flagUnrouted: boolean
   run: (key: string, fn: () => Promise<{ error?: string }>) => void
 }) {
   const level = levelFor(Math.floor(elapsedMs / 60000), warn, late)
@@ -331,6 +335,11 @@ function TicketCard({
                 <span className={`min-w-0 text-[15px] font-semibold leading-tight ${item.bumped ? 'line-through' : ''}`}>
                   <span className="mr-1.5 text-muted-foreground">{item.qty}×</span>
                   {item.name}
+                  {flagUnrouted && item.unrouted && (
+                    <span className="ml-2 rounded-full bg-amber-500/15 px-1.5 py-px align-middle text-[9px] font-bold uppercase tracking-wide text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-400">
+                      Unrouted
+                    </span>
+                  )}
                   {showStation && item.stationName && (
                     <span className="ml-2 rounded-full bg-background px-1.5 py-px align-middle text-[9px] font-bold uppercase tracking-wide text-muted-foreground ring-1 ring-border">
                       {item.stationName}

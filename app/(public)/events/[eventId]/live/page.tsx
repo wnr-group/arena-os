@@ -185,6 +185,8 @@ export default async function PublicLiveEventPage({ params, searchParams }: Para
           matches={live.matches}
           standings={live.standings}
           isComplete={live.isComplete}
+          // Nothing changes quickly unless the event is actually running.
+          pollMs={event.status === 'in_progress' ? 8000 : 30000}
           tv={tv}
         />
       </div>

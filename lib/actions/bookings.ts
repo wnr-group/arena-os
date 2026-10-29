@@ -8,12 +8,14 @@ import { withUser } from '@/db'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
-import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
+import { GridRefusedError, resolveGridOverride } from '@/lib/booking/slot-grid'
+import { writeAudit } from '@/lib/billing/invoice'
 import { planReschedule, rescheduleBookingCore } from '@/lib/booking/reschedule'
 import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settings-server'
 import { todayInZone } from '@/lib/booking/time'
-import { requireContext, AuthError } from '@/lib/auth/guard'
-import { canManageWalkins } from '@/lib/auth/roles'
+import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
+import { sendBookingRescheduledNotification } from '@/lib/notifications/booking-reschedule'
+import { canManageWalkins, isManager } from '@/lib/auth/roles'
 import {
   createBookingCore,
   priceBookingSlots,
@@ -43,17 +45,25 @@ import {
   type WalkinResourceOption,
 } from '@/lib/booking/walkin'
 import { BillingError } from '@/lib/billing/invoice'
-import { ReservationConflictError } from '@/lib/reservations/guard'
+import { ReservationConflictError, assertCanOverride } from '@/lib/reservations/guard'
+import { seatReservationCore } from '@/lib/reservations/service'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { cancelOpenOrdersForBooking } from '@/lib/orders/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
-type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string; reservationConflict?: boolean }
-type Result = { error?: string }
+type CreateResult = {
+  error?: string
+  bookingId?: string
+  bookingNumber?: string
+  reservationConflict?: boolean
+  gridRefusal?: { canOverride: boolean }
+}
+type Result = { error?: string; reservationConflict?: boolean; gridRefusal?: { canOverride: boolean } }
 
 function fail(e: unknown): Result {
+  if (e instanceof GridRefusedError) return { error: e.message, gridRefusal: { canOverride: e.canOverride } }
   if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const pg = pgError(e)
@@ -118,6 +128,12 @@ const createInput = z.object({
   // slot's resource type turns out to be per_head; meaningless and ignored
   // otherwise.
   headCount: z.coerce.number().int().min(1).max(1000).optional(),
+  /**
+   * Manager/owner override of the slot-grid rule (outside working hours, off the
+   * step grid). Honoured ONLY for those roles, only when the grid actually
+   * refuses, and always audited with this reason.
+   */
+  gridOverrideReason: z.string().trim().min(1).max(500).optional(),
 })
 
 /** Server action: create a booking across one or more resource slots for the signed-in tenant. */
@@ -131,9 +147,23 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
 
     const bookingCtx = { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }
     const result = await withUser(ctx.user.id, async (tx) => {
-      // The wizard only ever offers grid times; refuse a hand-built request that isn't on it.
-      await assertSlotsOnGrid(tx, bookingCtx, v.branchId, v.slots)
-      return createBookingCore(tx, bookingCtx, v)
+      // The wizard only ever offers grid times; refuse a request that isn't on it
+      // unless a manager/owner overrides with a reason (checked HERE, server-side).
+      const gridError = await resolveGridOverride(tx, bookingCtx, v.branchId, v.slots, {
+        mayOverride: isManager(ctx.role),
+        reason: v.gridOverrideReason,
+      })
+      const created = await createBookingCore(tx, bookingCtx, v)
+      if (gridError) {
+        await writeAudit(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, {
+          action: 'booking.grid_override',
+          entityType: 'booking',
+          entityId: created.id,
+          before: {},
+          after: { refusal: gridError, reason: v.gridOverrideReason, slots: v.slots.map((s) => ({ startsAt: s.startsAt, endsAt: s.endsAt })) },
+        })
+      }
+      return created
     })
 
     revalidatePath('/bookings')
@@ -614,6 +644,7 @@ export async function seatTable(input: z.input<typeof seatTableInput>): Promise<
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = seatTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     // An expired unpaid online hold still occupies its slot until swept; release it
     // here so a lapsed hold never blocks staff (best-effort, never throws).
     await sweepTenantHolds(ctx.tenant.id)
@@ -663,6 +694,7 @@ export async function requestBill(bookingId: string): Promise<Result> {
 const transferTableInput = z.object({
   bookingId: z.string().uuid(),
   targetResourceId: z.string().uuid(),
+  overrideReservation: z.boolean().optional(),
 })
 
 /** Move a table session to a different table (M17 #5) — its orders follow
@@ -674,12 +706,14 @@ export async function transferTable(input: z.input<typeof transferTableInput>): 
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = transferTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     await withUser(ctx.user.id, (tx) =>
       transferTableCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
     revalidatePath('/floor')
     return {}
   } catch (e) {
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -714,6 +748,7 @@ const splitTableInput = z.object({
   targetResourceId: z.string().uuid(),
   orderIds: z.array(z.string().uuid()),
   coverCount: z.coerce.number().int().positive('Guest count must be at least 1.'),
+  overrideReservation: z.boolean().optional(),
 })
 
 /** Split a subset of a table session's open orders onto a brand-new session
@@ -726,6 +761,7 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
       throw new AuthError('Table service is not enabled for this business.')
     }
     const v = splitTableInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     // An expired unpaid online hold still occupies its slot until swept; release it
     // here so a lapsed hold never blocks staff (best-effort, never throws).
     await sweepTenantHolds(ctx.tenant.id)
@@ -735,6 +771,7 @@ export async function splitTable(input: z.input<typeof splitTableInput>): Promis
     revalidatePath('/floor')
     return { bookingId: result.id, bookingNumber: result.bookingNumber }
   } catch (e) {
+    if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)
   }
 }
@@ -979,8 +1016,12 @@ const rescheduleInput = z.object({
   endsAt: z.string().datetime(),
   /** The slot start the dialog loaded; a mismatch means the booking changed underneath. */
   expectedStartsAt: z.string().datetime(),
-  reason: z.string().trim().max(500).optional(),
+  reason: z.string().trim().min(1, 'Give a reason for the change.').max(500),
+  /** Allow a window outside working hours / off the step grid (audited with the reason). */
+  allowOffGrid: z.boolean().optional(),
 })
+
+const quoteInput = rescheduleInput.omit({ reason: true })
 
 export type RescheduleContext = {
   error?: string
@@ -1002,7 +1043,7 @@ export type RescheduleContext = {
 /** What the Reschedule dialog needs to open. Eligibility is re-decided by the quote and the save. */
 export async function getRescheduleContext(bookingId: string): Promise<RescheduleContext> {
   try {
-    const ctx = await requireContext()
+    const ctx = await requireManager()
     const id = z.string().uuid().parse(bookingId)
     const row = await withUser(ctx.user.id, async (tx) => {
       const [b] = await tx
@@ -1042,7 +1083,7 @@ export async function getRescheduleContext(bookingId: string): Promise<Reschedul
     }
     if (b.backdated) return { error: 'A late-entered booking cannot be rescheduled.' }
     if (b.reservedFor || b.tableResourceId) {
-      return { error: 'A table reservation is rescheduled from the Reservations page.' }
+      return { error: 'A table reservation can’t be rescheduled here - cancel it and book a new one.' }
     }
     if (slots.length !== 1 || slots[0].endsAt === null) {
       return { error: 'Only a booking with a single time slot can be rescheduled for now.' }
@@ -1075,13 +1116,16 @@ export type RescheduleQuote = {
   /** newTotal - oldTotal, 2dp; negative when the booking gets cheaper. */
   difference?: string
   needsRefundReview?: boolean
+  /** The fixed discount would exceed the new price, so it is reduced to `newDiscount`. */
+  discountClamped?: boolean
+  newDiscount?: string
 }
 
 /** Read-only: validate the proposed window and price it, without writing anything. */
-export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Promise<RescheduleQuote> {
+export async function quoteReschedule(raw: z.input<typeof quoteInput>): Promise<RescheduleQuote> {
   try {
-    const ctx = await requireContext()
-    const v = rescheduleInput.parse(raw)
+    const ctx = await requireManager()
+    const v = quoteInput.parse(raw)
     const plan = await withUser(ctx.user.id, (tx) =>
       planReschedule(
         tx,
@@ -1091,6 +1135,7 @@ export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Pro
           newStartsAt: new Date(v.startsAt),
           newEndsAt: new Date(v.endsAt),
           expectedStartsAt: new Date(v.expectedStartsAt),
+          allowOffGrid: v.allowOffGrid,
         },
         { lock: false },
       ),
@@ -1100,6 +1145,8 @@ export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Pro
       newTotal: plan.newTotal.toFixed(2),
       difference: (plan.newTotal - plan.oldTotal).toFixed(2),
       needsRefundReview: plan.needsRefundReview,
+      discountClamped: plan.discountClamped,
+      newDiscount: plan.newDiscount.toFixed(2),
     }
   } catch (e) {
     return fail(e)
@@ -1107,13 +1154,14 @@ export async function quoteReschedule(raw: z.input<typeof rescheduleInput>): Pro
 }
 
 /**
- * Move a booking to a new window. Any staff member, like cancel: the server
- * re-validates everything (status, bill, grid, hours, window, overlap) and audits
+ * Move a booking to a new window. Owners and managers only: it re-prices the
+ * booking and can leave money to refund, and RLS is tenant-wide so this check is
+ * the only role gate. The server also re-validates everything (status, bill, grid, hours, window, overlap) and audits
  * the change; hiding the button is convenience, not authorization.
  */
 export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): Promise<Result & { newTotal?: string }> {
   try {
-    const ctx = await requireContext()
+    const ctx = await requireManager()
     const v = rescheduleInput.parse(raw)
     const plan = await withUser(ctx.user.id, (tx) =>
       rescheduleBookingCore(
@@ -1125,9 +1173,19 @@ export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): P
           newEndsAt: new Date(v.endsAt),
           expectedStartsAt: new Date(v.expectedStartsAt),
           reason: v.reason,
+          allowOffGrid: v.allowOffGrid,
         },
       ),
     )
+    // After commit, best-effort: a failed text must never undo the move.
+    if (plan.oldStartsAt.getTime() !== plan.newStartsAt.getTime()) {
+      await sendBookingRescheduledNotification(ctx.tenant.id, plan.bookingId, {
+        oldStartsAt: plan.oldStartsAt,
+        newStartsAt: plan.newStartsAt,
+        newEndsAt: plan.newEndsAt,
+        timeZone: ctx.tenant.timezone,
+      })
+    }
     revalidatePath('/bookings')
     revalidatePath('/sessions')
     revalidatePath('/floor')
@@ -1157,6 +1215,8 @@ export async function checkInBookingByToken(raw: string): Promise<CheckInResult>
           bookingNumber: bookings.bookingNumber,
           customerName: bookings.customerName,
           status: bookings.status,
+          reservedFor: bookings.reservedFor,
+          resourceId: bookings.resourceId,
         })
         .from(bookings)
         .where(and(eq(bookings.tenantId, ctx.tenant.id), eq(bookings.confirmationToken, token)))
@@ -1173,6 +1233,20 @@ export async function checkInBookingByToken(raw: string): Promise<CheckInResult>
       if (row.status === 'checked_in') {
         return { row, slot, alreadyCheckedIn: true }
       }
+      // A table reservation is not an ordinary booking: checking it in must seat the
+      // party (its slot goes, the table session starts) exactly as the staff action
+      // does. A bare status flip left a checked-in reservation with no table session
+      // and a live slot — one that could be neither seated, cancelled nor lapsed.
+      // A late arrival (no_show) is seated the same way.
+      if (row.reservedFor && !row.resourceId && (row.status === 'confirmed' || row.status === 'no_show')) {
+        await seatReservationCore(
+          tx,
+          { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId },
+          { bookingId: row.id },
+        )
+        return { row, slot, alreadyCheckedIn: false }
+      }
+
       if (row.status !== 'confirmed') {
         throw new BookingError(`This booking is ${row.status.replace('_', ' ')} — it can't be checked in.`)
       }

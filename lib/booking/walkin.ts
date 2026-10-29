@@ -32,10 +32,10 @@
  *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lt, lte, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
+import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, events, taxRates, auditLog, tenants } from '@/db/schema'
 import { industryHasStudioSetups } from './studio-setups'
 import { advancePaidTotals } from './advance-ledger'
 import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
@@ -60,6 +60,7 @@ import {
 } from './addons'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
+import { sweepOverdueWalkinsForTenant } from './walkin-auto-close'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -198,7 +199,9 @@ export async function listWalkinResources(
     const occupiedRows = await tx
       .select({ resourceId: bookingSlots.resourceId })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      // LEFT join: an event block has booking_id NULL and holds the station for
+      // as long as its slot is active, so it must count as occupied too.
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
       .where(
         and(
           inArray(bookingSlots.resourceId, ids),
@@ -207,7 +210,7 @@ export async function listWalkinResources(
           // An open tab's null ends_at means "still going" — occupied now,
           // same reading the GiST exclusion constraint itself gives it.
           or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, now)),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
     const occupiedNow = new Set(occupiedRows.map((r) => r.resourceId))
@@ -247,15 +250,17 @@ export async function listWalkinResources(
         endsAt: bookingSlots.endsAt,
         bookingNumber: bookings.bookingNumber,
         customerName: bookings.customerName,
+        eventTitle: events.title,
       })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           inArray(bookingSlots.resourceId, ids),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, now),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
@@ -283,8 +288,9 @@ export async function listWalkinResources(
           ? {
               startsAt: next.startsAt.toISOString(),
               endsAt: next.endsAt ? next.endsAt.toISOString() : null,
-              bookingNumber: next.bookingNumber,
-              customerName: next.customerName,
+              // An event block has no booking: name the event instead.
+              bookingNumber: next.bookingNumber ?? 'Event',
+              customerName: next.eventTitle ? `Event: ${next.eventTitle}` : next.customerName,
             }
           : null,
         pricingMode: r.pricingMode,
@@ -347,6 +353,8 @@ export type ActiveWalkin = {
  * otherwise invisible anywhere in the app once started.
  */
 export async function listActiveWalkins(ctx: ActiveContext, branchId: string): Promise<ActiveWalkin[]> {
+  // Close forgotten open-tabs first so this list (and the alarm poll) never shows them.
+  await sweepOverdueWalkinsForTenant(ctx.tenant.id)
   const rows = await withUser(ctx.user.id, (tx) =>
     tx
       .select({
@@ -513,22 +521,25 @@ export async function startWalkinCore(
   // here with a clear reason instead of surfacing as a raw 23P01 later.
   if (input.mode === 'open_tab') {
     const [futureSlot] = await tx
-      .select({ startsAt: bookingSlots.startsAt })
+      .select({ startsAt: bookingSlots.startsAt, eventTitle: events.title })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           eq(bookingSlots.resourceId, resource.id),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, startAt),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
       .limit(1)
     if (futureSlot) {
       throw new BookingError(
-        'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
+        futureSlot.eventTitle
+          ? `This station is held for the event “${futureSlot.eventTitle}” later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.`
+          : 'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
       )
     }
   }
@@ -1373,22 +1384,25 @@ export async function reopenWalkinCore(
 
   if (walkin.billingMode === 'open_tab') {
     const [futureSlot] = await tx
-      .select({ startsAt: bookingSlots.startsAt })
+      .select({ startsAt: bookingSlots.startsAt, eventTitle: events.title })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           eq(bookingSlots.resourceId, walkin.resourceId),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, walkin.startsAt),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
       .limit(1)
     if (futureSlot) {
       throw new BookingError(
-        'This station has a booking scheduled later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.',
+        futureSlot.eventTitle
+          ? `This station is held for the event “${futureSlot.eventTitle}” later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.`
+          : 'This station has a booking scheduled later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.',
       )
     }
   }

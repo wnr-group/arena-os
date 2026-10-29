@@ -28,11 +28,11 @@ type Role = (typeof ROLES)[number]
 async function main() {
   loadEnv()
   const inv = await import('../lib/inventory/service')
-  const { deductStockForOrders } = await import('../lib/inventory/deduct')
+  const { deductStockForOrders, restoreStockForOrders } = await import('../lib/inventory/deduct')
   const data = await import('../lib/inventory/data')
   const { buildFoodCostRows } = await import('../lib/inventory/rules')
   const booking = await import('../lib/booking/service')
-  const { createOrderCore } = await import('../lib/orders/service')
+  const { createOrderCore, editOrderItemQuantityCore, removeOrderItemCore } = await import('../lib/orders/service')
   const { issueInvoiceForBooking } = await import('../lib/billing/invoice')
   const rep = await import('../lib/reports/restaurant')
   const { todayInZone } = await import('../lib/booking/time')
@@ -133,7 +133,7 @@ async function main() {
   const A = await makeTenant('testfoodcosta')
   const B = await makeTenant('testfoodcostb')
   const ids = [A.tenantId, B.tenantId]
-  for (const tbl of ['modifier_option_ingredients', 'menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log']) {
+  for (const tbl of ['order_item_stock_usage', 'modifier_option_ingredients', 'menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log']) {
     await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
   }
 
@@ -231,18 +231,120 @@ async function main() {
   check('report: dough 0.9 kg × 60 = 54, lemon 3 × 5 = 15', near(ing('Dough')?.cost ?? null, 54) && near(ing('Lemon')?.cost ?? null, 15))
   check('report: cost of ingredients used = 264 + 54 + 15 = 333', near(r.foodCost.cogs, 333))
   check('report: every ingredient is costed', r.foodCost.uncosted === 0)
-  check('report: paid food revenue is the Food & Memberships figure', r.foodCost.foodRevenue > 0)
-  check('report: food cost % = cost ÷ paid food revenue', near(r.foodCost.pct, (333 / r.foodCost.foodRevenue) * 100, 0.02))
+  check('report: food revenue (ex-GST basis) is positive', r.foodCost.foodRevenue > 0)
+  check('report: food cost % = cost ÷ food revenue', near(r.foodCost.pct, (333 / r.foodCost.foodRevenue) * 100, 0.02))
   check('report: dishes with recipes are listed with their %', r.foodCost.dishes.length === 1 && r.foodCost.dishes[0].name === 'Pizza' && near(r.foodCost.dishes[0].pct, 32.67))
   await as(A, 'manager', (tx) => inv.updateStockItemCore(tx, act(A), dough.id, item(dough.id, null)))
   const r2 = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
-  check('an ingredient with no cost is flagged, and the total is a floor', r2.foodCost.uncosted === 1 && near(r2.foodCost.cogs, 279) && r2.foodCost.dishes[0].complete === false)
+  check('clearing a cost later does NOT rewrite past usage (priced at sale time): still 333, nothing uncosted', r2.foodCost.uncosted === 0 && near(r2.foodCost.cogs, 333))
+  check('...while the dish panel (current costs) now shows the dish as incomplete', r2.foodCost.dishes[0].complete === false)
+  await as(A, 'manager', (tx) => inv.updateStockItemCore(tx, act(A), cheese.id, { name: 'Cheese', unit: 'kg', reorderLevel: 0, active: true, unitCost: 900 }))
+  const r3 = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
+  check('raising a cost to 900 later leaves the past cheese cost at 264', near(r3.foodCost.ingredients.find((i) => i.name === 'Cheese')?.cost ?? null, 264) && near(r3.foodCost.cogs, 333))
+  await as(A, 'manager', (tx) => inv.updateStockItemCore(tx, act(A), cheese.id, { name: 'Cheese', unit: 'kg', reorderLevel: 0, active: true, unitCost: 400 }))
   const y = await rep.getRestaurantReport(cx(A), { range: { start: '2026-01-01', end: '2026-01-02' } })
   check('a range with no sales shows no ingredients and no %', y.foodCost.ingredients.length === 0 && y.foodCost.pct === null && y.foodCost.cogs === 0)
   const rb = await rep.getRestaurantReport(cx(B), { range: { start: today, end: today } })
   check("another tenant's report doesn't include A's ingredients", rb.foodCost.ingredients.length === 0)
 
-  for (const tbl of ['modifier_option_ingredients', 'menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log']) {
+
+  // ── 6. stock restore, recipe snapshot, tax basis, no-recipe short-circuit ──
+  console.log('\n── restore / snapshot ──')
+  const rice = await as(A, 'manager', (tx) => inv.createStockItemCore(tx, act(A), { branchId: A.branchId, name: 'Rice', unit: 'kg', reorderLevel: 0, openingQuantity: 100, unitCost: 10 }))
+  await as(A, 'manager', (tx) => inv.setRecipeCore(tx, act(A), A.menu.Salad, [{ stockItemId: rice.id, quantity: 1.5 }]))
+  const consumed = async () => 100 - (await qty(rice.id))
+  const saleR = await sell(A, 3, [{ name: 'Salad', qty: 2 }])
+  await billAndPay(A, saleR.bookingId)
+  check('2 x 1.5 = 3.0 deducted at billing', near(await consumed(), 3, 0.0005))
+  const voidInvoice = async () => {
+    await q(`update invoices set status='void' where booking_id=$1`, [saleR.bookingId])
+    await q(`update orders set status='open' where id=$1`, [saleR.orderId])
+  }
+  const line1 = (await q('select id from order_items where order_id=$1', [saleR.orderId]))[0].id as string
+  // a second line is added later and billed -> only the difference is deducted
+  await voidInvoice()
+  const line2 = (await q(
+    `insert into order_items (tenant_id,order_id,menu_item_id,item_name,unit_price,qty,line_total)
+     select tenant_id,order_id,menu_item_id,item_name,unit_price,1,unit_price from order_items where id=$1 returning id`,
+    [line1],
+  ))[0].id as string
+  await as(A, 'cashier', (tx) => issueInvoiceForBooking(tx, { id: A.tenantId, timezone: TZ }, { bookingId: saleR.bookingId }))
+  check('the added line tops up only its own 1.5 (total 4.5)', near(await consumed(), 4.5, 0.0005))
+  // bill correction: void the invoice, then fix the order
+  await voidInvoice()
+  const rm = await as(A, 'cashier', (tx) => removeOrderItemCore(tx, act(A, 'cashier'), { orderItemId: line2 }))
+  check('removing the added line gives its 1.5 back (3.0)', rm.removed && near(await consumed(), 3, 0.0005))
+  await as(A, 'cashier', (tx) => editOrderItemQuantityCore(tx, act(A, 'cashier'), { orderItemId: line1, newQty: 1 }))
+  check('cutting line 1 from 2 to 1 gives 1.5 back: ends at 1.5 consumed', near(await consumed(), 1.5, 0.0005))
+  const noop = await as(A, 'cashier', (tx) => restoreStockForOrders(tx, A.tenantId, [saleR.orderId]))
+  check('restoring again is a no-op', noop.movements === 0 && near(await consumed(), 1.5, 0.0005))
+
+  // voiding a line (void/comp flow) restores too; a comp does not
+  const saleV = await sell(A, 0, [{ name: 'Salad', qty: 2 }])
+  await billAndPay(A, saleV.bookingId)
+  const afterV = await consumed()
+  await q(`update invoices set status='void' where booking_id=$1`, [saleV.bookingId])
+  await q(`update orders set status='open' where id=$1`, [saleV.orderId])
+  await q(`update order_items set void_status='comped' where order_id=$1`, [saleV.orderId])
+  await as(A, 'cashier', (tx) => restoreStockForOrders(tx, A.tenantId, [saleV.orderId]))
+  check('a comped plate was cooked: nothing restored', near(await consumed(), afterV, 0.0005))
+  await q(`update order_items set void_status='voided' where order_id=$1`, [saleV.orderId])
+  await as(A, 'cashier', (tx) => restoreStockForOrders(tx, A.tenantId, [saleV.orderId]))
+  check('a voided line restores its 3.0', near(await consumed(), afterV - 3, 0.0005))
+
+  // an open, never-billed order has nothing deducted: restore must not invent a deduction
+  const saleU = await sell(A, 1, [{ name: 'Salad', qty: 2 }])
+  const beforeU = await consumed()
+  await as(A, 'cashier', (tx) => restoreStockForOrders(tx, A.tenantId, [saleU.orderId]))
+  check('restore never deducts for an unbilled order', near(await consumed(), beforeU, 0.0005))
+
+  // recipe raised after the sale: already-sold portions keep the snapshot
+  await as(A, 'manager', (tx) => inv.setRecipeCore(tx, act(A), A.menu.Salad, [{ stockItemId: rice.id, quantity: 3 }]))
+  const beforeRaise = await consumed()
+  await q(`update invoices set status='void' where booking_id=$1`, [saleR.bookingId])
+  await q(`update orders set status='open' where id=$1`, [saleR.orderId])
+  await as(A, 'cashier', (tx) => issueInvoiceForBooking(tx, { id: A.tenantId, timezone: TZ }, { bookingId: saleR.bookingId }))
+  check('raising the recipe 1.5 -> 3 does not charge the extra to already-sold portions', near(await consumed(), beforeRaise, 0.0005))
+  await billAndPay(A, saleU.bookingId)
+  check('...a line billed AFTER the change uses the new recipe (2 x 3 = 6)', near(await consumed(), beforeRaise + 6, 0.0005))
+
+  // cost snapshot at sale time
+  await as(A, 'manager', (tx) => inv.updateStockItemCore(tx, act(A), rice.id, { name: 'Rice', unit: 'kg', reorderLevel: 0, active: true, unitCost: 99 }))
+  const rr = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
+  const riceRow = rr.foodCost.ingredients.find((i) => i.name === 'Rice')
+  const riceUsed = riceRow?.used ?? 0
+  check('rice priced at its sale-time cost (10), not today\'s 99', !!riceRow && near(riceRow.cost, riceUsed * 10, 0.02))
+  const lastMove = (await q(`select unit_cost from stock_movements where stock_item_id=$1 and delta > 0 and source_type='order' limit 1`, [rice.id]))[0]
+  check('a restore movement carries the order\'s average deducted cost', Number(lastMove?.unit_cost) === 10)
+
+  // tax basis: ingredient cost has no GST, so revenue is compared ex-GST
+  await q(`update invoice_items set tax_rate = 5 where invoice_id in (select id from invoices where booking_id=$1 and status <> 'void')`, [saleU.bookingId])
+  const sales = await (await import('../lib/reports/sales')).getSalesReport(cx(A), { range: { start: today, end: today } })
+  const saladPaid = Number((await q(`select total from invoices where booking_id=$1 and status <> 'void'`, [saleU.bookingId]))[0].total)
+  check('food revenue ex-GST is below the GST-inclusive figure', sales.totals.foodNetRevenue < sales.totals.foodGrossRevenue)
+  check('...by exactly the tax inside the 5% lines (paid x 0.05 / 1.05)', near(sales.totals.foodGrossRevenue - sales.totals.foodNetRevenue, saladPaid * 0.05 / 1.05, 0.05))
+  const rt = await rep.getRestaurantReport(cx(A), { range: { start: today, end: today } })
+  check('food cost % divides cost by the ex-GST revenue', near(rt.foodCost.pct, (rt.foodCost.cogs / sales.totals.foodNetRevenue) * 100, 0.02) && rt.foodCost.foodRevenue === sales.totals.foodNetRevenue)
+
+  // a tenant with no recipes skips the deduct work (no lock taken, no snapshot rows)
+  console.log('\n── no recipes: short-circuit ──')
+  const saleB = await sell(B, 0, [{ name: 'Pizza', qty: 1 }])
+  const holder = await ownerPool.connect()
+  try {
+    await holder.query('begin')
+    await holder.query('select id from orders where id=$1 for update', [saleB.orderId])
+    const raced = await Promise.race([
+      as(B, 'cashier', (tx) => deductStockForOrders(tx, B.tenantId, [saleB.orderId])).then((r) => r.movements),
+      new Promise<string>((res) => setTimeout(() => res('blocked'), 4000)),
+    ])
+    check('a tenant with no recipes returns without waiting on the order lock', raced === 0)
+  } finally {
+    await holder.query('rollback')
+    holder.release()
+  }
+  check('...and writes no usage snapshots', (await q('select 1 from order_item_stock_usage where tenant_id=$1', [B.tenantId])).length === 0)
+
+  for (const tbl of ['order_item_stock_usage', 'modifier_option_ingredients', 'menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log']) {
     await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
   }
   await q('delete from bookings where tenant_id = any($1)', [ids])

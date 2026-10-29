@@ -82,6 +82,9 @@ export type FoodSalesRow = {
   quantity: number
   /** Money actually captured against this item. See the note above. */
   grossRevenue: number
+  /** The same money with GST taken out (each line at its own rate) - the basis
+   *  food cost % compares against, since ingredient costs carry no GST. */
+  netRevenue: number
   /** Distinct invoices this item appeared on. */
   invoices: number
 }
@@ -104,6 +107,7 @@ export type SalesReport = {
   totals: {
     foodQuantity: number
     foodGrossRevenue: number
+    foodNetRevenue: number
     membershipsSold: number
     membershipRevenue: number
   }
@@ -158,6 +162,7 @@ export async function getSalesReport(
       select ii.description                                                  as item_name,
              sum(ii.qty)::float                                              as quantity,
              sum(n.net_amount * ${lineOwed} / nullif(n.all_lines, 0))::float as gross_revenue,
+             sum(n.net_amount * ${lineOwed} / (1 + ii.tax_rate / 100) / nullif(n.all_lines, 0))::float as net_revenue,
              count(distinct ii.invoice_id)::int                             as invoices
         from inv_net n
         join public.invoice_items ii
@@ -241,6 +246,7 @@ export async function getSalesReport(
       itemName: r.item_name,
       quantity: round2(Number(r.quantity)),
       grossRevenue: round2(Number(r.gross_revenue)),
+      netRevenue: round2(Number(r.net_revenue)),
       invoices: Number(r.invoices),
     }))
 
@@ -258,6 +264,7 @@ export async function getSalesReport(
       totals: {
         foodQuantity: round2(foodRows.reduce((n, r) => n + r.quantity, 0)),
         foodGrossRevenue: round2(foodRows.reduce((n, r) => n + r.grossRevenue, 0)),
+        foodNetRevenue: round2(foodRows.reduce((n, r) => n + r.netRevenue, 0)),
         membershipsSold: membershipRows.reduce((n, r) => n + r.sold, 0),
         membershipRevenue: round2(membershipRows.reduce((n, r) => n + r.revenue, 0)),
       },
@@ -279,7 +286,7 @@ export const MEMBERSHIP_SALES_CSV_COLUMNS: readonly CsvColumn<MembershipSalesRow
   { header: 'Revenue', value: (r) => r.revenue.toFixed(2) },
 ]
 
-type FoodRow = { item_name: string; quantity: number | string; gross_revenue: number | string; invoices: number | string }
+type FoodRow = { item_name: string; quantity: number | string; gross_revenue: number | string; net_revenue: number | string; invoices: number | string }
 type MembershipRow = {
   plan_id: string
   plan_name: string

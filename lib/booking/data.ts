@@ -12,6 +12,7 @@ import {
   workingHours,
   bookings,
   bookingSlots,
+  events,
   taxRates,
   floorSections,
   memberships,
@@ -82,6 +83,8 @@ export function listResources(ctx: ActiveContext, branchId: string) {
         typeImageUrl: resourceTypes.imageUrl,
         typeDescription: resourceTypes.description,
         qrToken: resources.qrToken,
+        minSeats: resources.minSeats,
+        maxSeats: resources.maxSeats,
       })
       .from(resources)
       .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
@@ -501,5 +504,40 @@ export async function listRangeBookings(
       pageSize,
       summary: { bookings: total, byStatus },
     }
+  })
+}
+
+/**
+ * Event blocks holding stations in a window — the event counterpart of the
+ * booking lists above. An event's booking_slots rows have booking_id NULL, so
+ * every booking-joined list drops them; without this a station under an event
+ * looks idle to the people who run the floor. Active slots only: a cancelled
+ * or finished event releases its stations. One row per event.
+ */
+export async function listEventBlocks(ctx: ActiveContext, branchId: string, startUtc: Date, endUtc: Date) {
+  return withUser(ctx.user.id, async (tx) => {
+    const rows = await tx
+      .select({
+        eventId: events.id,
+        title: events.title,
+        status: events.status,
+        firstStartsAt: sql<Date>`min(${bookingSlots.startsAt})`.mapWith(bookingSlots.startsAt),
+        lastEndsAt: sql<Date>`max(${bookingSlots.endsAt})`.mapWith(bookingSlots.endsAt),
+        resourceNames: sql<string[]>`array_agg(distinct ${bookingSlots.resourceName} order by ${bookingSlots.resourceName})`,
+      })
+      .from(bookingSlots)
+      .innerJoin(events, eq(events.id, bookingSlots.eventId))
+      .where(
+        and(
+          eq(bookingSlots.tenantId, ctx.tenant.id),
+          eq(events.branchId, branchId),
+          eq(bookingSlots.active, true),
+          lt(bookingSlots.startsAt, endUtc),
+          or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, startUtc)),
+        ),
+      )
+      .groupBy(events.id, events.title, events.status)
+      .orderBy(asc(sql`min(${bookingSlots.startsAt})`))
+    return rows
   })
 }

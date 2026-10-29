@@ -71,6 +71,7 @@ export async function loadTipsByRecipient(
   tx: Db,
   tenantId: string,
   range: { start: string; end: string },
+  branchId?: string | null,
 ): Promise<TipEntry[]> {
   const res = await tx.execute(sql`
     select coalesce(p.tip_recipient_membership_id, bk.server_id)::text as recipient,
@@ -86,6 +87,7 @@ export async function loadTipsByRecipient(
        and i.status <> 'void'
        and ((p.created_at at time zone coalesce(br.timezone, t.timezone))::date)
            between ${range.start}::date and ${range.end}::date
+       ${branchId ? sql`and i.branch_id = ${branchId}` : sql``}
      group by 1
   `)
   return (res.rows as { recipient: string | null; tips: number }[]).map((r) => ({

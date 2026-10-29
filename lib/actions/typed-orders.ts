@@ -62,7 +62,7 @@ const createInput = z.object({
       z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1),
-        specialInstructions: z.string().trim().optional(),
+        specialInstructions: z.string().trim().max(300).optional(),
         modifierOptionIds: z.array(z.string().uuid()).optional(),
         seatNo: z.coerce.number().int().min(1).max(MAX_SEAT_NO).optional(),
       }),

@@ -20,6 +20,22 @@
  *   - the new window must sit on the venue's time step and inside working hours,
  *     inside the advance-booking window, and not in the past
  *
+ * Money rules:
+ *   - Re-pricing: the slot is priced at TODAY's rates for the NEW window, even
+ *     for a same-length move. The dialog's quote says so before staff confirm.
+ *   - Discount: bookings.discount is a fixed rupee amount staff keyed in. It is
+ *     carried over unchanged, but never above the new subtotal: if the new window
+ *     is cheaper than the discount, the stored discount is reduced to the
+ *     subtotal (total 0) and the plan reports discountClamped. Percent promo
+ *     codes and loyalty redemptions are NOT held on the booking - they are
+ *     evaluated against the bill when it is raised, so they apply to the new
+ *     price automatically and nothing needs recomputing here.
+ *   - Money already collected (online deposit with a paid intent, or an M26/M30
+ *     cash/UPI advance in advance_payments): if the new total drops below it, the
+ *     booking is flagged depositReviewRequired - the same "go refund this
+ *     customer" flag cancel raises. Nothing is refunded automatically.
+ *   - The customer is texted the old and new time after the change commits.
+ *
  * planReschedule is read-only and also backs the live quote the dialog shows;
  * rescheduleBookingCore is the same plan, locked, then applied and audited.
  */
@@ -29,12 +45,13 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { findLiveBilling, writeAudit } from '@/lib/billing/invoice'
+import { advancePaidTotal } from './advance-ledger'
 import { round2 } from '@/lib/billing/pricing'
 import { BookingError } from './booking-error'
 import { rescheduleSlotAddons } from './addons'
 import { assertWithinAdvanceWindow, priceBookingSlots, type PricedBookingSlot } from './service'
 import { getBookingSettingsCore } from './settings'
-import { assertSlotsOnGrid } from './slot-grid'
+import { GridRefusedError, slotsGridError } from './slot-grid'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -47,9 +64,14 @@ export type RescheduleInput = {
   /** The slot start the caller saw. A mismatch means someone else changed the booking meanwhile. */
   expectedStartsAt: Date
   reason?: string
+  /** Manager override of the slot-grid rule. Callers must already be role-gated
+   *  (rescheduling is manager-only); the refusal is audited with `reason`. */
+  allowOffGrid?: boolean
 }
 
 export type ReschedulePlan = {
+  /** The grid refusal that was overridden, or null when the window is on the grid. */
+  gridOverride: string | null
   bookingId: string
   bookingNumber: string
   status: 'confirmed' | 'checked_in'
@@ -64,6 +86,10 @@ export type ReschedulePlan = {
   oldTotal: number
   newTotal: number
   newSubtotal: number
+  /** The discount that will be stored: the old one, capped at the new subtotal. */
+  newDiscount: number
+  /** The old fixed discount exceeded the new price and was reduced. */
+  discountClamped: boolean
   discount: number
   /** The deposit already paid online / held against this booking. */
   deposit: number
@@ -113,7 +139,7 @@ export async function planReschedule(
   }
   if (booking.backdated) throw new BookingError('A late-entered booking cannot be rescheduled.')
   if (booking.reservedFor || booking.tableResourceId) {
-    throw new BookingError('A table reservation is rescheduled from the Reservations page.')
+    throw new BookingError('A table reservation can’t be rescheduled here - cancel it and book a new one.')
   }
   if (await findLiveBilling(tx, ctx.tenantId, booking.id)) {
     throw new BookingError('This booking has already been billed - its time is frozen with the bill.')
@@ -168,7 +194,8 @@ export async function planReschedule(
   }
 
   const window = [{ startsAt: input.newStartsAt.toISOString(), endsAt: input.newEndsAt.toISOString() }]
-  await assertSlotsOnGrid(tx, ctx, booking.branchId, window, { endOnly })
+  const gridError = await slotsGridError(tx, ctx, booking.branchId, window, { endOnly })
+  if (gridError && !input.allowOffGrid) throw new GridRefusedError(gridError, true)
   if (!endOnly) {
     await assertWithinAdvanceWindow(tx, ctx, [{ startsAt: input.newStartsAt, endsAt: input.newEndsAt }])
   }
@@ -186,31 +213,44 @@ export async function planReschedule(
   })
   const newSubtotal = round2(Number(priced.slotTotal) + addonTotal)
   const discount = Number(booking.discount)
-  const newTotal = round2(Math.max(0, newSubtotal - discount))
+  const newDiscount = Math.min(discount, newSubtotal)
+  const discountClamped = discount - newDiscount > 0.004
+  const newTotal = round2(Math.max(0, newSubtotal - newDiscount))
   const oldTotal = Number(booking.total)
   const deposit = Number(booking.deposit)
 
-  // Money already collected online that the new, lower total no longer needs: the
-  // same "go refund this customer" flag cancel raises. A deposit counts only if a
-  // paid intent exists. Over-flagging is safe; under-flagging is not.
+  // Money already collected that the new, lower total no longer needs: the same
+  // "go refund this customer" flag cancel raises. An online deposit counts only if
+  // a paid intent exists; an M26/M30 advance counts from the ledger (a booking
+  // with an invoice is refused above, so every tender here is unconsumed).
+  // Over-flagging is safe; under-flagging is not.
+  // The two can both be collected on one booking, so compare their SUM with the
+  // new total, not each on its own: a ₹300 advance plus a ₹300 deposit against a
+  // ₹500 total is ₹100 over, though neither exceeds it alone.
   let needsRefundReview = false
-  if (newTotal < oldTotal - 0.004 && deposit > newTotal + 0.004) {
-    const [paid] = await tx
-      .select({ id: paymentIntents.id })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, ctx.tenantId),
-          eq(paymentIntents.bookingId, booking.id),
-          eq(paymentIntents.purpose, 'booking_deposit'),
-          eq(paymentIntents.status, 'paid'),
-        ),
-      )
-      .limit(1)
-    needsRefundReview = !!paid
+  if (newTotal < oldTotal - 0.004) {
+    const advance = await advancePaidTotal(tx, ctx.tenantId, booking.id)
+    if (advance > newTotal + 0.004) needsRefundReview = true
+    // Only a PAID deposit intent counts as collected (below).
+    if (!needsRefundReview && deposit > 0.004 && advance + deposit > newTotal + 0.004) {
+      const [paidDeposit] = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, ctx.tenantId),
+            eq(paymentIntents.bookingId, booking.id),
+            eq(paymentIntents.purpose, 'booking_deposit'),
+            eq(paymentIntents.status, 'paid'),
+          ),
+        )
+        .limit(1)
+      if (paidDeposit) needsRefundReview = true
+    }
   }
 
   return {
+    gridOverride: gridError,
     bookingId: booking.id,
     bookingNumber: booking.bookingNumber,
     status: booking.status,
@@ -225,6 +265,8 @@ export async function planReschedule(
     oldTotal,
     newTotal,
     newSubtotal,
+    newDiscount,
+    discountClamped,
     discount,
     deposit,
     priced,
@@ -239,6 +281,7 @@ export async function rescheduleBookingCore(
   ctx: Ctx & { membershipId: string | null },
   input: RescheduleInput,
 ): Promise<ReschedulePlan> {
+  if (!input.reason?.trim()) throw new BookingError('Give a reason for the change.')
   const plan = await planReschedule(tx, ctx, input, { lock: true })
   const p = plan.priced
 
@@ -267,6 +310,7 @@ export async function rescheduleBookingCore(
     subtotal: plan.newSubtotal.toFixed(2),
     total: plan.newTotal.toFixed(2),
   }
+  if (plan.discountClamped) set.discount = plan.newDiscount.toFixed(2)
   if (plan.needsRefundReview) set.depositReviewRequired = true
   await tx.update(bookings).set(set).where(and(eq(bookings.id, plan.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
@@ -279,13 +323,17 @@ export async function rescheduleBookingCore(
         startsAt: plan.oldStartsAt.toISOString(),
         endsAt: plan.oldEndsAt.toISOString(),
         total: plan.oldTotal.toFixed(2),
+        discount: plan.discount.toFixed(2),
       },
       after: {
         startsAt: plan.newStartsAt.toISOString(),
         endsAt: plan.newEndsAt.toISOString(),
         total: plan.newTotal.toFixed(2),
-        reason: input.reason?.trim() || null,
+        discount: plan.newDiscount.toFixed(2),
+        reason: input.reason.trim(),
+        ...(plan.gridOverride ? { gridOverride: plan.gridOverride } : {}),
         refundReviewFlagged: plan.needsRefundReview,
+        discountClamped: plan.discountClamped,
       },
     })
   }

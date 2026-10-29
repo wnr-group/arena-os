@@ -9,6 +9,7 @@ import { getBookingSettings } from '@/lib/booking/settings-server'
 import { WorkingHoursForm } from '@/components/settings/WorkingHoursForm'
 import { BookingWindowForm } from '@/components/settings/BookingWindowForm'
 import { SlotStepForm } from '@/components/settings/SlotStepForm'
+import { WalkinAutoCloseForm } from '@/components/settings/WalkinAutoCloseForm'
 
 export default async function HoursSettingsPage() {
   const ctx = await getActiveContext()
@@ -40,15 +41,26 @@ export default async function HoursSettingsPage() {
   })
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8">
-      <h1 className="text-2xl font-semibold">Working hours</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        When <strong>{branch.name}</strong> is open. Availability for bookings is
-        computed from these ({ctx.tenant.timezone}).
-      </p>
-      <WorkingHoursForm branchId={branch.id} initialDays={days} />
-      <BookingWindowForm initialDays={bookingSettings.maxAdvanceDays} />
-      <SlotStepForm initialMinutes={bookingSettings.slotStepMinutes} />
+    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+      <header>
+        <h1 className="text-2xl font-semibold tracking-tight">Working hours &amp; booking rules</h1>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          When <strong className="font-semibold text-foreground">{branch.name}</strong> is open and how bookings
+          behave. Times are in {ctx.tenant.timezone}; availability is calculated from your opening hours.
+        </p>
+      </header>
+
+      <div className="mt-6 space-y-6">
+        <WorkingHoursForm branchId={branch.id} initialDays={days} />
+        <BookingWindowForm initialDays={bookingSettings.maxAdvanceDays} />
+        <SlotStepForm initialMinutes={bookingSettings.slotStepMinutes} />
+        {ctx.tenant.industry !== 'restaurant' && (
+          <WalkinAutoCloseForm
+            initialMinutes={bookingSettings.walkinAutoCloseMinutes}
+            initialAtClosing={bookingSettings.walkinAutoCloseAtClosing}
+          />
+        )}
+      </div>
     </div>
   )
 }

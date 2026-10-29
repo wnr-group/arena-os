@@ -216,6 +216,9 @@ export const resources = pgTable(
     imageUrl: text('image_url'),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // 0173: party sizes a table takes; NULL = no limit on that side.
+    minSeats: integer('min_seats'),
+    maxSeats: integer('max_seats'),
     // M20 (0152): the floor section this table sits in, and a server assigned to
     // the table itself (overrides the section's).
     sectionId: uuid('section_id').references((): AnyPgColumn => floorSections.id, { onDelete: 'set null' }),
@@ -440,6 +443,9 @@ export const bookings = pgTable(
     // session already happened (backdated entry). Explicit flag, never inferred
     // from timestamps. False for every booking created any other way.
     backdated: boolean('backdated').notNull().default(false),
+    // 0173: client-supplied key that makes a double-submitted public reservation
+    // resolve to the first booking. Unique per tenant (partial index in the DB).
+    idempotencyKey: text('idempotency_key'),
   },
   (t) => [
     unique('bookings_tenant_number_key').on(t.tenantId, t.bookingNumber),
@@ -3196,6 +3202,10 @@ export const bookingSettings = pgTable('booking_settings', {
   maxAdvanceDays: integer('max_advance_days').notNull().default(7),
   /** Grid step for bookable start times / durations, minutes (0162). */
   slotStepMinutes: integer('slot_step_minutes').notNull().default(30),
+  /** Auto-close an open-tab walk-in after this many minutes (0167). Null = off. */
+  walkinAutoCloseMinutes: integer('walkin_auto_close_minutes'),
+  /** Also auto-close an open-tab walk-in at the branch's closing time (0168). */
+  walkinAutoCloseAtClosing: boolean('walkin_auto_close_at_closing').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })
@@ -3310,10 +3320,27 @@ export const stockMovements = pgTable(
     /** opening | purchase | adjustment | wastage | order */
     sourceType: text('source_type').notNull().default('adjustment'),
     sourceId: uuid('source_id'),
+    /** 0174: the item's unit cost when an 'order' movement was written (null = not costed / pre-0174). */
+    unitCost: numeric('unit_cost', { precision: 14, scale: 4 }),
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('idx_stock_movements_item').on(t.tenantId, t.stockItemId, t.createdAt)],
+)
+
+// 0174: per order line, what one portion consumed when it was deducted (frozen).
+export const orderItemStockUsage = pgTable(
+  'order_item_stock_usage',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    orderItemId: uuid('order_item_id').notNull(),
+    stockItemId: uuid('stock_item_id').notNull(),
+    perPortion: numeric('per_portion', { precision: 14, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orderItemId, t.stockItemId] })],
 )
 
 // M10 (0154): optional recipe — one portion of a menu item consumes `quantity` of a stock item.
@@ -3533,6 +3560,26 @@ export const eventSeries = pgTable(
   ],
 )
 
+// ── skipped recurring occurrences (migration 0164) ──────────────────────────
+// Written by lib/events/recurring.ts when an occurrence's stations were already
+// booked. One row per (series, period); the manager resolves it (create the
+// occurrence anyway, or dismiss) from the Events settings page.
+export const eventSeriesSkips = pgTable(
+  'event_series_skips',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Tenant-composite FK to event_series(tenant_id, id) lives in 0164.
+    seriesId: uuid('series_id').notNull(),
+    occurrencePeriod: date('occurrence_period').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('event_series_skips_series_period_key').on(t.seriesId, t.occurrencePeriod)],
+)
+
 // ── event matches (migration 0134, M15 #6) ──────────────────────────────────
 // The bracket ENGINE is pure TypeScript in lib/events/bracket.ts; this is only
 // where its output lives. Participants are event_registrations ids — the same
@@ -3574,6 +3621,8 @@ export const eventMatches = pgTable(
     scoreA: integer('score_a'),
     scoreB: integer('score_b'),
     winner: uuid('winner'),
+    /** 'played' or 'forfeit' (0178). A forfeit is recorded 0-0 with the other side winning. */
+    resultKind: text('result_kind').notNull().default('played'),
     /**
      * The topology, written once at generation. Advancement FOLLOWS these
      * pointers rather than recomputing bracket maths at result time, so a
@@ -3729,6 +3778,14 @@ export const eventRegistrations = pgTable(
     paymentHoldExpiresAt: timestamp('payment_hold_expires_at', { withTimezone: true }),
     /** Money arrived, place could not be honoured. Twin of bookings.depositReviewRequired. */
     refundRequired: boolean('refund_required').notNull().default(false),
+    /** What is owed back while refundRequired (0177). Kept in step by a trigger. */
+    refundDueAmount: numeric('refund_due_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Total already refunded, set by mark_event_registration_refunded() (0177). */
+    refundedAmount: numeric('refunded_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    refundReference: text('refund_reference'),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    /** What the customer chose to show on the PUBLIC bracket (0178). Null = initials only. */
+    publicDisplayName: text('public_display_name'),
     registeredAt: timestamp('registered_at', { withTimezone: true }),
     waitlistedAt: timestamp('waitlisted_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),

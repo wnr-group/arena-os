@@ -253,7 +253,22 @@ export async function listCheckedInParticipants(
   ctx: ActiveContext,
   eventId: string,
 ): Promise<CheckedInParticipant[]> {
-  const rows = await withUser(ctx.user.id, (tx) =>
+  return withUser(ctx.user.id, (tx) => listCheckedInParticipantsTx(tx, ctx, eventId))
+}
+
+/**
+ * The same list on a transaction the caller already holds. Bracket generation
+ * runs inside one transaction and used to call the connection-opening variant
+ * above, taking a SECOND pooled connection while holding the first — a pool
+ * starvation hazard under load (every generator waiting on a connection that
+ * only another generator can free).
+ */
+export async function listCheckedInParticipantsTx(
+  tx: DB,
+  ctx: ActiveContext,
+  eventId: string,
+): Promise<CheckedInParticipant[]> {
+  const rows = await (
     tx
       .select({
         registrationId: eventRegistrations.id,
@@ -274,7 +289,7 @@ export async function listCheckedInParticipants(
           eq(eventRegistrations.status, 'checked_in'),
         ),
       )
-      .orderBy(asc(eventRegistrations.checkedInAt), asc(eventRegistrations.id)),
+      .orderBy(asc(eventRegistrations.checkedInAt), asc(eventRegistrations.id))
   )
 
   // Every checked_in row has a timestamp — both writers set it in the same

@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { DB } from '@/db'
 import { bookingSettings } from '@/db/schema'
 import { writeAudit } from '@/lib/billing/invoice'
-import { DEFAULT_MAX_ADVANCE_DAYS, DEFAULT_SLOT_STEP_MINUTES, isAdvanceWindowPreset, isSlotStepPreset } from './settings'
+import { DEFAULT_MAX_ADVANCE_DAYS, DEFAULT_SLOT_STEP_MINUTES, isAdvanceWindowPreset, isSlotStepPreset, isWalkinAutoClosePreset } from './settings'
 
 export class AdvanceWindowError extends Error {}
 
@@ -80,6 +80,47 @@ export async function applySlotStep(
     entityId: actor.tenantId,
     before: { slotStepMinutes: old },
     after: { slotStepMinutes: next },
+  })
+  return old
+}
+
+export class WalkinAutoCloseError extends Error {}
+
+export type WalkinAutoCloseValue = { minutes: number | null; atClosing: boolean }
+
+/**
+ * Save the walk-in auto-close rules — a max session length (preset minutes, or
+ * null for none) and/or closing time — and audit old → new. Manager-only at the
+ * caller and again by RLS. Only affects walk-ins closed from now on; nothing is
+ * closed here.
+ */
+export async function applyWalkinAutoClose(
+  tx: DB,
+  actor: { tenantId: string; membershipId: string },
+  next: WalkinAutoCloseValue,
+): Promise<WalkinAutoCloseValue> {
+  if (next.minutes !== null && !isWalkinAutoClosePreset(next.minutes)) {
+    throw new WalkinAutoCloseError('Choose one of the listed durations, or turn the time limit off.')
+  }
+  if (typeof next.atClosing !== 'boolean') throw new WalkinAutoCloseError('Invalid auto-close setting.')
+  const [row] = await tx
+    .select({ minutes: bookingSettings.walkinAutoCloseMinutes, atClosing: bookingSettings.walkinAutoCloseAtClosing })
+    .from(bookingSettings)
+    .where(eq(bookingSettings.tenantId, actor.tenantId))
+    .limit(1)
+  const old = { minutes: row?.minutes ?? null, atClosing: row?.atClosing ?? false }
+  if (old.minutes === next.minutes && old.atClosing === next.atClosing) return old
+  const values = { walkinAutoCloseMinutes: next.minutes, walkinAutoCloseAtClosing: next.atClosing }
+  await tx
+    .insert(bookingSettings)
+    .values({ tenantId: actor.tenantId, ...values, updatedBy: actor.membershipId })
+    .onConflictDoUpdate({ target: bookingSettings.tenantId, set: { ...values, updatedBy: actor.membershipId } })
+  await writeAudit(tx, actor, {
+    action: 'booking_settings.walkin_auto_close_changed',
+    entityType: 'booking_settings',
+    entityId: actor.tenantId,
+    before: { walkinAutoCloseMinutes: old.minutes, walkinAutoCloseAtClosing: old.atClosing },
+    after: { walkinAutoCloseMinutes: next.minutes, walkinAutoCloseAtClosing: next.atClosing },
   })
   return old
 }

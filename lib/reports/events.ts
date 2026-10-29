@@ -51,11 +51,11 @@ import { round2 } from '@/lib/billing/pricing'
  *
  * ── Money that may have to go back is reported SEPARATELY ───────────────────
  *
- * A registration cancelled after payment carries `refund_required` (0141) —
+ * Money owed back carries `refund_required` and `refund_due_amount` (0177) —
  * this codebase never auto-refunds. Folding it into revenue would overstate
  * what the venue kept; dropping it would hide money that was actually taken.
- * So it is counted in `refundDue` beside the revenue figure, and the page shows
- * it when it is non-zero.
+ * So `refundDue` sums what is still owed, beside the revenue figure, and falls
+ * as each refund is marked paid out (mark_event_registration_refunded).
  */
 
 /** Manager or owner, the same rule every other report in this module applies. */
@@ -156,9 +156,10 @@ export async function getEventReport(ctx: ActiveContext, range: DateRange): Prom
                    where er.payment_reference is not null
                      and er.status <> 'cancelled'
                  )                                                   as revenue,
-                 sum(er.paid_amount) filter (
-                   where er.payment_reference is not null
-                     and er.status = 'cancelled'
+                 -- Keyed off the flag, not the status: a second capture leaves
+                 -- the row registered, and a refunded row drops out (0177).
+                 sum(er.refund_due_amount) filter (
+                   where er.refund_required
                  )                                                   as refund_due
             from public.event_registrations er
            where er.tenant_id = ${ctx.tenant.id}

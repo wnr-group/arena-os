@@ -70,7 +70,8 @@ type Standing = {
   rank: number
 }
 
-const POLL_MS = 8000
+/** Poll rate when the page does not say otherwise. */
+const DEFAULT_POLL_MS = 8000
 
 const SIDE_LABEL: Record<Match['side'], string> = {
   winners: 'Winners bracket',
@@ -85,12 +86,15 @@ export function LiveBracket({
   matches,
   standings,
   isComplete,
+  pollMs = DEFAULT_POLL_MS,
   tv,
 }: {
   format: string | null
   matches: Match[]
   standings: Standing[]
   isComplete: boolean
+  /** Slower while the event is not running; the server also caches each snapshot. */
+  pollMs?: number
   tv: boolean
 }) {
   const router = useRouter()
@@ -112,7 +116,7 @@ export function LiveBracket({
       timer.current = setInterval(() => {
         router.refresh()
         setUpdatedAt(Date.now())
-      }, POLL_MS)
+      }, pollMs)
     }
 
     const onVisibility = () => {
@@ -132,7 +136,7 @@ export function LiveBracket({
       stop()
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [router, isComplete])
+  }, [router, isComplete, pollMs])
 
   const isTable = format === 'round_robin' || format === 'points'
 

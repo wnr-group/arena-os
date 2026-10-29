@@ -2,16 +2,17 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { Timer } from 'lucide-react'
 import { saveSlotStep } from '@/lib/actions/booking-settings'
 import { SLOT_STEP_PRESETS } from '@/lib/booking/settings'
+import { ChoiceChips, SaveBar, SettingsCard } from '@/components/settings/SettingsCard'
 
 /** A few start times from 8:00 at the given interval, e.g. "8:00, 8:20, 8:40, 9:00, ...". */
-function exampleTimes(step: number): string {
-  const times = [0, 1, 2, 3].map((i) => {
+function exampleTimes(step: number): string[] {
+  return [0, 1, 2, 3].map((i) => {
     const t = 8 * 60 + i * step
     return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
   })
-  return `${times.join(', ')}, ...`
 }
 
 /**
@@ -41,55 +42,42 @@ export function SlotStepForm({ initialMinutes }: { initialMinutes: number }) {
   }
 
   return (
-    <div className="mt-8 rounded-xl border border-border bg-card p-5 shadow-sm">
-      <h2 className="text-base font-semibold">Booking time interval</h2>
-      <p className="mt-0.5 text-sm text-muted-foreground">
-        How often a booking can start, for customers and staff. A smaller interval gives more choice but can leave small
-        gaps nobody can book. Existing bookings stay the same.
-      </p>
-      <fieldset className="mt-3" disabled={pending}>
-        <legend className="sr-only">Booking time interval</legend>
-        <div className="flex flex-wrap gap-2">
-          {SLOT_STEP_PRESETS.map((p) => (
-            <label
-              key={p.minutes}
-              className={`cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-                minutes === p.minutes
-                  ? 'border-primary bg-primary text-primary-foreground'
-                  : 'border-border bg-background hover:bg-muted'
-              }`}
-            >
-              <input
-                type="radio"
-                name="slot-step-minutes"
-                value={p.minutes}
-                checked={minutes === p.minutes}
-                onChange={() => {
-                  setMinutes(p.minutes)
-                  setSaved(false)
-                  setError(null)
-                }}
-                className="sr-only"
-              />
-              {p.label}
-            </label>
-          ))}
-        </div>
-      </fieldset>
-      <p className="mt-3 text-sm text-muted-foreground">
-        Example start times: <span className="font-medium text-foreground">{exampleTimes(minutes)}</span>
-      </p>
-      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          onClick={submit}
-          disabled={pending || minutes === savedMinutes}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-        >
-          {pending ? 'Saving…' : 'Save interval'}
-        </button>
-        {saved && !pending && <span className="text-sm text-muted-foreground">Saved.</span>}
+    <SettingsCard
+      icon={Timer}
+      title="Booking time interval"
+      description="How often a booking can start, for customers and staff. A smaller interval gives more choice but can leave small gaps nobody can book. Existing bookings stay the same."
+      footer={
+        <SaveBar
+          onSave={submit}
+          disabled={minutes === savedMinutes}
+          pending={pending}
+          saved={saved}
+          error={error}
+          label="Save interval"
+        />
+      }
+    >
+      <ChoiceChips
+        name="slot-step-minutes"
+        legend="Booking time interval"
+        options={SLOT_STEP_PRESETS.map((p) => ({ value: p.minutes, label: p.label }))}
+        value={minutes}
+        disabled={pending}
+        onChange={(v) => {
+          setMinutes(v)
+          setSaved(false)
+          setError(null)
+        }}
+      />
+      <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+        <span>Start times will look like</span>
+        {exampleTimes(minutes).map((t) => (
+          <span key={t} className="rounded-md bg-muted px-2 py-0.5 font-medium tabular-nums text-foreground">
+            {t}
+          </span>
+        ))}
+        <span>…</span>
       </div>
-    </div>
+    </SettingsCard>
   )
 }

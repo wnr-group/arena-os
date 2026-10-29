@@ -198,10 +198,11 @@ export async function sendTestPrint(printerId: string): Promise<Result> {
 export async function retryPrintJob(jobId: string): Promise<Result> {
   try {
     const ctx = await requireContext()
+    await requireEntitlement(ctx, MODULE)
     const rows = await withUser(ctx.user.id, (tx) =>
       tx
         .update(printJobs)
-        .set({ status: 'pending', error: null, sentAt: null, finishedAt: null })
+        .set({ status: 'pending', error: null, sentAt: null, finishedAt: null, attempts: 0 })
         .where(
           and(eq(printJobs.id, jobId), eq(printJobs.tenantId, ctx.tenant.id), inArray(printJobs.status, ['failed', 'sent', 'pending'])),
         )
@@ -218,6 +219,7 @@ export async function retryPrintJob(jobId: string): Promise<Result> {
 export async function cancelPrintJob(jobId: string): Promise<Result> {
   try {
     const ctx = await requireContext()
+    await requireEntitlement(ctx, MODULE)
     const rows = await withUser(ctx.user.id, (tx) =>
       tx
         .update(printJobs)
@@ -238,6 +240,7 @@ export async function cancelPrintJob(jobId: string): Promise<Result> {
 export async function printReceipt(invoiceId: string): Promise<Result & { queued?: boolean }> {
   try {
     const ctx = await requireContext()
+    await requireEntitlement(ctx, MODULE)
     const r = await printInvoice(ctx, invoiceId)
     if (r === 'no_printer') {
       return { error: 'No receipt printer is set up — use "Print / Save as PDF" instead.' }
@@ -252,6 +255,7 @@ export async function printReceipt(invoiceId: string): Promise<Result & { queued
 export async function reprintKitchenTicket(kotId: string): Promise<Result & { queued?: number }> {
   try {
     const ctx = await requireContext()
+    await requireEntitlement(ctx, MODULE)
     const n = await withUser(ctx.user.id, async (tx) => {
       const [k] = await tx
         .select({ orderId: kots.orderId })

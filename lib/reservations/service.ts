@@ -15,15 +15,22 @@ import type * as schema from '@/db/schema'
 import { auditLog, bookingSlots, bookings, resourceTypes, resources, workingHours } from '@/db/schema'
 import { BookingError, createBookingCore, type CreatedBooking } from '@/lib/booking/service'
 import { dayWindow, type DayHours } from '@/lib/booking/availability'
-import { todayInZone, weekdayInZone } from '@/lib/booking/time'
+import { formatTimeInZone, todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { getReservationSettingsCore } from './settings'
-import { assertNoUpcomingReservation } from './guard'
+import { guardTableSeating, lockTable } from './guard'
 import { resolveTableServer } from '@/lib/sections/resolve'
+import { normalizePhone } from '@/lib/customers/phone'
 import {
+  PUBLIC_MAX_OPEN_RESERVATIONS_PER_PHONE,
   RESERVATION_LIMITS,
   RESERVATION_SLOT_MINUTES,
   STAFF_MAX_PARTY_SIZE,
+  isOnSlotGrid,
+  tableFitsParty,
+  openSessionBlocksWindow,
+  openSessionOccupiedUntil,
   reservationEnd,
+  type OpenSession,
   type ReservationSettings,
 } from './rules'
 
@@ -51,6 +58,8 @@ export type CreateReservationInput = {
   customerPhone?: string
   customerEmail?: string
   notes?: string
+  /** Public double-submit guard — see bookings.idempotency_key (0173). */
+  idempotencyKey?: string
 }
 
 /** Load the settings and refuse unless reservations are on (and, for the
@@ -73,6 +82,8 @@ async function loadTable(tx: Db, tenantId: string, resourceId: string) {
       name: resources.name,
       branchId: resources.branchId,
       status: resources.status,
+      minSeats: resources.minSeats,
+      maxSeats: resources.maxSeats,
       hourlyRate: resourceTypes.hourlyRate,
     })
     .from(resources)
@@ -105,6 +116,25 @@ async function loadDayHours(tx: Db, tenantId: string, branchId: string, dateStr:
     )
     .limit(1)
   return row ?? DEFAULT_HOURS
+}
+
+/**
+ * Parties currently seated at any of `resourceIds`. Read through
+ * table_open_sessions() (migration 0172) rather than the bookings table, so the
+ * anonymous storefront — which can't read bookings, and mustn't see guests — is
+ * subject to exactly the same rule as staff. Only timing comes back.
+ */
+async function loadOpenSessions(tx: Db, tenantId: string, resourceIds: string[]): Promise<(OpenSession & { resourceId: string })[]> {
+  if (resourceIds.length === 0) return []
+  const r = await tx.execute(
+    sql`select resource_id, checked_in_at, reserved_minutes
+          from public.table_open_sessions(${tenantId}::uuid, ARRAY[${sql.join(resourceIds.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[])`,
+  )
+  return (r.rows as { resource_id: string; checked_in_at: Date | string; reserved_minutes: number | null }[]).map((row) => ({
+    resourceId: row.resource_id,
+    checkedInAt: new Date(row.checked_in_at),
+    reservedMinutes: row.reserved_minutes,
+  }))
 }
 
 /**
@@ -152,6 +182,30 @@ export async function createReservationCore(
 
   const table = await loadTable(tx, ctx.tenantId, input.resourceId)
   if (table.branchId !== input.branchId) throw new BookingError('Table belongs to a different branch.')
+  if (!tableFitsParty(table, input.partySize)) {
+    throw new BookingError(
+      audience === 'public'
+        ? 'That table doesn’t fit your party size. Please pick another time.'
+        : `${table.name} doesn’t seat a party of ${input.partySize}. Pick another table.`,
+    )
+  }
+
+  // A seated party has no slot row, so the exclusion constraint below can't see
+  // them: look at the open sessions ourselves, under the table lock that seating
+  // takes too, so "free" can't go stale between this read and the insert.
+  await lockTable(tx, ctx.tenantId, input.resourceId)
+  const reservationNow = new Date()
+  const seated = (await loadOpenSessions(tx, ctx.tenantId, [input.resourceId])).find((o) =>
+    openSessionBlocksWindow(o, start, reservationEnd(start, minutes), reservationNow, settings.defaultDurationMinutes),
+  )
+  if (seated) {
+    const until = openSessionOccupiedUntil(seated, reservationNow, settings.defaultDurationMinutes)
+    throw new BookingError(
+      audience === 'public'
+        ? 'That table is not available at that time. Please pick another time or table.'
+        : `${table.name} has a party seated until about ${formatTimeInZone(until, ctx.timezone)}. Pick another table or a later time.`,
+    )
+  }
 
   // Within opening hours: must START while the venue is open. A party may
   // still be eating at close, so the end is not held to it.
@@ -160,6 +214,23 @@ export async function createReservationCore(
   if (hours.isClosed) throw new BookingError('We’re closed that day.')
   const { open, close } = dayWindow(dateStr, ctx.timezone, hours)
   if (start < open || start >= close) throw new BookingError('That time is outside our opening hours.')
+  // The storefront only offers times on the venue's grid; a hand-crafted request
+  // must not land between them and fragment the table's day.
+  if (audience === 'public' && !isOnSlotGrid(start, open)) throw new BookingError('Pick one of the times offered.')
+
+  // The public phone is unverified, so cap how many tables one number can hold.
+  // Serialised per phone so concurrent submits can't both read "under the cap".
+  if (audience === 'public') {
+    const phone = normalizePhone(input.customerPhone)
+    if (!phone) throw new BookingError('Enter a valid phone number.')
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`resv-phone:${ctx.tenantId}:${phone}`}, 0))`)
+    const r = await tx.execute(sql`select public.open_reservations_for_phone(${ctx.tenantId}::uuid, ${phone}) as n`)
+    if (Number((r.rows[0] as { n: number | string } | undefined)?.n ?? 0) >= PUBLIC_MAX_OPEN_RESERVATIONS_PER_PHONE) {
+      throw new BookingError(
+        `This number already has ${PUBLIC_MAX_OPEN_RESERVATIONS_PER_PHONE} upcoming reservations. Please call us to book more.`,
+      )
+    }
+  }
 
   const created = await createBookingCore(tx, ctx, {
     branchId: input.branchId,
@@ -172,6 +243,7 @@ export async function createReservationCore(
     deposit: 0,
     slots: [{ resourceId: input.resourceId, startsAt: start.toISOString(), endsAt: reservationEnd(start, minutes).toISOString() }],
     reservation: { coverCount: input.partySize, minutes },
+    idempotencyKey: input.idempotencyKey,
   })
 
   // The public path has no membership (and no audit_log write access); staff
@@ -249,10 +321,16 @@ export async function seatReservationCore(
   const targetId = input.resourceId ?? slot.resourceId
   const table = await loadTable(tx, ctx.tenantId, targetId)
   if (table.branchId !== b.branchId) throw new BookingError('Table belongs to a different branch.')
-  // A different table may itself be reserved for someone else shortly.
-  if (targetId !== slot.resourceId && !input.overrideReservation) {
-    await assertNoUpcomingReservation(tx, ctx, targetId)
-  }
+  // Another party (or an event) may hold this table shortly — a different table,
+  // or the original one after a late arrival's slot was released. The
+  // reservation being seated never blocks itself. A manager's override is allowed
+  // through but audited (guardTableSeating).
+  await lockTable(tx, ctx.tenantId, targetId)
+  await guardTableSeating(tx, ctx, targetId, {
+    override: input.overrideReservation,
+    excludeBookingId: b.id,
+    bookingId: b.id,
+  })
 
   const covers = input.coverCount ?? b.coverCount
   if (!covers || !Number.isInteger(covers) || covers < 1) {
@@ -342,9 +420,9 @@ export type FreeTable = { id: string; name: string }
 
 /**
  * Tables with no active reservation overlapping [start, end), best-first
- * (floor order). A table occupied right now is skipped for a start in the next
- * half hour — it can't plausibly be vacated for it. The DB exclusion
- * constraint remains the real guard; this only picks candidates.
+ * (floor order), and no seated party still expected to be there. The DB
+ * exclusion constraint and createReservationCore remain the real guards; this
+ * only picks candidates.
  */
 export async function freeTablesForWindow(
   tx: Db,
@@ -353,9 +431,11 @@ export async function freeTablesForWindow(
   start: Date,
   end: Date,
   now: Date = new Date(),
+  /** When given, only tables that take this party size. */
+  partySize?: number,
 ): Promise<FreeTable[]> {
-  const tables = await tx
-    .select({ id: resources.id, name: resources.name })
+  const tables = (await tx
+    .select({ id: resources.id, name: resources.name, minSeats: resources.minSeats, maxSeats: resources.maxSeats })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(
@@ -366,7 +446,7 @@ export async function freeTablesForWindow(
         eq(resourceTypes.hourlyRate, '0'),
       ),
     )
-    .orderBy(asc(resources.sortOrder), asc(resources.name))
+    .orderBy(asc(resources.sortOrder), asc(resources.name))).filter((t) => partySize === undefined || tableFitsParty(t, partySize))
   if (tables.length === 0) return []
   const ids = tables.map((t) => t.id)
 
@@ -384,20 +464,13 @@ export async function freeTablesForWindow(
     )
   const blocked = new Set(taken.map((r) => r.resourceId))
 
-  if (start.getTime() < now.getTime() + 30 * MIN) {
-    const occupied = await tx
-      .select({ resourceId: bookings.resourceId })
-      .from(bookings)
-      .where(
-        and(
-          eq(bookings.tenantId, tenantId),
-          inArray(bookings.resourceId, ids),
-          inArray(bookings.status, ['confirmed', 'checked_in']),
-        ),
-      )
-    for (const o of occupied) if (o.resourceId) blocked.add(o.resourceId)
+  // A party seated now has no slot row; it still holds the table for as long as
+  // it is expected to (see openSessionBlocksWindow), not just the next half hour.
+  const defaultMinutes = (await getReservationSettingsCore(tx, tenantId)).defaultDurationMinutes
+  for (const o of await loadOpenSessions(tx, tenantId, ids)) {
+    if (openSessionBlocksWindow(o, start, end, now, defaultMinutes)) blocked.add(o.resourceId)
   }
-  return tables.filter((t) => !blocked.has(t.id))
+  return tables.filter((t) => !blocked.has(t.id)).map(({ id, name }) => ({ id, name }))
 }
 
 export type StartOption = { startsAt: string; label: string; freeTables: number }
@@ -410,7 +483,7 @@ export type StartOption = { startsAt: string; label: string; freeTables: number 
 export async function getReservationStartOptionsCore(
   tx: Db,
   tenant: { id: string; timezone: string },
-  input: { branchId: string; date: string },
+  input: { branchId: string; date: string; /** When given, count only tables that take this party. */ partySize?: number },
   audience: 'staff' | 'public',
   now: Date = new Date(),
 ): Promise<{ durationMinutes: number; options: StartOption[] }> {
@@ -421,8 +494,8 @@ export async function getReservationStartOptionsCore(
   if (hours.isClosed) return { durationMinutes, options: [] }
   const { open, close } = dayWindow(input.date, tenant.timezone, hours)
 
-  const tables = await tx
-    .select({ id: resources.id })
+  const tables = (await tx
+    .select({ id: resources.id, minSeats: resources.minSeats, maxSeats: resources.maxSeats })
     .from(resources)
     .innerJoin(resourceTypes, eq(resourceTypes.id, resources.resourceTypeId))
     .where(
@@ -432,7 +505,7 @@ export async function getReservationStartOptionsCore(
         eq(resources.status, 'available'),
         eq(resourceTypes.hourlyRate, '0'),
       ),
-    )
+    )).filter((t) => input.partySize === undefined || tableFitsParty(t, input.partySize))
   if (tables.length === 0) return { durationMinutes, options: [] }
   const ids = tables.map((t) => t.id)
 
@@ -450,6 +523,8 @@ export async function getReservationStartOptionsCore(
       ),
     )
 
+  const seatedNow = await loadOpenSessions(tx, tenant.id, ids)
+
   const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tenant.timezone, hour: '2-digit', minute: '2-digit', hour12: false })
   const options: StartOption[] = []
   for (let t = open.getTime(); t < close.getTime(); t += RESERVATION_SLOT_MINUTES * MIN) {
@@ -458,9 +533,9 @@ export async function getReservationStartOptionsCore(
     const end = reservationEnd(start, durationMinutes)
     let free = 0
     for (const id of ids) {
-      const clash = slots.some(
-        (s) => s.resourceId === id && s.endsAt !== null && s.startsAt < end && s.endsAt > start,
-      )
+      const clash =
+        slots.some((s) => s.resourceId === id && s.endsAt !== null && s.startsAt < end && s.endsAt > start) ||
+        seatedNow.some((o) => o.resourceId === id && openSessionBlocksWindow(o, start, end, now, settings.defaultDurationMinutes))
       if (!clash) free++
     }
     if (free > 0) options.push({ startsAt: start.toISOString(), label: fmt.format(start), freeTables: free })

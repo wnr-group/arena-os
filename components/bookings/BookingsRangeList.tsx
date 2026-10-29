@@ -89,6 +89,7 @@ export function BookingsRangeList({
   ordersByBooking,
   canRequestVoidComp,
   canEditAddons,
+  canReschedule = false,
   showFoodOrdering,
   footer,
 }: {
@@ -105,6 +106,7 @@ export function BookingsRangeList({
   ordersByBooking: Record<string, OrderSummary[]>
   canRequestVoidComp: boolean
   canEditAddons: boolean
+  canReschedule?: boolean
   showFoodOrdering: boolean
   /** Server-rendered pager. */
   footer?: ReactNode
@@ -214,6 +216,7 @@ export function BookingsRangeList({
         ordersByBooking={ordersByBooking}
         canRequestVoidComp={canRequestVoidComp}
         canEditAddons={canEditAddons}
+        canReschedule={canReschedule}
         showFoodOrdering={showFoodOrdering}
         onClose={() => setSelectedId(null)}
       />
