@@ -1,7 +1,7 @@
 import 'server-only'
 import { and, asc, desc, eq, ne, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { branches, eventResources, eventSeries, events, resources } from '@/db/schema'
+import { branches, eventResources, eventSeries, eventSeriesSkips, events, resources } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import type { EventRow, EventWithBranch } from './types'
 
@@ -141,6 +141,30 @@ export function listBookableResources(ctx: ActiveContext) {
       .orderBy(asc(resources.sortOrder), asc(resources.name)),
   )
 }
+
+/**
+ * Occurrences the recurring job skipped because their stations were already
+ * booked (0164), newest first, with the series title. "Create anyway" refuses a
+ * period that has already ended; the manager dismisses those.
+ */
+export async function listEventSeriesSkips(ctx: ActiveContext) {
+  return withUser(ctx.user.id, (tx) =>
+    tx
+      .select({
+        id: eventSeriesSkips.id,
+        seriesId: eventSeriesSkips.seriesId,
+        seriesTitle: eventSeries.title,
+        occurrencePeriod: eventSeriesSkips.occurrencePeriod,
+        reason: eventSeriesSkips.reason,
+        createdAt: eventSeriesSkips.createdAt,
+      })
+      .from(eventSeriesSkips)
+      .innerJoin(eventSeries, eq(eventSeries.id, eventSeriesSkips.seriesId))
+      .where(eq(eventSeriesSkips.tenantId, ctx.tenant.id))
+      .orderBy(desc(eventSeriesSkips.occurrencePeriod)),
+  )
+}
+
 /**
  * The recurring series a manager configures (M15 #8).
  *

@@ -8,6 +8,10 @@ import { BusinessProfileForm } from '@/components/settings/BusinessProfileForm'
 import { GoogleBusinessForm } from '@/components/settings/GoogleBusinessForm'
 import { getGoogleConnectionStatus } from '@/lib/reviews/google-credentials'
 
+// "Sync now" (lib/actions/google-business.ts) runs as a server action on this
+// route, so this is its time limit; the fetcher caps itself below it.
+export const maxDuration = 60
+
 export default async function BusinessSettingsPage() {
   const ctx = await getActiveContext()
   if (!ctx) return null

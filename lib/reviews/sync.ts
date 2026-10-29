@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, eq, lt, notInArray, sql } from 'drizzle-orm'
+import { and, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm'
 import { ownerDb, type DB } from '@/db'
 import { googleBusinessCredentials, googleReviews } from '@/db/schema'
 import { loadGoogleConnection } from './google-credentials'
@@ -84,25 +84,31 @@ export async function syncGoogleReviewsForTenant(
 
     // Optional throttle for the interactive "Sync now" button, which is not
     // otherwise rate limited: refuse if an attempt began moments ago.
-    if (opts.minIntervalMs) {
-      const [row] = await db
-        .select({ lastSyncAttempt: googleBusinessCredentials.lastSyncAttempt })
-        .from(googleBusinessCredentials)
-        .where(eq(googleBusinessCredentials.tenantId, tenantId))
-        .limit(1)
-      if (row?.lastSyncAttempt && Date.now() - row.lastSyncAttempt.getTime() < opts.minIntervalMs) {
-        return {
-          ...base,
-          connected: true,
-          error: 'A sync was started a moment ago. Please wait a minute and try again.',
-        }
+    //
+    // Check and stamp are ONE conditional UPDATE: two clicks racing each other
+    // cannot both pass a separate read and then both stamp.
+    const claimed = await db
+      .update(googleBusinessCredentials)
+      .set({ lastSyncAttempt: sql`now()` })
+      .where(
+        and(
+          eq(googleBusinessCredentials.tenantId, tenantId),
+          opts.minIntervalMs
+            ? or(
+                isNull(googleBusinessCredentials.lastSyncAttempt),
+                lt(googleBusinessCredentials.lastSyncAttempt, sql`now() - make_interval(secs => ${opts.minIntervalMs / 1000})`),
+              )
+            : undefined,
+        ),
+      )
+      .returning({ tenantId: googleBusinessCredentials.tenantId })
+    if (claimed.length === 0) {
+      return {
+        ...base,
+        connected: true,
+        error: 'A sync was started a moment ago. Please wait a minute and try again.',
       }
     }
-
-    await db
-      .update(googleBusinessCredentials)
-      .set({ lastSyncAttempt: new Date() })
-      .where(eq(googleBusinessCredentials.tenantId, tenantId))
 
     const fetched = await fetchReviews({
       accountId: connection.accountId,
@@ -274,7 +280,7 @@ export async function syncAllGoogleReviews(
 export async function syncGoogleReviewsBatch(
   fetchReviews: FetchGoogleReviews,
   db: DB = ownerDb,
-  opts: { deadline?: number } = {},
+  opts: { deadline?: number; /** Called before each tenant, e.g. to renew the sweep's lease. */ beforeTenant?: () => Promise<void> } = {},
 ): Promise<{ results: SyncResult[]; deferred: number }> {
   const tenants = await db
     .select({ tenantId: googleBusinessCredentials.tenantId })
@@ -288,6 +294,9 @@ export async function syncGoogleReviewsBatch(
       deferred = tenants.length - i
       break
     }
+    // Outside the try on purpose: a lost lease must END the sweep, not be
+    // recorded as this tenant's failure and repeated for every tenant after it.
+    await opts.beforeTenant?.()
     try {
       results.push(await syncGoogleReviewsForTenant(t.tenantId, fetchReviews, db))
     } catch (e) {

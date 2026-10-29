@@ -1,10 +1,10 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
-import { eventSeries } from '@/db/schema'
+import { eventSeries, eventSeriesSkips } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
@@ -270,6 +270,90 @@ export async function deleteEventSeries(seriesId: string): Promise<Result> {
         .where(and(eq(eventSeries.id, id), eq(eventSeries.tenantId, ctx.tenant.id))),
     )
 
+    revalidatePath('/settings/events')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Resolve a skipped occurrence by creating it anyway.
+ *
+ * The job skipped it because its stations were already booked. Creating it here
+ * makes the event (open for registration, like any generated occurrence) WITHOUT
+ * holding stations — the manager sorts the stations out on the event itself. A
+ * period that has already ended is refused; the skip row is removed on success.
+ */
+export async function createSkippedOccurrence(skipId: string): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const id = z.string().uuid().parse(skipId)
+
+    const outcome = await withUser(ctx.user.id, async (tx) => {
+      const [skip] = await tx
+        .select({ seriesId: eventSeriesSkips.seriesId, period: eventSeriesSkips.occurrencePeriod })
+        .from(eventSeriesSkips)
+        .where(and(eq(eventSeriesSkips.id, id), eq(eventSeriesSkips.tenantId, ctx.tenant.id)))
+        .for('update')
+      if (!skip) return 'gone' as const
+
+      const inserted = await tx.execute(sql`
+        insert into public.events
+          (tenant_id, branch_id, title, type, description, banner_url, resource_scope,
+           starts_at, ends_at, capacity, entry_fee, tournament_format,
+           registration_mode, team_size, status, created_by, series_id, occurrence_period)
+        select s.tenant_id, s.branch_id, s.title, s.type, s.description, s.banner_url, 'none',
+               (${skip.period}::date + s.start_time) at time zone t.timezone,
+               (${skip.period}::date + s.start_time) at time zone t.timezone
+                 + make_interval(mins => s.duration_minutes),
+               s.capacity, s.entry_fee, s.tournament_format,
+               s.registration_mode, s.team_size,
+               'registration_open'::public.event_status, s.created_by, s.id, ${skip.period}::date
+          from public.event_series s
+          join public.tenants t on t.id = s.tenant_id
+         where s.id = ${skip.seriesId}
+           and s.tenant_id = ${ctx.tenant.id}
+           and (${skip.period}::date + s.start_time) at time zone t.timezone
+                 + make_interval(mins => s.duration_minutes) > now()
+        on conflict (series_id, occurrence_period) where series_id is not null do nothing
+        returning id
+      `)
+      const created = (inserted.rows?.length ?? 0) > 0
+      if (!created) {
+        // Either it already exists (resolved elsewhere) or its window has passed.
+        const [exists] = (
+          await tx.execute(sql`
+            select 1 from public.events where series_id = ${skip.seriesId} and occurrence_period = ${skip.period}::date
+          `)
+        ).rows
+        if (!exists) return 'past' as const
+      }
+      await tx.delete(eventSeriesSkips).where(eq(eventSeriesSkips.id, id))
+      return 'ok' as const
+    })
+
+    if (outcome === 'gone') return { error: 'That skipped occurrence was already resolved.' }
+    if (outcome === 'past') return { error: 'That occurrence has already ended, so it cannot be created. Dismiss it instead.' }
+    revalidatePath('/settings/events')
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** Dismiss a skipped occurrence without creating it. */
+export async function dismissSkippedOccurrence(skipId: string): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const id = z.string().uuid().parse(skipId)
+    await withUser(ctx.user.id, (tx) =>
+      tx
+        .delete(eventSeriesSkips)
+        .where(and(eq(eventSeriesSkips.id, id), eq(eventSeriesSkips.tenantId, ctx.tenant.id))),
+    )
     revalidatePath('/settings/events')
     return {}
   } catch (e) {

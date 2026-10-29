@@ -32,6 +32,10 @@ async function handle(request: NextRequest): Promise<NextResponse> {
   if (!url) return NextResponse.json({ error: 'Cron is not configured.' }, { status: 503 })
 
   const client = new Client({ connectionString: url })
+  // A dropped connection emits 'error' on the Client; with no listener that is an
+  // uncaught exception that can take the function down. The in-flight query
+  // rejects on its own and is reported through the series failure path.
+  client.on('error', (e) => console.error('[cron] generate-events connection error:', e.message))
   await client.connect()
   try {
     const summary = await runRecurringEvents(client)
@@ -41,6 +45,8 @@ async function handle(request: NextRequest): Promise<NextResponse> {
     } catch (e) {
       console.error('[cron] print job retention failed:', e instanceof Error ? e.message : e)
     }
+    // `summary.failures` carries the reason each failed series failed (series id +
+    // message, no tenant data), so a 500 says what to fix, not just that it happened.
     return NextResponse.json({ ...summary, printJobsPruned }, { status: summary.failed > 0 ? 500 : 200 })
   } finally {
     await client.end().catch(() => {})

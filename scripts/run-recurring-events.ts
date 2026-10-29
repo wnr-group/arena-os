@@ -19,6 +19,7 @@ async function main() {
   if (!url) throw new Error('DATABASE_URL_OWNER is not set in .env.local')
 
   const client = new Client({ connectionString: url })
+  client.on('error', (e) => console.error('connection error:', e.message))
   await client.connect()
   const started = Date.now()
 
@@ -26,7 +27,7 @@ async function main() {
 
   console.log(
     `✓ ${r.generated} occurrence(s) created, ${r.alreadyExisted} already existed, ` +
-      `${r.conflicted} skipped for a resource conflict, ` +
+      `${r.conflicted} skipped for a resource conflict, ${r.pastSkipped} past period(s) stepped over, ` +
       `${r.advanced} series advanced, ${r.failed} failed (${Date.now() - started}ms)`,
   )
 

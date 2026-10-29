@@ -3560,6 +3560,26 @@ export const eventSeries = pgTable(
   ],
 )
 
+// ── skipped recurring occurrences (migration 0164) ──────────────────────────
+// Written by lib/events/recurring.ts when an occurrence's stations were already
+// booked. One row per (series, period); the manager resolves it (create the
+// occurrence anyway, or dismiss) from the Events settings page.
+export const eventSeriesSkips = pgTable(
+  'event_series_skips',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    // Tenant-composite FK to event_series(tenant_id, id) lives in 0164.
+    seriesId: uuid('series_id').notNull(),
+    occurrencePeriod: date('occurrence_period').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('event_series_skips_series_period_key').on(t.seriesId, t.occurrencePeriod)],
+)
+
 // ── event matches (migration 0134, M15 #6) ──────────────────────────────────
 // The bracket ENGINE is pure TypeScript in lib/events/bracket.ts; this is only
 // where its output lives. Participants are event_registrations ids — the same
