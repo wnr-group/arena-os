@@ -3756,6 +3756,12 @@ export const eventRegistrations = pgTable(
     paymentHoldExpiresAt: timestamp('payment_hold_expires_at', { withTimezone: true }),
     /** Money arrived, place could not be honoured. Twin of bookings.depositReviewRequired. */
     refundRequired: boolean('refund_required').notNull().default(false),
+    /** What is owed back while refundRequired (0177). Kept in step by a trigger. */
+    refundDueAmount: numeric('refund_due_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Total already refunded, set by mark_event_registration_refunded() (0177). */
+    refundedAmount: numeric('refunded_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    refundReference: text('refund_reference'),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
     registeredAt: timestamp('registered_at', { withTimezone: true }),
     waitlistedAt: timestamp('waitlisted_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),

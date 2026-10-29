@@ -158,6 +158,7 @@
     "test:events": "tsx scripts/test-events.ts",
     "test:proxy-public-routes": "tsx scripts/test-proxy-public-routes.ts",
     "test:event-bracket": "tsx scripts/test-event-bracket.ts",
+    "test:event-registration-rules": "tsx --import ./scripts/server-only-hook.mjs scripts/test-event-registration-rules.ts",
     "test:event-registrations": "tsx --import ./scripts/server-only-hook.mjs scripts/test-event-registrations.ts",
     "test:event-check-in": "tsx --import ./scripts/server-only-hook.mjs scripts/test-event-check-in.ts",
     "test:event-series": "tsx --import ./scripts/server-only-hook.mjs scripts/test-event-series.ts",
@@ -171,7 +172,7 @@
     "test:google-review": "tsx --import ./scripts/server-only-hook.mjs scripts/test-google-review.ts",
     "test:whatsapp-group": "tsx --import ./scripts/server-only-hook.mjs scripts/test-whatsapp-group.ts",
     "test:business-profile": "tsx --import ./scripts/server-only-hook.mjs scripts/test-business-profile.ts",
-    "test:m15": "npm run test:events && npm run test:event-bracket && npm run test:event-registrations && npm run test:event-check-in && npm run test:event-series && npm run test:event-resource-blocks && npm run test:public-live-bracket && npm run test:event-bracket-db && npm run test:events-rls && npm run test:event-registrations-rls && npm run test:public-events && npm run test:whatsapp-group",
+    "test:m15": "npm run test:events && npm run test:event-bracket && npm run test:event-registrations && npm run test:event-registration-rules && npm run test:event-check-in && npm run test:event-series && npm run test:event-resource-blocks && npm run test:public-live-bracket && npm run test:event-bracket-db && npm run test:events-rls && npm run test:event-registrations-rls && npm run test:public-events && npm run test:whatsapp-group",
     "test:google-whatsapp": "npm run test:whatsapp-group && npm run test:google-review && npm run test:google-business-reviews && npm run test:business-profile"
   },
   "dependencies": {

@@ -21,8 +21,9 @@ import {
   cancelEventRegistrationAsStaff,
   cancelRegistrationsForCancelledEvent,
   checkInEventRegistrationCore,
+  markEventRegistrationRefunded,
 } from '@/lib/events/registrations'
-import { refusalMessage } from '@/lib/events/registration'
+import { REFUND_REFUSALS, refusalMessage } from '@/lib/events/registration'
 
 /**
  * Event management actions (M15 #1).
@@ -529,6 +530,38 @@ export async function checkInEventRegistrationByToken(
         alreadyCheckedIn: outcome.alreadyCheckedIn,
       },
     }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Mark a flagged refund as paid out (amount + the reference of the transfer).
+ * Clears refund_required, so the registration leaves the refund-due figure, and
+ * audits it. Nothing is refunded by this — the money is moved by a human first.
+ */
+export async function markEventRefunded(
+  registrationId: string,
+  amount: number,
+  reference: string,
+): Promise<Result> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const p = z
+      .object({
+        id: z.string().uuid(),
+        amount: z.number().positive().max(10_000_000),
+        reference: z.string().trim().min(1).max(200),
+      })
+      .parse({ id: registrationId, amount, reference })
+
+    const outcome = await markEventRegistrationRefunded(ctx, p.id, p.amount, p.reference)
+    if (outcome !== 'refunded') {
+      return { error: REFUND_REFUSALS[outcome] ?? 'That did not work. Please refresh and try again.' }
+    }
+    revalidateEventPaths()
+    return {}
   } catch (e) {
     return fail(e)
   }
