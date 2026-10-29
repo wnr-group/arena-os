@@ -4,8 +4,10 @@ import { cronAuthFailure } from '@/lib/cron/auth'
 import { acquireLease, releaseLease } from '@/lib/cron/lease'
 
 /**
- * Scheduler hook that closes forgotten open-tab walk-ins (0167) for venues that
- * turned on "Auto-close forgotten walk-ins".
+ * Manual/optional hook that closes forgotten open-tab walk-ins (0167) for venues
+ * that turned on "Auto-close forgotten walk-ins". No longer scheduled in
+ * vercel.json: reads of the live walk-in list sweep on demand instead (see
+ * sweepOverdueWalkinsForTenant). Kept for manual runs and an external scheduler.
  *
  * Machine-to-machine: no session, no tenant. Authenticates with the shared
  * CRON_SECRET bearer check in lib/cron/auth.ts. The response is only counts —

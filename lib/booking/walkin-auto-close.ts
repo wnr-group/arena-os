@@ -135,3 +135,33 @@ export async function autoCloseOverdueWalkins(
   }
   return { closed, failed }
 }
+
+/** Per-tenant gap between request-triggered sweeps, per server instance. */
+const SWEEP_INTERVAL_MS = 30_000
+const lastSweep = new Map<string, number>()
+
+/**
+ * Request-triggered sweep: close this tenant's overdue open-tab walk-ins when
+ * someone reads the live walk-in list. There is no scheduler behind it, so a
+ * forgotten tab closes on the next read after its deadline, not at it — the
+ * bill is still stamped at the deadline (see autoCloseOverdueWalkins).
+ *
+ * Best effort: throttled per tenant per server instance, and a failure is
+ * logged and swallowed so it never breaks the read. Concurrent sweeps are safe
+ * because checkout locks the booking row; the loser is skipped.
+ */
+export async function sweepOverdueWalkinsForTenant(tenantId: string, now: Date = new Date()): Promise<void> {
+  const last = lastSweep.get(tenantId)
+  if (last !== undefined && now.getTime() - last < SWEEP_INTERVAL_MS) return
+  lastSweep.set(tenantId, now.getTime())
+  try {
+    await autoCloseOverdueWalkins({ tenantId, now })
+  } catch (e) {
+    console.error('[auto-close-walkins] sweep failed:', e instanceof Error ? e.message : 'unknown')
+  }
+}
+
+/** Test hook: forget the throttle. */
+export function resetWalkinSweepThrottle(): void {
+  lastSweep.clear()
+}

@@ -60,6 +60,7 @@ import {
 } from './addons'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
+import { sweepOverdueWalkinsForTenant } from './walkin-auto-close'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -347,6 +348,8 @@ export type ActiveWalkin = {
  * otherwise invisible anywhere in the app once started.
  */
 export async function listActiveWalkins(ctx: ActiveContext, branchId: string): Promise<ActiveWalkin[]> {
+  // Close forgotten open-tabs first so this list (and the alarm poll) never shows them.
+  await sweepOverdueWalkinsForTenant(ctx.tenant.id)
   const rows = await withUser(ctx.user.id, (tx) =>
     tx
       .select({
