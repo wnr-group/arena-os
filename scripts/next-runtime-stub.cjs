@@ -70,6 +70,7 @@ module.exports = {
   // next/cache
   revalidatePath: () => {},
   revalidateTag: () => {},
+  updateTag: () => {},
   unstable_cache: (fn) => fn,
   unstable_noStore: () => {},
 }

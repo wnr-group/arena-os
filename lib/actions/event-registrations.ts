@@ -9,6 +9,7 @@ import {
   cancelOwnEventRegistration,
   claimEventRegistration,
   joinEventTeam as joinEventTeamCore,
+  setEventPublicName as setEventPublicNameCore,
 } from '@/lib/events/registrations'
 import { refusalMessage, type EventRegistrationStatus } from '@/lib/events/registration'
 import {
@@ -197,6 +198,33 @@ export async function cancelMyEventRegistration(
     revalidatePath('/account/events')
     revalidatePath('/events')
   }
+  return { ok: true }
+}
+
+// ── public bracket name ──────────────────────────────────────────────────────
+
+const publicNameInput = z.object({
+  registrationId: z.string().uuid(),
+  name: z.string().trim().max(40, 'Keep the name to 40 characters.'),
+})
+
+/**
+ * Choose the name shown on the public live bracket. Blank goes back to
+ * initials. Only the customer's own registration can be changed.
+ */
+export async function setMyEventPublicName(
+  raw: z.input<typeof publicNameInput>,
+): Promise<{ error?: string; ok?: true }> {
+  const customer = await getCurrentCustomer()
+  if (!customer) return { error: SIGN_IN_MESSAGE }
+
+  const parsed = publicNameInput.safeParse(raw)
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Check the name entered.' }
+
+  const outcome = await setEventPublicNameCore(customer.id, parsed.data.registrationId, parsed.data.name)
+  if (outcome !== 'saved') return { error: 'That registration could not be found.' }
+
+  revalidatePath('/account/events')
   return { ok: true }
 }
 

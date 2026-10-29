@@ -7,7 +7,7 @@ import { withUser } from '@/db'
 import { auditLog, eventMatches, eventRegistrations, events } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
-import { uploadImage, deleteImage } from '@/lib/storage/s3'
+import { uploadImage, deleteImage, objectKeyFromUrl } from '@/lib/storage/s3'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { EventError, assertEventEditAllowed, updateEventStatusCore, validateEventFields } from '@/lib/events/service'
 import { EVENT_STATUSES, EVENT_TYPES, TOURNAMENT_FORMATS } from '@/lib/events/types'
@@ -117,6 +117,20 @@ const eventInput = z.object({
   resourceIds: z.array(z.string().uuid()).max(500).optional(),
 })
 
+/**
+ * A banner is shown on public pages and deleted with the event, so it must be
+ * an image THIS tenant uploaded through uploadEventBanner(): inside our storage
+ * base, under tenants/<id>/events/. An arbitrary URL would let a manager embed
+ * a third-party tracking image on public pages, or point at another object in
+ * the tenant's storage that deleteEvent would then delete.
+ */
+function assertOwnBannerUrl(url: string, tenantId: string): void {
+  const key = objectKeyFromUrl(url, tenantId)
+  if (!key || !key.startsWith(`tenants/${tenantId}/events/`)) {
+    throw new EventError('The banner must be an image uploaded here. Upload a file instead of pasting a link.')
+  }
+}
+
 export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Result> {
   try {
     const ctx = await requireManager()
@@ -184,12 +198,17 @@ export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Re
             teamSize: events.teamSize,
             entryFee: events.entryFee,
             capacity: events.capacity,
+            bannerUrl: events.bannerUrl,
           })
           .from(events)
           .where(and(eq(events.id, v.id), eq(events.tenantId, ctx.tenant.id)))
           .for('update')
           .limit(1)
         if (!current) throw new EventError('Event not found.')
+        // An unchanged legacy URL is left alone; a NEW one must be our own upload.
+        if (values.bannerUrl && values.bannerUrl !== current.bannerUrl) {
+          assertOwnBannerUrl(values.bannerUrl, ctx.tenant.id)
+        }
 
         // Under the same lock: no claim or payment can slip in before the write.
         await assertEventEditAllowed(tx, { tenantId: ctx.tenant.id }, v.id, current, {
@@ -225,6 +244,7 @@ export async function upsertEvent(input: z.input<typeof eventInput>): Promise<Re
           .where(and(eq(events.id, v.id), eq(events.tenantId, ctx.tenant.id)))
         eventId = v.id
       } else {
+        if (values.bannerUrl) assertOwnBannerUrl(values.bannerUrl, ctx.tenant.id)
         const [created] = await tx
           .insert(events)
           .values({ ...values, createdBy: ctx.membershipId })

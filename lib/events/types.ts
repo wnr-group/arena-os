@@ -82,6 +82,20 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
  */
 export const PUBLIC_EVENT_STATUSES = ['published', 'registration_open'] as const satisfies readonly EventStatus[]
 
+/**
+ * Statuses whose DETAIL page (by direct link) is served. Wider than the
+ * LISTING above: the live bracket page is reachable for full / in_progress /
+ * completed events and links back to the event, which 404'd. The listing and
+ * the homepage strip still use PUBLIC_EVENT_STATUSES only.
+ */
+export const PUBLIC_EVENT_DETAIL_STATUSES = [
+  'published',
+  'registration_open',
+  'full',
+  'in_progress',
+  'completed',
+] as const satisfies readonly EventStatus[]
+
 export function isPubliclyVisible(status: EventStatus): boolean {
   return (PUBLIC_EVENT_STATUSES as readonly EventStatus[]).includes(status)
 }

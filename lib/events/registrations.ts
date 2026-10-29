@@ -91,6 +91,23 @@ export async function claimEventRegistration(
   }
 }
 
+/**
+ * Set (or clear, with blank) the name shown for this registration on the PUBLIC
+ * bracket. Without one only initials are shown. Returns 'saved' or a code.
+ */
+export async function setEventPublicName(
+  customerId: string,
+  registrationId: string,
+  name: string,
+): Promise<string> {
+  return withCustomer(customerId, async (tx) => {
+    const { rows } = await tx.execute<{ r: string }>(
+      sql`select public.set_event_public_name(${registrationId}::uuid, ${name}) as r`,
+    )
+    return rows[0]?.r ?? 'not_found'
+  })
+}
+
 /** Join an existing team. Returns 'joined' or a refusal code. */
 export async function joinEventTeam(customerId: string, teamId: string): Promise<string> {
   return withCustomer(customerId, async (tx) => {

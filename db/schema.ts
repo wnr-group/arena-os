@@ -3601,6 +3601,8 @@ export const eventMatches = pgTable(
     scoreA: integer('score_a'),
     scoreB: integer('score_b'),
     winner: uuid('winner'),
+    /** 'played' or 'forfeit' (0178). A forfeit is recorded 0-0 with the other side winning. */
+    resultKind: text('result_kind').notNull().default('played'),
     /**
      * The topology, written once at generation. Advancement FOLLOWS these
      * pointers rather than recomputing bracket maths at result time, so a
@@ -3762,6 +3764,8 @@ export const eventRegistrations = pgTable(
     refundedAmount: numeric('refunded_amount', { precision: 10, scale: 2 }).notNull().default('0'),
     refundReference: text('refund_reference'),
     refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    /** What the customer chose to show on the PUBLIC bracket (0178). Null = initials only. */
+    publicDisplayName: text('public_display_name'),
     registeredAt: timestamp('registered_at', { withTimezone: true }),
     waitlistedAt: timestamp('waitlisted_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
