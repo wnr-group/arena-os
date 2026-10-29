@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlarmClock, BellRing, Clock, Loader2, ReceiptText, RefreshCw, RotateCcw, Timer } from 'lucide-react'
 import { toast } from 'sonner'
@@ -92,9 +92,26 @@ export function SessionsBoard({
   const [sessions, setSessions] = useState(initialSessions)
   useEffect(() => setSessions(initialSessions), [initialSessions])
 
+  // router.refresh() re-runs the server page, whose listActiveWalkins() runs the
+  // overdue walk-in sweep — so this poll is a real server-side trigger, not just
+  // a UI refresh. One refresh at a time, none while the tab is hidden (the
+  // top-bar poll still runs the sweep), and one as soon as the tab is visible.
+  // isPending stays true until the refreshed server render lands, so it is the
+  // in-flight signal; mirrored into a ref so the interval reads the live value.
+  const [refreshPending, startRefresh] = useTransition()
+  const refreshing = useRef(false)
+  refreshing.current = refreshPending
   useEffect(() => {
-    const id = setInterval(() => router.refresh(), REFRESH_INTERVAL_MS)
-    return () => clearInterval(id)
+    function refresh() {
+      if (document.hidden || refreshing.current) return
+      startRefresh(() => router.refresh())
+    }
+    const id = setInterval(refresh, REFRESH_INTERVAL_MS)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [router])
 
   // Starts null (not Date.now()) on purpose: a 'use client' component is

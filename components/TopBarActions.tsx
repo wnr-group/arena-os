@@ -129,9 +129,24 @@ export function TopBarActions({
   useEffect(() => {
     if (!active) return
     let cancelled = false
+    // One request in flight at a time: a slow response must not stack a second
+    // poll behind it. Each poll is also what runs the server-side overdue
+    // walk-in sweep (listActiveWalkins), so it must keep running from here.
+    let inFlight = false
 
     async function tick() {
-      const { sessions } = await listActiveWalkinsForAlarm(branchId!)
+      if (inFlight) return
+      inFlight = true
+      let sessions: Awaited<ReturnType<typeof listActiveWalkinsForAlarm>>['sessions']
+      try {
+        sessions = (await listActiveWalkinsForAlarm(branchId!)).sessions
+      } catch {
+        // A dropped connection / deploy mismatch is noise for a background
+        // poll; the next tick retries.
+        return
+      } finally {
+        inFlight = false
+      }
       if (cancelled) return
       const now = Date.now()
       const stillAlarmed = new Set<string>()
