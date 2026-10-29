@@ -1,10 +1,10 @@
 import 'server-only'
-import { and, eq, inArray, isNull, or, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, or, isNotNull } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
 import type * as schema from '@/db/schema'
 import { auditLog, bookingSettings, bookings, bookingSlots, tenants, workingHours } from '@/db/schema'
-import { checkoutWalkinCore } from './walkin'
+import { checkoutWalkinCore, WALKIN_LATE_CHECKOUT_MAX_DAYS } from './walkin'
 import { walkinCloseDeadline, type DayHours } from './walkin-auto-close-rules'
 
 type Db = NodePgDatabase<typeof schema>
@@ -59,7 +59,9 @@ export async function autoCloseOverdueWalkins(
         opts.tenantId ? eq(bookings.tenantId, opts.tenantId) : undefined,
       ),
     )
-    .orderBy(bookingSlots.startsAt)
+    // Newest first: a tab too old to ever close (see the window filter below)
+    // must not sit at the front of the queue and crowd newer ones out.
+    .orderBy(desc(bookingSlots.startsAt))
     .limit(1000)
   if (open.length === 0) return { closed: 0, failed: 0 }
 
@@ -97,6 +99,12 @@ export async function autoCloseOverdueWalkins(
       }),
     }))
     .filter((o): o is typeof o & { deadline: Date } => o.deadline !== null && o.deadline.getTime() <= now.getTime())
+    // checkoutWalkinCore refuses an end older than the late-checkout window, so
+    // such a tab can never auto-close: leave it for staff instead of retrying it
+    // (and counting it as failed) on every sweep.
+    .filter((o) => now.getTime() - o.deadline.getTime() <= WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000)
+    // Oldest deadline first among the closeable ones.
+    .sort((a, b) => a.deadline.getTime() - b.deadline.getTime())
     .slice(0, limit)
 
   let closed = 0
@@ -138,6 +146,13 @@ export async function autoCloseOverdueWalkins(
 
 /** Per-tenant gap between request-triggered sweeps, per server instance. */
 const SWEEP_INTERVAL_MS = 30_000
+/**
+ * Most tabs one request-triggered sweep closes. The sweep runs inline on a read
+ * (the Sessions list and the alarm poll), so a long gap must not make that read
+ * wait for dozens of sequential transactions; the rest close on the next sweep.
+ * The cron / manual run keeps the larger default.
+ */
+export const REQUEST_SWEEP_LIMIT = 10
 const lastSweep = new Map<string, number>()
 
 /**
@@ -155,7 +170,7 @@ export async function sweepOverdueWalkinsForTenant(tenantId: string, now: Date =
   if (last !== undefined && now.getTime() - last < SWEEP_INTERVAL_MS) return
   lastSweep.set(tenantId, now.getTime())
   try {
-    await autoCloseOverdueWalkins({ tenantId, now })
+    await autoCloseOverdueWalkins({ tenantId, now, limit: REQUEST_SWEEP_LIMIT })
   } catch (e) {
     console.error('[auto-close-walkins] sweep failed:', e instanceof Error ? e.message : 'unknown')
   }
