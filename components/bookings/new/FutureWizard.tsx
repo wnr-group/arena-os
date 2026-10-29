@@ -419,6 +419,10 @@ export function FutureWizard({
   const [phoneChecked, setPhoneChecked] = useState(false)
   const [existingCustomerName, setExistingCustomerName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Set when the server refused the time for the venue's hours/grid AND the
+  // signed-in user is a manager/owner who may override it with a reason.
+  const [canOverrideGrid, setCanOverrideGrid] = useState(false)
+  const [gridReason, setGridReason] = useState('')
   // Plain state, not useTransition — router.push() called from inside a
   // startTransition's async callback (after an await) was silently getting
   // dropped: React ends OUR transition the moment this callback returns,
@@ -610,9 +614,11 @@ export function FutureWizard({
         ],
         headCount: takesPlayers ? headCount : undefined,
         advanceTenders,
+        gridOverrideReason: canOverrideGrid && gridReason.trim() ? gridReason.trim() : undefined,
       })
       if (r.error) {
         setError(r.error)
+        setCanOverrideGrid(Boolean(r.gridRefusal?.canOverride))
         setPending(false)
       } else {
         toast.success(`Booking ${r.bookingNumber} created.`)
@@ -1173,6 +1179,24 @@ export function FutureWizard({
             </div>
 
             {error && <p className={wizardError}>{error}</p>}
+            {canOverrideGrid && (
+              <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                <label className="text-sm font-medium" htmlFor="grid-override-reason">
+                  Manager override — why book outside the usual hours or slot grid?
+                </label>
+                <input
+                  id="grid-override-reason"
+                  value={gridReason}
+                  onChange={(e) => setGridReason(e.target.value)}
+                  maxLength={500}
+                  placeholder="e.g. Private party, venue opening late for them"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-base"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Enter a reason, then press Confirm booking again. This is recorded in the audit log.
+                </p>
+              </div>
+            )}
             <WizardFooter
               onBack={() => setStep(2)}
               onNext={submit}

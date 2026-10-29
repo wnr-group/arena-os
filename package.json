@@ -60,6 +60,7 @@
     "test:report-presets-qa": "tsx --import ./scripts/server-only-hook.mjs scripts/test-report-presets-qa.ts",
     "test:booking-settings": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-settings.ts",
     "test:booking-reschedule": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-booking-reschedule.ts",
+    "test:slot-grid-override": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-slot-grid-override.ts",
     "test:slot-step": "tsx --import ./scripts/server-only-hook.mjs scripts/test-slot-step.ts",
     "test:booking-horizon": "tsx --import ./scripts/server-only-hook.mjs scripts/test-booking-horizon.ts",
     "test:booking-horizon-enforcement": "tsx --import ./scripts/server-only-hook.mjs --import ./scripts/next-runtime-hook.mjs scripts/test-booking-horizon-enforcement.ts",

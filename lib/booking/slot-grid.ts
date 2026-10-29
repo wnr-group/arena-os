@@ -44,6 +44,51 @@ export function slotGridError(
   return null
 }
 
+/** A refusal by the grid rule, as opposed to any other booking error: the one a
+ *  manager may override (with a reason, audited) from the staff paths. */
+export class GridRefusedError extends BookingError {
+  /** True when the caller is a manager/owner and could retry with an override reason. */
+  constructor(
+    message: string,
+    readonly canOverride = false,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * First grid violation among `slots`, or null when all sit on the grid. Split
+ * out of assertSlotsOnGrid so a staff path can decide whether a manager override
+ * applies before refusing.
+ */
+export async function slotsGridError(
+  tx: DB,
+  ctx: { tenantId: string; timezone: string },
+  branchId: string,
+  slots: { startsAt: string; endsAt: string; setupId?: string }[],
+  opts: { endOnly?: boolean } = {},
+): Promise<string | null> {
+  const { slotStepMinutes } = await getBookingSettingsCore(tx, ctx.tenantId)
+  for (const s of slots) {
+    if (s.setupId) continue
+    const startsAt = new Date(s.startsAt)
+    const endsAt = new Date(s.endsAt)
+    const dow = weekdayInZone(todayInZone(ctx.timezone, startsAt), ctx.timezone)
+    const [row] = await tx
+      .select({
+        openTime: workingHours.openTime,
+        closeTime: workingHours.closeTime,
+        isClosed: workingHours.isClosed,
+        open24h: workingHours.open24h,
+      })
+      .from(workingHours)
+      .where(and(eq(workingHours.branchId, branchId), eq(workingHours.dayOfWeek, dow)))
+    const err = slotGridError({ startsAt, endsAt }, ctx.timezone, row ?? DEFAULT_HOURS, slotStepMinutes, opts)
+    if (err) return err
+  }
+  return null
+}
+
 /**
  * Enforce the grid for reserved (future) bookings made through the staff wizard
  * and the public storefront. Reads the venue step and the branch's working hours
@@ -61,22 +106,28 @@ export async function assertSlotsOnGrid(
   slots: { startsAt: string; endsAt: string; setupId?: string }[],
   opts: { endOnly?: boolean } = {},
 ): Promise<void> {
-  const { slotStepMinutes } = await getBookingSettingsCore(tx, ctx.tenantId)
-  for (const s of slots) {
-    if (s.setupId) continue
-    const startsAt = new Date(s.startsAt)
-    const endsAt = new Date(s.endsAt)
-    const dow = weekdayInZone(todayInZone(ctx.timezone, startsAt), ctx.timezone)
-    const [row] = await tx
-      .select({
-        openTime: workingHours.openTime,
-        closeTime: workingHours.closeTime,
-        isClosed: workingHours.isClosed,
-        open24h: workingHours.open24h,
-      })
-      .from(workingHours)
-      .where(and(eq(workingHours.branchId, branchId), eq(workingHours.dayOfWeek, dow)))
-    const err = slotGridError({ startsAt, endsAt }, ctx.timezone, row ?? DEFAULT_HOURS, slotStepMinutes, opts)
-    if (err) throw new BookingError(err)
-  }
+  const err = await slotsGridError(tx, ctx, branchId, slots, opts)
+  if (err) throw new GridRefusedError(err)
+}
+
+/**
+ * The staff-path decision: enforce the grid, but let a manager/owner override it
+ * with a reason. Returns the refusal that was overridden (for the audit row), or
+ * null when the slots are on the grid. Throws GridRefusedError otherwise — with
+ * `canOverride` telling the UI whether a manager may retry with a reason.
+ *
+ * The role check is HERE, on the server, from the authenticated context; a
+ * `reason` sent by a cashier is ignored.
+ */
+export async function resolveGridOverride(
+  tx: DB,
+  ctx: { tenantId: string; timezone: string },
+  branchId: string,
+  slots: { startsAt: string; endsAt: string; setupId?: string }[],
+  who: { mayOverride: boolean; reason?: string },
+): Promise<string | null> {
+  const err = await slotsGridError(tx, ctx, branchId, slots)
+  if (!err) return null
+  if (who.mayOverride && who.reason?.trim()) return err
+  throw new GridRefusedError(err, who.mayOverride)
 }

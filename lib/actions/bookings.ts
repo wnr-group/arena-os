@@ -8,13 +8,14 @@ import { withUser } from '@/db'
 import { bookings, bookingSlots, paymentIntents } from '@/db/schema'
 import { hasUnconsumedAdvance } from '@/lib/booking/advance-ledger'
 import { sweepTenantHolds } from '@/lib/booking/payment-hold'
-import { assertSlotsOnGrid } from '@/lib/booking/slot-grid'
+import { GridRefusedError, resolveGridOverride } from '@/lib/booking/slot-grid'
+import { writeAudit } from '@/lib/billing/invoice'
 import { planReschedule, rescheduleBookingCore } from '@/lib/booking/reschedule'
 import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settings-server'
 import { todayInZone } from '@/lib/booking/time'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { sendBookingRescheduledNotification } from '@/lib/notifications/booking-reschedule'
-import { canManageWalkins } from '@/lib/auth/roles'
+import { canManageWalkins, isManager } from '@/lib/auth/roles'
 import {
   createBookingCore,
   priceBookingSlots,
@@ -52,10 +53,17 @@ import { isValidPhone } from '@/lib/customers/phone'
 import { findCustomerByRawPhone } from '@/lib/customers/service'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
-type CreateResult = { error?: string; bookingId?: string; bookingNumber?: string; reservationConflict?: boolean }
-type Result = { error?: string; reservationConflict?: boolean }
+type CreateResult = {
+  error?: string
+  bookingId?: string
+  bookingNumber?: string
+  reservationConflict?: boolean
+  gridRefusal?: { canOverride: boolean }
+}
+type Result = { error?: string; reservationConflict?: boolean; gridRefusal?: { canOverride: boolean } }
 
 function fail(e: unknown): Result {
+  if (e instanceof GridRefusedError) return { error: e.message, gridRefusal: { canOverride: e.canOverride } }
   if (e instanceof AuthError || e instanceof BookingError || e instanceof BillingError) return { error: e.message }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
   const pg = pgError(e)
@@ -120,6 +128,12 @@ const createInput = z.object({
   // slot's resource type turns out to be per_head; meaningless and ignored
   // otherwise.
   headCount: z.coerce.number().int().min(1).max(1000).optional(),
+  /**
+   * Manager/owner override of the slot-grid rule (outside working hours, off the
+   * step grid). Honoured ONLY for those roles, only when the grid actually
+   * refuses, and always audited with this reason.
+   */
+  gridOverrideReason: z.string().trim().min(1).max(500).optional(),
 })
 
 /** Server action: create a booking across one or more resource slots for the signed-in tenant. */
@@ -133,9 +147,23 @@ export async function createBooking(input: z.input<typeof createInput>): Promise
 
     const bookingCtx = { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId }
     const result = await withUser(ctx.user.id, async (tx) => {
-      // The wizard only ever offers grid times; refuse a hand-built request that isn't on it.
-      await assertSlotsOnGrid(tx, bookingCtx, v.branchId, v.slots)
-      return createBookingCore(tx, bookingCtx, v)
+      // The wizard only ever offers grid times; refuse a request that isn't on it
+      // unless a manager/owner overrides with a reason (checked HERE, server-side).
+      const gridError = await resolveGridOverride(tx, bookingCtx, v.branchId, v.slots, {
+        mayOverride: isManager(ctx.role),
+        reason: v.gridOverrideReason,
+      })
+      const created = await createBookingCore(tx, bookingCtx, v)
+      if (gridError) {
+        await writeAudit(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, {
+          action: 'booking.grid_override',
+          entityType: 'booking',
+          entityId: created.id,
+          before: {},
+          after: { refusal: gridError, reason: v.gridOverrideReason, slots: v.slots.map((s) => ({ startsAt: s.startsAt, endsAt: s.endsAt })) },
+        })
+      }
+      return created
     })
 
     revalidatePath('/bookings')
@@ -989,6 +1017,8 @@ const rescheduleInput = z.object({
   /** The slot start the dialog loaded; a mismatch means the booking changed underneath. */
   expectedStartsAt: z.string().datetime(),
   reason: z.string().trim().min(1, 'Give a reason for the change.').max(500),
+  /** Allow a window outside working hours / off the step grid (audited with the reason). */
+  allowOffGrid: z.boolean().optional(),
 })
 
 const quoteInput = rescheduleInput.omit({ reason: true })
@@ -1105,6 +1135,7 @@ export async function quoteReschedule(raw: z.input<typeof quoteInput>): Promise<
           newStartsAt: new Date(v.startsAt),
           newEndsAt: new Date(v.endsAt),
           expectedStartsAt: new Date(v.expectedStartsAt),
+          allowOffGrid: v.allowOffGrid,
         },
         { lock: false },
       ),
@@ -1142,6 +1173,7 @@ export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): P
           newEndsAt: new Date(v.endsAt),
           expectedStartsAt: new Date(v.expectedStartsAt),
           reason: v.reason,
+          allowOffGrid: v.allowOffGrid,
         },
       ),
     )

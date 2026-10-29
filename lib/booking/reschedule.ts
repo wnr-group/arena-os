@@ -51,7 +51,7 @@ import { BookingError } from './booking-error'
 import { rescheduleSlotAddons } from './addons'
 import { assertWithinAdvanceWindow, priceBookingSlots, type PricedBookingSlot } from './service'
 import { getBookingSettingsCore } from './settings'
-import { assertSlotsOnGrid } from './slot-grid'
+import { GridRefusedError, slotsGridError } from './slot-grid'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -64,9 +64,14 @@ export type RescheduleInput = {
   /** The slot start the caller saw. A mismatch means someone else changed the booking meanwhile. */
   expectedStartsAt: Date
   reason?: string
+  /** Manager override of the slot-grid rule. Callers must already be role-gated
+   *  (rescheduling is manager-only); the refusal is audited with `reason`. */
+  allowOffGrid?: boolean
 }
 
 export type ReschedulePlan = {
+  /** The grid refusal that was overridden, or null when the window is on the grid. */
+  gridOverride: string | null
   bookingId: string
   bookingNumber: string
   status: 'confirmed' | 'checked_in'
@@ -189,7 +194,8 @@ export async function planReschedule(
   }
 
   const window = [{ startsAt: input.newStartsAt.toISOString(), endsAt: input.newEndsAt.toISOString() }]
-  await assertSlotsOnGrid(tx, ctx, booking.branchId, window, { endOnly })
+  const gridError = await slotsGridError(tx, ctx, booking.branchId, window, { endOnly })
+  if (gridError && !input.allowOffGrid) throw new GridRefusedError(gridError, true)
   if (!endOnly) {
     await assertWithinAdvanceWindow(tx, ctx, [{ startsAt: input.newStartsAt, endsAt: input.newEndsAt }])
   }
@@ -239,6 +245,7 @@ export async function planReschedule(
   }
 
   return {
+    gridOverride: gridError,
     bookingId: booking.id,
     bookingNumber: booking.bookingNumber,
     status: booking.status,
@@ -319,6 +326,7 @@ export async function rescheduleBookingCore(
         total: plan.newTotal.toFixed(2),
         discount: plan.newDiscount.toFixed(2),
         reason: input.reason.trim(),
+        ...(plan.gridOverride ? { gridOverride: plan.gridOverride } : {}),
         refundReviewFlagged: plan.needsRefundReview,
         discountClamped: plan.discountClamped,
       },
