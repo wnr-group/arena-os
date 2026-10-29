@@ -1,5 +1,5 @@
 /**
- * Tenant-composite FKs + order stock-movement guard (migration 0175) against a
+ * Tenant-composite FKs + order stock-movement guard (migrations 0175, 0176) against a
  * real database, driven as the app role (arena_app) so RLS and the FKs both apply.
  *
  *   npx tsx --import ./scripts/server-only-hook.mjs scripts/verify-tenant-fk-hardening.ts
@@ -161,6 +161,35 @@ async function main() {
   check('stock: a restore up to what the order took is accepted', (await sm({ delta: '2', source: A.orderId })) === 'ok')
   check('stock: ...a restore beyond it is refused', (await sm({ delta: '0.001', source: A.orderId })) === '23514')
   check('stock: on-hand never went positive from those attempts', Number((await q(`select quantity from stock_items where id=$1`, [A.stockId]))[0].quantity) === 0)
+
+  // ── order_item_stock_usage (0176) ─────────────────────────────────────────
+  const usage = (item: string) =>
+    code(() =>
+      asA((tx) =>
+        tx.execute(sql`insert into order_item_stock_usage (tenant_id,order_item_id,stock_item_id,per_portion)
+                       values (${A.tenantId}, ${item}, ${A.stockId}, 1)`),
+      ),
+    )
+  check("order_item_stock_usage: another tenant's ORDER LINE is refused", (await usage(B.itemId)) === '23503')
+  check('order_item_stock_usage: own order line is accepted', (await usage(A.itemId)) === 'ok')
+
+  // ── guard is race-safe (0176) ─────────────────────────────────────────────
+  const race = await q(`insert into stock_items (tenant_id,branch_id,name,unit) values ($1,$2,'Race','kg') returning id`, [A.tenantId, A.branchId])
+  const raceId = race[0].id as string
+  const raceMove = (delta: string) =>
+    code(() =>
+      asA((tx) =>
+        tx.execute(sql`insert into stock_movements (tenant_id,stock_item_id,delta,source_type,source_id)
+                       values (${A.tenantId}, ${raceId}, ${delta}, 'order', ${A.orderId})`),
+      ),
+    )
+  check('race: deduct 1', (await raceMove('-1')) === 'ok')
+  const results = await Promise.all([raceMove('1'), raceMove('1')])
+  check('race: two concurrent restores of one unit — exactly one succeeds', results.filter((r) => r === 'ok').length === 1 && results.filter((r) => r === '23514').length === 1)
+  check(
+    'race: net for the (item, order) never exceeds zero',
+    Number((await q(`select coalesce(sum(delta),0) as n from stock_movements where stock_item_id=$1 and source_id=$2`, [raceId, A.orderId]))[0].n) === 0,
+  )
 
   for (const t of [A, B]) {
     for (const tbl of ['stock_movements', 'print_jobs', 'kot_items', 'kots', 'invoices', 'order_items', 'orders', 'menu_items', 'menu_categories', 'stock_items']) {
