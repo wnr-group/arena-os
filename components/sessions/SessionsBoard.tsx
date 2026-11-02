@@ -448,7 +448,7 @@ function SessionCard({
               : s.autoClosed.limitMinutes === null
                 ? '"close at closing time"'
                 : '"close after a set time / at closing time"'}{' '}
-            rule. Billed up to then — reopen the tab if the customer is still playing.
+            rule. Billed up to then.
           </span>
         </p>
       )}
