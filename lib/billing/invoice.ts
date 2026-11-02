@@ -36,6 +36,7 @@ import {
   type RedeemedLoyalty,
 } from './loyalty'
 import { paise } from './payments'
+import { releaseHeldLinesIfCoursesOff } from '@/lib/kots/kds'
 import { deductStockForOrders } from '@/lib/inventory/deduct'
 import {
   computeServiceCharge,
@@ -591,7 +592,8 @@ export async function lockOpenFoodOrders(
  * (migration 0147) is on the tab but not yet fired, so billing it would charge
  * for food that is never made — and a later Fire would reopen a ticket for an
  * already-paid order. Staff fire it, or void it, first. (Turning course firing
- * off releases every held line, so this only ever trips while it is on.)
+ * unusable (flags off, or the plan lost the KDS) releases every held line before
+ * this runs, so it only ever trips while course firing can actually be done.)
  */
 export async function assertNoHeldCourses(tx: Db, tenantId: string, orderIds: readonly string[]): Promise<void> {
   if (orderIds.length === 0) return
@@ -924,6 +926,10 @@ export async function prepareBookingBill(
   // "whatever is open" and later flipping "whatever is open" are two different
   // sets under concurrency — see lockOpenFoodOrders() for what that cost.
   const billedOrderIds = await lockOpenFoodOrders(tx, tenant.id, booking.id)
+  // Held lines nobody can fire any more (courses off, or the plan lost the KDS)
+  // are released and sent to the kitchen first, so the bill is never blocked on
+  // an action the cashier cannot take.
+  await releaseHeldLinesIfCoursesOff(tx, tenant.id, { orderIds: billedOrderIds })
   await assertNoHeldCourses(tx, tenant.id, billedOrderIds)
 
   const lines = await loadBillLines(

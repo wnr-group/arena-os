@@ -72,6 +72,35 @@ export function reservationBlocksWalkin(
   return r.startsAt.getTime() < now.getTime() + bufferMinutes * MIN
 }
 
+/** An open session that has overrun its expected length still holds its table
+ *  for at least this much longer — the same "can't plausibly be vacated" window
+ *  freeTablesForWindow always used. */
+export const OVERRUN_HOLD_MINUTES = 30
+
+/** A table with a party seated (an open table session): when it was seated and
+ *  how long it was expected to last (reserved_minutes; walk-ins have none). */
+export type OpenSession = { checkedInAt: Date; reservedMinutes: number | null }
+
+/**
+ * When an open session is expected to free its table: seated time + the
+ * reservation length (or the venue default for a walk-in), but never earlier
+ * than OVERRUN_HOLD_MINUTES from now — a party still seated past their time has
+ * not left yet.
+ */
+export function openSessionOccupiedUntil(s: OpenSession, now: Date, defaultMinutes: number): Date {
+  const expected = s.checkedInAt.getTime() + (s.reservedMinutes ?? defaultMinutes) * MIN
+  return new Date(Math.max(expected, now.getTime() + OVERRUN_HOLD_MINUTES * MIN))
+}
+
+/**
+ * Seated parties have no booking_slots row (a table session has no time window),
+ * so the slot exclusion constraint can't see them. This is the rule that does:
+ * does the open session still hold the table during [start, end)?
+ */
+export function openSessionBlocksWindow(s: OpenSession, start: Date, end: Date, now: Date, defaultMinutes: number): boolean {
+  return start.getTime() < openSessionOccupiedUntil(s, now, defaultMinutes).getTime() && end.getTime() > s.checkedInAt.getTime()
+}
+
 export type ReservationStatusLabel = 'upcoming' | 'due' | 'late' | 'seated' | 'no_show' | 'cancelled' | 'completed'
 
 /**
@@ -114,4 +143,26 @@ export function validateReservationSettings(s: ReservationSettings): string | nu
   }
   if (s.publicEnabled && !s.enabled) return 'Turn reservations on before opening them to the public.'
   return null
+}
+
+/** Most future, unseated reservations one phone number may hold on the public
+ *  site. The phone is unverified, so this bounds how many tables a single
+ *  caller can sit on; staff are not subject to it. */
+export const PUBLIC_MAX_OPEN_RESERVATIONS_PER_PHONE = 3
+
+export type TableSeats = { minSeats: number | null; maxSeats: number | null }
+
+/** Whether a party of `partySize` may be put on a table. A NULL bound is "no
+ *  limit" on that side, so a table with no seats set takes any party. */
+export function tableFitsParty(t: TableSeats, partySize: number): boolean {
+  if (t.minSeats !== null && partySize < t.minSeats) return false
+  if (t.maxSeats !== null && partySize > t.maxSeats) return false
+  return true
+}
+
+/** Whether `start` lies on the venue's start-time grid — every
+ *  RESERVATION_SLOT_MINUTES from opening, the same grid the picker offers. */
+export function isOnSlotGrid(start: Date, open: Date): boolean {
+  const step = RESERVATION_SLOT_MINUTES * 60_000
+  return (start.getTime() - open.getTime()) % step === 0
 }

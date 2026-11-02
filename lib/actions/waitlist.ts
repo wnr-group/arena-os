@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireContext, AuthError } from '@/lib/auth/guard'
 import { canManageWalkins } from '@/lib/auth/roles'
+import { assertCanOverride } from '@/lib/reservations/guard'
 import { BookingError } from '@/lib/booking/service'
 import { isValidPhone } from '@/lib/customers/phone'
 import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement-guard'
@@ -130,6 +131,7 @@ export async function seatFromWaitlist(
   try {
     const ctx = await requireHost()
     const v = seatInput.parse(input)
+    assertCanOverride(ctx.role, v.overrideReservation)
     const r = await withUser(ctx.user.id, (tx) => seatWaitlistEntryCore(tx, actorOf(ctx), v))
     revalidatePath('/waitlist')
     revalidatePath('/floor')

@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
+import type { KotOrderRef } from '@/lib/kots/service'
+import { sendOrderReadyNotification } from '@/lib/notifications/service'
 import { canManageIncomingOrders } from '@/lib/auth/roles'
 import {
   OrderError,
@@ -45,7 +47,7 @@ const createInput = z.object({
       z.object({
         menuItemId: z.string().uuid(),
         qty: z.coerce.number().int().min(1),
-        specialInstructions: z.string().trim().optional(),
+        specialInstructions: z.string().trim().max(300).optional(),
         // Structured choices (M17 #8) — see CreateOrderItemInput's doc
         // comment (lib/orders/service.ts) for what createOrderCore does
         // with these.
@@ -126,6 +128,22 @@ export async function cancelOrder(orderId: string): Promise<Result> {
   }
 }
 
+/**
+ * A removal/void that finished the kitchen ticket is a "ready" just like a bump,
+ * so the customer gets the same notification. Best-effort, in its own
+ * transaction AFTER the change committed — a notification hiccup must never fail
+ * (or roll back) the removal. The ref is only set when that call moved the ticket
+ * to ready, so this fires once per ready.
+ */
+async function notifyKotReady(userId: string, tenantId: string, ref: KotOrderRef | null | undefined): Promise<void> {
+  if (!ref) return
+  try {
+    await withUser(userId, (tx) => sendOrderReadyNotification(tx, { tenantId }, ref))
+  } catch (e) {
+    console.error('[orders] order-ready notification failed:', e instanceof Error ? e.message : e)
+  }
+}
+
 const editOrderItemQuantityInput = z.object({
   orderItemId: z.string().uuid(),
   newQty: z.preprocess(
@@ -155,6 +173,7 @@ export async function editOrderItemQuantity(
     const result = await withUser(ctx.user.id, (tx) =>
       editOrderItemQuantityCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
+    await notifyKotReady(ctx.user.id, ctx.tenant.id, result.kotReady)
     revalidatePath('/bookings')
     revalidatePath('/kitchen')
     return { removed: result.removed }
@@ -167,9 +186,10 @@ export async function editOrderItemQuantity(
 export async function removeOrderItem(orderItemId: string): Promise<Result> {
   try {
     const ctx = await requireContext()
-    await withUser(ctx.user.id, (tx) =>
+    const result = await withUser(ctx.user.id, (tx) =>
       removeOrderItemCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, { orderItemId }),
     )
+    await notifyKotReady(ctx.user.id, ctx.tenant.id, result.kotReady)
     revalidatePath('/bookings')
     revalidatePath('/kitchen')
     return {}
@@ -252,6 +272,7 @@ export async function requestVoidOrderItem(
     const result = await withUser(ctx.user.id, (tx) =>
       requestVoidOrderItemCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId, role: ctx.role }, v),
     )
+    await notifyKotReady(ctx.user.id, ctx.tenant.id, result.kotReady)
     revalidatePath('/bookings')
     revalidatePath('/floor')
     if (result.status === 'approved') revalidatePath('/kitchen')
@@ -283,9 +304,10 @@ export async function decideVoidRequest(input: z.input<typeof decideVoidRequestI
       throw new AuthError('Void/comp is only available for restaurant tenants.')
     }
     const v = decideVoidRequestInput.parse(input)
-    await withUser(ctx.user.id, (tx) =>
+    const result = await withUser(ctx.user.id, (tx) =>
       decideVoidRequestCore(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, v),
     )
+    await notifyKotReady(ctx.user.id, ctx.tenant.id, result.kotReady)
     revalidatePath('/bookings')
     revalidatePath('/floor')
     revalidatePath('/kitchen')

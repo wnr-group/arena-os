@@ -4,7 +4,7 @@ import { useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Loader2 } from 'lucide-react'
-import { cancelEventRegistration, checkInEventRegistration } from '@/lib/actions/events'
+import { cancelEventRegistration, checkInEventRegistration, markEventRefunded } from '@/lib/actions/events'
 import {
   EVENT_REGISTRATION_STATUS_LABELS,
   type EventRegistrationStatus,
@@ -30,6 +30,7 @@ type Entrant = {
   teamName: string | null
   paidAmount: string
   refundRequired: boolean
+  refundDueAmount: string
   waitlistPosition: number | null
   /** ISO string — Dates do not cross the server/client boundary. */
   createdAt: string
@@ -117,6 +118,23 @@ export function EventEntrantsTable({
                       }
                     >
                       {pending ? <Loader2 size={13} className="animate-spin" /> : 'Check in'}
+                    </button>
+                  )}
+                  {e.refundRequired && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
+                      onClick={() => {
+                        const due = Number(e.refundDueAmount)
+                        const reference = window.prompt(
+                          `Refund of ${formatMoney(due, currency)} sent? Enter the transfer reference to mark it refunded.`,
+                        )
+                        if (!reference?.trim()) return
+                        run(() => markEventRefunded(e.registrationId, due, reference), 'Marked as refunded.')
+                      }}
+                    >
+                      Mark refunded
                     </button>
                   )}
                   {e.status !== 'cancelled' && (

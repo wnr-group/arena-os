@@ -1,6 +1,8 @@
 import 'server-only'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { unstable_cache } from 'next/cache'
 import { cache } from 'react'
+import { LIVE_CACHE_SECONDS, liveTag } from './public-live-cache'
 import { withPublicTenant } from '@/db'
 import { branches, eventMatches, events } from '@/db/schema'
 import {
@@ -143,14 +145,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * `cache()` dedupes within a single render pass, so the page body and
  * generateMetadata() share one read instead of issuing two.
  */
-export const getPublicEventLive = cache(async function getPublicEventLive(
+async function loadPublicEventLive(
   tenantId: string,
   eventId: string,
 ): Promise<PublicLiveView | null> {
-  // A malformed id would make Postgres raise 22P02 and surface as a 500 on a
-  // URL somebody simply mistyped. Same guard getPublicEventById uses.
-  if (!UUID_RE.test(eventId)) return null
-
   return withPublicTenant(tenantId, async (tx) => {
     const [row] = await tx
       .select({
@@ -322,6 +320,37 @@ export const getPublicEventLive = cache(async function getPublicEventLive(
       champion,
     }
   })
+}
+
+/**
+ * The cached entry point. The snapshot is shared across viewers for
+ * LIVE_CACHE_SECONDS (keyed by tenant + event, so one venue's cache can never
+ * answer for another) and expired at once by updateTag(liveTag(eventId)) when
+ * staff change the bracket. unstable_cache stores JSON, so the two Dates are
+ * restored on the way out.
+ */
+export const getPublicEventLive = cache(async function getPublicEventLive(
+  tenantId: string,
+  eventId: string,
+): Promise<PublicLiveView | null> {
+  // A malformed id would make Postgres raise 22P02 and surface as a 500 on a
+  // URL somebody simply mistyped. Same guard getPublicEventById uses.
+  if (!UUID_RE.test(eventId)) return null
+
+  const view = await unstable_cache(
+    () => loadPublicEventLive(tenantId, eventId),
+    ['public-event-live', tenantId, eventId],
+    { revalidate: LIVE_CACHE_SECONDS, tags: [liveTag(eventId)] },
+  )()
+  if (!view) return null
+  return {
+    ...view,
+    event: {
+      ...view.event,
+      startsAt: new Date(view.event.startsAt),
+      endsAt: new Date(view.event.endsAt),
+    },
+  }
 })
 
 /**

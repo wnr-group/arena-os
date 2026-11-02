@@ -76,6 +76,8 @@ export default async function ResourcesUnitsPage() {
           typeImageUrl: r.typeImageUrl,
           typeDescription: r.typeDescription,
           qrToken: r.qrToken,
+          minSeats: r.minSeats,
+          maxSeats: r.maxSeats,
         }))}
         setupsByResource={setupsByResource}
       />

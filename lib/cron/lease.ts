@@ -12,8 +12,8 @@ import { ownerDb, type DB } from '@/db'
  * running again without any error. A lease is two ordinary statements, and it
  * expires: a killed run delays the next by at most `ttlMs`.
  *
- * Take it for longer than the job can run (budget + a margin for the last unit of
- * work), because nothing renews it.
+ * Take it for the job's budget plus a margin, and call renewLease() before each
+ * unit of work so a unit that overruns cannot let a second run start.
  */
 export type Lease = { name: string; holder: string }
 
@@ -28,6 +28,20 @@ export async function acquireLease(name: string, ttlMs: number, db: DB = ownerDb
      where public.job_leases.held_until < now()
     returning holder`)
   return r.rows.length > 0 ? { name, holder } : null
+}
+
+/**
+ * Push the lease's expiry out to at least now + ttlMs, only while `lease` is
+ * still the holder. Returns false if it was lost (expired and taken over), so a
+ * long job can stop instead of overlapping a newer run. Never shortens a lease.
+ */
+export async function renewLease(lease: Lease, ttlMs: number, db: DB = ownerDb): Promise<boolean> {
+  const r = await db.execute(sql`
+    update public.job_leases
+       set held_until = greatest(held_until, now() + make_interval(secs => ${ttlMs / 1000}))
+     where name = ${lease.name} and holder = ${lease.holder}
+    returning holder`)
+  return r.rows.length > 0
 }
 
 /** Free the lease early. Only the holder's own row is touched; never throws. */

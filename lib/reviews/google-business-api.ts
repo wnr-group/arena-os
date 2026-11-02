@@ -285,6 +285,9 @@ export function describeApiFailure(status: number, body: string): GoogleApiError
  * `fetchImpl` is a parameter for exactly that reason: the paging and error
  * handling below can be exercised with a stub `fetch`, without a network.
  */
+/** Default cap on one tenant's whole fetch; the Vercel limit for a "Sync now" click is 60s. */
+export const MAX_FETCH_MS = 45_000
+
 export function createGoogleReviewFetcher(
   fetchImpl: typeof fetch = fetch,
   exchange: (
@@ -292,8 +295,11 @@ export function createGoogleReviewFetcher(
     clientId: string,
     clientSecret: string,
   ) => Promise<string> = defaultExchange,
+  /** Total wall-clock cap for one tenant's fetch (token exchange + all pages). */
+  maxMs: number = MAX_FETCH_MS,
 ): FetchGoogleReviews {
   return async ({ accountId, locationId, clientId, clientSecret, refreshToken }) => {
+    const deadline = Date.now() + maxMs
     const accessToken = await exchange(refreshToken, clientId, clientSecret)
 
     const out: GoogleReviewFromApi[] = []
@@ -304,6 +310,13 @@ export function createGoogleReviewFetcher(
     // nextPageToken would otherwise spin forever against a shared quota. 40
     // pages of 50 is 2,000 reviews, far past what a homepage will ever show.
     for (let page = 0; page < 40; page++) {
+      // Out of time: return the prefix, marked truncated (so nothing is pruned
+      // on the strength of an incomplete list) rather than run past the host's
+      // function limit. The next sync continues the cache from the top.
+      if (page > 0 && Date.now() >= deadline) {
+        truncated = true
+        break
+      }
       let res: Response
       try {
         res = await fetchImpl(reviewsUrl(accountId, locationId, pageToken), {

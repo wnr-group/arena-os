@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Loader2, Pause, Play, Plus, Repeat, Trash2, X } from 'lucide-react'
 import {
+  createSkippedOccurrence,
   deleteEventSeries,
+  dismissSkippedOccurrence,
   setEventSeriesActive,
   upsertEventSeries,
 } from '@/lib/actions/event-series'
@@ -61,6 +63,14 @@ type Series = {
 
 type Branch = { id: string; name: string }
 
+/** An occurrence the job skipped because its stations were already booked. */
+export type SeriesSkip = {
+  id: string
+  seriesTitle: string
+  occurrencePeriod: string
+  reason: string
+}
+
 const input =
   'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30'
 const label = 'text-sm font-medium text-muted-foreground'
@@ -78,9 +88,11 @@ function describe(s: Series): string {
 export function EventSeriesManager({
   series,
   branches,
+  skips = [],
 }: {
   series: Series[]
   branches: Branch[]
+  skips?: SeriesSkip[]
 }) {
   const router = useRouter()
   const confirm = useConfirm()
@@ -121,6 +133,47 @@ export function EventSeriesManager({
           </span>
         </button>
       </div>
+
+      {skips.length > 0 && (
+        <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+            Skipped occurrences ({skips.length})
+          </h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            These were not created because their stations were already booked. “Create anyway” makes the
+            event without holding stations; set those on the event afterwards.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {skips.map((k) => (
+              <li key={k.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <div className="min-w-0">
+                  <span className="font-medium">{k.seriesTitle}</span>
+                  <span className="text-muted-foreground"> · {k.occurrencePeriod}</span>
+                  <p className="text-xs text-muted-foreground">{k.reason}</p>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => run(() => createSkippedOccurrence(k.id), 'Occurrence created.')}
+                    className={`${btn} bg-primary text-primary-foreground hover:opacity-90`}
+                  >
+                    Create anyway
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => run(() => dismissSkippedOccurrence(k.id), 'Dismissed.')}
+                    className={`${btn} border border-border hover:bg-muted`}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {series.length === 0 ? (
         <p className="mt-4 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">

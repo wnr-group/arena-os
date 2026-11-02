@@ -268,7 +268,8 @@ async function main() {
     const custId = (await owner.query<{ customer_id: string }>('select customer_id from event_registrations where id=$1', [regs[0]])).rows[0].customer_id
     check('…and no customer id', !blob.includes(custId))
 
-    check('but participant display names ARE present (a bracket needs them)', blob.includes('Player 1'))
+    check('but participant display names ARE present (a bracket needs them)', blob.includes('P. 1.'))
+    check('…as initials only: the stored full name is not published (0178)', !blob.includes('Player 1'))
 
     // event_registrations must be unreadable on the public path entirely.
     const priv = await asPublic(A.tenantId, (tx) =>

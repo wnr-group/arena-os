@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { withUser } from '@/db'
+import { ownerDb, withUser } from '@/db'
 import { requireOwner, AuthError } from '@/lib/auth/guard'
 import { zodErrorMessage } from '@/lib/utils/errors'
 import { saveGoogleOAuthClient, deleteGoogleConnection } from '@/lib/reviews/google-credentials'
@@ -86,9 +86,14 @@ export async function saveGoogleOAuthClientAction(
 export async function disconnectGoogleBusiness(): Promise<Result> {
   try {
     const ctx = await requireOwner()
-    await withUser(ctx.user.id, (tx) => deleteGoogleConnection(ctx.tenant.id, tx))
-    // Owner connection: staff have no DELETE policy on google_reviews.
-    await deleteCachedGoogleReviews(ctx.tenant.id)
+    // ONE transaction on the owner connection (staff have no DELETE policy on
+    // google_reviews): a failure between the two statements cannot leave the
+    // venue disconnected with its reviews still public, or the reverse. The
+    // tenant id is the authenticated owner's own.
+    await ownerDb.transaction(async (tx) => {
+      await deleteGoogleConnection(ctx.tenant.id, tx)
+      await deleteCachedGoogleReviews(ctx.tenant.id, tx)
+    })
     revalidatePath('/settings/business')
     revalidatePath('/')
     return { success: true }

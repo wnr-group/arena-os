@@ -52,7 +52,7 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Table sessions" value={String(r.summary.sessions)} hint={`${r.summary.covers} guests billed`} />
         <StatCard label="Billed sales" value={money(r.summary.billed)} hint="Invoices incl. GST, excl. tips" />
-        <StatCard label="Spend per guest" value={money(r.summary.spendPerCover)} hint="Billed sales ÷ guests" />
+        <StatCard label="Spend per guest" value={money(r.summary.spendPerCover)} hint="Billed sales ÷ guests, for tables where the guest count was recorded" />
         <StatCard
           label="Avg. table time"
           value={mins(r.summary.avgSessionMinutes)}
@@ -211,9 +211,9 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
         ) : (
           <>
             <div className="grid gap-4 p-4 sm:grid-cols-3">
-              <StatCard label="Cost of ingredients used" value={money(r.foodCost.cogs)} hint={r.foodCost.uncosted > 0 ? `${r.foodCost.uncosted} ingredient${r.foodCost.uncosted === 1 ? '' : 's'} not costed yet — real cost is higher` : 'At today’s ingredient costs'} />
-              <StatCard label="Paid food revenue" value={money(r.foodCost.foodRevenue)} hint="Same as Food & Memberships" />
-              <StatCard label="Food cost %" value={r.foodCost.pct === null ? '—' : `${r.foodCost.pct}%`} hint="Ingredients used ÷ paid food revenue" />
+              <StatCard label="Cost of ingredients used" value={money(r.foodCost.cogs)} hint={r.foodCost.uncosted > 0 ? `${r.foodCost.uncosted} ingredient${r.foodCost.uncosted === 1 ? '' : 's'} not costed yet — real cost is higher` : 'At each ingredient’s cost when it was sold'} />
+              <StatCard label="Paid food revenue (ex-GST)" value={money(r.foodCost.foodRevenue)} hint="Food & Memberships figure with GST taken out" />
+              <StatCard label="Food cost %" value={r.foodCost.pct === null ? '—' : `${r.foodCost.pct}%`} hint="Ingredient cost ÷ food revenue, both before GST" />
             </div>
             <Table head={['Ingredient', 'Used', 'Cost / unit', 'Cost']} right={[1, 2, 3]}>
               {r.foodCost.ingredients.map((i) => (
@@ -242,8 +242,9 @@ export default async function RestaurantReportPage({ searchParams }: { searchPar
           </Table>
         )}
         <Note>
-          Ingredients are what sales deducted from stock in this range (dish recipe plus chosen modifiers), priced at today’s cost per unit — change a
-          cost and past figures move with it. Revenue is paid food revenue, so the % is a guide, not an accounting ratio. Per-dish cost uses the menu price.
+          Ingredients are what sales deducted from stock in this range (dish recipe plus chosen modifiers), priced at each ingredient’s cost when it was
+          sold — changing a cost later does not move past figures. Revenue is paid food revenue with GST taken out, so the % is a guide, not an accounting
+          ratio. Per-dish cost uses today’s costs and the menu price.
         </Note>
       </Section>
 

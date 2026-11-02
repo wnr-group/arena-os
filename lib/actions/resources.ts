@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import {
@@ -12,6 +12,8 @@ import {
   holidayRates,
   workingHours,
   taxRates,
+  bookingSlots,
+  events,
   businessProfiles,
 } from '@/db/schema'
 import { requireManager, AuthError } from '@/lib/auth/guard'
@@ -246,6 +248,9 @@ export async function uploadResourceTypeImage(formData: FormData): Promise<{ url
 }
 
 // ── resources ────────────────────────────────────────────────────────────────
+const seatsField = z
+  .preprocess((v) => (v === '' ? null : v), z.union([z.null(), z.coerce.number().int().min(1).max(100)]))
+  .optional()
 const resourceInput = z.object({
   id: z.string().uuid().optional(),
   branchId: z.string().uuid(),
@@ -268,6 +273,14 @@ const resourceInput = z.object({
   imageUrl: z.string().trim().optional(),
   description: z.string().trim().optional(),
   sortOrder: z.coerce.number().int().default(0),
+  // Party sizes a table takes (restaurants). null = no limit on that side;
+  // undefined = leave as stored, so callers that don't know about seats (every
+  // non-restaurant form) never wipe them.
+  minSeats: seatsField,
+  maxSeats: seatsField,
+}).refine((v) => !v.minSeats || !v.maxSeats || v.minSeats <= v.maxSeats, {
+  message: 'Minimum seats can’t exceed maximum seats.',
+  path: ['minSeats'],
 })
 
 export async function upsertResource(input: z.input<typeof resourceInput>): Promise<Result> {
@@ -290,6 +303,8 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
         imageUrl: newImageUrl,
         description: v.description || null,
         sortOrder: v.sortOrder,
+        ...(v.minSeats !== undefined && { minSeats: v.minSeats }),
+        ...(v.maxSeats !== undefined && { maxSeats: v.maxSeats }),
       }
       if (v.id) {
         const [existing] = await tx
@@ -332,6 +347,27 @@ export async function upsertResource(input: z.input<typeof resourceInput>): Prom
 export async function deleteResource(id: string): Promise<Result> {
   try {
     const ctx = await requireManager()
+    // A station held by a live event cannot be deleted either — name the event
+    // rather than the generic "existing bookings" (booking_slots_resource_id_fkey
+    // is the same constraint for a booking's slot and an event's block).
+    const heldBy = await withUser(ctx.user.id, (tx) =>
+      tx
+        .select({ title: events.title })
+        .from(bookingSlots)
+        .innerJoin(events, eq(events.id, bookingSlots.eventId))
+        .where(
+          and(
+            eq(bookingSlots.tenantId, ctx.tenant.id),
+            eq(bookingSlots.resourceId, id),
+            eq(bookingSlots.active, true),
+            or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, new Date())),
+          ),
+        )
+        .limit(1),
+    )
+    if (heldBy[0]) {
+      return { error: `This resource is held for the event “${heldBy[0].title}”. Cancel the event or change its stations first.` }
+    }
     const [row] = await withUser(ctx.user.id, async (tx) => {
       const existing = await tx
         .select({ imageUrl: resources.imageUrl })

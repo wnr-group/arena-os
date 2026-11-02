@@ -34,6 +34,9 @@ function ownerPool(): Pool {
     globalForDb.__ownerPool = new Pool({
       connectionString: process.env.DATABASE_URL_OWNER,
     })
+    // An idle client dropped by the server emits 'error' on the pool; with no
+    // listener that is an uncaught exception that can crash the process.
+    globalForDb.__ownerPool.on('error', (e) => console.error('[db] owner pool error:', e.message))
   }
   return globalForDb.__ownerPool
 }
@@ -41,6 +44,7 @@ function ownerPool(): Pool {
 function appPool(): Pool {
   if (!globalForDb.__appPool) {
     globalForDb.__appPool = new Pool({ connectionString: process.env.DATABASE_URL })
+    globalForDb.__appPool.on('error', (e) => console.error('[db] app pool error:', e.message))
   }
   return globalForDb.__appPool
 }

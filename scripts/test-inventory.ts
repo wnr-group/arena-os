@@ -283,8 +283,20 @@ async function main() {
     const r = await attempt(() => as(A, role, (tx) => tx.insert(schema.stockMovements).values({ tenantId: A.tenantId, stockItemId: cheese.id, delta: '1', sourceType: 'purchase' })))
     check(`${role} ${should ? 'can' : 'cannot'} record a manual stock movement`, should ? r.ok : !r.ok && r.code === '42501')
   }
-  const rOrder = await attempt(() => as(A, 'cashier', (tx) => tx.insert(schema.stockMovements).values({ tenantId: A.tenantId, stockItemId: cheese.id, delta: '-1', sourceType: 'order', sourceId: '11111111-1111-1111-1111-111111111111' })))
-  check("a cashier's sale CAN deduct (source 'order' is open to any member — billing runs as them)", rOrder.ok)
+  const orderMv = (orderId: string | null, delta: string, ten = A.tenantId) => attempt(() => as(A, 'cashier', (tx) => tx.insert(schema.stockMovements).values({ tenantId: ten, stockItemId: cheese.id, delta, sourceType: 'order', sourceId: orderId })))
+  const rOrder = await orderMv(sale.orderId, '-1')
+  check("a cashier's sale CAN deduct against a real order of the tenant (billing runs as them)", rOrder.ok)
+  const rOrphan = await orderMv('11111111-1111-1111-1111-111111111111', '-1')
+  check('an order movement with no such order is refused', !rOrphan.ok && rOrphan.code === '23514')
+  const rNoSrc = await orderMv(null, '-1')
+  check('an order movement with no source is refused', !rNoSrc.ok && rNoSrc.code === '23514')
+  const rPlus = await orderMv(sale.orderId, '1000')
+  check('a cashier cannot insert a positive order movement beyond what the order took (+1000)', !rPlus.ok && rPlus.code === '23514')
+  const tookRow = await q(`select -sum(delta) took from stock_movements where stock_item_id=$1 and source_id=$2 and source_type='order'`, [cheese.id, sale.orderId])
+  const giveBack = await orderMv(sale.orderId, String(Number(tookRow[0].took)))
+  check('...but may give back exactly what the order took (a restore)', giveBack.ok)
+  const giveMore = await orderMv(sale.orderId, '0.001')
+  check('...and not a thousandth more', !giveMore.ok && giveMore.code === '23514')
   for (const role of ROLES) {
     const should = role === 'owner' || role === 'manager'
     const r = await attempt(() => as(A, role, (tx) => tx.insert(schema.menuItemIngredients).values({ tenantId: A.tenantId, menuItemId: A.menu.Cola, stockItemId: tomato.id, quantity: '1' }).returning({ id: schema.menuItemIngredients.id })))

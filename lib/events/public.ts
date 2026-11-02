@@ -4,6 +4,7 @@ import { and, asc, eq, gte, inArray } from 'drizzle-orm'
 import { withPublicTenant } from '@/db'
 import { branches, events } from '@/db/schema'
 import {
+  PUBLIC_EVENT_DETAIL_STATUSES,
   PUBLIC_EVENT_STATUSES,
   spotsRemaining,
   type EventStatus,
@@ -156,7 +157,7 @@ export const getPublicEventById = cache(async function getPublicEventById(
         and(
           eq(events.id, eventId),
           eq(events.tenantId, tenantId),
-          inArray(events.status, [...PUBLIC_EVENT_STATUSES]),
+          inArray(events.status, [...PUBLIC_EVENT_DETAIL_STATUSES]),
         ),
       )
       .limit(1),

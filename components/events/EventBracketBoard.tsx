@@ -5,9 +5,13 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Loader2, Shuffle, Trophy, X } from 'lucide-react'
 import {
+  correctMatchResultAction,
+  forfeitMatchAction,
   generateBracketAction,
   recordMatchResultAction,
+  reopenMatchAction,
   resetBracketAction,
+  voidMatchAction,
 } from '@/lib/actions/event-matches'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 
@@ -43,6 +47,7 @@ type Match = {
   scoreA: number | null
   scoreB: number | null
   winner: string | null
+  resultKind: string
 }
 
 type Standing = {
@@ -62,6 +67,9 @@ const SIDE_LABEL: Record<Match['side'], string> = {
   round_robin: 'Schedule',
   points: 'Score cards',
 }
+
+const ROW_BTN =
+  'rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50'
 
 const STATUS_CLASS: Record<string, string> = {
   pending: 'bg-muted text-muted-foreground',
@@ -98,6 +106,8 @@ export function EventBracketBoard({
   const confirm = useConfirm()
   const [pending, startTransition] = useTransition()
   const [scoring, setScoring] = useState<Match | null>(null)
+  const [correcting, setCorrecting] = useState<Match | null>(null)
+  const [forfeiting, setForfeiting] = useState<Match | null>(null)
 
   const hasBracket = matches.length > 0
   const played = matches.filter((m) => m.status === 'completed').length
@@ -111,6 +121,47 @@ export function EventBracketBoard({
         setScoring(null)
         router.refresh()
       }
+    })
+  }
+
+  /**
+   * Run a correction. If later matches were played on the strength of the old
+   * result the server refuses and says so; offer to reset those too and, on
+   * confirmation, run it again with cascade.
+   */
+  function runCorrection(
+    fn: (cascade: boolean) => Promise<{ error?: string }>,
+    ok: string,
+  ) {
+    startTransition(async () => {
+      const r = await fn(false)
+      if (!r.error) {
+        toast.success(ok)
+        setCorrecting(null)
+        setForfeiting(null)
+        router.refresh()
+        return
+      }
+      if (/already been played/i.test(r.error)) {
+        confirm({
+          title: 'Later matches depend on this result',
+          description:
+            'Matches that were played after this one used the old result. Continuing resets those results too, and they will need to be entered again.',
+          confirmText: 'Reset them and continue',
+          onConfirm: async () => {
+            const again = await fn(true)
+            if (again.error) toast.error(again.error)
+            else {
+              toast.success(ok)
+              setCorrecting(null)
+              setForfeiting(null)
+              router.refresh()
+            }
+          },
+        })
+        return
+      }
+      toast.error(r.error)
     })
   }
 
@@ -260,14 +311,84 @@ export function EventBracketBoard({
                             >
                               {STATUS_LABEL[m.status] ?? m.status}
                             </span>
-                            {(m.status === 'ready' || m.status === 'completed') && (
+                            {m.resultKind === 'forfeit' && m.status === 'completed' && (
+                              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
+                                Forfeit
+                              </span>
+                            )}
+                            {m.status === 'ready' && (
                               <button
                                 type="button"
                                 onClick={() => setScoring(m)}
-                                disabled={pending || m.status === 'completed'}
-                                className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={pending}
+                                className={ROW_BTN}
                               >
-                                {m.status === 'completed' ? 'Recorded' : 'Enter result'}
+                                Enter result
+                              </button>
+                            )}
+                            {m.status === 'completed' && (
+                              <button
+                                type="button"
+                                onClick={() => setCorrecting(m)}
+                                disabled={pending}
+                                className={ROW_BTN}
+                              >
+                                Correct
+                              </button>
+                            )}
+                            {(m.status === 'ready' || m.status === 'completed') && m.side !== 'points' && (
+                              <button
+                                type="button"
+                                onClick={() => setForfeiting(m)}
+                                disabled={pending}
+                                className={ROW_BTN}
+                              >
+                                Forfeit
+                              </button>
+                            )}
+                            {m.status === 'completed' && (
+                              <button
+                                type="button"
+                                disabled={pending}
+                                className={ROW_BTN}
+                                onClick={() =>
+                                  runCorrection(
+                                    (cascade) => reopenMatchAction({ matchId: m.id, eventId, cascade }),
+                                    'Result removed.',
+                                  )
+                                }
+                              >
+                                Reopen
+                              </button>
+                            )}
+                            {m.side === 'round_robin' && (m.status === 'ready' || m.status === 'completed') && (
+                              <button
+                                type="button"
+                                disabled={pending}
+                                className={ROW_BTN}
+                                onClick={() =>
+                                  runCorrection(
+                                    (cascade) => voidMatchAction({ matchId: m.id, eventId, cascade }),
+                                    'Fixture voided.',
+                                  )
+                                }
+                              >
+                                Void
+                              </button>
+                            )}
+                            {m.side === 'round_robin' && m.status === 'void' && (
+                              <button
+                                type="button"
+                                disabled={pending}
+                                className={ROW_BTN}
+                                onClick={() =>
+                                  run(
+                                    () => reopenMatchAction({ matchId: m.id, eventId }),
+                                    'Fixture restored.',
+                                  )
+                                }
+                              >
+                                Restore
                               </button>
                             )}
                           </span>
@@ -280,6 +401,60 @@ export function EventBracketBoard({
           </section>
         )
       })}
+
+      {correcting && (
+        <ScoreDialog
+          match={correcting}
+          eventId={eventId}
+          pending={pending}
+          title="Correct result"
+          initialA={correcting.scoreA}
+          initialB={correcting.scoreB}
+          onClose={() => setCorrecting(null)}
+          onSave={(scoreA, scoreB) =>
+            runCorrection(
+              (cascade) =>
+                correctMatchResultAction({ matchId: correcting.id, eventId, scoreA, scoreB, cascade }),
+              'Result corrected.',
+            )
+          }
+        />
+      )}
+
+      {forfeiting && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
+          <div className="mt-16 w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Who forfeits?</h2>
+              <button type="button" aria-label="Close" onClick={() => setForfeiting(null)} className="rounded-lg p-1.5 hover:bg-muted">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The other side is awarded the match and advances. No scoreline is recorded.
+            </p>
+            <div className="mt-4 space-y-2">
+              {(['a', 'b'] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  disabled={pending}
+                  className="w-full rounded-lg border border-border px-3.5 py-2.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                  onClick={() =>
+                    runCorrection(
+                      (cascade) =>
+                        forfeitMatchAction({ matchId: forfeiting.id, eventId, forfeitingSide: side, cascade }),
+                      'Forfeit recorded.',
+                    )
+                  }
+                >
+                  {(side === 'a' ? forfeiting.nameA : forfeiting.nameB) ?? side.toUpperCase()} forfeits
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {scoring && (
         <ScoreDialog
@@ -327,18 +502,24 @@ function Side({
 function ScoreDialog({
   match,
   pending,
+  title,
+  initialA = null,
+  initialB = null,
   onClose,
   onSave,
 }: {
   match: Match
   eventId: string
   pending: boolean
+  title?: string
+  initialA?: number | null
+  initialB?: number | null
   onClose: () => void
   onSave: (scoreA: number, scoreB: number | null) => void
 }) {
   const isPoints = match.side === 'points'
-  const [a, setA] = useState('')
-  const [b, setB] = useState('')
+  const [a, setA] = useState(initialA === null ? '' : String(initialA))
+  const [b, setB] = useState(initialB === null ? '' : String(initialB))
 
   const invalid =
     a.trim() === '' || (!isPoints && b.trim() === '') || (!isPoints && a.trim() === b.trim())
@@ -347,7 +528,7 @@ function ScoreDialog({
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
       <div className="mt-16 w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-xl">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{isPoints ? 'Enter points' : 'Enter result'}</h2>
+          <h2 className="text-lg font-semibold">{title ?? (isPoints ? 'Enter points' : 'Enter result')}</h2>
           <button type="button" aria-label="Close" onClick={onClose} className="rounded-lg p-1.5 hover:bg-muted">
             <X size={18} />
           </button>

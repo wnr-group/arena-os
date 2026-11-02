@@ -6,6 +6,7 @@ import { requireEntitlement } from '@/lib/platform/entitlement-guard'
 import { isManager } from '@/lib/auth/roles'
 import { ReportAccessError } from './daily-revenue'
 import { getSalesReport, type FoodSalesRow } from './sales'
+import { loadTipsByRecipient } from '@/lib/tips/service'
 import { buildFoodCostRows, foodCostPct, type FoodCostRow } from '@/lib/inventory/rules'
 import { getModifierCostInputs, listMenuPrices, listRecipeRows, listStockCosts } from '@/lib/inventory/data'
 import type { DateRange } from './date-range'
@@ -60,10 +61,14 @@ export type DaypartRow = {
   sessions: number
   covers: number
   billed: number
+  billedWithCovers: number
   spendPerCover: number | null
 }
 
-export type HourRow = { hour: number; sessions: number; covers: number; billed: number }
+/** `billed` is every session's sales; `billedWithCovers` only sessions whose guest
+ *  count was recorded - the figure per-cover is divided from, so a session with
+ *  an unknown count can't inflate it. */
+export type HourRow = { hour: number; sessions: number; covers: number; billed: number; billedWithCovers: number }
 
 export type ServerRow = {
   serverId: string | null
@@ -71,6 +76,7 @@ export type ServerRow = {
   sessions: number
   covers: number
   billed: number
+  billedWithCovers: number
   spendPerCover: number | null
   tips: number
   tipPct: number | null
@@ -128,13 +134,13 @@ export type RestaurantReport = {
   }
   servers: ServerRow[]
   foodCost: {
-    /** Ingredients deducted by sales in the range, priced at today's unit cost. */
+    /** Ingredients deducted by sales in the range, priced at the unit cost recorded at sale time. */
     ingredients: IngredientUseRow[]
     /** Σ cost of the ingredients that have a cost. */
     cogs: number
     /** Ingredients used but not costed yet — COGS is a floor while this is above 0. */
     uncosted: number
-    /** Paid food revenue in the range (same figure as Food & Memberships). */
+    /** Paid food revenue in the range EXCLUDING GST (the GST-inclusive figure is on Food & Memberships). */
     foodRevenue: number
     /** cogs ÷ foodRevenue; null with no revenue or nothing used. */
     pct: number | null
@@ -157,14 +163,13 @@ function sessionsCte(tenantId: string, range: DateRange, branchId?: string | nul
              extract(epoch from (b.completed_at - b.checked_in_at)) / 60 as minutes,
              b.completed_at,
              coalesce(inv.billed, 0) as billed,
-             coalesce(inv.tips, 0) as tips,
              (inv.booking_id is not null) as has_bill
         from public.bookings b
         join public.tenants t on t.id = b.tenant_id
         join public.branches br on br.id = b.branch_id
         join public.resources r on r.id = b.resource_id
         left join (
-          select i.booking_id, sum(i.total) as billed, sum(i.tip_amount) as tips
+          select i.booking_id, sum(i.total) as billed
             from public.invoices i
            where i.tenant_id = ${tenantId}
              and i.status in ('issued', 'paid')
@@ -194,7 +199,7 @@ export async function getRestaurantReport(
   const { min, max } = SESSION_MINUTES_BOUNDS
   const finishedFilter = sql`status = 'completed' and completed_at is not null and minutes between ${min} and ${max}`
 
-  const [tablesRes, turnRes, hourRes, serverRes, vcRes, eightySixRes, cogsRes, sales, stockCosts, recipeRows, menuPrices, modInputs] = await Promise.all([
+  const [tablesRes, turnRes, hourRes, serverRes, tipEntries, vcRes, eightySixRes, cogsRes, sales, stockCosts, recipeRows, menuPrices, modInputs] = await Promise.all([
     withUser(ctx.user.id, (tx) =>
       tx.execute<{ n: number }>(sql`
         select count(*)::int as n
@@ -223,8 +228,9 @@ export async function getRestaurantReport(
         with ${sessionsCte(tenantId, range, branchId)}
         select hr as hour,
                count(*)::int as sessions,
-               coalesce(sum(cover_count) filter (where has_bill), 0)::int as covers,
-               coalesce(sum(billed), 0)::float as billed
+               coalesce(sum(cover_count) filter (where has_bill and cover_count is not null), 0)::int as covers,
+               coalesce(sum(billed), 0)::float as billed,
+               coalesce(sum(billed) filter (where cover_count is not null), 0)::float as billed_with_covers
           from sess
          group by hr
          order by hr
@@ -236,15 +242,19 @@ export async function getRestaurantReport(
         select s.server_id::text as server_id,
                coalesce(m.full_name, m.email, 'Unassigned') as server_name,
                count(*)::int as sessions,
-               coalesce(sum(s.cover_count) filter (where s.has_bill), 0)::int as covers,
+               coalesce(sum(s.cover_count) filter (where s.has_bill and s.cover_count is not null), 0)::int as covers,
                coalesce(sum(s.billed), 0)::float as billed,
-               coalesce(sum(s.tips), 0)::float as tips
+               coalesce(sum(s.billed) filter (where s.cover_count is not null), 0)::float as billed_with_covers
           from sess s
           left join public.memberships m on m.id = s.server_id
          group by s.server_id, m.full_name, m.email
          order by billed desc, server_name
       `),
     ),
+    // Tips: the SAME attribution the tips report and the payout use (captured
+    // payments on live invoices; named recipient, else the table's server), so
+    // the two screens reconcile on any range - including a refunded tipped payment.
+    withUser(ctx.user.id, (tx) => loadTipsByRecipient(tx, tenantId, range, branchId)),
     // Void / comp: the audit trail written when an item is voided or comped.
     withUser(ctx.user.id, (tx) =>
       tx.execute(sql`
@@ -282,7 +292,12 @@ export async function getRestaurantReport(
     // Food cost: what sales actually deducted (the 'order' movements) in the range.
     withUser(ctx.user.id, (tx) =>
       tx.execute(sql`
-        select si.name, si.unit, si.unit_cost::float as unit_cost, (- sum(m.delta))::float as used
+        select si.name, si.unit,
+               (- sum(m.delta))::float as used,
+               -- Priced at the cost recorded when each movement was written; movements
+               -- from before that was recorded (0174) fall back to today's cost.
+               coalesce(sum(- m.delta * coalesce(m.unit_cost, si.unit_cost)), 0)::float as cost_sum,
+               coalesce(sum(- m.delta) filter (where coalesce(m.unit_cost, si.unit_cost) is not null), 0)::float as costed_used
           from public.stock_movements m
           join public.stock_items si on si.id = m.stock_item_id and si.tenant_id = m.tenant_id
           join public.tenants t on t.id = m.tenant_id
@@ -290,7 +305,7 @@ export async function getRestaurantReport(
            and m.source_type = 'order'
            and ((m.created_at at time zone t.timezone)::date) between ${range.start}::date and ${range.end}::date
            ${branchId ? sql`and si.branch_id = ${branchId}` : sql``}
-         group by si.id, si.name, si.unit, si.unit_cost
+         group by si.id, si.name, si.unit
          order by used desc, si.name
       `),
     ),
@@ -319,44 +334,68 @@ export async function getRestaurantReport(
     sessions: num(r.sessions),
     covers: num(r.covers),
     billed: round2(num(r.billed)),
+    billedWithCovers: round2(num(r.billed_with_covers)),
   }))
   const daypart: DaypartRow[] = DAYPARTS.map((d) => {
     const rows = hourly.filter((h) => daypartOf(h.hour) === d.key)
     const covers = rows.reduce((n, h) => n + h.covers, 0)
     const billed = round2(rows.reduce((n, h) => n + h.billed, 0))
-    const per = safeDiv(billed, covers)
+    const billedWithCovers = round2(rows.reduce((n, h) => n + h.billedWithCovers, 0))
+    const per = safeDiv(billedWithCovers, covers)
     return {
       key: d.key,
       label: d.label,
       sessions: rows.reduce((n, h) => n + h.sessions, 0),
       covers,
       billed,
+      billedWithCovers,
       spendPerCover: per === null ? null : round2(per),
     }
   })
 
   // ── servers ───────────────────────────────────────────────────────────────
-  const servers: ServerRow[] = (serverRes.rows as Record<string, unknown>[]).map((r) => {
-    const billed = round2(num(r.billed))
-    const tips = round2(num(r.tips))
-    const covers = num(r.covers)
-    const per = safeDiv(billed, covers)
-    return {
-      serverId: (r.server_id as string | null) ?? null,
-      serverName: String(r.server_name),
-      sessions: num(r.sessions),
-      covers,
-      billed,
-      spendPerCover: per === null ? null : round2(per),
-      tips,
-      tipPct: tipPercent(tips, billed),
+  const tipsByRecipient = new Map<string | null, number>()
+  for (const t of tipEntries) tipsByRecipient.set(t.recipientId, round2((tipsByRecipient.get(t.recipientId) ?? 0) + t.amount))
+  const serverRows = (serverRes.rows as Record<string, unknown>[]).map((r) => ({
+    serverId: (r.server_id as string | null) ?? null,
+    serverName: String(r.server_name),
+    sessions: num(r.sessions),
+    covers: num(r.covers),
+    billed: round2(num(r.billed)),
+    billedWithCovers: round2(num(r.billed_with_covers)),
+  }))
+  // A recipient who was tipped but sat no table in the range still gets a row,
+  // so the column total equals the tips report's total.
+  const missing = [...tipsByRecipient.keys()].filter((id) => !serverRows.some((r) => r.serverId === id))
+  if (missing.length > 0) {
+    const named = missing.filter((id): id is string => id !== null)
+    const names = new Map<string, string>()
+    if (named.length > 0) {
+      const res = await withUser(ctx.user.id, (tx) =>
+        tx.execute(sql`
+          select id::text as id, coalesce(full_name, email, 'Unassigned') as name
+            from public.memberships
+           where tenant_id = ${tenantId} and id in (${sql.join(named.map((id) => sql`${id}::uuid`), sql`, `)})
+        `),
+      )
+      for (const r of res.rows as { id: string; name: string }[]) names.set(r.id, r.name)
     }
+    for (const id of missing) {
+      serverRows.push({ serverId: id, serverName: id === null ? 'Unassigned' : (names.get(id) ?? 'Unassigned'), sessions: 0, covers: 0, billed: 0, billedWithCovers: 0 })
+    }
+  }
+  const servers: ServerRow[] = serverRows.map((r) => {
+    const tips = tipsByRecipient.get(r.serverId) ?? 0
+    const per = safeDiv(r.billedWithCovers, r.covers)
+    return { ...r, spendPerCover: per === null ? null : round2(per), tips, tipPct: tipPercent(tips, r.billed) }
   })
 
   const billedTotal = round2(hourly.reduce((n, h) => n + h.billed, 0))
+  const billedWithCoversTotal = round2(hourly.reduce((n, h) => n + h.billedWithCovers, 0))
   const coversTotal = hourly.reduce((n, h) => n + h.covers, 0)
   const tipsTotal = round2(servers.reduce((n, s) => n + s.tips, 0))
-  const perCover = safeDiv(billedTotal, coversTotal)
+  // Only sessions with a recorded guest count: unknown counts must not inflate spend per guest.
+  const perCover = safeDiv(billedWithCoversTotal, coversTotal)
   const avgMin = safeDiv(minutesWeighted, finishedTotal)
 
   // ── void / comp ───────────────────────────────────────────────────────────
@@ -395,18 +434,21 @@ export async function getRestaurantReport(
   // An item that was 86'd but sold nothing in the window still belongs here.
   for (const [name, n] of eightySix) {
     if (!menuMix.some((m) => m.itemName === name)) {
-      menuMix.push({ itemName: name, quantity: 0, grossRevenue: 0, invoices: 0, eightySixed: n })
+      menuMix.push({ itemName: name, quantity: 0, grossRevenue: 0, netRevenue: 0, invoices: 0, eightySixed: n })
     }
   }
 
   // ── food cost ─────────────────────────────────────────────────────────────
   const ingredients: IngredientUseRow[] = (cogsRes.rows as Record<string, unknown>[]).map((r) => {
-    const unitCost = r.unit_cost === null ? null : num(r.unit_cost)
     const used = Math.round(num(r.used) * 1000) / 1000
-    return { name: String(r.name), unit: String(r.unit), used, unitCost, cost: unitCost === null ? 0 : round2(used * unitCost) }
+    const costedUsed = num(r.costed_used)
+    // Average cost per unit over the costed usage; null when nothing was costed.
+    const unitCost = costedUsed > 0 ? num(r.cost_sum) / costedUsed : null
+    return { name: String(r.name), unit: String(r.unit), used, unitCost, cost: round2(num(r.cost_sum)) }
   })
   const cogs = round2(ingredients.reduce((n, i) => n + i.cost, 0))
-  const foodRevenue = sales.totals.foodGrossRevenue
+  // Like with like: ingredient costs carry no GST, so compare against revenue with the GST taken out.
+  const foodRevenue = sales.totals.foodNetRevenue
   const dishes = buildFoodCostRows({
     menu: menuPrices,
     stock: stockCosts,

@@ -44,6 +44,8 @@ type ResourceRow = {
   typeImageUrl: string | null
   typeDescription: string | null
   qrToken: string
+  minSeats: number | null
+  maxSeats: number | null
 }
 type Modal = { mode: 'add' } | { mode: 'edit'; row: ResourceRow }
 type SetupsTarget = { resourceId: string; resourceName: string }
@@ -643,6 +645,8 @@ function ResourceModal({
   const [status, setStatus] = useState<ResourceStatus>(row?.status ?? 'available')
   const [override, setOverride] = useState(row?.rateOverride ?? '')
   const [description, setDescription] = useState(row?.description ?? '')
+  const [minSeats, setMinSeats] = useState(row?.minSeats?.toString() ?? '')
+  const [maxSeats, setMaxSeats] = useState(row?.maxSeats?.toString() ?? '')
   // No per-resource upload anymore — a resource always shows its type's
   // photo (ResourceVisual/table row already fall back to typeImageUrl).
   // Kept as a plain value (not state) so an existing legacy override, if any,
@@ -659,12 +663,19 @@ function ResourceModal({
   const selectableTypes = types.filter((t) => t.isActive || t.id === typeId)
 
   const errors = useMemo(() => {
-    const e: { name?: string; typeId?: string; override?: string } = {}
+    const e: { name?: string; typeId?: string; override?: string; seats?: string } = {}
     if (!name.trim()) e.name = 'Name is required.'
     if (!typeId) e.typeId = 'Select a resource type.'
     if (override !== '' && Number.isNaN(Number(override))) e.override = 'Enter a valid rate.'
+    if (isRestaurant) {
+      const lo = minSeats === '' ? null : Number(minSeats)
+      const hi = maxSeats === '' ? null : Number(maxSeats)
+      const bad = (n: number | null) => n !== null && (!Number.isInteger(n) || n < 1 || n > 100)
+      if (bad(lo) || bad(hi)) e.seats = 'Seats must be a whole number from 1 to 100.'
+      else if (lo !== null && hi !== null && lo > hi) e.seats = 'Minimum seats can’t exceed maximum seats.'
+    }
     return e
-  }, [name, typeId, override])
+  }, [name, typeId, override, isRestaurant, minSeats, maxSeats])
   const isValid = Object.keys(errors).length === 0
 
   useBodyScrollLock()
@@ -683,6 +694,11 @@ function ResourceModal({
           hourlyRateOverride: override === '' ? null : Number(override),
           imageUrl,
           description,
+          // Only the restaurant form shows seats; others leave them untouched.
+          ...(isRestaurant && {
+            minSeats: minSeats === '' ? null : Number(minSeats),
+            maxSeats: maxSeats === '' ? null : Number(maxSeats),
+          }),
         }),
       () => {
         toast.success(row ? `Resource "${name.trim()}" updated.` : `Resource "${name.trim()}" added.`)
@@ -772,14 +788,48 @@ function ResourceModal({
             </div>
 
             {isRestaurant ? (
-              <div>
-                <label className={label}>Status</label>
-                <select className={input} value={status} onChange={(e) => setStatus(e.target.value as ResourceStatus)}>
-                  <option value="available">Available</option>
-                  <option value="maintenance">Maintenance</option>
-                  <option value="inactive">Inactive</option>
-                </select>
-              </div>
+              <>
+                <div>
+                  <label className={label}>Status</label>
+                  <select className={input} value={status} onChange={(e) => setStatus(e.target.value as ResourceStatus)}>
+                    <option value="available">Available</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={label}>Party size this table takes (optional)</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      className={`${input} ${submitted && errors.seats ? inputInvalid : ''}`}
+                      placeholder="Min seats"
+                      type="number"
+                      min="1"
+                      max="100"
+                      step="1"
+                      value={minSeats}
+                      onChange={(e) => setMinSeats(e.target.value)}
+                    />
+                    <input
+                      className={`${input} ${submitted && errors.seats ? inputInvalid : ''}`}
+                      placeholder="Max seats"
+                      type="number"
+                      min="1"
+                      max="100"
+                      step="1"
+                      value={maxSeats}
+                      onChange={(e) => setMaxSeats(e.target.value)}
+                    />
+                  </div>
+                  {submitted && errors.seats ? (
+                    <p className={errorText}>{errors.seats}</p>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Reservations only go to tables that fit. Leave blank for no limit.
+                    </p>
+                  )}
+                </div>
+              </>
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-3">

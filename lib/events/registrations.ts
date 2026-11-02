@@ -91,6 +91,23 @@ export async function claimEventRegistration(
   }
 }
 
+/**
+ * Set (or clear, with blank) the name shown for this registration on the PUBLIC
+ * bracket. Without one only initials are shown. Returns 'saved' or a code.
+ */
+export async function setEventPublicName(
+  customerId: string,
+  registrationId: string,
+  name: string,
+): Promise<string> {
+  return withCustomer(customerId, async (tx) => {
+    const { rows } = await tx.execute<{ r: string }>(
+      sql`select public.set_event_public_name(${registrationId}::uuid, ${name}) as r`,
+    )
+    return rows[0]?.r ?? 'not_found'
+  })
+}
+
 /** Join an existing team. Returns 'joined' or a refusal code. */
 export async function joinEventTeam(customerId: string, teamId: string): Promise<string> {
   return withCustomer(customerId, async (tx) => {
@@ -311,6 +328,8 @@ export type EventEntrant = {
   teamName: string | null
   paidAmount: string
   refundRequired: boolean
+  /** What is still owed back (0177); 0 once refunded. */
+  refundDueAmount: string
   createdAt: Date
   waitlistPosition: number | null
 }
@@ -341,6 +360,7 @@ export async function listEventEntrants(
         teamName: eventTeams.name,
         paidAmount: eventRegistrations.paidAmount,
         refundRequired: eventRegistrations.refundRequired,
+        refundDueAmount: eventRegistrations.refundDueAmount,
         createdAt: eventRegistrations.createdAt,
       })
       .from(eventRegistrations)
@@ -450,6 +470,26 @@ export function isEventRegistrationMode(v: unknown): v is EventRegistrationMode 
 export const ACTIVE_REGISTRATION_STATUSES: readonly EventRegistrationStatus[] = ACTIVE_STATUSES
 
 /**
+ * Record that a flagged refund has been paid out. Returns 'refunded' or a
+ * refusal code (REFUND_REFUSALS). The SQL function authorises the manager from
+ * the registration's own tenant, locks the event, clears refund_required and
+ * writes the audit row — so two clicks cannot both record the same refund.
+ */
+export async function markEventRegistrationRefunded(
+  ctx: ActiveContext,
+  registrationId: string,
+  amount: number,
+  reference: string,
+): Promise<string> {
+  return withUser(ctx.user.id, async (tx) => {
+    const { rows } = await tx.execute<{ r: string }>(
+      sql`select public.mark_event_registration_refunded(${registrationId}::uuid, ${amount.toFixed(2)}::numeric, ${reference}) as r`,
+    )
+    return rows[0]?.r ?? 'not_found'
+  })
+}
+
+/**
  * Cancel every active entry on an event the venue has just called off, and flag
  * whoever paid.
  *
@@ -487,7 +527,14 @@ export async function cancelRegistrationsForCancelledEvent(
       status: 'cancelled',
       cancelledAt: new Date(),
       paymentHoldExpiresAt: null,
-      refundRequired: sql`${eventRegistrations.paidAmount} > 0`,
+      refundRequired: sql`(${eventRegistrations.refundRequired} or ${eventRegistrations.paidAmount} > 0)`,
+      // A registration that already owed money back (a duplicate capture) owes
+      // that PLUS its original payment once cancelled. The refund trigger only
+      // sets the amount on a false -> true flip, so add it here when the flag
+      // was already raised.
+      refundDueAmount: sql`case when ${eventRegistrations.refundRequired} and ${eventRegistrations.paidAmount} > 0
+        then ${eventRegistrations.refundDueAmount} + ${eventRegistrations.paidAmount}
+        else ${eventRegistrations.refundDueAmount} end`,
     })
     .where(
       and(

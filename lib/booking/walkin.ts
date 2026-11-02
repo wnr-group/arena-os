@@ -32,10 +32,10 @@
  *     there's nothing for the exclusion constraint to usefully decide there.
  */
 import 'server-only'
-import { and, asc, eq, gt, inArray, isNull, lt, lte, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
-import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, taxRates, auditLog, tenants } from '@/db/schema'
+import { resources, resourceTypes, resourceSetups, holidayRates, bookings, bookingSlots, events, taxRates, auditLog, tenants } from '@/db/schema'
 import { industryHasStudioSetups } from './studio-setups'
 import { advancePaidTotals } from './advance-ledger'
 import { BookingError, nextBookingNumber, validateAdvanceTenders, recordAdvanceTenders, type AdvanceTenderInput } from './service'
@@ -60,6 +60,8 @@ import {
 } from './addons'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
+import { after } from 'next/server'
+import { sweepOverdueWalkinsForTenant } from './walkin-auto-close'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -198,7 +200,9 @@ export async function listWalkinResources(
     const occupiedRows = await tx
       .select({ resourceId: bookingSlots.resourceId })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      // LEFT join: an event block has booking_id NULL and holds the station for
+      // as long as its slot is active, so it must count as occupied too.
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
       .where(
         and(
           inArray(bookingSlots.resourceId, ids),
@@ -207,7 +211,7 @@ export async function listWalkinResources(
           // An open tab's null ends_at means "still going" — occupied now,
           // same reading the GiST exclusion constraint itself gives it.
           or(isNull(bookingSlots.endsAt), gt(bookingSlots.endsAt, now)),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
     const occupiedNow = new Set(occupiedRows.map((r) => r.resourceId))
@@ -247,15 +251,17 @@ export async function listWalkinResources(
         endsAt: bookingSlots.endsAt,
         bookingNumber: bookings.bookingNumber,
         customerName: bookings.customerName,
+        eventTitle: events.title,
       })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           inArray(bookingSlots.resourceId, ids),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, now),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
@@ -283,8 +289,9 @@ export async function listWalkinResources(
           ? {
               startsAt: next.startsAt.toISOString(),
               endsAt: next.endsAt ? next.endsAt.toISOString() : null,
-              bookingNumber: next.bookingNumber,
-              customerName: next.customerName,
+              // An event block has no booking: name the event instead.
+              bookingNumber: next.bookingNumber ?? 'Event',
+              customerName: next.eventTitle ? `Event: ${next.eventTitle}` : next.customerName,
             }
           : null,
         pricingMode: r.pricingMode,
@@ -336,6 +343,9 @@ export type ActiveWalkin = {
    *  startWalkinCore). Lets the Sessions board show a live "Partially paid"
    *  indicator once the running total outgrows it, before any bill exists. */
   advancePaid: string
+  /** Set when the system auto-close sweep ended this tab (walkin.auto_closed audit row), so
+   *  the board can tell staff why the bill stops where it does. */
+  autoClosed: { endsAt: string; limitMinutes: number | null; atClosing: boolean } | null
 }
 
 /**
@@ -347,6 +357,14 @@ export type ActiveWalkin = {
  * otherwise invisible anywhere in the app once started.
  */
 export async function listActiveWalkins(ctx: ActiveContext, branchId: string): Promise<ActiveWalkin[]> {
+  // Close forgotten open-tabs after the response, so billing writes never delay
+  // this read; the next poll shows them closed. Outside a request (scripts) there
+  // is no after(), so run it inline.
+  try {
+    after(() => sweepOverdueWalkinsForTenant(ctx.tenant.id))
+  } catch {
+    await sweepOverdueWalkinsForTenant(ctx.tenant.id)
+  }
   const rows = await withUser(ctx.user.id, (tx) =>
     tx
       .select({
@@ -389,10 +407,34 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
   const advance = await withUser(ctx.user.id, (tx) =>
     advancePaidTotals(tx, ctx.tenant.id, [...new Set(rows.map((r) => r.bookingId))]),
   )
+  const closedIds = rows.filter((r) => r.billingMode === 'open_tab' && r.endsAt !== null).map((r) => r.bookingId)
+  const autoClosedBy = new Map<string, ActiveWalkin['autoClosed']>()
+  if (closedIds.length > 0) {
+    const audits = await withUser(ctx.user.id, (tx) =>
+      tx
+        .select({ entityId: auditLog.entityId, after: auditLog.after })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.tenantId, ctx.tenant.id),
+            eq(auditLog.action, 'walkin.auto_closed'),
+            inArray(auditLog.entityId, closedIds),
+          ),
+        )
+        .orderBy(asc(auditLog.createdAt)),
+    )
+    for (const a of audits) {
+      const d = (a.after ?? {}) as { endsAt?: string; limitMinutes?: number | null; atClosing?: boolean }
+      if (a.entityId && d.endsAt) {
+        autoClosedBy.set(a.entityId, { endsAt: d.endsAt, limitMinutes: d.limitMinutes ?? null, atClosing: d.atClosing === true })
+      }
+    }
+  }
   return rows.map((r) => ({
     ...r,
     billingMode: (r.billingMode as WalkinMode) ?? 'open_tab',
     advancePaid: advance.get(r.bookingId) ?? '0.00',
+    autoClosed: autoClosedBy.get(r.bookingId) ?? null,
   }))
 }
 
@@ -513,22 +555,25 @@ export async function startWalkinCore(
   // here with a clear reason instead of surfacing as a raw 23P01 later.
   if (input.mode === 'open_tab') {
     const [futureSlot] = await tx
-      .select({ startsAt: bookingSlots.startsAt })
+      .select({ startsAt: bookingSlots.startsAt, eventTitle: events.title })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           eq(bookingSlots.resourceId, resource.id),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, startAt),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
       .limit(1)
     if (futureSlot) {
       throw new BookingError(
-        'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
+        futureSlot.eventTitle
+          ? `This station is held for the event “${futureSlot.eventTitle}” later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.`
+          : 'This station has a booking scheduled later — an open tab has no end time, so it would overlap. Start a timed session instead, or pick a different station.',
       )
     }
   }
@@ -997,17 +1042,25 @@ function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): 
  *     WALKIN_CHECKOUT_WINDOW_MINUTES ahead of now, no more than
  *     WALKIN_LATE_CHECKOUT_MAX_DAYS behind it (M32 — a forgotten tab), and
  *     after the session started — it IS the priced window's own end.
- *   - Timed: `endAt` (defaulting to now) must not be past the committed end
- *     (extensions included) — "Extend the session before checking out"
- *     rather than a silent overstay charge. The priced window's end is
- *     always the committed end itself, never `endAt`: a timed session is a
- *     slot the customer bought, so leaving early doesn't discount it and
- *     checking out exactly on time doesn't charge a moment more. Billed
- *     time is therefore always committed + extensions, full stop.
+ *   - Timed, not yet overdue (now <= committed end): `endAt` is ignored and
+ *     the priced window's end is the committed end itself: a timed session is
+ *     a slot the customer bought, so leaving early doesn't discount it and
+ *     checking out exactly on time doesn't charge a moment more.
+ *   - Timed, OVERDUE (now > committed end; M39 #1): the one scoped exception.
+ *     An explicit `endAt` (after the start, not in the future, within
+ *     WALKIN_LATE_CHECKOUT_MAX_DAYS) is the priced end, shorter OR longer than
+ *     the committed end. Omitted, it defaults to the committed end (unblocked,
+ *     billed as before). `entered` says whether the caller supplied one.
  *
  * Pure (no DB) — safe to call after either a locking or a read-only load.
  */
-function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | undefined): { endAt: Date; priceEnd: Date } {
+function resolveCheckoutWindow(
+  walkin: WalkinForCheckout,
+  endAtInput: string | undefined,
+  /** The system auto-close sweep ends a tab at a known deadline of any age: the
+   *  7-day bound is a typo guard for staff-entered times, not a cap on that. */
+  systemClose = false,
+): { endAt: Date; priceEnd: Date; entered: boolean } {
   const now = new Date()
   const endAt = endAtInput ? new Date(endAtInput) : now
   if (Number.isNaN(endAt.getTime())) throw new BookingError('Invalid end time.')
@@ -1022,26 +1075,32 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
     if (endAt.getTime() - now.getTime() > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
       throw new BookingError(`End time cannot be more than ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes in the future.`)
     }
-    if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+    if (!systemClose && now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
       throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
     }
     if (endAt.getTime() <= walkin.startsAt.getTime()) {
       throw new BookingError('End time must be after the session started.')
     }
-    return { endAt, priceEnd: endAt }
+    return { endAt, priceEnd: endAt, entered: false }
   }
 
   // Timed.
   if (Number(walkin.slotTotal) > 0) throw new BookingError('This session has already been checked out.')
   if (!walkin.committedEndAt) throw new BookingError('This walk-in has no committed end time.')
-  // Gate on the SERVER's now, not the client-supplied endAt — endAt plays no
-  // part in what gets priced here (priceEnd is always committedEndAt), so
-  // checking it instead of now would let a crafted endAt (e.g. exactly
-  // committedEndAt) walk straight past an actual overstay unbilled.
-  if (now.getTime() > walkin.committedEndAt.getTime()) {
-    throw new BookingError('Extend the session before checking out.')
+  // Gate on the SERVER's now, not the client-supplied endAt: while the session
+  // is still inside its committed window endAt plays no part in pricing, so a
+  // crafted endAt cannot discount it.
+  if (now.getTime() <= walkin.committedEndAt.getTime() || !endAtInput) {
+    return { endAt, priceEnd: walkin.committedEndAt, entered: false }
   }
-  return { endAt, priceEnd: walkin.committedEndAt }
+  // Overdue with an entered actual end (M39 #1): it describes something that
+  // already happened, so never the future and never before the session began.
+  if (endAt.getTime() > now.getTime()) throw new BookingError('The end time cannot be in the future.')
+  if (endAt.getTime() <= walkin.startsAt.getTime()) throw new BookingError('End time must be after the session started.')
+  if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+    throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
+  }
+  return { endAt, priceEnd: endAt, entered: true }
 }
 
 /**
@@ -1129,13 +1188,25 @@ export async function previewWalkinCheckout(
  */
 export async function checkoutWalkinCore(
   tx: Db,
-  ctx: { tenantId: string; timezone: string; membershipId?: string | null },
+  ctx: {
+    tenantId: string
+    timezone: string
+    membershipId?: string | null
+    /** The system auto-close sweep: it writes its own walkin.auto_closed audit row, so the
+     *  walkin.late_checkout row (always true for a sweep, which prices a past deadline) is skipped. */
+    autoClosed?: boolean
+  },
   input: CheckoutWalkinInput,
   /** Injected for tests; production always uses the real clock. */
   now: Date = new Date(),
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
-  const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
+  const { priceEnd, entered } = resolveCheckoutWindow(walkin, input.endAt, ctx.autoClosed === true)
+  // M39 #1: an overdue timed checkout with an entered end that differs from the committed one.
+  const enteredTimedEnd =
+    walkin.billingMode === 'timed' && entered && walkin.committedEndAt && priceEnd.getTime() !== walkin.committedEndAt.getTime()
+      ? priceEnd
+      : null
   const headCount = resolveHeadCount(walkin, input.headCount)
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
@@ -1167,7 +1238,13 @@ export async function checkoutWalkinCore(
   } else {
     await tx
       .update(bookingSlots)
-      .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate, ...(trimmedEnd ? { endsAt: trimmedEnd } : {}) })
+      .set({
+        slotTotal: priced.unitPrice.toFixed(2),
+        ...headCountUpdate,
+        ...(trimmedEnd ? { endsAt: trimmedEnd } : {}),
+        // committed_end_at stays as the record of what was promised; only the slot follows the entered end.
+        ...(enteredTimedEnd ? { endsAt: enteredTimedEnd } : {}),
+      })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
   // M33: the walk-in's single pricing pass is NOW — price its add-on lines
@@ -1177,6 +1254,8 @@ export async function checkoutWalkinCore(
   // Early timed checkout: the add-ons were priced over the full committed
   // window above, but they stop HOLDING stock when the session actually ends.
   if (trimmedEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, trimmedEnd)
+  // M39 #1: add-ons hold stock only until the entered end (a later end re-checks stock).
+  if (enteredTimedEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, enteredTimedEnd, { checkStock: true })
   const checkoutTotal = round2(priced.unitPrice + addonTotal)
   // The booking's own subtotal/total are stamped here too — a walk-in is born
   // with both at 0 (nothing is priced until now), and every screen that reads
@@ -1195,7 +1274,7 @@ export async function checkoutWalkinCore(
   // is a late checkout — a correction, not routine ops — so it is audited
   // (entered end vs when it actually happened). A routine checkout inside the
   // window writes nothing, exactly as before; a timed walk-in never does.
-  if (walkin.billingMode === 'open_tab') {
+  if (walkin.billingMode === 'open_tab' && !ctx.autoClosed) {
     const checkedOutAt = new Date()
     if (Math.abs(priceEnd.getTime() - checkedOutAt.getTime()) > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
       await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
@@ -1210,6 +1289,23 @@ export async function checkoutWalkinCore(
         },
       })
     }
+  }
+
+  // M39 #1: an overdue timed checkout closed at an entered end is a correction of
+  // what was promised, so it is audited the same way (entered end vs when it happened).
+  if (enteredTimedEnd) {
+    await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
+      action: 'walkin.late_checkout',
+      entityType: 'booking',
+      entityId: walkin.bookingId,
+      before: { committedEndAt: walkin.committedEndAt?.toISOString() ?? null },
+      after: {
+        committedEndAt: walkin.committedEndAt?.toISOString() ?? null,
+        enteredEndAt: enteredTimedEnd.toISOString(),
+        checkedOutAt: new Date().toISOString(),
+        total: checkoutTotal.toFixed(2),
+      },
+    })
   }
 
   return { bookingId: walkin.bookingId, total: checkoutTotal }
@@ -1373,36 +1469,41 @@ export async function reopenWalkinCore(
 
   if (walkin.billingMode === 'open_tab') {
     const [futureSlot] = await tx
-      .select({ startsAt: bookingSlots.startsAt })
+      .select({ startsAt: bookingSlots.startsAt, eventTitle: events.title })
       .from(bookingSlots)
-      .innerJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(bookings, eq(bookings.id, bookingSlots.bookingId))
+      .leftJoin(events, eq(events.id, bookingSlots.eventId))
       .where(
         and(
           eq(bookingSlots.resourceId, walkin.resourceId),
           eq(bookingSlots.active, true),
           gt(bookingSlots.startsAt, walkin.startsAt),
-          inArray(bookings.status, ACTIVE_BOOKING_STATUSES),
+          or(isNotNull(bookingSlots.eventId), inArray(bookings.status, ACTIVE_BOOKING_STATUSES)),
         ),
       )
       .orderBy(asc(bookingSlots.startsAt))
       .limit(1)
     if (futureSlot) {
       throw new BookingError(
-        'This station has a booking scheduled later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.',
+        futureSlot.eventTitle
+          ? `This station is held for the event “${futureSlot.eventTitle}” later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.`
+          : 'This station has a booking scheduled later — reopening would leave the tab with no end time and overlap it. Check it out for real instead.',
       )
     }
   }
 
   // A timed session checked out early: its slot was trimmed short of the
   // committed end, which must be re-claimed (and re-validated) now.
+  // Also when an overdue checkout entered a LATER end (M39 #1): the slot goes back to
+  // the committed end, which only frees time, so the overlap check below is skipped.
   const restoreEnd =
     walkin.billingMode === 'timed' &&
     walkin.committedEndAt &&
     walkin.slotEndsAt &&
-    walkin.slotEndsAt.getTime() < walkin.committedEndAt.getTime()
+    walkin.slotEndsAt.getTime() !== walkin.committedEndAt.getTime()
       ? walkin.committedEndAt
       : null
-  if (restoreEnd && walkin.slotEndsAt) {
+  if (restoreEnd && walkin.slotEndsAt && walkin.slotEndsAt.getTime() < restoreEnd.getTime()) {
     const [taken] = await tx
       .select({ startsAt: bookingSlots.startsAt })
       .from(bookingSlots)
@@ -1443,7 +1544,9 @@ export async function reopenWalkinCore(
   await unpriceWalkinAddons(tx, ctx.tenantId, walkin.slotId)
   await tx
     .update(bookings)
-    .set({ subtotal: '0.00', total: '0.00' })
+    // autoCloseExempt: a reopened tab is a staff decision that the customer is still
+    // playing, so the auto-close sweep must not close it again at the old deadline.
+    .set({ subtotal: '0.00', total: '0.00', autoCloseExempt: true })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {

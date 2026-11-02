@@ -4,8 +4,8 @@ import { sweepTenantHolds } from '@/lib/booking/payment-hold'
 import { canManageIncomingOrders, canManageKitchen, canManageWalkins, isManager } from '@/lib/auth/roles'
 import { withUser } from '@/db'
 import { branches } from '@/db/schema'
-import { listResources, getWorkingHours, listDayBookings, listRangeBookings, addDays } from '@/lib/booking/data'
-import { todayInZone, weekdayInZone } from '@/lib/booking/time'
+import { listResources, getWorkingHours, listDayBookings, listRangeBookings, listEventBlocks, addDays } from '@/lib/booking/data'
+import { todayInZone, weekdayInZone, zonedTimeToUtc } from '@/lib/booking/time'
 import { parseRangePreset, resolveRange } from '@/lib/booking/ranges'
 import { listMenuItems, listMostOrderedItemIds, listMenuItemModifierGroups, groupModifierGroupsByMenuItem } from '@/lib/menu/data'
 import { listOrdersForBookings, listOrderItemModifierNames } from '@/lib/orders/data'
@@ -16,6 +16,7 @@ import { industryHasStudioSetups } from '@/lib/booking/studio-setups'
 import { BookingsView, type OrderSummary } from '@/components/bookings/BookingsView'
 import { BookingsRangeView } from '@/components/bookings/BookingsRangeView'
 import { BookingsRangeList } from '@/components/bookings/BookingsRangeList'
+import { EventBlocksStrip, type EventBlockRow } from '@/components/bookings/EventBlocksStrip'
 import { Pager } from '@/components/portal/Pager'
 import { rangeSpan, rangeSummary } from '@/components/bookings/RangePresetBar'
 
@@ -126,7 +127,17 @@ export default async function BookingsPage({
 
   // Multi-day presets skip the single-day loaders below (timeline, menu); the
   // list loads one page of bookings plus what the shared detail panel needs.
+  const toRows = (blocks: Awaited<ReturnType<typeof listEventBlocks>>): EventBlockRow[] =>
+    blocks.map((b) => ({
+      eventId: b.eventId,
+      title: b.title,
+      startsAt: b.firstStartsAt.toISOString(),
+      endsAt: b.lastEndsAt.toISOString(),
+      resourceNames: b.resourceNames ?? [],
+    }))
+
   if (range && !range.isSingleDay) {
+    const eventBlocks = toRows(await listEventBlocks(ctx, branch.id, range.startUtc, range.endUtc))
     const result = await listRangeBookings(ctx, branch.id, range.startUtc, range.endUtc, {
       page: Number(sp.page),
     })
@@ -139,6 +150,7 @@ export default async function BookingsPage({
     const rangeHref = (n: number) => `/bookings?range=${range.preset}${n > 1 ? `&page=${n}` : ''}`
     return (
       <BookingsRangeView branchName={branch.name} preset={range.preset} summary={rangeSummary(range)}>
+        <EventBlocksStrip blocks={eventBlocks} timeZone={tz} />
         <BookingsRangeList
           rows={result.rows.map((r) => ({
             bookingId: r.bookingId,
@@ -173,6 +185,7 @@ export default async function BookingsPage({
           ordersByBooking={ordersByBooking}
           canRequestVoidComp={isRestaurant && canManageIncomingOrders(ctx.role)}
           canEditAddons={canManageWalkins(ctx.role)}
+          canReschedule={isManager(ctx.role)}
           showFoodOrdering={showFoodOrdering}
           footer={
             <Pager
@@ -186,11 +199,12 @@ export default async function BookingsPage({
     )
   }
 
-  const [allResources, hours, slots, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] =
+  const [allResources, hours, slots, eventBlockRows, menuItemRows, happyHourRows, popularItemRows, menuItemGroupRows] =
     await Promise.all([
       listResources(ctx, branch.id),
       getWorkingHours(ctx, branch.id),
       listDayBookings(ctx, branch.id, date, tz),
+      listEventBlocks(ctx, branch.id, zonedTimeToUtc(date, '00:00', tz), zonedTimeToUtc(addDays(date, 1), '00:00', tz)),
       listMenuItems(ctx),
       listHappyHours(ctx),
       listMostOrderedItemIds(ctx, branch.id),
@@ -252,6 +266,8 @@ export default async function BookingsPage({
     }))
 
   return (
+    <>
+    <EventBlocksStrip blocks={toRows(eventBlockRows)} timeZone={tz} />
     <BookingsView
       branchId={branch.id}
       branchName={branch.name}
@@ -301,6 +317,8 @@ export default async function BookingsPage({
       showFoodOrdering={showFoodOrdering}
       canRecordBackdated={isManager(ctx.role)}
       canEditAddons={canManageWalkins(ctx.role)}
+      canReschedule={isManager(ctx.role)}
     />
+    </>
   )
 }

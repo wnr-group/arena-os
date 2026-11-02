@@ -682,6 +682,21 @@ export const MIN_PARTICIPANTS: Record<TournamentFormat, number> = {
 }
 
 /**
+ * The most participants each format will draw.
+ *
+ * Round robin is quadratic: n entrants is n(n-1)/2 matches, so 300 entrants is
+ * 44,850 rows (~25 MB of JSON on the public live page). 128 is 8,128 matches —
+ * already far more than anyone can schedule — and keeps the page and the insert
+ * sane. The elimination formats are linear, so the cap there is generous.
+ */
+export const MAX_PARTICIPANTS: Record<TournamentFormat, number> = {
+  single_elim: 256,
+  double_elim: 256,
+  round_robin: 128,
+  points: 512,
+}
+
+/**
  * Generate the whole competition for one format.
  *
  * Seeds the input itself rather than trusting the caller's order, so the
@@ -695,6 +710,14 @@ export function generateBracket(
   if (seeds.length < MIN_PARTICIPANTS[format]) {
     throw new BracketError(
       `This format needs at least ${MIN_PARTICIPANTS[format]} checked-in participants; ${seeds.length} checked in.`,
+    )
+  }
+  if (seeds.length > MAX_PARTICIPANTS[format]) {
+    throw new BracketError(
+      `${seeds.length} participants checked in, but this format supports at most ${MAX_PARTICIPANTS[format]}. ` +
+        (format === 'round_robin'
+          ? 'Split the field into groups (separate events) or use a knockout format.'
+          : 'Split the field into separate events.'),
     )
   }
   switch (format) {
@@ -799,8 +822,14 @@ export type CompletedMatch = {
  *
  * ── The ordering rule ───────────────────────────────────────────────────────
  *
- *   round_robin   wins desc, then point difference desc, then points-for desc.
+ *   round_robin   wins desc; then, among those level on wins, RESULTS BETWEEN
+ *                 THEM (head-to-head — wins in matches only the tied players
+ *                 played against each other); then point difference desc, then
+ *                 points-for desc.
  *   points        points-for desc.
+ *
+ * Head-to-head is applied once, over the whole tied group, not recursively: if
+ * it leaves a sub-group still level, point difference and the rest decide.
  *
  * then, for BOTH, the seeded order as the final tiebreak — which is what makes
  * the table a total order rather than one with arbitrary ties. `seedOrder` is
@@ -840,9 +869,33 @@ export function computeStandings(
     }
   }
 
+  // Head-to-head wins inside each group of players level on total wins.
+  const h2h = new Map<string, number>()
+  if (side === 'round_robin') {
+    const byWins = new Map<number, string[]>()
+    for (const r of rows.values()) {
+      const g = byWins.get(r.won) ?? []
+      g.push(r.registrationId)
+      byWins.set(r.won, g)
+    }
+    for (const group of byWins.values()) {
+      if (group.length < 2) continue
+      const inGroup = new Set(group)
+      for (const id of group) h2h.set(id, 0)
+      for (const m of matches) {
+        if (m.scoreA === null || !m.a || !m.b || !m.winner) continue
+        if (!inGroup.has(m.a) || !inGroup.has(m.b)) continue
+        h2h.set(m.winner, (h2h.get(m.winner) ?? 0) + 1)
+      }
+    }
+  }
+
   const sorted = [...rows.values()].sort((x, y) => {
     if (side === 'round_robin') {
       if (y.won !== x.won) return y.won - x.won
+      const hx = h2h.get(x.registrationId) ?? 0
+      const hy = h2h.get(y.registrationId) ?? 0
+      if (hy !== hx) return hy - hx
       const dx = x.pointsFor - x.pointsAgainst
       const dy = y.pointsFor - y.pointsAgainst
       if (dy !== dx) return dy - dx

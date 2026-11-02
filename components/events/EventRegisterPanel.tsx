@@ -9,6 +9,7 @@ import {
   createEventRegistrationCheckout,
   joinEventTeam,
   registerForEvent,
+  setMyEventPublicName,
 } from '@/lib/actions/event-registrations'
 import {
   EVENT_REGISTRATION_STATUS_LABELS,
@@ -221,6 +222,10 @@ export function EventRegisterPanel({
           </p>
         )}
 
+        {p.isOwnRegistration && !p.teamName && p.status !== 'cancelled' && (
+          <PublicNameField registrationId={p.registrationId} />
+        )}
+
         {p.isOwnRegistration && p.status !== 'cancelled' && p.status !== 'checked_in' && (
           <button
             type="button"
@@ -339,6 +344,49 @@ export function EventRegisterPanel({
 }
 
 /** One line saying where the customer stands, in the colour that says it too. */
+/**
+ * The public live bracket shows initials unless the entrant opts in to a name.
+ * Blank means initials. Teams show their team name, so this is for solo entries.
+ */
+function PublicNameField({ registrationId }: { registrationId: string }) {
+  const [name, setName] = useState('')
+  const [saving, startSave] = useTransition()
+  return (
+    <div className="rounded-xl border border-border p-3">
+      <label className="text-sm font-medium" htmlFor="public-name">
+        Name on the public bracket
+      </label>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Spectators see only your initials unless you choose a name here (a nickname is fine).
+      </p>
+      <div className="mt-2 flex gap-2">
+        <input
+          id="public-name"
+          className={input}
+          maxLength={40}
+          placeholder="Initials only"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <button
+          type="button"
+          disabled={saving}
+          className="shrink-0 rounded-lg border border-border px-3 text-sm font-medium hover:bg-muted disabled:opacity-60"
+          onClick={() =>
+            startSave(async () => {
+              const r = await setMyEventPublicName({ registrationId, name })
+              if (r.error) toast.error(r.error)
+              else toast.success(name.trim() ? 'Saved.' : 'Showing initials only.')
+            })
+          }
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function StatusBanner({ participation }: { participation: Participation }) {
   const { status, waitlistPosition } = participation
   const label = EVENT_REGISTRATION_STATUS_LABELS[status]

@@ -1,6 +1,6 @@
 'use server'
 
-import { revalidatePath } from 'next/cache'
+import { revalidatePath, updateTag } from 'next/cache'
 import { z } from 'zod'
 import { withUser } from '@/db'
 import { requireManager, AuthError } from '@/lib/auth/guard'
@@ -8,10 +8,15 @@ import { EntitlementError, requireEntitlement } from '@/lib/platform/entitlement
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 import { EventError } from '@/lib/events/lifecycle'
 import {
+  correctMatchResult,
+  forfeitMatch,
   generateEventBracket,
   recordMatchResult,
+  reopenMatch,
   resetEventBracket,
+  voidMatch,
 } from '@/lib/events/bracket-service'
+import { liveTag } from '@/lib/events/public-live-cache'
 
 /**
  * BRACKET AND SCORE-ENTRY ACTIONS (M15 #6).
@@ -56,6 +61,9 @@ function fail(e: unknown): Result {
 function revalidateBracket(eventId: string): void {
   revalidatePath(`/settings/events/${eventId}`)
   revalidatePath(`/settings/events/${eventId}/bracket`)
+  // The public live page is cached for a few seconds; a staff change should be
+  // visible to spectators on their next poll, not after the cache lapses.
+  updateTag(liveTag(eventId))
 }
 
 // ── generation ───────────────────────────────────────────────────────────────
@@ -158,6 +166,98 @@ export async function recordMatchResultAction(
 
     revalidateBracket(v.eventId)
     return { winner: outcome.winner, advanced: outcome.advancedTo !== null }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── corrections ──────────────────────────────────────────────────────────────
+
+const correctInput = resultInput.extend({
+  /** Also reset later matches that were played on the strength of the old result. */
+  cascade: z.boolean().optional(),
+})
+
+export type CorrectionResult = Result & { winner?: string | null; unwound?: number }
+
+/**
+ * Replace a recorded result. A changed score with the same winner touches
+ * nothing else; a changed winner takes the old outcome back out of the later
+ * matches and places the new one, refusing if those were played unless
+ * `cascade` is set.
+ */
+export async function correctMatchResultAction(
+  input: z.input<typeof correctInput>,
+): Promise<CorrectionResult> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const v = correctInput.parse(input)
+
+    const out = await withUser(ctx.user.id, (tx) =>
+      correctMatchResult(tx, ctx, {
+        matchId: v.matchId,
+        scoreA: v.scoreA,
+        scoreB: v.scoreB ?? null,
+        cascade: v.cascade,
+      }),
+    )
+    revalidateBracket(v.eventId)
+    return { winner: out.winner, unwound: out.unwound ?? 0 }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const matchRef = z.object({
+  matchId: z.string().uuid(),
+  eventId: z.string().uuid(),
+  cascade: z.boolean().optional(),
+})
+
+/** Award a match to one side because the other did not play. */
+export async function forfeitMatchAction(
+  input: z.input<typeof matchRef> & { forfeitingSide: 'a' | 'b' },
+): Promise<CorrectionResult> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const v = matchRef.extend({ forfeitingSide: z.enum(['a', 'b']) }).parse(input)
+    const out = await withUser(ctx.user.id, (tx) =>
+      forfeitMatch(tx, ctx, { matchId: v.matchId, forfeitingSide: v.forfeitingSide, cascade: v.cascade }),
+    )
+    revalidateBracket(v.eventId)
+    return { winner: out.winner, unwound: out.unwound ?? 0 }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** Drop a round-robin fixture that will not be played. */
+export async function voidMatchAction(input: z.input<typeof matchRef>): Promise<CorrectionResult> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const v = matchRef.parse(input)
+    await withUser(ctx.user.id, (tx) => voidMatch(tx, ctx, { matchId: v.matchId, cascade: v.cascade }))
+    revalidateBracket(v.eventId)
+    return {}
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/** Undo a result so the match can be scored again. */
+export async function reopenMatchAction(input: z.input<typeof matchRef>): Promise<CorrectionResult> {
+  try {
+    const ctx = await requireManager()
+    await requireEntitlement(ctx, 'module.events')
+    const v = matchRef.parse(input)
+    const out = await withUser(ctx.user.id, (tx) =>
+      reopenMatch(tx, ctx, { matchId: v.matchId, cascade: v.cascade }),
+    )
+    revalidateBracket(v.eventId)
+    return { unwound: out.unwound ?? 0 }
   } catch (e) {
     return fail(e)
   }

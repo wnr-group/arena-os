@@ -1,5 +1,5 @@
 import 'server-only'
-import { acquireLease, releaseLease } from '@/lib/cron/lease'
+import { acquireLease, releaseLease, renewLease } from '@/lib/cron/lease'
 import { syncGoogleReviewsBatch, type SyncResult } from './sync'
 import { createGoogleReviewFetcher } from './google-business-api'
 
@@ -14,6 +14,12 @@ export const SYNC_LEASE_NAME = 'google-review-sweep'
 export const DEFAULT_SWEEP_BUDGET_MS = 45_000
 /** Added to the budget for the lease: the tenant in flight when the budget runs out. */
 const LEASE_MARGIN_MS = 90_000
+
+class LeaseLostError extends Error {
+  constructor() {
+    super('Sweep lease was lost; stopping so a newer run does not overlap.')
+  }
+}
 
 export type SweepOutcome =
   | { skipped: true }
@@ -58,6 +64,11 @@ export async function runGoogleReviewSweep(
   try {
     const { results, deferred } = await syncGoogleReviewsBatch(createGoogleReviewFetcher(), undefined, {
       deadline: started + budgetMs,
+      // Each tenant starts with a fresh margin, so a slow tenant past the budget
+      // still cannot let a second sweep overlap. Lost lease = stop starting work.
+      beforeTenant: async () => {
+        if (!(await renewLease(lease, LEASE_MARGIN_MS))) throw new LeaseLostError()
+      },
     })
     return { skipped: false, results, deferred, ms: Date.now() - started }
   } finally {

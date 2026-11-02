@@ -19,11 +19,12 @@ import { createBookingCore, BookingError, type CreateBookingSlotInput } from '@/
 import { issueInvoiceForBooking, writeAudit } from '@/lib/billing/invoice'
 import { recordPaymentForInvoice, getInvoiceSettlement, paise, type PosPaymentMethod } from '@/lib/billing/payments'
 import { todayInZone } from '@/lib/booking/time'
+import { BACKDATED_MAX_DAYS, isPriorMonthDate } from '@/lib/booking/backdated-window'
 
 type Db = NodePgDatabase<typeof schema>
 
-/** How far back a session may be entered. */
-export const BACKDATED_MAX_DAYS = 7
+// Re-exported: the constant lives in a client-safe module the entry form shares.
+export { BACKDATED_MAX_DAYS }
 const DAY_MS = 24 * 60 * 60 * 1000
 
 export type RecordBackdatedInput = {
@@ -53,7 +54,7 @@ export type RecordedBackdatedBooking = {
 }
 
 /**
- * The server-side window: every slot must have started within the last 7 days
+ * The server-side window: every slot must have started within the last ${BACKDATED_MAX_DAYS} days
  * and already ended. Enforced here, never trusted to the UI's date picker.
  */
 export function assertBackdatedWindow(slots: { startsAt: string; endsAt: string }[], now: Date = new Date()): void {
@@ -193,6 +194,11 @@ export async function recordBackdatedBookingCore(
       idempotencyKey: key ?? null,
       enteredAt: now.toISOString(),
       enteredOn: todayInZone(ctx.timezone, now),
+      // Decided here from the slots themselves (tenant calendar), never from the
+      // client: an entry for a month before the current one.
+      priorMonthEntry: input.slots.some((s) =>
+        isPriorMonthDate(todayInZone(ctx.timezone, new Date(s.startsAt)), todayInZone(ctx.timezone, now)),
+      ),
       slots: input.slots.map((s) => ({ resourceId: s.resourceId, startsAt: s.startsAt, endsAt: s.endsAt })),
       invoiceId: invoice.invoiceId,
       invoiceNumber: invoice.invoiceNumber,

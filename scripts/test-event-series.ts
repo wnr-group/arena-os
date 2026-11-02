@@ -564,6 +564,19 @@ async function main() {
       fresh.resourceScope === 'none' && fresh.registrationMode === 'solo' && fresh.tournamentFormat === null)
     const scoped = await owner.query<{ resource_scope: string }>('select resource_scope from event_series where id=$1', [s])
     check('a series saved with branch scope really holds stations (generator)', scoped.rows[0].resource_scope === 'branch')
+    // A period that has already ENDED is stepped over, never minted open.
+    const old = await makeSeries(C, { title: 'After outage', nextRun: (await days(-21)) })
+    runGenerator()
+    const oldOcc = await occurrencesOf(old)
+    const pastOpen = await owner.query(
+      "select 1 from events where series_id=$1 and ends_at < now()", [old])
+    check('no past occurrence is created for a series that was behind', pastOpen.rowCount === 0, String(pastOpen.rowCount))
+    check('…but its upcoming periods are still generated', oldOcc.length >= 1)
+    const oldNext = (await owner.query<{ d: string }>('select next_run::text d from event_series where id=$1', [old])).rows[0].d
+    check('…and the cursor moved past the stepped-over periods', oldNext > (await days(0)))
+    check('…leaving no skip row (a past period is not a conflict)',
+      (await owner.query('select 1 from event_series_skips where series_id=$1', [old])).rowCount === 0)
+
     await owner.query('delete from event_series where tenant_id=$1', [C.tenantId])
     await owner.query('delete from booking_slots where tenant_id=$1', [C.tenantId])
     await owner.query('delete from events where tenant_id=$1', [C.tenantId])

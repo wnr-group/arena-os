@@ -275,15 +275,10 @@ async function main() {
       [overdueBookingId],
     )
 
-    const blockedPreview = await previewWalkinCheckout({ bookingId: overdueBookingId })
-    check(
-      'preview reads as guidance, not a generic error: "Extend the session before checking out"',
-      (blockedPreview.error ?? '').toLowerCase().includes('extend the session'),
-    )
-
-    const blocked = await checkoutWalkin({ bookingId: overdueBookingId })
-    check('checkout itself is blocked past the committed end', Boolean(blocked.error))
-    check('…with the same "extend first" message', (blocked.error ?? '').toLowerCase().includes('extend the session'))
+    // M39 #1: an overdue timed walk-in is no longer blocked: with no endAt it
+    // bills the committed window exactly as before.
+    const overduePreview = await previewWalkinCheckout({ bookingId: overdueBookingId })
+    check('an overdue preview is not blocked (defaults to the committed end)', !overduePreview.error && overduePreview.total !== undefined)
 
     // Extend past "now" — the block should lift immediately.
     const extended = await extendWalkin({ bookingId: overdueBookingId, addMinutes: 20 })
@@ -291,6 +286,86 @@ async function main() {
 
     const unblocked = await checkoutWalkin({ bookingId: overdueBookingId })
     check('checkout now succeeds once the extension covers "now"', !unblocked.error)
+  }
+
+  // ══ 4b. M39 #1: an overdue timed walk-in can be closed at an entered actual end ═
+  console.log('\n── overdue timed checkout with an entered end ──')
+  {
+    let n = 0
+    // A 30-min timed walk-in on its own station, shifted so it started `startedMinAgo` ago.
+    async function overdueWalkin(startedMinAgo: number) {
+      n++
+      const st = (
+        await owner.query<{ id: string }>(
+          `insert into resources (tenant_id,branch_id,resource_type_id,name,status)
+           values ($1,$2,$3,$4,'available')
+           on conflict (tenant_id,name) do update set status='available' returning id`,
+          [tenantId, branchId, hourlyType.rows[0].id, `M39 Station ${n}`],
+        )
+      ).rows[0].id
+      const s = await startWalkin({ branchId, resourceId: st, phone: nextPhone(), startAt: new Date().toISOString(), mode: 'timed', durationMin: 30 })
+      if (!s.bookingId) throw new Error(`startWalkin failed: ${s.error}`)
+      await owner.query(`update bookings set committed_end_at = committed_end_at - ($2 || ' minutes')::interval where id = $1`, [s.bookingId, String(startedMinAgo)])
+      await owner.query(
+        `update booking_slots set starts_at = starts_at - ($2 || ' minutes')::interval, ends_at = ends_at - ($2 || ' minutes')::interval where booking_id = $1`,
+        [s.bookingId, String(startedMinAgo)],
+      )
+      const row = await owner.query<{ starts_at: Date; committed_end_at: Date }>(
+        `select sl.starts_at, b.committed_end_at from bookings b join booking_slots sl on sl.booking_id = b.id where b.id = $1`,
+        [s.bookingId],
+      )
+      return { id: s.bookingId, start: new Date(row.rows[0].starts_at), committed: new Date(row.rows[0].committed_end_at) }
+    }
+    const MIN = 60_000
+    const state = async (id: string) => {
+      const r = await owner.query<{ ends_at: Date; slot_total: string; committed_end_at: Date; total: string }>(
+        `select sl.ends_at, sl.slot_total, b.committed_end_at, b.total from bookings b join booking_slots sl on sl.booking_id = b.id where b.id = $1`,
+        [id],
+      )
+      return r.rows[0]
+    }
+    const lateAudits = async (id: string) =>
+      (await owner.query(`select 1 from audit_log where entity_id = $1 and action = 'walkin.late_checkout'`, [id])).rowCount ?? 0
+
+    const base = await overdueWalkin(120) // started 120 min ago, committed end 90 min ago
+    const plain = await checkoutWalkin({ bookingId: base.id })
+    const baseTotal = Number((await state(base.id)).total)
+    check('overdue with no endAt: checks out, billed the committed window', !plain.error && baseTotal > 0)
+    check('...and writes no late-checkout audit', (await lateAudits(base.id)) === 0)
+
+    const shorter = await overdueWalkin(120)
+    const shortEnd = new Date(shorter.start.getTime() + 15 * MIN)
+    const sRes = await checkoutWalkin({ bookingId: shorter.id, endAt: shortEnd.toISOString() })
+    const sState = await state(shorter.id)
+    check('an entered end SHORTER than the committed end is accepted', !sRes.error)
+    check('...and bills less than the committed window', Number(sState.total) < baseTotal)
+    check('...the slot ends at the entered end', new Date(sState.ends_at).getTime() === shortEnd.getTime())
+    check('...committed_end_at is untouched', new Date(sState.committed_end_at).getTime() === shorter.committed.getTime())
+    check('...with one late-checkout audit row', (await lateAudits(shorter.id)) === 1)
+
+    const equal = await overdueWalkin(120)
+    const eRes = await checkoutWalkin({ bookingId: equal.id, endAt: equal.committed.toISOString() })
+    check('an entered end EQUAL to the committed end bills the same as no endAt', !eRes.error && Number((await state(equal.id)).total) === baseTotal)
+    check('...and writes no audit (nothing differs)', (await lateAudits(equal.id)) === 0)
+
+    const longer = await overdueWalkin(120)
+    const longEnd = new Date(longer.start.getTime() + 75 * MIN)
+    const lRes = await checkoutWalkin({ bookingId: longer.id, endAt: longEnd.toISOString() })
+    const lState = await state(longer.id)
+    check('an entered end LONGER than the committed end is accepted', !lRes.error)
+    check('...and bills more than the committed window', Number(lState.total) > baseTotal)
+    check('...the slot ends at the entered end', new Date(lState.ends_at).getTime() === longEnd.getTime())
+    check('...with one late-checkout audit row', (await lateAudits(longer.id)) === 1)
+
+    const futureTry = await overdueWalkin(120)
+    const fRes = await checkoutWalkin({ bookingId: futureTry.id, endAt: new Date(Date.now() + 10 * MIN).toISOString() })
+    check('an entered end in the future is refused', Boolean(fRes.error))
+    const beforeStart = await checkoutWalkin({ bookingId: futureTry.id, endAt: new Date(futureTry.start.getTime() - MIN).toISOString() })
+    check('an entered end before the start is refused', Boolean(beforeStart.error))
+
+    const old = await overdueWalkin(8 * 24 * 60)
+    const oRes = await checkoutWalkin({ bookingId: old.id, endAt: new Date(old.start.getTime() + 20 * MIN).toISOString() })
+    check('an entered end more than 7 days ago is refused', Boolean(oRes.error) && (oRes.error ?? '').includes('7 days'))
   }
 
   // ══ 5. extend only applies to a TIMED walk-in ═══════════════════════════════

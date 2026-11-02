@@ -9,6 +9,7 @@ import { resolvePublicTenant } from '@/lib/tenant/public'
 import { getPublicStation, getPublicBranch } from '@/lib/booking/public-availability'
 import { getPublicBookingForOrder } from '@/lib/booking/public-confirmation'
 import { createOrderCore, OrderError } from '@/lib/orders/service'
+import { printAcceptedOnlineOrder } from '@/lib/printing/system'
 import { getOrderSettingsCore } from '@/lib/orders/settings'
 import { findCustomerByRawPhone, findOrCreateCustomer, setNotifyOrderReady } from '@/lib/customers/service'
 import {
@@ -306,6 +307,12 @@ export async function placeOnlineOrder(raw: z.input<typeof orderInput>): Promise
         awaitingPayment,
       }
     })
+
+    // Auto-accepted (neither awaiting review nor payment): it is the kitchen's
+    // now, so print its ticket. After commit, as the system, never throwing.
+    if (!result.pendingAcceptance && !result.awaitingPayment) {
+      await printAcceptedOnlineOrder(tenant.id, result.id)
+    }
 
     return {
       orderNumber: result.orderNumber,

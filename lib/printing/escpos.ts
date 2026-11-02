@@ -10,7 +10,22 @@
  *   ESC @        initialise            ESC a n    align (0 left, 1 centre, 2 right)
  *   ESC E n      bold                  GS ! n     character size (w-1)<<4 | (h-1)
  *   ESC d n      feed n lines          GS V B n   partial cut after feeding
+ *
+ * Bounds: a job is only as safe as its largest input, and notes/names are
+ * free text, so every field is capped (MAX_FIELD_CHARS / MAX_FIELD_LINES), runs
+ * of blank lines collapse, and the whole job is capped at MAX_JOB_BYTES — cut at
+ * a line boundary with a visible "TICKET TRUNCATED" footer, never mid-command.
+ *
+ * Non-Latin text (Devanagari, Tamil, emoji, ...) prints as "?": this encoder
+ * emits no code page. See docs/kitchen-printing.md for that decision.
  */
+
+/** A hostile or careless field can take at most this many characters ... */
+export const MAX_FIELD_CHARS = 1000
+/** ... and this many printed lines (the last one becomes "..."). */
+export const MAX_FIELD_LINES = 12
+/** Hard cap on one job's bytes. A real ticket is a few KB. */
+export const MAX_JOB_BYTES = 32 * 1024
 
 const ESC = 0x1b
 const GS = 0x1d
@@ -32,12 +47,19 @@ export function toAscii(input: string): string {
     .replace(/[̀-ͯ]/g, '')
     .replace(/[\r\t]/g, ' ')
     .replace(/[^\x20-\x7e\n]/gu, '?')
+    // Blank-line floods ("\n" x 5000) print as paper, not text: keep at most one.
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
 }
 
-/** Word-wrap to `width` columns; words longer than a line are hard-split. */
-export function wrap(text: string, width: number): string[] {
+/**
+ * Word-wrap to `width` columns; words longer than a line are hard-split. Input
+ * is capped at MAX_FIELD_CHARS and output at `maxLines` (the last line becomes
+ * "..." when it was cut).
+ */
+export function wrap(text: string, width: number, maxLines = Infinity): string[] {
   const out: string[] = []
-  for (const para of toAscii(text).split('\n')) {
+  for (const para of toAscii(text.slice(0, MAX_FIELD_CHARS)).split('\n')) {
     let line = ''
     for (let word of para.split(/ +/).filter(Boolean)) {
       while (word.length > width) {
@@ -57,17 +79,21 @@ export function wrap(text: string, width: number): string[] {
     }
     out.push(line)
   }
+  if (out.length > maxLines) return [...out.slice(0, Math.max(0, maxLines - 1)), '...']
   return out
 }
 
 export class EscPos {
   private bytes: number[] = []
+  /** Byte offsets just after a complete line: the only safe places to truncate. */
+  private lineEnds: number[] = []
   /** Characters per line at normal size — double-width text halves this. */
   readonly width: number
 
   constructor(width = 42) {
     this.width = width
     this.raw(ESC, 0x40) // initialise
+    this.lineEnds.push(this.bytes.length)
   }
 
   private raw(...b: number[]): this {
@@ -95,8 +121,8 @@ export class EscPos {
   }
 
   /** Wrapped text lines, each ended with a newline. `cols` = effective width. */
-  line(text = '', cols = this.width): this {
-    for (const l of wrap(text, cols)) this.write(l).raw(LF)
+  line(text = '', cols = this.width, maxLines = MAX_FIELD_LINES): this {
+    for (const l of wrap(text, cols, maxLines)) this.write(l).raw(LF).endLine()
     return this
   }
 
@@ -104,16 +130,21 @@ export class EscPos {
   row(left: string, right: string, cols = this.width): this {
     const r = toAscii(right)
     const room = Math.max(1, cols - r.length - 1)
-    const parts = wrap(left, room)
+    const parts = wrap(left, room, MAX_FIELD_LINES)
     parts.forEach((p, i) => {
       const isLast = i === parts.length - 1
-      this.write(isLast ? p.padEnd(cols - r.length, ' ') + r : p).raw(LF)
+      this.write(isLast ? p.padEnd(cols - r.length, ' ') + r : p).raw(LF).endLine()
     })
     return this
   }
 
   rule(ch = '-'): this {
-    return this.write(ch.repeat(this.width)).raw(LF)
+    return this.write(ch.repeat(this.width)).raw(LF).endLine()
+  }
+
+  private endLine(): this {
+    this.lineEnds.push(this.bytes.length)
+    return this
   }
 
   feed(n = 1): this {
@@ -126,6 +157,17 @@ export class EscPos {
   }
 
   build(): Buffer {
-    return Buffer.from(this.bytes)
+    if (this.bytes.length <= MAX_JOB_BYTES) return Buffer.from(this.bytes)
+    // Over the cap: keep whole lines up to it, then a re-initialised footer so no
+    // half-written command or leftover size/bold state survives the cut.
+    const footer = new EscPos(this.width)
+    footer.bold(true).line('*** TICKET TRUNCATED - SEE SCREEN ***').bold(false).cut()
+    const room = MAX_JOB_BYTES - footer.bytes.length
+    let end = this.lineEnds[0] ?? 2
+    for (const p of this.lineEnds) {
+      if (p > room) break
+      end = p
+    }
+    return Buffer.from([...this.bytes.slice(0, end), ...footer.bytes])
   }
 }

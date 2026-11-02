@@ -4,7 +4,7 @@ import { withUser, type DB } from '@/db'
 import { auditLog, eventMatches, events } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { EventError } from './lifecycle'
-import { listCheckedInParticipants } from './check-in'
+import { listCheckedInParticipantsTx } from './check-in'
 import {
   BracketError,
   computeStandings,
@@ -40,6 +40,9 @@ import {
 
 /** A refusal a manager should see verbatim. */
 export { EventError }
+
+/** Rows per INSERT; 1,000 x 8 columns is far under the 65,535-parameter limit. */
+const INSERT_BATCH = 1000
 
 const FORMAT_VALUES: readonly TournamentFormat[] = [
   'single_elim',
@@ -123,7 +126,7 @@ export async function generateEventBracket(
   // `registered` through a verified payment webhook, and only `registered` can
   // be checked in. So "verified payment" needs no separate test here — it is
   // upstream of check-in.
-  const checkedIn = await listCheckedInParticipants(ctx, eventId)
+  const checkedIn = await listCheckedInParticipantsTx(tx, ctx, eventId)
 
   if (checkedIn.length < MIN_PARTICIPANTS[event.format]) {
     throw new EventError(
@@ -154,26 +157,36 @@ export async function generateEventBracket(
   // the rows do. So every row is inserted first, then a single UPDATE per match
   // resolves its coordinates to ids. Both passes are in this transaction, so no
   // caller can ever observe a draw with unwired pointers.
-  const inserted = await tx
-    .insert(eventMatches)
-    .values(
-      generated.map((m) => ({
-        tenantId: ctx.tenant.id,
-        eventId,
-        side: m.side,
-        round: m.round,
-        position: m.position,
-        participantA: m.a,
-        participantB: m.b,
-        status: m.status,
-      })),
-    )
-    .returning({
-      id: eventMatches.id,
-      side: eventMatches.side,
-      round: eventMatches.round,
-      position: eventMatches.position,
-    })
+  //
+  // Inserted in batches: one statement carries 8 bind parameters per match and
+  // Postgres allows 65,535 per statement, so a single INSERT fails from 8,192
+  // matches (a 129-player round robin has 8,256). MAX_PARTICIPANTS keeps a
+  // draw inside what the rest of the system handles; batching keeps the insert
+  // from being the thing that decides that.
+  const inserted: { id: string; side: BracketSide; round: number; position: number }[] = []
+  for (let i = 0; i < generated.length; i += INSERT_BATCH) {
+    const rows = await tx
+      .insert(eventMatches)
+      .values(
+        generated.slice(i, i + INSERT_BATCH).map((m) => ({
+          tenantId: ctx.tenant.id,
+          eventId,
+          side: m.side,
+          round: m.round,
+          position: m.position,
+          participantA: m.a,
+          participantB: m.b,
+          status: m.status,
+        })),
+      )
+      .returning({
+        id: eventMatches.id,
+        side: eventMatches.side,
+        round: eventMatches.round,
+        position: eventMatches.position,
+      })
+    for (const r of rows) inserted.push({ ...r, side: r.side as BracketSide })
+  }
 
   const idByKey = new Map(inserted.map((r) => [`${r.side}:${r.round}:${r.position}`, r.id]))
   const keyOf = (m: GeneratedMatch) => `${m.side}:${m.round}:${m.position}`
@@ -292,12 +305,103 @@ export type RecordResultOutcome = {
   winner: string | null
   advancedTo: string | null
   loserRoutedTo: string | null
+  /** Later matches whose results were discarded to make the change (cascade only). */
+  unwound?: number
+}
+
+/** Event states in which results may be entered or changed. */
+const SCORABLE_EVENT_STATUSES = ['registration_open', 'full', 'in_progress'] as const
+
+type LockedMatch = {
+  id: string
+  eventId: string
+  side: BracketSide
+  round: number
+  position: number
+  status: string
+  a: string | null
+  b: string | null
+  winner: string | null
+  scoreA: number | null
+  scoreB: number | null
+  resultKind: string
+  winnerNextMatchId: string | null
+  winnerNextSlot: string | null
+  loserNextMatchId: string | null
+  loserNextSlot: string | null
+}
+
+/**
+ * Lock the event, then the match, and refuse unless the event is in a state
+ * where results may change.
+ *
+ * The EVENT is locked first, always: a correction can touch several matches, so
+ * every score-writing path takes the same lock order (event → match → later
+ * matches) and two of them cannot deadlock. It also serialises concurrent
+ * score entry within one event, which is cheap and what makes "no double
+ * advancement" a property of the lock rather than of timing.
+ *
+ * Results are accepted only while the event is open for registration, full or
+ * in progress. Draft and published events have no field to score, a completed
+ * event's results are final, and a cancelled one's are void.
+ */
+async function lockMatch(tx: DB, ctx: ActiveContext, matchId: string): Promise<LockedMatch> {
+  const [pre] = await tx
+    .select({ eventId: eventMatches.eventId })
+    .from(eventMatches)
+    .where(and(eq(eventMatches.id, matchId), eq(eventMatches.tenantId, ctx.tenant.id)))
+    .limit(1)
+  if (!pre) throw new EventError('Match not found.')
+
+  const [parent] = await tx
+    .select({ status: events.status })
+    .from(events)
+    .where(and(eq(events.id, pre.eventId), eq(events.tenantId, ctx.tenant.id)))
+    .for('update')
+    .limit(1)
+  if (!parent) throw new EventError('Event not found.')
+  if (parent.status === 'cancelled') {
+    throw new EventError('This event has been cancelled, so its results can no longer be changed.')
+  }
+  if (!(SCORABLE_EVENT_STATUSES as readonly string[]).includes(parent.status)) {
+    throw new EventError(
+      parent.status === 'completed'
+        ? 'This event is completed, so its results are final and can no longer be changed.'
+        : 'Results can only be entered once the event is open for registration or in progress.',
+    )
+  }
+
+  const [match] = await tx
+    .select({
+      id: eventMatches.id,
+      eventId: eventMatches.eventId,
+      side: eventMatches.side,
+      round: eventMatches.round,
+      position: eventMatches.position,
+      status: eventMatches.status,
+      a: eventMatches.participantA,
+      b: eventMatches.participantB,
+      winner: eventMatches.winner,
+      scoreA: eventMatches.scoreA,
+      scoreB: eventMatches.scoreB,
+      resultKind: eventMatches.resultKind,
+      winnerNextMatchId: eventMatches.winnerNextMatchId,
+      winnerNextSlot: eventMatches.winnerNextSlot,
+      loserNextMatchId: eventMatches.loserNextMatchId,
+      loserNextSlot: eventMatches.loserNextSlot,
+    })
+    .from(eventMatches)
+    .where(and(eq(eventMatches.id, matchId), eq(eventMatches.tenantId, ctx.tenant.id)))
+    .for('update')
+    .limit(1)
+  if (!match) throw new EventError('Match not found.')
+  return { ...match, side: match.side as BracketSide }
 }
 
 /**
  * Record a result and advance the bracket. ONE transaction, in this order:
  *
- *   1. lock the match (`for update`)
+ *   1. lock the event and the match
  *   2. verify it is still scoreable
  *   3. verify both participants are present
  *   4. validate the score and DERIVE the winner — the client never sends one
@@ -309,92 +413,101 @@ export type RecordResultOutcome = {
  * Anything that throws rolls all of it back, so a match can never be completed
  * without its advancement, nor advanced without being completed.
  *
- * ── Concurrency ─────────────────────────────────────────────────────────────
- *
- * The `for update` on step 1 is what makes two staff submitting the same match
- * safe: the second waits, then re-reads the row inside its own transaction,
- * sees `completed`, and is refused. It cannot produce a second winner and
- * cannot advance anybody twice.
+ * A match that already has a result is REFUSED here; changing one goes through
+ * correctMatchResult / forfeitMatch / voidMatch / reopenMatch below, which
+ * handle the later matches the old result already fed.
  */
 export async function recordMatchResult(
   tx: DB,
   ctx: ActiveContext,
   input: RecordResultInput,
 ): Promise<RecordResultOutcome> {
-  const [match] = await tx
-    .select({
-      id: eventMatches.id,
-      eventId: eventMatches.eventId,
-      side: eventMatches.side,
-      round: eventMatches.round,
-      position: eventMatches.position,
-      status: eventMatches.status,
-      a: eventMatches.participantA,
-      b: eventMatches.participantB,
-      winnerNextMatchId: eventMatches.winnerNextMatchId,
-      winnerNextSlot: eventMatches.winnerNextSlot,
-      loserNextMatchId: eventMatches.loserNextMatchId,
-      loserNextSlot: eventMatches.loserNextSlot,
-    })
-    .from(eventMatches)
-    .where(and(eq(eventMatches.id, input.matchId), eq(eventMatches.tenantId, ctx.tenant.id)))
-    .for('update')
-    .limit(1)
-
-  if (!match) throw new EventError('Match not found.')
-
-  // The EVENT's own state, which this path never consulted: it read
-  // event_matches and nothing else, so a cancelled tournament's bracket stayed
-  // fully scoreable. generateEventBracket() and resetEventBracket() both refuse
-  // on the event, and score entry is the third door into the same bracket.
-  //
-  // Read after the match lock, so the id is already known to be this tenant's.
-  const [parent] = await tx
-    .select({ status: events.status })
-    .from(events)
-    .where(and(eq(events.id, match.eventId), eq(events.tenantId, ctx.tenant.id)))
-    .limit(1)
-  if (!parent) throw new EventError('Event not found.')
-  if (parent.status === 'cancelled') {
-    throw new EventError('This event has been cancelled, so its results can no longer be changed.')
-  }
+  const match = await lockMatch(tx, ctx, input.matchId)
 
   if (match.status === 'completed') {
-    throw new EventError('This match already has a result. Nothing has been changed.')
+    throw new EventError(
+      'This match already has a result. Use Correct to change it. Nothing has been changed.',
+    )
   }
+  assertScoreable(match)
+
+  const verdict = decideScore(match, input)
+  const out = await finishMatch(tx, ctx, match, {
+    scoreA: input.scoreA,
+    scoreB: match.side === 'points' ? null : input.scoreB,
+    winnerSide: verdict.winner,
+    kind: 'played',
+  })
+
+  await writeAudit(tx, ctx, {
+    action: 'match_result_recorded',
+    entityId: match.id,
+    before: { status: match.status, a: match.a, b: match.b },
+    after: {
+      eventId: match.eventId,
+      side: match.side,
+      round: match.round,
+      position: match.position,
+      scoreA: input.scoreA,
+      scoreB: match.side === 'points' ? null : input.scoreB,
+      winner: out.winner,
+      advancedTo: out.advancedTo,
+      loserRoutedTo: out.loserRoutedTo,
+    },
+  })
+
+  return { matchId: match.id, ...out }
+}
+
+/** Refusals shared by every path that is about to put a result on a match. */
+function assertScoreable(match: LockedMatch): void {
   if (match.status === 'bye') {
     throw new EventError('This is a bye — there is nothing to play, and the entrant has advanced.')
   }
   if (match.status === 'void') {
     throw new EventError('This match will not be played.')
   }
-
   const isPoints = match.side === 'points'
   if (!match.a || (!isPoints && !match.b)) {
     throw new EventError('Both participants must be decided before a result can be entered.')
   }
+}
 
-  const verdict = decideWinner(
-    match.side as BracketSide,
-    { scoreA: input.scoreA, scoreB: input.scoreB },
-    !isPoints,
-  )
+function decideScore(match: LockedMatch, input: { scoreA: number; scoreB: number | null }) {
+  const isPoints = match.side === 'points'
+  const verdict = decideWinner(match.side, { scoreA: input.scoreA, scoreB: input.scoreB }, !isPoints)
   if (!verdict.ok) throw new EventError(verdict.error)
+  return verdict
+}
 
-  const winner =
-    verdict.winner === 'a' ? match.a : verdict.winner === 'b' ? (match.b as string) : null
-  const loser =
-    verdict.winner === 'a' ? (match.b as string) : verdict.winner === 'b' ? match.a : null
+/**
+ * Write a result onto a scoreable match and advance by pointer. Shared by
+ * first entry, correction and forfeit so there is ONE place that completes a
+ * match and moves people.
+ */
+async function finishMatch(
+  tx: DB,
+  ctx: ActiveContext,
+  match: LockedMatch,
+  r: {
+    scoreA: number
+    scoreB: number | null
+    winnerSide: 'a' | 'b' | null
+    kind: 'played' | 'forfeit'
+  },
+): Promise<{ winner: string | null; advancedTo: string | null; loserRoutedTo: string | null }> {
+  const winner = r.winnerSide === 'a' ? match.a : r.winnerSide === 'b' ? (match.b as string) : null
+  const loser = r.winnerSide === 'a' ? (match.b as string) : r.winnerSide === 'b' ? match.a : null
 
-  const now = new Date()
   const updated = await tx
     .update(eventMatches)
     .set({
-      scoreA: input.scoreA,
-      scoreB: isPoints ? null : input.scoreB,
+      scoreA: r.scoreA,
+      scoreB: r.scoreB,
       winner,
       status: 'completed',
-      completedAt: now,
+      resultKind: r.kind,
+      completedAt: new Date(),
     })
     .where(
       and(
@@ -450,24 +563,329 @@ export async function recordMatchResult(
     advancedTo = null
   }
 
+  return { winner, advancedTo, loserRoutedTo }
+}
+
+// ── corrections ──────────────────────────────────────────────────────────────
+
+/**
+ * Take back the effect a completed result had on later matches.
+ *
+ * A result feeds at most two later matches (winner and loser pointers). Each
+ * destination slot is emptied so the corrected outcome can be placed again. If
+ * a destination has itself been PLAYED, its result depends on this one:
+ *
+ *   * without `cascade` the correction is refused, naming what stands in the
+ *     way — the safe default, because discarding a played match is not
+ *     something to do by accident;
+ *   * with `cascade` that match is reset too (and, recursively, whatever it
+ *     fed), so the bracket is left exactly as if none of it had been played.
+ *
+ * Returns how many LATER matches had their results discarded.
+ */
+async function unwindResult(
+  tx: DB,
+  ctx: ActiveContext,
+  match: LockedMatch,
+  cascade: boolean,
+): Promise<number> {
+  let unwound = 0
+  const dests: { id: string; slot: string }[] = []
+  if (match.winnerNextMatchId && match.winnerNextSlot) {
+    dests.push({ id: match.winnerNextMatchId, slot: match.winnerNextSlot })
+  }
+  if (match.loserNextMatchId && match.loserNextSlot) {
+    dests.push({ id: match.loserNextMatchId, slot: match.loserNextSlot })
+  }
+
+  for (const d of dests) {
+    const [dest] = await tx
+      .select({
+        id: eventMatches.id,
+        eventId: eventMatches.eventId,
+        side: eventMatches.side,
+        round: eventMatches.round,
+        position: eventMatches.position,
+        status: eventMatches.status,
+        a: eventMatches.participantA,
+        b: eventMatches.participantB,
+        winner: eventMatches.winner,
+        scoreA: eventMatches.scoreA,
+        scoreB: eventMatches.scoreB,
+        resultKind: eventMatches.resultKind,
+        winnerNextMatchId: eventMatches.winnerNextMatchId,
+        winnerNextSlot: eventMatches.winnerNextSlot,
+        loserNextMatchId: eventMatches.loserNextMatchId,
+        loserNextSlot: eventMatches.loserNextSlot,
+      })
+      .from(eventMatches)
+      .where(and(eq(eventMatches.id, d.id), eq(eventMatches.tenantId, ctx.tenant.id)))
+      .for('update')
+      .limit(1)
+    if (!dest) continue
+
+    if (dest.status === 'completed') {
+      if (!cascade) {
+        throw new EventError(
+          'A later match that depends on this result has already been played. ' +
+            'Correct that match first, or confirm that the later results should be reset too.',
+        )
+      }
+      unwound += 1 + (await unwindResult(tx, ctx, { ...dest, side: dest.side as BracketSide }, true))
+    }
+
+    // Empty the slot this result filled, and put the destination back to
+    // waiting. A voided grand-final reset becomes live again too: whether it is
+    // needed is decided afresh when the corrected result is applied.
+    await tx
+      .update(eventMatches)
+      .set({
+        ...(d.slot === 'a' ? { participantA: null } : { participantB: null }),
+        status: dest.status === 'bye' ? 'bye' : 'pending',
+        scoreA: null,
+        scoreB: null,
+        winner: null,
+        resultKind: 'played',
+        completedAt: null,
+      })
+      .where(and(eq(eventMatches.id, d.id), eq(eventMatches.tenantId, ctx.tenant.id)))
+  }
+
+  // The grand final's reset row is voided when the winners champion takes the
+  // first final; it is not necessarily reached through the pointers above once
+  // voided, so make sure it is live again before the new result decides.
+  if (match.side === 'final' && match.round === 1) {
+    await tx
+      .update(eventMatches)
+      .set({ status: 'pending' })
+      .where(
+        and(
+          eq(eventMatches.tenantId, ctx.tenant.id),
+          eq(eventMatches.eventId, match.eventId),
+          eq(eventMatches.side, 'final'),
+          eq(eventMatches.round, 2),
+          eq(eventMatches.status, 'void'),
+        ),
+      )
+  }
+  return unwound
+}
+
+/**
+ * Clear a completed match back to a blank, scoreable one (after its
+ * consequences have been unwound).
+ */
+async function clearMatchResult(
+  tx: DB,
+  ctx: ActiveContext,
+  matchId: string,
+  status: 'ready' | 'void',
+): Promise<void> {
+  await tx
+    .update(eventMatches)
+    .set({
+      status,
+      scoreA: null,
+      scoreB: null,
+      winner: null,
+      resultKind: 'played',
+      completedAt: null,
+    })
+    .where(and(eq(eventMatches.id, matchId), eq(eventMatches.tenantId, ctx.tenant.id)))
+}
+
+export type CorrectResultInput = RecordResultInput & { cascade?: boolean }
+
+/**
+ * Replace a recorded result.
+ *
+ *   * Same winner, different score → only the score changes. Nothing downstream
+ *     moves, so this works even when later matches have been played.
+ *   * Different winner → the old outcome is unwound from later matches and the
+ *     new one placed. Refused if a later match has been played, unless `cascade`
+ *     is set, in which case those results are reset.
+ */
+export async function correctMatchResult(
+  tx: DB,
+  ctx: ActiveContext,
+  input: CorrectResultInput,
+): Promise<RecordResultOutcome> {
+  const match = await lockMatch(tx, ctx, input.matchId)
+  if (match.status !== 'completed') {
+    throw new EventError('This match has no result to correct. Enter a result instead.')
+  }
+
+  const verdict = decideScore(match, input)
+  const isPoints = match.side === 'points'
+  const newWinner =
+    verdict.winner === 'a' ? match.a : verdict.winner === 'b' ? (match.b as string) : null
+  const scoreB = isPoints ? null : input.scoreB
+  const before = {
+    scoreA: match.scoreA,
+    scoreB: match.scoreB,
+    winner: match.winner,
+    kind: match.resultKind,
+  }
+
+  let out: { winner: string | null; advancedTo: string | null; loserRoutedTo: string | null }
+  let unwound = 0
+  if (newWinner === match.winner) {
+    // The outcome stands; only the numbers change. A forfeit corrected to a
+    // played score becomes a played result.
+    await tx
+      .update(eventMatches)
+      .set({ scoreA: input.scoreA, scoreB, resultKind: 'played' })
+      .where(and(eq(eventMatches.id, match.id), eq(eventMatches.tenantId, ctx.tenant.id)))
+    out = { winner: match.winner, advancedTo: null, loserRoutedTo: null }
+  } else {
+    unwound = await unwindResult(tx, ctx, match, input.cascade === true)
+    await clearMatchResult(tx, ctx, match.id, 'ready')
+    out = await finishMatch(tx, ctx, { ...match, status: 'ready' }, {
+      scoreA: input.scoreA,
+      scoreB,
+      winnerSide: verdict.winner,
+      kind: 'played',
+    })
+  }
+
   await writeAudit(tx, ctx, {
-    action: 'match_result_recorded',
+    action: 'match_result_corrected',
     entityId: match.id,
-    before: { status: match.status, a: match.a, b: match.b },
+    before,
     after: {
       eventId: match.eventId,
-      side: match.side,
-      round: match.round,
-      position: match.position,
       scoreA: input.scoreA,
-      scoreB: isPoints ? null : input.scoreB,
-      winner,
-      advancedTo,
-      loserRoutedTo,
+      scoreB,
+      winner: out.winner,
+      unwound,
     },
   })
+  return { matchId: match.id, ...out, unwound }
+}
 
-  return { matchId: match.id, winner, advancedTo, loserRoutedTo }
+export type ForfeitInput = { matchId: string; forfeitingSide: 'a' | 'b'; cascade?: boolean }
+
+/**
+ * Award a match to one side because the other did not play. Works on a match
+ * that is ready or already completed (an incorrectly entered score). Recorded
+ * 0–0 with result_kind = 'forfeit' so the table shows a win without inventing
+ * a scoreline.
+ */
+export async function forfeitMatch(
+  tx: DB,
+  ctx: ActiveContext,
+  input: ForfeitInput,
+): Promise<RecordResultOutcome> {
+  const match = await lockMatch(tx, ctx, input.matchId)
+  if (match.side === 'points') {
+    throw new EventError('A points card has no opponent, so it cannot be forfeited.')
+  }
+  if (match.status !== 'completed') assertScoreable(match)
+  if (!match.a || !match.b) {
+    throw new EventError('Both participants must be decided before a match can be forfeited.')
+  }
+
+  const winnerSide = input.forfeitingSide === 'a' ? 'b' : 'a'
+  const newWinner = winnerSide === 'a' ? match.a : match.b
+  const before = { status: match.status, winner: match.winner, kind: match.resultKind }
+
+  let out: { winner: string | null; advancedTo: string | null; loserRoutedTo: string | null }
+  let unwound = 0
+  if (match.status === 'completed' && newWinner === match.winner) {
+    await tx
+      .update(eventMatches)
+      .set({ scoreA: 0, scoreB: 0, resultKind: 'forfeit' })
+      .where(and(eq(eventMatches.id, match.id), eq(eventMatches.tenantId, ctx.tenant.id)))
+    out = { winner: match.winner, advancedTo: null, loserRoutedTo: null }
+  } else {
+    if (match.status === 'completed') {
+      unwound = await unwindResult(tx, ctx, match, input.cascade === true)
+      await clearMatchResult(tx, ctx, match.id, 'ready')
+    }
+    out = await finishMatch(tx, ctx, { ...match, status: 'ready' }, {
+      scoreA: 0,
+      scoreB: 0,
+      winnerSide,
+      kind: 'forfeit',
+    })
+  }
+
+  await writeAudit(tx, ctx, {
+    action: 'match_forfeited',
+    entityId: match.id,
+    before,
+    after: { eventId: match.eventId, forfeitingSide: input.forfeitingSide, winner: out.winner, unwound },
+  })
+  return { matchId: match.id, ...out, unwound }
+}
+
+export type VoidInput = { matchId: string; cascade?: boolean }
+
+/**
+ * Cancel a round-robin fixture that will not be played. It then drops out of
+ * the standings. Knockout matches cannot be voided — someone has to advance —
+ * so those are forfeited instead.
+ */
+export async function voidMatch(
+  tx: DB,
+  ctx: ActiveContext,
+  input: VoidInput,
+): Promise<RecordResultOutcome> {
+  const match = await lockMatch(tx, ctx, input.matchId)
+  if (match.side !== 'round_robin') {
+    throw new EventError(
+      'Only round-robin fixtures can be voided. In a knockout, forfeit the match so someone advances.',
+    )
+  }
+  if (match.status === 'void') throw new EventError('This match has already been voided.')
+
+  const before = { status: match.status, winner: match.winner, scoreA: match.scoreA, scoreB: match.scoreB }
+  if (match.status === 'completed') {
+    await unwindResult(tx, ctx, match, input.cascade === true)
+  }
+  await clearMatchResult(tx, ctx, match.id, 'void')
+
+  await writeAudit(tx, ctx, {
+    action: 'match_voided',
+    entityId: match.id,
+    before,
+    after: { eventId: match.eventId, status: 'void' },
+  })
+  return { matchId: match.id, winner: null, advancedTo: null, loserRoutedTo: null }
+}
+
+export type ReopenInput = { matchId: string; cascade?: boolean }
+
+/**
+ * Undo a result: the match goes back to ready (or, for a voided round-robin
+ * fixture, is brought back) and anything it fed is taken back first.
+ */
+export async function reopenMatch(
+  tx: DB,
+  ctx: ActiveContext,
+  input: ReopenInput,
+): Promise<RecordResultOutcome> {
+  const match = await lockMatch(tx, ctx, input.matchId)
+  if (match.status !== 'completed' && !(match.status === 'void' && match.side === 'round_robin')) {
+    throw new EventError('Only a match with a result can be re-opened.')
+  }
+  if (!match.a || (match.side !== 'points' && !match.b)) {
+    throw new EventError('Both participants must be decided before a match can be re-opened.')
+  }
+
+  let unwound = 0
+  if (match.status === 'completed') {
+    unwound = await unwindResult(tx, ctx, match, input.cascade === true)
+  }
+  await clearMatchResult(tx, ctx, match.id, 'ready')
+
+  await writeAudit(tx, ctx, {
+    action: 'match_reopened',
+    entityId: match.id,
+    before: { status: match.status, winner: match.winner, scoreA: match.scoreA, scoreB: match.scoreB },
+    after: { eventId: match.eventId, status: 'ready', unwound },
+  })
+  return { matchId: match.id, winner: null, advancedTo: null, loserRoutedTo: null, unwound }
 }
 
 /**
@@ -568,6 +986,8 @@ export type BracketMatchRow = {
   scoreA: number | null
   scoreB: number | null
   winner: string | null
+  /** 'played' or 'forfeit'. */
+  resultKind: string
 }
 
 export type EventBracketView = {
@@ -608,6 +1028,7 @@ export async function getEventBracket(
         scoreA: eventMatches.scoreA,
         scoreB: eventMatches.scoreB,
         winner: eventMatches.winner,
+        resultKind: eventMatches.resultKind,
       })
       .from(eventMatches)
       .where(and(eq(eventMatches.tenantId, ctx.tenant.id), eq(eventMatches.eventId, eventId)))

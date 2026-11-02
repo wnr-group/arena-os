@@ -23,7 +23,7 @@ import { resolveScopeDefaultTaxPercent } from '@/lib/tax-rates/resolve'
 import { loadWeekendDays } from '@/lib/settings/business-profile'
 import { loadActiveHappyHourRules } from '@/lib/happy-hours/rules'
 import { BookingError } from './booking-error'
-import { assertNoUpcomingReservation } from '@/lib/reservations/guard'
+import { guardTableSeating, lockTable } from '@/lib/reservations/guard'
 import { resolveTableServer } from '@/lib/sections/resolve'
 import { MAX_DAY_RANGE_DAYS, calendarDaysInRange, horizonMessage, horizonNow, isWithinHorizon } from './horizon'
 import { getBookingSettingsCore } from './settings'
@@ -115,6 +115,9 @@ export type CreateBookingInput = {
    *  marks the booking as a table reservation (cover count + length) so it can
    *  later be converted to a seated session. Never accepted from a client. */
   reservation?: { coverCount: number; minutes: number }
+  /** Public double-submit guard (0173): a second create with the same key hits
+   *  the unique index (23505) instead of making a second booking. */
+  idempotencyKey?: string
 }
 
 export type CreatedBooking = { id: string; bookingNumber: string; confirmationToken: string }
@@ -892,6 +895,7 @@ export async function createBookingCore(
       createdBy: ctx.membershipId,
       headCount: input.headCount ?? null,
       backdated: input.backdated ?? false,
+      idempotencyKey: input.idempotencyKey ?? null,
       ...(input.reservation && {
         coverCount: input.reservation.coverCount,
         reservedFor: slotRows[0].startsAt,
@@ -1237,10 +1241,13 @@ export async function seatTableSessionCore(
   }
   if (resource.status !== 'available') throw new BookingError('This table is not available.')
 
-  // M20: a walk-in must not take a table a reservation is about to need.
-  // Short-circuits to a no-op unless the venue opted into reservations, so
-  // every existing restaurant seats exactly as before.
-  if (!input.overrideReservation) await assertNoUpcomingReservation(tx, ctx, input.resourceId)
+  // M20: a walk-in must not take a table a reservation (or an event) is about to
+  // need. Without reservations or events on this table it is a no-op, so every
+  // existing restaurant seats exactly as before. A manager's override passes but
+  // is audited. The table lock serialises this against a reservation being
+  // created for the same table.
+  await lockTable(tx, ctx.tenantId, input.resourceId)
+  await guardTableSeating(tx, ctx, input.resourceId, { override: input.overrideReservation })
 
   const resolvedCustomer = await resolveBookingCustomer(tx, ctx.tenantId, {
     phone: input.customerPhone,
@@ -1633,7 +1640,12 @@ export async function undoCheckInCore(
   })
 }
 
-export type TransferTableInput = { bookingId: string; targetResourceId: string }
+export type TransferTableInput = {
+  bookingId: string
+  targetResourceId: string
+  /** Move them although a reservation/event is about to need the target. Managers only (the action checks). */
+  overrideReservation?: boolean
+}
 
 /** Move a table session to a different table. Its orders "come with it" for
  *  free — they key off bookings.id, which never changes here, only its
@@ -1675,12 +1687,18 @@ export async function transferTableCore(
   }
   if (target.status !== 'available') throw new BookingError('Target table is not available.')
 
+  // Moving a party onto a table is seating them there: the same reservation/event
+  // guard and table lock apply as for a fresh walk-in.
+  await lockTable(tx, ctx.tenantId, target.id)
+  await guardTableSeating(tx, ctx, target.id, { override: input.overrideReservation, bookingId: input.bookingId })
+
   // idx_bookings_open_table_session rejects this (23505) if the target was
   // seated by someone else a moment ago — translated to a friendly message
   // by lib/actions/bookings.ts:fail(), same as seatTable's race.
   await tx
     .update(bookings)
-    .set({ resourceId: target.id })
+    // The server follows the table the party ends up at, as on seating.
+    .set({ resourceId: target.id, serverId: await resolveTableServer(tx, ctx.tenantId, target.id) })
     .where(and(eq(bookings.id, input.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, ctx, {
@@ -1767,6 +1785,8 @@ export type SplitTableInput = {
   targetResourceId: string
   orderIds: string[]
   coverCount: number
+  /** Seat the split-off party although a reservation/event is about to need the target. Managers only. */
+  overrideReservation?: boolean
 }
 
 /** Split a subset of a table session's open orders onto a brand-new session
@@ -1823,6 +1843,10 @@ export async function splitTableCore(
     throw new BookingError('Target isn’t set up as a table — use a resource type with no hourly rate.')
   }
   if (target.status !== 'available') throw new BookingError('Target table is not available.')
+
+  // The split-off party sits down at the target: same guard as any seating.
+  await lockTable(tx, ctx.tenantId, target.id)
+  await guardTableSeating(tx, ctx, target.id, { override: input.overrideReservation, bookingId: input.sourceBookingId })
 
   const bookingNumber = await nextBookingNumber(tx, ctx)
   const now = new Date()

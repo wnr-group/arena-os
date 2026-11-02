@@ -15,11 +15,15 @@
  * A voided line never counts as outstanding, and a removed line takes its
  * kot_items row with it (ON DELETE CASCADE).
  */
-import { and, eq, inArray, isNull, ne, notExists, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, notExists, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type * as schema from '@/db/schema'
 import { kitchenStations, kots, kotItems, orderItems, orderSettings, orders } from '@/db/schema'
+import { enqueueKitchenTicketsForOrderBestEffort } from '@/lib/printing/jobs'
 import { KotError, type KotOrderRef } from './service'
+
+/** The plan module that includes the KDS and course firing. */
+export const KDS_MODULE = 'module.kitchen_display'
 
 type Db = NodePgDatabase<typeof schema>
 
@@ -65,6 +69,7 @@ export async function saveKdsSettingsCore(
   tx: Db,
   tenantId: string,
   v: Omit<KdsSettings, 'stationsEnabled'> & { stationsEnabled?: boolean },
+  membershipId: string | null = null,
 ): Promise<void> {
   const whole = (n: number) => Number.isInteger(n)
   if (!whole(v.warnMinutes) || !whole(v.lateMinutes) || v.warnMinutes < 1 || v.lateMinutes > 480) {
@@ -96,16 +101,26 @@ export async function saveKdsSettingsCore(
   // Course firing needs both flags. Once it can no longer run, nobody can fire a
   // held course (fire_order_course refuses), so release what is still held rather
   // than leave billed-but-never-cooked lines behind.
-  if (!(v.enabled && v.coursesEnabled)) await releaseHeldLinesCore(tx, tenantId)
+  if (!(v.enabled && v.coursesEnabled)) await releaseHeldLinesCore(tx, tenantId, { membershipId })
 }
 
 /**
- * Fire every still-held line on the tenant's open orders, and put a ticket the
- * kitchen had finished / the floor had served back to `preparing` — the same
- * effect as fireCourseCore, minus the flag check, for when course firing is
- * being switched off. Returns the number of lines released.
+ * Fire every still-held line on the tenant's open orders (or just `orderIds`),
+ * and put a ticket the kitchen had finished / the floor had served back to
+ * `preparing` — the same effect as fireCourseCore, minus the flag check, for when
+ * course firing can no longer run. Each released line is also sent to the
+ * kitchen printer, exactly like a fired course: without that a printer-only
+ * kitchen never gets paper for food that is billed. Returns lines released.
+ *
+ * The ticket reset is a plain UPDATE on kots, which only owner/manager/kitchen
+ * staff may do; for any other caller it quietly matches nothing. The lines are
+ * still released and printed, which is what stops billing being blocked.
  */
-export async function releaseHeldLinesCore(tx: Db, tenantId: string): Promise<number> {
+export async function releaseHeldLinesCore(
+  tx: Db,
+  tenantId: string,
+  opts: { membershipId?: string | null; orderIds?: readonly string[] } = {},
+): Promise<number> {
   const openOrders = tx
     .select({ id: orders.id })
     .from(orders)
@@ -119,17 +134,39 @@ export async function releaseHeldLinesCore(tx: Db, tenantId: string): Promise<nu
         eq(orderItems.fireStatus, 'held'),
         ne(orderItems.voidStatus, 'voided'),
         inArray(orderItems.orderId, openOrders),
+        opts.orderIds ? inArray(orderItems.orderId, [...opts.orderIds]) : undefined,
       ),
     )
-    .returning({ orderId: orderItems.orderId })
-  const orderIds = [...new Set(released.map((r) => r.orderId))]
+    .returning({ id: orderItems.id, orderId: orderItems.orderId })
+  const byOrder = new Map<string, string[]>()
+  for (const r of released) byOrder.set(r.orderId, [...(byOrder.get(r.orderId) ?? []), r.id])
+  const orderIds = [...byOrder.keys()]
   if (orderIds.length > 0) {
     await tx
       .update(kots)
       .set({ status: 'preparing' })
       .where(and(eq(kots.tenantId, tenantId), inArray(kots.orderId, orderIds), inArray(kots.status, ['ready', 'served'])))
   }
+  // Kitchen paper for exactly the lines just released (no-op without a printer).
+  for (const [orderId, lineIds] of byOrder) {
+    await enqueueKitchenTicketsForOrderBestEffort(tx, tenantId, orderId, 'fire', opts.membershipId ?? null, lineIds)
+  }
   return released.length
+}
+
+/**
+ * Release held lines when course firing can't run — flags off, or the plan no
+ * longer includes the KDS (the settings-save path that normally releases them is
+ * refused then, and so is firing, which would strand billed food). A no-op while
+ * courses are genuinely usable. Safe to call on any order/billing path.
+ */
+export async function releaseHeldLinesIfCoursesOff(
+  tx: Db,
+  tenantId: string,
+  opts: { membershipId?: string | null; orderIds?: readonly string[] } = {},
+): Promise<number> {
+  if ((await getCourseConfigCore(tx, tenantId)).enabled) return 0
+  return releaseHeldLinesCore(tx, tenantId, opts)
 }
 
 async function assertKdsEnabled(tx: Db, tenantId: string): Promise<void> {
@@ -165,6 +202,32 @@ async function lockKot(tx: Db, tenantId: string, kotId: string) {
  *  = lines with no station, undefined = every line on the ticket. */
 export type StationScope = { id: string | null } | undefined
 
+/**
+ * Which order lines a station screen owns.
+ *
+ *   `{ id: S }`     lines routed to S, PLUS every unrouted line
+ *   `{ id: null }`  unrouted lines (the "Unassigned" screen)
+ *   undefined       everything (all stations / expo)
+ *
+ * "Unrouted" means no station, or a station that has since been deactivated or
+ * deleted (delete clears station_id) — work no tab would otherwise own. Showing it
+ * on every station screen means it can never be cooked by nobody; whoever bumps it
+ * clears it everywhere, because the bump is per line, not per screen.
+ */
+export function stationLineFilter(tx: Db, station: StationScope) {
+  if (station === undefined) return undefined
+  const unrouted = or(
+    isNull(orderItems.stationId),
+    notExists(
+      tx
+        .select({ one: sql`1` })
+        .from(kitchenStations)
+        .where(and(eq(kitchenStations.id, orderItems.stationId), eq(kitchenStations.isActive, true))),
+    ),
+  )
+  return station.id === null ? unrouted : or(eq(orderItems.stationId, station.id), unrouted)
+}
+
 /** Not-voided, fired lines on the order with no bump row (optionally one station's). */
 async function outstandingLineIds(tx: Db, tenantId: string, orderId: string, station?: StationScope): Promise<string[]> {
   const rows = await tx
@@ -177,11 +240,7 @@ async function outstandingLineIds(tx: Db, tenantId: string, orderId: string, sta
         ne(orderItems.voidStatus, 'voided'),
         // Held lines aren't the cook's yet — they never block "ready".
         eq(orderItems.fireStatus, 'fired'),
-        station === undefined
-          ? undefined
-          : station.id === null
-            ? isNull(orderItems.stationId)
-            : eq(orderItems.stationId, station.id),
+        stationLineFilter(tx, station),
         notExists(tx.select({ one: sql`1` }).from(kotItems).where(eq(kotItems.orderItemId, orderItems.id))),
       ),
     )
@@ -287,23 +346,44 @@ export async function recallKotCore(tx: Db, actor: KdsActor, kotId: string): Pro
  * already bumped, the ticket is done. Called from lib/orders/service.ts; a
  * no-op for tenants without the KDS so the legacy flow is untouched.
  */
-export async function reconcileKotAfterLineChange(tx: Db, tenantId: string, orderId: string): Promise<void> {
-  if (!(await getKdsSettingsCore(tx, tenantId)).enabled) return
+export async function reconcileKotAfterLineChange(tx: Db, tenantId: string, orderId: string): Promise<KotOrderRef | null> {
+  if (!(await getKdsSettingsCore(tx, tenantId)).enabled) return null
   // Through reconcile_kot_after_line_change (migration 0163): waiters and cashiers
   // can't lock or UPDATE kots (kots_update), so done inline this silently did
   // nothing for them and left the ticket 'preparing' forever.
+  let readied: boolean
   try {
-    await tx.execute(sql`select public.reconcile_kot_after_line_change(${orderId}::uuid)`)
+    const r = await tx.execute(sql`select public.reconcile_kot_after_line_change(${orderId}::uuid) as readied`)
+    readied = (r.rows[0] as { readied: boolean } | undefined)?.readied === true
   } catch (e) {
     const err = (e as { cause?: { message?: string } }).cause ?? (e as { message?: string })
     throw new KotError(err.message?.replace(/^error: /i, '') || 'Could not update the ticket.')
   }
+  // True only when this call moved the ticket pending/preparing -> ready (the SQL
+  // only looks at open tickets), so a caller notifies exactly once per ready.
+  if (!readied) return null
+  const [o] = await tx
+    .select({ orderId: orders.id, orderNumber: orders.orderNumber, customerId: orders.customerId })
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.tenantId, tenantId)))
+    .limit(1)
+  return o ?? null
 }
 
-/** Course config as the order path sees it: usable only with the KDS on too. */
+/**
+ * Course config as the order path sees it: usable only with the KDS on too, AND
+ * only while the plan still includes the KDS. A tenant that lost the module keeps
+ * its kds_enabled/courses_enabled flags, but nobody can fire a course then
+ * (fireCourse and the settings save are refused), so treating the flags as on
+ * would hide held lines on the queue, keep offering Hold, and block billing.
+ */
 export async function getCourseConfigCore(tx: Db, tenantId: string): Promise<{ enabled: boolean; names: string[] }> {
   const s = await getKdsSettingsCore(tx, tenantId)
-  return { enabled: s.enabled && s.coursesEnabled, names: s.courseNames }
+  if (!(s.enabled && s.coursesEnabled)) return { enabled: false, names: s.courseNames }
+  // Loaded on demand: the guard pulls in the app's DB pool, and this module is
+  // imported by standalone scripts that must set their environment first.
+  const { hasEntitlementIn } = await import('@/lib/platform/entitlement-guard')
+  return { enabled: await hasEntitlementIn(tx, tenantId, KDS_MODULE), names: s.courseNames }
 }
 
 /**
@@ -334,9 +414,10 @@ export async function fireCourseCore(tx: Db, orderId: string, course: number): P
 export async function getStationRoutingCore(tx: Db, tenantId: string): Promise<Map<string, string> | null> {
   const s = await getKdsSettingsCore(tx, tenantId)
   if (!(s.enabled && s.stationsEnabled)) return null
-  const rows = await tx
-    .select({ id: kitchenStations.id, name: kitchenStations.name })
-    .from(kitchenStations)
-    .where(and(eq(kitchenStations.tenantId, tenantId), eq(kitchenStations.isActive, true)))
-  return new Map(rows.map((r) => [r.id, r.name]))
+  // Through station_routing() (migration 0171), not the table: an anonymous online
+  // order runs under the public-tenant context, where kitchen_stations is
+  // invisible, so every online line used to be stored unrouted. Staff and online
+  // orders now resolve routing identically.
+  const r = await tx.execute(sql`select id, name from public.station_routing(${tenantId}::uuid)`)
+  return new Map((r.rows as { id: string; name: string }[]).map((row) => [row.id, row.name]))
 }

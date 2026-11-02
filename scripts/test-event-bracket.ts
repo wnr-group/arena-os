@@ -487,5 +487,67 @@ section('11. double elimination plays to a champion at EVERY field size')
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+section('12. field-size cap and head-to-head tiebreak')
+{
+  const thrown = (fn: () => unknown): string | null => {
+    try {
+      fn()
+      return null
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e)
+    }
+  }
+  check('round robin accepts exactly 128', thrown(() => generateBracket('round_robin', people(128))) === null)
+  check('...and has n(n-1)/2 matches', generateBracket('round_robin', people(128)).length === 8128)
+  const over = thrown(() => generateBracket('round_robin', people(129)))
+  check('a 129-player round robin is refused', over !== null)
+  check('...naming the limit', (over ?? '').includes('at most 128'))
+  check(
+    'single elimination accepts 256 and refuses 257',
+    thrown(() => generateBracket('single_elim', people(256))) === null &&
+      thrown(() => generateBracket('single_elim', people(257))) !== null,
+  )
+  check(
+    'double elimination accepts 256 and refuses 257',
+    thrown(() => generateBracket('double_elim', people(256))) === null &&
+      thrown(() => generateBracket('double_elim', people(257))) !== null,
+  )
+  check('points refuses past its cap', thrown(() => generateBracket('points', people(513))) !== null)
+
+  const mk = (a: string, b: string, sa: number, sb: number) => ({
+    side: 'round_robin' as const,
+    a,
+    b,
+    scoreA: sa,
+    scoreB: sb,
+    winner: sa > sb ? a : b,
+  })
+  // r01 and r02 both finish 3-0 vs the rest... r02 beat r01 narrowly, but r01 has the better point difference.
+  const tbl = computeStandings('round_robin', ['r01', 'r02', 'r03', 'r04'], [
+    mk('r01', 'r02', 1, 2),
+    mk('r01', 'r03', 20, 0),
+    mk('r01', 'r04', 20, 0),
+    mk('r02', 'r03', 2, 1),
+    mk('r02', 'r04', 3, 2),
+    mk('r03', 'r04', 5, 0),
+  ])
+  check(
+    'level on wins, the head-to-head winner ranks first despite a worse point difference',
+    tbl[0].registrationId === 'r02' && tbl[1].registrationId === 'r01',
+    tbl.map((r) => r.registrationId).join(),
+  )
+
+  const tri = computeStandings('round_robin', ['a', 'b', 'c', 'd'], [
+    mk('a', 'b', 3, 1),
+    mk('b', 'c', 3, 1),
+    mk('c', 'a', 9, 0),
+    mk('a', 'd', 1, 0),
+    mk('b', 'd', 1, 0),
+    mk('c', 'd', 1, 0),
+  ])
+  check('a three-way tie on wins is still a total order', new Set(tri.map((r) => r.rank)).size === 4)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

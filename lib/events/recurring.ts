@@ -29,6 +29,12 @@
  * old behaviour — rolling the whole series back — left next_run on the head
  * period forever, so one conflicting Tuesday stopped every later Tuesday too.
  *
+ * ── A finished period is never generated ────────────────────────────────────
+ *
+ * After an outage the cursor can be weeks behind. A period whose occurrence has
+ * already ENDED is stepped over (counted in `pastSkipped`), not minted: it would
+ * be open for registration and would try to hold stations in the past.
+ *
  * ── Timezone ────────────────────────────────────────────────────────────────
  *
  * No timezone arithmetic in JavaScript. "Is it due?" is computed by Postgres from
@@ -83,7 +89,11 @@ export type RecurringRunSummary = {
   /** Occurrences not created because their resources were already booked. */
   conflicted: number
   advanced: number
+  /** Periods stepped over because the occurrence had already ended. */
+  pastSkipped: number
   failed: number
+  /** Why each failed series failed — surfaced by the route, not only console.error. */
+  failures: { seriesId: string; reason: string }[]
 }
 
 /** A resource clash while holding an occurrence's stations: the booking_slots
@@ -131,7 +141,9 @@ export async function runRecurringEvents(
     alreadyExisted: 0,
     conflicted: 0,
     advanced: 0,
+    pastSkipped: 0,
     failed: 0,
+    failures: [],
   }
 
   for (const s of due) {
@@ -163,6 +175,7 @@ export async function runRecurringEvents(
       let made = 0
       let existed = 0
       let conflicted = 0
+      let past = 0
       let periods = 0
 
       // EVERY period in the window is handled, not just the latest — a class
@@ -173,49 +186,66 @@ export async function runRecurringEvents(
         (tpl.until_date === null || cursor <= tpl.until_date) &&
         periods < MAX_PERIODS_PER_SERIES
       ) {
+        // Already over? Step past it — never mint a finished occurrence open for
+        // registration, and never try to block a window that has gone by.
+        const { rows: ended } = await client.query<{ over: boolean }>(
+          `select (($2::date + s.start_time) at time zone t.timezone
+                      + make_interval(mins => s.duration_minutes)) < now() as over
+             from public.event_series s
+             join public.tenants t on t.id = s.tenant_id
+            where s.id = $1`,
+          [s.id, cursor],
+        )
+        const isPast = ended[0]?.over === true
+
         // Each occurrence in its own savepoint: a clash rolls back THIS one only.
         await client.query('savepoint occurrence')
         try {
-          // The occurrence is an ORDINARY event, built entirely from the series
-          // row inside the database — no field is round-tripped through this
-          // code, so nothing here can substitute a value or cross a tenant.
-          // `on conflict do nothing` against idx_events_series_occurrence is the
-          // idempotency guarantee.
-          const { rowCount, rows: made_ } = await client.query<{ id: string }>(
-            `insert into public.events
-               (tenant_id, branch_id, title, type, description, banner_url, resource_scope,
-                starts_at, ends_at, capacity, entry_fee, tournament_format,
-                registration_mode, team_size, status, created_by,
-                series_id, occurrence_period)
-             select s.tenant_id, s.branch_id, s.title, s.type, s.description, s.banner_url, s.resource_scope,
-                    ($2::date + s.start_time) at time zone t.timezone,
-                    ($2::date + s.start_time) at time zone t.timezone
-                      + make_interval(mins => s.duration_minutes),
-                    s.capacity, s.entry_fee, s.tournament_format,
-                    s.registration_mode, s.team_size,
-                    -- Generated OPEN for entries. A class nobody can book is not
-                    -- a class; the manager can still cancel or draft it, and M15
-                    -- #4's resource blocking picks it up from this status.
-                    'registration_open'::public.event_status,
-                    s.created_by,
-                    s.id, $2::date
-               from public.event_series s
-               join public.tenants t on t.id = s.tenant_id
-              where s.id = $1
-             on conflict (series_id, occurrence_period) where series_id is not null
-             do nothing
-             returning id`,
-            [s.id, cursor],
-          )
+          if (isPast) {
+            past++
+            await client.query('release savepoint occurrence')
+          } else {
+            // The occurrence is an ORDINARY event, built entirely from the series
+            // row inside the database — no field is round-tripped through this
+            // code, so nothing here can substitute a value or cross a tenant.
+            // `on conflict do nothing` against idx_events_series_occurrence is the
+            // idempotency guarantee.
+            const { rowCount, rows: made_ } = await client.query<{ id: string }>(
+              `insert into public.events
+                 (tenant_id, branch_id, title, type, description, banner_url, resource_scope,
+                  starts_at, ends_at, capacity, entry_fee, tournament_format,
+                  registration_mode, team_size, status, created_by,
+                  series_id, occurrence_period)
+               select s.tenant_id, s.branch_id, s.title, s.type, s.description, s.banner_url, s.resource_scope,
+                      ($2::date + s.start_time) at time zone t.timezone,
+                      ($2::date + s.start_time) at time zone t.timezone
+                        + make_interval(mins => s.duration_minutes),
+                      s.capacity, s.entry_fee, s.tournament_format,
+                      s.registration_mode, s.team_size,
+                      -- Generated OPEN for entries. A class nobody can book is not
+                      -- a class; the manager can still cancel or draft it, and M15
+                      -- #4's resource blocking picks it up from this status.
+                      'registration_open'::public.event_status,
+                      s.created_by,
+                      s.id, $2::date
+                 from public.event_series s
+                 join public.tenants t on t.id = s.tenant_id
+                where s.id = $1
+               on conflict (series_id, occurrence_period) where series_id is not null
+               do nothing
+               returning id`,
+              [s.id, cursor],
+            )
 
-          if (rowCount && rowCount > 0) {
-            // The occurrence RESERVES what the series says it reserves — the SAME
-            // syncEventBlocks() the settings screen calls, with the booking_slots
-            // exclusion constraint (0003/0130) as the real arbiter.
-            await syncEventBlocks(db as never, s.tenant_id, made_[0].id)
-            made++
-          } else existed++
-          await client.query('release savepoint occurrence')
+            if (rowCount && rowCount > 0) {
+              // The occurrence RESERVES what the series says it reserves — the SAME
+              // syncEventBlocks() the settings screen calls, with the booking_slots
+              // exclusion constraint (0003/0130) as the real arbiter.
+              await syncEventBlocks(db as never, s.tenant_id, made_[0].id)
+              made++
+            } else existed++
+            await client.query('release savepoint occurrence')
+          }
         } catch (e) {
           if (!isBlockConflict(e)) throw e
           // Undo the event row and anything syncEventBlocks wrote for it, keep
@@ -258,11 +288,16 @@ export async function runRecurringEvents(
       summary.generated += made
       summary.alreadyExisted += existed
       summary.conflicted += conflicted
-      summary.advanced++
+      summary.pastSkipped += past
+      // Only a run that actually moved the cursor counts: a concurrent job may
+      // already have advanced this series while we waited on the row lock.
+      if (cursor !== tpl.next_run) summary.advanced++
     } catch (e) {
       await client.query('rollback').catch(() => {})
       summary.failed++
-      console.error(`  ✗ series ${s.id}:`, e instanceof Error ? e.message : 'unknown error')
+      const reason = e instanceof Error ? e.message.slice(0, 300) : 'unknown error'
+      summary.failures.push({ seriesId: s.id, reason })
+      console.error(`  ✗ series ${s.id}:`, reason)
     }
   }
 
