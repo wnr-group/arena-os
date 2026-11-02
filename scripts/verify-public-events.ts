@@ -1,7 +1,9 @@
 /**
  * Proves the PUBLIC event surface (M15 #2) against a real database:
  *
- *   - exactly published + registration_open are visible; the other five are not
+ *   - exactly published + registration_open show in the LISTING; draft/cancelled
+ *     are never public anywhere; full/in_progress/completed are reachable by
+ *     direct link only (0135, M15 #7's live bracket) — see POLICY_PUBLIC
  *   - the events_public_select POLICY enforces that, not just the reader — the
  *     decisive test issues a query with NO status filter and shows the database
  *     still refuses to hand over a draft
@@ -190,8 +192,14 @@ async function main() {
   const regOpen = await getPublicEventById(A.tenantId, idsByStatus.registration_open)
   check('a registration_open event loads', regOpen?.id === idsByStatus.registration_open)
 
-  for (const status of ['draft', 'full', 'in_progress', 'completed', 'cancelled'] as const) {
+  for (const status of ['draft', 'cancelled'] as const) {
     check(`a ${status} event returns null (404s)`, (await getPublicEventById(A.tenantId, idsByStatus[status])) === null)
+  }
+  // Widened by 0135 (M15 #7) for the live bracket: these three are reachable by
+  // direct link even though the LISTING above never shows them (see POLICY_PUBLIC).
+  for (const status of ['full', 'in_progress', 'completed'] as const) {
+    const row = await getPublicEventById(A.tenantId, idsByStatus[status])
+    check(`a ${status} event loads by direct link (no longer 404s)`, row?.id === idsByStatus[status])
   }
   check('an unknown uuid returns null', (await getPublicEventById(A.tenantId, '00000000-0000-4000-8000-000000000000')) === null)
   check('a malformed id returns null rather than throwing', (await getPublicEventById(A.tenantId, 'not-a-uuid')) === null)
