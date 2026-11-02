@@ -91,8 +91,9 @@ export type WalkinAutoCloseValue = { minutes: number | null; atClosing: boolean 
 /**
  * Save the walk-in auto-close rules — a max session length (preset minutes, or
  * null for none) and/or closing time — and audit old → new. Manager-only at the
- * caller and again by RLS. Only affects walk-ins closed from now on; nothing is
- * closed here.
+ * caller and again by RLS. Nothing is closed here, but nothing is grandfathered
+ * either: the next request-triggered sweep (Sessions list / alarm poll, not a
+ * scheduler) closes any open tab already past the new deadline, retroactively.
  */
 export async function applyWalkinAutoClose(
   tx: DB,

@@ -56,7 +56,7 @@ export function WalkinAutoCloseForm({
     <SettingsCard
       icon={AlarmClockOff}
       title="Auto-close forgotten walk-ins"
-      description="A walk-in with no end time keeps running until staff check it out. Turn on a rule to close a forgotten one automatically. It is billed up to the moment it closes and left unpaid for staff to settle, and you can still correct the end time afterwards."
+      description="A walk-in with no end time keeps running until staff check it out. Turn on a rule to close a forgotten one. There is no timer: it is closed the next time someone opens Sessions (or an alarm check runs) after its deadline, so it stays occupied until then. It is billed up to the deadline, not the moment it is closed, and left unpaid for staff to settle. Turning a rule on also closes tabs that are already past it. The end time can be corrected once a tab has closed, not while it is still running."
       footer={
         <SaveBar onSave={submit} disabled={!dirty} pending={pending} saved={justSaved} error={error} label="Save rules" />
       }

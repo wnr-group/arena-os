@@ -18,7 +18,7 @@ type Db = NodePgDatabase<typeof schema>
  * start + the max length and the next closing time (walkinCloseDeadline); once
  * that has passed it is closed through checkoutWalkinCore — the same pricing,
  * rounding, add-on and head-count path as a staff checkout — with the end set to
- * the DEADLINE, not "now": a cron that runs late (or a long outage) never bills
+ * the DEADLINE, not "now": a sweep that runs late (it is request-triggered, not scheduled) never bills
  * the customer for time past it.
  *
  * Like a manual checkout it only prices the session; the booking stays
