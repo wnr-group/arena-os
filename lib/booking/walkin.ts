@@ -60,6 +60,7 @@ import {
 } from './addons'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { withUser } from '@/db'
+import { after } from 'next/server'
 import { sweepOverdueWalkinsForTenant } from './walkin-auto-close'
 
 type Db = NodePgDatabase<typeof schema>
@@ -353,8 +354,14 @@ export type ActiveWalkin = {
  * otherwise invisible anywhere in the app once started.
  */
 export async function listActiveWalkins(ctx: ActiveContext, branchId: string): Promise<ActiveWalkin[]> {
-  // Close forgotten open-tabs first so this list (and the alarm poll) never shows them.
-  await sweepOverdueWalkinsForTenant(ctx.tenant.id)
+  // Close forgotten open-tabs after the response, so billing writes never delay
+  // this read; the next poll shows them closed. Outside a request (scripts) there
+  // is no after(), so run it inline.
+  try {
+    after(() => sweepOverdueWalkinsForTenant(ctx.tenant.id))
+  } catch {
+    await sweepOverdueWalkinsForTenant(ctx.tenant.id)
+  }
   const rows = await withUser(ctx.user.id, (tx) =>
     tx
       .select({

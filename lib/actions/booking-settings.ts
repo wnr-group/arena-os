@@ -11,6 +11,7 @@ import {
   applySlotStep,
   applyWalkinAutoClose,
 } from '@/lib/booking/settings-write'
+import { resetWalkinSweepThrottle } from '@/lib/booking/walkin-auto-close'
 
 type Result = { error?: string; success?: true; reduced?: boolean }
 
@@ -63,6 +64,7 @@ export async function saveWalkinAutoClose(value: { minutes: number | null; atClo
     await withUser(ctx.user.id, (tx) =>
       applyWalkinAutoClose(tx, { tenantId: ctx.tenant.id, membershipId: ctx.membershipId }, value),
     )
+    resetWalkinSweepThrottle(ctx.tenant.id)
     revalidatePath('/settings/hours')
     return { success: true }
   } catch (e) {

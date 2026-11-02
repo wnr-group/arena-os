@@ -31,7 +31,7 @@ type Db = NodePgDatabase<typeof schema>
 export async function autoCloseOverdueWalkins(
   opts: { tenantId?: string; limit?: number; now?: Date } = {},
   db: Db = ownerDb,
-): Promise<{ closed: number; failed: number }> {
+): Promise<{ closed: number; failed: number; candidates: number }> {
   const now = opts.now ?? new Date()
   const limit = opts.limit ?? 100
 
@@ -63,7 +63,7 @@ export async function autoCloseOverdueWalkins(
     // must not sit at the front of the queue and crowd newer ones out.
     .orderBy(desc(bookingSlots.startsAt))
     .limit(1000)
-  if (open.length === 0) return { closed: 0, failed: 0 }
+  if (open.length === 0) return { closed: 0, failed: 0, candidates: 0 }
 
   // Opening hours only matter to the closing-time rule.
   const hoursByBranch = new Map<string, Map<number, DayHours>>()
@@ -141,42 +141,62 @@ export async function autoCloseOverdueWalkins(
       console.error('[auto-close-walkins] skipped a booking:', e instanceof Error ? e.message : 'unknown')
     }
   }
-  return { closed, failed }
+  return { closed, failed, candidates: open.length }
 }
 
 /** Per-tenant gap between request-triggered sweeps, per server instance. */
 const SWEEP_INTERVAL_MS = 30_000
 /**
- * Most tabs one request-triggered sweep closes. The sweep runs inline on a read
- * (the Sessions list and the alarm poll), so a long gap must not make that read
- * wait for dozens of sequential transactions; the rest close on the next sweep.
- * The cron / manual run keeps the larger default.
+ * Gap after a sweep that found no open tab under an auto-close rule (the common
+ * case: rules off), so the candidate query on the owner connection is not run on
+ * every Sessions load. Saving the rules calls resetWalkinSweepThrottle for the
+ * tenant, so enabling one is not delayed by it.
+ */
+const IDLE_SWEEP_INTERVAL_MS = 5 * 60_000
+/** A sweep that outlives this stops being waited on (it is also off the request path). */
+const SWEEP_TIMEOUT_MS = 10_000
+/**
+ * Most tabs one request-triggered sweep closes: the rest close on the next
+ * sweep. The cron / manual run keeps the larger default.
  */
 export const REQUEST_SWEEP_LIMIT = 10
-const lastSweep = new Map<string, number>()
+const nextSweepAt = new Map<string, number>()
 
 /**
  * Request-triggered sweep: close this tenant's overdue open-tab walk-ins when
  * someone reads the live walk-in list. There is no scheduler behind it, so a
- * forgotten tab closes on the next read after its deadline, not at it — the
- * bill is still stamped at the deadline (see autoCloseOverdueWalkins).
+ * forgotten tab closes on the first read after its deadline, not at it — the
+ * bill is still stamped at the deadline (see autoCloseOverdueWalkins). Callers
+ * run it after the response (next/server after()), so the read that triggers it
+ * does not show the tab as closed until the next poll.
  *
- * Best effort: throttled per tenant per server instance, and a failure is
- * logged and swallowed so it never breaks the read. Concurrent sweeps are safe
- * because checkout locks the booking row; the loser is skipped.
+ * Best effort: throttled per tenant per server instance, bounded by a timeout,
+ * and a failure is logged and swallowed. Concurrent sweeps are safe because
+ * checkout locks the booking row; the loser is skipped.
  */
 export async function sweepOverdueWalkinsForTenant(tenantId: string, now: Date = new Date()): Promise<void> {
-  const last = lastSweep.get(tenantId)
-  if (last !== undefined && now.getTime() - last < SWEEP_INTERVAL_MS) return
-  lastSweep.set(tenantId, now.getTime())
+  const due = nextSweepAt.get(tenantId)
+  if (due !== undefined && now.getTime() < due) return
+  nextSweepAt.set(tenantId, now.getTime() + SWEEP_INTERVAL_MS)
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await autoCloseOverdueWalkins({ tenantId, now, limit: REQUEST_SWEEP_LIMIT })
+    const r = await Promise.race([
+      autoCloseOverdueWalkins({ tenantId, now, limit: REQUEST_SWEEP_LIMIT }),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SWEEP_TIMEOUT_MS)
+      }),
+    ])
+    if (r === null) console.error('[auto-close-walkins] sweep timed out')
+    else if (r.candidates === 0) nextSweepAt.set(tenantId, now.getTime() + IDLE_SWEEP_INTERVAL_MS)
   } catch (e) {
     console.error('[auto-close-walkins] sweep failed:', e instanceof Error ? e.message : 'unknown')
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
-/** Test hook: forget the throttle. */
-export function resetWalkinSweepThrottle(): void {
-  lastSweep.clear()
+/** Forget the throttle for one tenant (rules changed) or all (tests). */
+export function resetWalkinSweepThrottle(tenantId?: string): void {
+  if (tenantId) nextSweepAt.delete(tenantId)
+  else nextSweepAt.clear()
 }
