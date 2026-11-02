@@ -1042,13 +1042,15 @@ function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): 
  *     WALKIN_CHECKOUT_WINDOW_MINUTES ahead of now, no more than
  *     WALKIN_LATE_CHECKOUT_MAX_DAYS behind it (M32 — a forgotten tab), and
  *     after the session started — it IS the priced window's own end.
- *   - Timed: `endAt` (defaulting to now) must not be past the committed end
- *     (extensions included) — "Extend the session before checking out"
- *     rather than a silent overstay charge. The priced window's end is
- *     always the committed end itself, never `endAt`: a timed session is a
- *     slot the customer bought, so leaving early doesn't discount it and
- *     checking out exactly on time doesn't charge a moment more. Billed
- *     time is therefore always committed + extensions, full stop.
+ *   - Timed, not yet overdue (now <= committed end): `endAt` is ignored and
+ *     the priced window's end is the committed end itself: a timed session is
+ *     a slot the customer bought, so leaving early doesn't discount it and
+ *     checking out exactly on time doesn't charge a moment more.
+ *   - Timed, OVERDUE (now > committed end; M39 #1): the one scoped exception.
+ *     An explicit `endAt` (after the start, not in the future, within
+ *     WALKIN_LATE_CHECKOUT_MAX_DAYS) is the priced end, shorter OR longer than
+ *     the committed end. Omitted, it defaults to the committed end (unblocked,
+ *     billed as before). `entered` says whether the caller supplied one.
  *
  * Pure (no DB) — safe to call after either a locking or a read-only load.
  */
@@ -1058,7 +1060,7 @@ function resolveCheckoutWindow(
   /** The system auto-close sweep ends a tab at a known deadline of any age: the
    *  7-day bound is a typo guard for staff-entered times, not a cap on that. */
   systemClose = false,
-): { endAt: Date; priceEnd: Date } {
+): { endAt: Date; priceEnd: Date; entered: boolean } {
   const now = new Date()
   const endAt = endAtInput ? new Date(endAtInput) : now
   if (Number.isNaN(endAt.getTime())) throw new BookingError('Invalid end time.')
@@ -1079,20 +1081,26 @@ function resolveCheckoutWindow(
     if (endAt.getTime() <= walkin.startsAt.getTime()) {
       throw new BookingError('End time must be after the session started.')
     }
-    return { endAt, priceEnd: endAt }
+    return { endAt, priceEnd: endAt, entered: false }
   }
 
   // Timed.
   if (Number(walkin.slotTotal) > 0) throw new BookingError('This session has already been checked out.')
   if (!walkin.committedEndAt) throw new BookingError('This walk-in has no committed end time.')
-  // Gate on the SERVER's now, not the client-supplied endAt — endAt plays no
-  // part in what gets priced here (priceEnd is always committedEndAt), so
-  // checking it instead of now would let a crafted endAt (e.g. exactly
-  // committedEndAt) walk straight past an actual overstay unbilled.
-  if (now.getTime() > walkin.committedEndAt.getTime()) {
-    throw new BookingError('Extend the session before checking out.')
+  // Gate on the SERVER's now, not the client-supplied endAt: while the session
+  // is still inside its committed window endAt plays no part in pricing, so a
+  // crafted endAt cannot discount it.
+  if (now.getTime() <= walkin.committedEndAt.getTime() || !endAtInput) {
+    return { endAt, priceEnd: walkin.committedEndAt, entered: false }
   }
-  return { endAt, priceEnd: walkin.committedEndAt }
+  // Overdue with an entered actual end (M39 #1): it describes something that
+  // already happened, so never the future and never before the session began.
+  if (endAt.getTime() > now.getTime()) throw new BookingError('The end time cannot be in the future.')
+  if (endAt.getTime() <= walkin.startsAt.getTime()) throw new BookingError('End time must be after the session started.')
+  if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+    throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
+  }
+  return { endAt, priceEnd: endAt, entered: true }
 }
 
 /**
@@ -1193,7 +1201,12 @@ export async function checkoutWalkinCore(
   now: Date = new Date(),
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
-  const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt, ctx.autoClosed === true)
+  const { priceEnd, entered } = resolveCheckoutWindow(walkin, input.endAt, ctx.autoClosed === true)
+  // M39 #1: an overdue timed checkout with an entered end that differs from the committed one.
+  const enteredTimedEnd =
+    walkin.billingMode === 'timed' && entered && walkin.committedEndAt && priceEnd.getTime() !== walkin.committedEndAt.getTime()
+      ? priceEnd
+      : null
   const headCount = resolveHeadCount(walkin, input.headCount)
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
@@ -1225,7 +1238,13 @@ export async function checkoutWalkinCore(
   } else {
     await tx
       .update(bookingSlots)
-      .set({ slotTotal: priced.unitPrice.toFixed(2), ...headCountUpdate, ...(trimmedEnd ? { endsAt: trimmedEnd } : {}) })
+      .set({
+        slotTotal: priced.unitPrice.toFixed(2),
+        ...headCountUpdate,
+        ...(trimmedEnd ? { endsAt: trimmedEnd } : {}),
+        // committed_end_at stays as the record of what was promised; only the slot follows the entered end.
+        ...(enteredTimedEnd ? { endsAt: enteredTimedEnd } : {}),
+      })
       .where(eq(bookingSlots.id, walkin.slotId))
   }
   // M33: the walk-in's single pricing pass is NOW — price its add-on lines
@@ -1235,6 +1254,8 @@ export async function checkoutWalkinCore(
   // Early timed checkout: the add-ons were priced over the full committed
   // window above, but they stop HOLDING stock when the session actually ends.
   if (trimmedEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, trimmedEnd)
+  // M39 #1: add-ons hold stock only until the entered end (a later end re-checks stock).
+  if (enteredTimedEnd) await syncSlotAddonEnds(tx, ctx.tenantId, walkin.slotId, enteredTimedEnd, { checkStock: true })
   const checkoutTotal = round2(priced.unitPrice + addonTotal)
   // The booking's own subtotal/total are stamped here too — a walk-in is born
   // with both at 0 (nothing is priced until now), and every screen that reads
@@ -1268,6 +1289,23 @@ export async function checkoutWalkinCore(
         },
       })
     }
+  }
+
+  // M39 #1: an overdue timed checkout closed at an entered end is a correction of
+  // what was promised, so it is audited the same way (entered end vs when it happened).
+  if (enteredTimedEnd) {
+    await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
+      action: 'walkin.late_checkout',
+      entityType: 'booking',
+      entityId: walkin.bookingId,
+      before: { committedEndAt: walkin.committedEndAt?.toISOString() ?? null },
+      after: {
+        committedEndAt: walkin.committedEndAt?.toISOString() ?? null,
+        enteredEndAt: enteredTimedEnd.toISOString(),
+        checkedOutAt: new Date().toISOString(),
+        total: checkoutTotal.toFixed(2),
+      },
+    })
   }
 
   return { bookingId: walkin.bookingId, total: checkoutTotal }
@@ -1456,14 +1494,16 @@ export async function reopenWalkinCore(
 
   // A timed session checked out early: its slot was trimmed short of the
   // committed end, which must be re-claimed (and re-validated) now.
+  // Also when an overdue checkout entered a LATER end (M39 #1): the slot goes back to
+  // the committed end, which only frees time, so the overlap check below is skipped.
   const restoreEnd =
     walkin.billingMode === 'timed' &&
     walkin.committedEndAt &&
     walkin.slotEndsAt &&
-    walkin.slotEndsAt.getTime() < walkin.committedEndAt.getTime()
+    walkin.slotEndsAt.getTime() !== walkin.committedEndAt.getTime()
       ? walkin.committedEndAt
       : null
-  if (restoreEnd && walkin.slotEndsAt) {
+  if (restoreEnd && walkin.slotEndsAt && walkin.slotEndsAt.getTime() < restoreEnd.getTime()) {
     const [taken] = await tx
       .select({ startsAt: bookingSlots.startsAt })
       .from(bookingSlots)
