@@ -7,8 +7,13 @@ import { toast } from 'sonner'
 import { useBodyScrollLock } from '@/lib/hooks/useBodyScrollLock'
 import { checkoutWalkin, correctWalkinEndTime, extendWalkin, previewWalkinCheckout } from '@/lib/actions/bookings'
 import { formatCountdown } from '@/lib/booking/countdown'
-import { resolveCorrectedEnd } from '@/lib/booking/walkin-end-time'
-import { formatMoney, timeInZone } from '@/lib/format'
+import {
+  LATE_CHECKOUT_MAX_DAYS,
+  resolveCorrectedEnd,
+  resolveLateCheckoutEnd,
+  toDatetimeLocal,
+} from '@/lib/booking/walkin-end-time'
+import { dateInZone, formatMoney, timeInZone } from '@/lib/format'
 
 const QUICK_EXTEND_MINUTES = [15, 30, 60]
 
@@ -17,12 +22,12 @@ const QUICK_EXTEND_MINUTES = [15, 30, 60]
  * both actions, since they're the same decision from the operator's side:
  * "is this session done, or does it need more time?"
  *
- * Checking out is only offered while the (possibly-extended) committed end
- * hasn't passed yet — past it, the server refuses with "Extend the session
- * before checking out" and this dialog surfaces that as guidance right next
- * to the Extend control, not as a dead-end error. Billed time is always the
- * committed end (extensions included), never however long the session
- * actually ran — see lib/booking/walkin.ts's resolveCheckoutWindow.
+ * While the (possibly-extended) committed end hasn't passed, billed time is
+ * always the committed end, never however long the session actually ran.
+ * Once it HAS passed (M39 #2) an "Actual end time" field appears, pre-filled
+ * with the committed end, so leaving it alone bills exactly the committed time;
+ * editing it bills the entered end instead (shorter or longer), re-priced live.
+ * See lib/booking/walkin.ts's resolveCheckoutWindow.
  *
  * M22 follow-up: checking out no longer raises the invoice itself — it only
  * prices/freezes the session, then hands off to the same POS bill screen a
@@ -97,6 +102,22 @@ export function TimedWalkinDialog({
   // means no surcharge.
   const minPlayers = isBoard ? 1 : (booking.minPlayers ?? 1)
 
+  // M39 #2: while overdue, the actual end time (branch wall time, datetime-local).
+  // Untouched = the committed end, and then NO endAt is sent at all, so the
+  // result is exactly the committed-time bill. Re-seeded whenever the committed
+  // end moves (an extend or a fix).
+  const committedLocal = toDatetimeLocal(new Date(committedEndAt), timeZone)
+  const [actualValue, setActualValue] = useState(committedLocal)
+  useEffect(() => {
+    setActualValue(committedLocal)
+  }, [committedLocal])
+  const actualEdited = overdue && actualValue !== committedLocal
+  const actualResult = actualEdited ? resolveLateCheckoutEnd(actualValue, timeZone, new Date(now), booking.startsAt) : null
+  const actualError = actualResult && 'error' in actualResult ? actualResult.error : null
+  const actualIso = actualResult && 'iso' in actualResult ? actualResult.iso : undefined
+  const actualMin = toDatetimeLocal(new Date(now - LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000), timeZone)
+  const actualMax = toDatetimeLocal(new Date(now), timeZone)
+
   const [preview, setPreview] = useState<{ total: number; addonTotal: number } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -109,10 +130,18 @@ export function TimedWalkinDialog({
   // gets billed.
   useEffect(() => {
     let cancelled = false
+    if (actualError) {
+      // An unusable entered end: show its own message, price nothing.
+      setPreview(null)
+      setPreviewError(null)
+      setPreviewLoading(false)
+      return
+    }
     setPreviewLoading(true)
     setPreviewError(null)
     previewWalkinCheckout({
       bookingId: booking.bookingId,
+      endAt: actualIso,
       headCount: takesPlayers ? headCount : undefined,
     }).then((r) => {
       if (cancelled) return
@@ -128,7 +157,7 @@ export function TimedWalkinDialog({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booking.bookingId, committedEndAt, headCount, Math.floor(now / 15_000)])
+  }, [booking.bookingId, committedEndAt, headCount, actualIso, actualError, Math.floor(now / 15_000)])
 
   function extend(minutes: number) {
     if (!Number.isInteger(minutes) || minutes <= 0) {
@@ -174,6 +203,7 @@ export function TimedWalkinDialog({
     startCheckout(async () => {
       const r = await checkoutWalkin({
         bookingId: booking.bookingId,
+        endAt: actualIso,
         headCount: takesPlayers ? headCount : undefined,
       })
       if (r.error || !r.bookingId) {
@@ -387,6 +417,54 @@ export function TimedWalkinDialog({
             </section>
           )}
 
+          {/* M39 #2 — only once the committed time has passed. */}
+          {overdue && (
+            <section aria-labelledby="walkin-actual-label" className="rounded-2xl border border-border bg-muted/30 p-3.5">
+              <h3 id="walkin-actual-label" className="text-sm font-semibold text-foreground">
+                <label htmlFor="walkin-actual-end">Actual end time</label>
+              </h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Originally booked until{' '}
+                <span className="font-semibold tabular-nums text-foreground">
+                  {dateInZone(committedEndAt, timeZone)}, {timeInZone(committedEndAt, timeZone)}
+                </span>
+                . If the customer left at a different time, enter when they actually left; otherwise leave this as it is
+                and the full booked time is billed.
+              </p>
+              <input
+                id="walkin-actual-end"
+                type="datetime-local"
+                value={actualValue}
+                min={actualMin}
+                max={actualMax}
+                onChange={(e) => setActualValue(e.target.value)}
+                disabled={busy}
+                className="mt-2 min-h-11 w-full rounded-xl border border-border bg-background px-3.5 py-2 text-base font-semibold tabular-nums outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+              />
+              {actualEdited && actualIso && (
+                <p className="mt-2 text-sm font-medium text-foreground">
+                  Billing up to {dateInZone(actualIso, timeZone)}, {timeInZone(actualIso, timeZone)}. This is recorded as a
+                  late checkout.
+                </p>
+              )}
+              {actualError && (
+                <p role="alert" className="mt-2 text-sm text-destructive">
+                  {actualError}
+                </p>
+              )}
+              {actualEdited && (
+                <button
+                  type="button"
+                  onClick={() => setActualValue(committedLocal)}
+                  disabled={busy}
+                  className="mt-2 text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50"
+                >
+                  Reset to booked end time
+                </button>
+              )}
+            </section>
+          )}
+
           {/* Charge */}
           <section
             aria-label="Committed-time charge"
@@ -396,11 +474,8 @@ export function TimedWalkinDialog({
               <span>Committed-time charge</span>
               {previewLoading && <Loader2 size={14} className="animate-spin" aria-label="Pricing" />}
             </div>
-            {overdue ? (
-              <p className="mt-2 text-sm leading-relaxed text-foreground">
-                This session&apos;s committed time is up. Extend it above before checking out — the bill will always
-                match the committed time plus any extensions, never a silent overstay charge.
-              </p>
+            {actualError ? (
+              <p className="mt-2 text-sm text-muted-foreground">Fix the actual end time above to see the charge.</p>
             ) : previewError ? (
               <p className="mt-2 text-sm text-destructive">{previewError}</p>
             ) : (
@@ -414,8 +489,11 @@ export function TimedWalkinDialog({
                   </p>
                 )}
                 <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                  For the full committed session, whether it runs the whole way or ends early. Food/orders fold into
-                  the same bill.
+                  {overdue
+                    ? actualEdited
+                      ? 'Billed up to the actual end time entered above, not the booked end. Food/orders fold into the same bill.'
+                      : 'The full booked time, since no other end time was entered. Food/orders fold into the same bill.'
+                    : 'For the full committed session, whether it runs the whole way or ends early. Food/orders fold into the same bill.'}
                 </p>
               </>
             )}
@@ -441,7 +519,7 @@ export function TimedWalkinDialog({
           <button
             type="button"
             className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={busy || overdue || previewLoading || !preview}
+            disabled={busy || Boolean(actualError) || previewLoading || !preview}
             onClick={checkout}
           >
             {checkingOut && <Loader2 size={15} className="animate-spin" />}
