@@ -17,6 +17,44 @@
 -- 3. public_event_taken_counts() no longer trusts a caller-supplied tenant id.
 -- ============================================================================
 
+-- ── pre-flight ──────────────────────────────────────────────────────────────
+-- Fail early with a readable message instead of mid-way through the VALIDATEs.
+-- Needs Postgres >= 15 for ON DELETE SET NULL (column). Run off-peak: the unique
+-- indexes below are not CONCURRENT (a transaction cannot be) and block writes to
+-- their table briefly (about 0.7 s at 500k order_items).
+do $$
+declare
+  r record;
+  n bigint;
+  bad text := '';
+begin
+  if current_setting('server_version_num')::int < 150000 then
+    raise exception '0175 needs Postgres 15 or newer (ON DELETE SET NULL (column)); this is %', current_setting('server_version');
+  end if;
+  for r in
+    select * from (values
+      ('print_jobs','printer_id','printers'), ('print_jobs','kot_id','kots'),
+      ('print_jobs','invoice_id','invoices'), ('print_jobs','branch_id','branches'),
+      ('kot_items','kot_id','kots'), ('kot_items','order_item_id','order_items'),
+      ('menu_items','station_id','kitchen_stations'), ('order_items','station_id','kitchen_stations'),
+      ('menu_categories','station_id','kitchen_stations'), ('kitchen_stations','printer_id','printers'),
+      ('waitlist_entries','branch_id','branches'), ('floor_sections','branch_id','branches'),
+      ('stock_items','branch_id','branches')
+    ) as t(child, col, parent)
+  loop
+    execute format(
+      'select count(*) from public.%I c join public.%I p on p.id = c.%I where c.tenant_id <> p.tenant_id',
+      r.child, r.parent, r.col) into n;
+    if n > 0 then
+      bad := bad || format(E'
+  %s.%s -> %s: %s row(s)', r.child, r.col, r.parent, n);
+    end if;
+  end loop;
+  if bad <> '' then
+    raise exception E'0175 found rows that point at another tenant''s row; fix them first:%', bad;
+  end if;
+end $$;
+
 -- ── referenced-side keys ────────────────────────────────────────────────────
 create unique index if not exists printers_tenant_id_id_key         on public.printers(tenant_id, id);
 create unique index if not exists kots_tenant_id_id_key             on public.kots(tenant_id, id);
@@ -28,12 +66,16 @@ alter table public.print_jobs drop constraint if exists print_jobs_printer_id_fk
 alter table public.print_jobs drop constraint if exists print_jobs_kot_id_fkey;
 alter table public.print_jobs drop constraint if exists print_jobs_invoice_id_fkey;
 alter table public.print_jobs drop constraint if exists print_jobs_branch_id_fkey;
+alter table public.print_jobs drop constraint if exists print_jobs_printer_tenant_fkey;
 alter table public.print_jobs add constraint print_jobs_printer_tenant_fkey
   foreign key (tenant_id, printer_id) references public.printers(tenant_id, id) on delete cascade not valid;
+alter table public.print_jobs drop constraint if exists print_jobs_kot_tenant_fkey;
 alter table public.print_jobs add constraint print_jobs_kot_tenant_fkey
   foreign key (tenant_id, kot_id) references public.kots(tenant_id, id) on delete set null (kot_id) not valid;
+alter table public.print_jobs drop constraint if exists print_jobs_invoice_tenant_fkey;
 alter table public.print_jobs add constraint print_jobs_invoice_tenant_fkey
   foreign key (tenant_id, invoice_id) references public.invoices(tenant_id, id) on delete set null (invoice_id) not valid;
+alter table public.print_jobs drop constraint if exists print_jobs_branch_tenant_fkey;
 alter table public.print_jobs add constraint print_jobs_branch_tenant_fkey
   foreign key (tenant_id, branch_id) references public.branches(tenant_id, id) on delete cascade not valid;
 alter table public.print_jobs validate constraint print_jobs_printer_tenant_fkey;
@@ -44,21 +86,33 @@ alter table public.print_jobs validate constraint print_jobs_branch_tenant_fkey;
 -- ── kot_items ───────────────────────────────────────────────────────────────
 alter table public.kot_items drop constraint if exists kot_items_kot_id_fkey;
 alter table public.kot_items drop constraint if exists kot_items_order_item_id_fkey;
+alter table public.kot_items drop constraint if exists kot_items_kot_tenant_fkey;
 alter table public.kot_items add constraint kot_items_kot_tenant_fkey
   foreign key (tenant_id, kot_id) references public.kots(tenant_id, id) on delete cascade not valid;
+alter table public.kot_items drop constraint if exists kot_items_order_item_tenant_fkey;
 alter table public.kot_items add constraint kot_items_order_item_tenant_fkey
   foreign key (tenant_id, order_item_id) references public.order_items(tenant_id, id) on delete cascade not valid;
 alter table public.kot_items validate constraint kot_items_kot_tenant_fkey;
 alter table public.kot_items validate constraint kot_items_order_item_tenant_fkey;
 
+-- ── kitchen_stations.printer_id ─────────────────────────────────────────────
+alter table public.kitchen_stations drop constraint if exists kitchen_stations_printer_id_fkey;
+alter table public.kitchen_stations drop constraint if exists kitchen_stations_printer_tenant_fkey;
+alter table public.kitchen_stations add constraint kitchen_stations_printer_tenant_fkey
+  foreign key (tenant_id, printer_id) references public.printers(tenant_id, id) on delete set null (printer_id) not valid;
+alter table public.kitchen_stations validate constraint kitchen_stations_printer_tenant_fkey;
+
 -- ── station references ──────────────────────────────────────────────────────
 alter table public.menu_items drop constraint if exists menu_items_station_id_fkey;
 alter table public.order_items drop constraint if exists order_items_station_id_fkey;
 alter table public.menu_categories drop constraint if exists menu_categories_station_id_fkey;
+alter table public.menu_items drop constraint if exists menu_items_station_tenant_fkey;
 alter table public.menu_items add constraint menu_items_station_tenant_fkey
   foreign key (tenant_id, station_id) references public.kitchen_stations(tenant_id, id) on delete set null (station_id) not valid;
+alter table public.order_items drop constraint if exists order_items_station_tenant_fkey;
 alter table public.order_items add constraint order_items_station_tenant_fkey
   foreign key (tenant_id, station_id) references public.kitchen_stations(tenant_id, id) on delete set null (station_id) not valid;
+alter table public.menu_categories drop constraint if exists menu_categories_station_tenant_fkey;
 alter table public.menu_categories add constraint menu_categories_station_tenant_fkey
   foreign key (tenant_id, station_id) references public.kitchen_stations(tenant_id, id) on delete set null (station_id) not valid;
 alter table public.menu_items validate constraint menu_items_station_tenant_fkey;
@@ -69,10 +123,13 @@ alter table public.menu_categories validate constraint menu_categories_station_t
 alter table public.waitlist_entries drop constraint if exists waitlist_entries_branch_id_fkey;
 alter table public.floor_sections drop constraint if exists floor_sections_branch_id_fkey;
 alter table public.stock_items drop constraint if exists stock_items_branch_id_fkey;
+alter table public.waitlist_entries drop constraint if exists waitlist_entries_branch_tenant_fkey;
 alter table public.waitlist_entries add constraint waitlist_entries_branch_tenant_fkey
   foreign key (tenant_id, branch_id) references public.branches(tenant_id, id) on delete cascade not valid;
+alter table public.floor_sections drop constraint if exists floor_sections_branch_tenant_fkey;
 alter table public.floor_sections add constraint floor_sections_branch_tenant_fkey
   foreign key (tenant_id, branch_id) references public.branches(tenant_id, id) on delete cascade not valid;
+alter table public.stock_items drop constraint if exists stock_items_branch_tenant_fkey;
 alter table public.stock_items add constraint stock_items_branch_tenant_fkey
   foreign key (tenant_id, branch_id) references public.branches(tenant_id, id) on delete cascade not valid;
 alter table public.waitlist_entries validate constraint waitlist_entries_branch_tenant_fkey;

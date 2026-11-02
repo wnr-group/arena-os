@@ -134,6 +134,9 @@ async function main() {
   check("menu_categories.station_id: another tenant's station is refused", (await setStation('menu_categories', A.categoryId, B.stationId)) === '23503')
   check("order_items.station_id: another tenant's station is refused", (await setStation('order_items', A.itemId, B.stationId)) === '23503')
   check('...own station is accepted on all three', (await setStation('menu_items', A.menuId, A.stationId)) === 'ok' && (await setStation('menu_categories', A.categoryId, A.stationId)) === 'ok' && (await setStation('order_items', A.itemId, A.stationId)) === 'ok')
+  const setPrinter = (printer: string) => code(() => asA((tx) => tx.execute(sql`update kitchen_stations set printer_id = ${printer} where id = ${A.stationId} and tenant_id = ${A.tenantId}`)))
+  check("kitchen_stations.printer_id: another tenant's printer is refused", (await setPrinter(B.printerId)) === '23503')
+  check('...own printer is accepted', (await setPrinter(A.printerId)) === 'ok')
   await q(`delete from kitchen_stations where id=$1`, [A.stationId])
   check('deleting a station nulls the references (and keeps the tenant)', (await q(`select station_id from menu_items where id=$1`, [A.menuId]))[0].station_id === null)
 
