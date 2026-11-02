@@ -66,3 +66,6 @@ revoke all on function public.open_reservations_for_phone(uuid, text) from publi
 revoke all on function public.reservation_by_idempotency_key(uuid, text) from public;
 grant execute on function public.open_reservations_for_phone(uuid, text) to arena_app;
 grant execute on function public.reservation_by_idempotency_key(uuid, text) to arena_app;
+
+comment on function public.reservation_by_idempotency_key(uuid, text) is
+  'Returns confirmation_token to whoever presents the key. The key is a client-generated uuid acting as a bearer secret: never log it or put it in a URL.';

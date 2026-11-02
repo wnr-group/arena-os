@@ -146,6 +146,8 @@ async function main() {
   check("stock_items: another tenant's branch is refused (no existence oracle)", (await si(B.branchId)) === '23503' && (await si(A.branchId)) === 'ok')
 
   // ── stock_movements ───────────────────────────────────────────────────────
+  // Usage snapshot backing A's order line (qty 1) for A.stockId: at most 2 can be taken.
+  await q(`insert into order_item_stock_usage (tenant_id,order_item_id,stock_item_id,per_portion) values ($1,$2,$3,2)`, [A.tenantId, A.itemId, A.stockId])
   const sm = (o: { delta: string; source?: string | null; type?: string }) =>
     code(() =>
       asA((tx) =>
@@ -160,14 +162,29 @@ async function main() {
   check('stock: a deduction against a real order is accepted', (await sm({ delta: '-2', source: A.orderId })) === 'ok')
   check('stock: a restore up to what the order took is accepted', (await sm({ delta: '2', source: A.orderId })) === 'ok')
   check('stock: ...a restore beyond it is refused', (await sm({ delta: '0.001', source: A.orderId })) === '23514')
+  check('stock: ...a deduction beyond what the lines use is refused (forged negative)', (await sm({ delta: '-500', source: A.orderId })) === '23514')
+  const unbacked = (await q(`insert into stock_items (tenant_id,branch_id,name,unit) values ($1,$2,'Unbacked','kg') returning id`, [A.tenantId, A.branchId]))[0].id as string
+  const smItem = (item: string, delta: string) =>
+    code(() =>
+      asA((tx) =>
+        tx.execute(sql`insert into stock_movements (tenant_id,stock_item_id,delta,source_type,source_id)
+                       values (${A.tenantId}, ${item}, ${delta}, 'order', ${A.orderId})`),
+      ),
+    )
+  check('stock: a deduction of an item no line of the order uses is refused', (await smItem(unbacked, '-1')) === '23514')
+  const otherBranch = (await q(`insert into branches (tenant_id,name) values ($1,'Other') returning id`, [A.tenantId]))[0].id as string
+  const foreign = (await q(`insert into stock_items (tenant_id,branch_id,name,unit) values ($1,$2,'Elsewhere','kg') returning id`, [A.tenantId, otherBranch]))[0].id as string
+  await q(`insert into order_item_stock_usage (tenant_id,order_item_id,stock_item_id,per_portion) values ($1,$2,$3,5)`, [A.tenantId, A.itemId, foreign])
+  check("stock: an item held at a different branch than the order's is refused", (await smItem(foreign, '-1')) === '23514')
   check('stock: on-hand never went positive from those attempts', Number((await q(`select quantity from stock_items where id=$1`, [A.stockId]))[0].quantity) === 0)
 
   // ── order_item_stock_usage (0176) ─────────────────────────────────────────
+  const usageStock = (await q(`insert into stock_items (tenant_id,branch_id,name,unit) values ($1,$2,'Usage','kg') returning id`, [A.tenantId, A.branchId]))[0].id as string
   const usage = (item: string) =>
     code(() =>
       asA((tx) =>
         tx.execute(sql`insert into order_item_stock_usage (tenant_id,order_item_id,stock_item_id,per_portion)
-                       values (${A.tenantId}, ${item}, ${A.stockId}, 1)`),
+                       values (${A.tenantId}, ${item}, ${usageStock}, 1)`),
       ),
     )
   check("order_item_stock_usage: another tenant's ORDER LINE is refused", (await usage(B.itemId)) === '23503')
@@ -176,6 +193,7 @@ async function main() {
   // ── guard is race-safe (0176) ─────────────────────────────────────────────
   const race = await q(`insert into stock_items (tenant_id,branch_id,name,unit) values ($1,$2,'Race','kg') returning id`, [A.tenantId, A.branchId])
   const raceId = race[0].id as string
+  await q(`insert into order_item_stock_usage (tenant_id,order_item_id,stock_item_id,per_portion) values ($1,$2,$3,1)`, [A.tenantId, A.itemId, raceId])
   const raceMove = (delta: string) =>
     code(() =>
       asA((tx) =>
