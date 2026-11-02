@@ -399,6 +399,17 @@ async function main() {
     return (await tx.execute(sql`select booking_number from public.reservation_by_idempotency_key(${A.tenantId}::uuid, ${key})`)).rows
   })
   check('storefront can recover the first confirmation by key', seen.length === 1 && first.ok && (seen[0] as { booking_number: string }).booking_number === first.v.bookingNumber)
+  const byKey = (k: string) =>
+    app.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.public_tenant_id', ${A.tenantId}, true)`)
+      return (await tx.execute(sql`select 1 from public.reservation_by_idempotency_key(${A.tenantId}::uuid, ${k})`)).rows
+    })
+  await q('update bookings set idempotency_key=$2 where tenant_id=$1 and idempotency_key=$3', [A.tenantId, 'weak-key', key])
+  check('a key that is not uuid-shaped never returns a confirmation', (await byKey('weak-key')).length === 0)
+  await q('update bookings set idempotency_key=$3 where tenant_id=$1 and idempotency_key=$2', [A.tenantId, 'weak-key', key])
+  await q("update bookings set status='cancelled' where tenant_id=$1 and idempotency_key=$2", [A.tenantId, key])
+  check('a cancelled reservation is not returned for its key', (await byKey(key)).length === 0)
+  await q("update bookings set status='confirmed' where tenant_id=$1 and idempotency_key=$2", [A.tenantId, key])
   const otherTenantSees = await app.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.public_tenant_id', ${B.tenantId}, true)`)
     return (await tx.execute(sql`select 1 from public.reservation_by_idempotency_key(${A.tenantId}::uuid, ${key})`)).rows

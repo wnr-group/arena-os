@@ -58,6 +58,11 @@ as $$
     from public.bookings b
    where b.tenant_id = p_tenant
      and b.idempotency_key = p_key
+     -- The key is a bearer secret for the token below: only a uuid-shaped key (what
+     -- the client generates) is honoured, so a weak or guessable key exposes nothing.
+     and p_key ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     -- A cancelled / no-show booking is not a confirmation to show again on a retry.
+     and b.status not in ('cancelled', 'no_show')
      and b.reserved_for is not null
      and p_tenant = public.current_public_tenant_id()
 $$;
