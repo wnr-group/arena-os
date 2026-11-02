@@ -15,6 +15,7 @@ import { maxAdvanceDaysOrDefault, slotStepOrDefault } from '@/lib/booking/settin
 import { todayInZone } from '@/lib/booking/time'
 import { requireContext, requireManager, AuthError } from '@/lib/auth/guard'
 import { sendBookingRescheduledNotification } from '@/lib/notifications/booking-reschedule'
+import { getConfiguredProvider } from '@/lib/notifications/provider'
 import { canManageWalkins, isManager } from '@/lib/auth/roles'
 import {
   createBookingCore,
@@ -1038,6 +1039,9 @@ export type RescheduleContext = {
   today?: string
   maxAdvanceDays?: number
   slotMinutes?: number
+  /** No real provider is wired in yet (lib/notifications/provider.ts) — the dialog
+   *  must not promise a text that will actually just no-op. */
+  smsConfigured?: boolean
 }
 
 /** What the Reschedule dialog needs to open. Eligibility is re-decided by the quote and the save. */
@@ -1103,6 +1107,7 @@ export async function getRescheduleContext(bookingId: string): Promise<Reschedul
       today: todayInZone(ctx.tenant.timezone),
       maxAdvanceDays,
       slotMinutes,
+      smsConfigured: getConfiguredProvider() !== null,
     }
   } catch (e) {
     return fail(e)
@@ -1177,8 +1182,10 @@ export async function rescheduleBooking(raw: z.input<typeof rescheduleInput>): P
         },
       ),
     )
-    // After commit, best-effort: a failed text must never undo the move.
-    if (plan.oldStartsAt.getTime() !== plan.newStartsAt.getTime()) {
+    // After commit, best-effort: a failed text must never undo the move. An
+    // end-only change (duration edited while checked_in) is still a reschedule
+    // the customer should hear about, not just a start-time move.
+    if (plan.oldStartsAt.getTime() !== plan.newStartsAt.getTime() || plan.oldEndsAt.getTime() !== plan.newEndsAt.getTime()) {
       await sendBookingRescheduledNotification(ctx.tenant.id, plan.bookingId, {
         oldStartsAt: plan.oldStartsAt,
         newStartsAt: plan.newStartsAt,

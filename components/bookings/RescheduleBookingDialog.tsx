@@ -363,7 +363,11 @@ function RescheduleForm({
                 flagged so the difference can be refunded.
               </p>
             )}
-            <p className="mt-2 text-xs text-muted-foreground">The customer will be sent a text with the old and new time.</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {ctx.smsConfigured
+                ? 'The customer will be sent a text with the old and new time.'
+                : 'Texting customers isn’t set up for this account yet — let them know about the new time yourself.'}
+            </p>
           </div>
         )}
 

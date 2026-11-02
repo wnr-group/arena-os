@@ -191,6 +191,15 @@ async function main() {
   const endMove = await rescheduleBooking({ bookingId: b3, startsAt: iso(at(DAY + 1, '12:00')), endsAt: iso(at(DAY + 1, '14:00')), expectedStartsAt: iso(at(DAY + 1, '12:00')) })
   check('checked-in: extending the end is allowed', !endMove.error, endMove)
   check('...and re-priced (2h = 200)', Number(await totalOf(b3)) === 200)
+  const endOnlyNote = await owner.query<{ message_body: string }>(
+    `select message_body from notifications where tenant_id=$1 and kind='booking_rescheduled' and recipient_phone like '%9000000003'`,
+    [tenantId],
+  )
+  check(
+    '...and the customer is notified too (an end-only change is still a reschedule)',
+    endOnlyNote.rows.length === 1 && /now ends at/i.test(endOnlyNote.rows[0].message_body),
+    endOnlyNote.rows,
+  )
 
   const b4 = await book(at(DAY + 2, '12:00'), at(DAY + 2, '13:00'), '9000000004')
   const cancel = await setBookingStatus(b4, 'cancelled', 'test')

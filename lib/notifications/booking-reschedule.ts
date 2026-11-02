@@ -24,8 +24,18 @@ function when(d: Date, timeZone: string): string {
   return `${date}, ${time}`
 }
 
+function time(d: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+}
+
 // Copy to be reviewed before a real SMS provider is switched on.
 export function rescheduledText(bookingNumber: string, i: BookingRescheduledInfo): string {
+  // The caller only sends this when something actually moved. A checked-in
+  // session's start can't change (see rescheduleBookingCore), so an unchanged
+  // start means the duration did — "moved to X to Y" would read as a no-op then.
+  if (i.oldStartsAt.getTime() === i.newStartsAt.getTime()) {
+    return `Your booking ${bookingNumber} now ends at ${time(i.newEndsAt, i.timeZone)}. Please contact us if this doesn't work for you.`
+  }
   return `Your booking ${bookingNumber} has been moved from ${when(i.oldStartsAt, i.timeZone)} to ${when(i.newStartsAt, i.timeZone)}. Please contact us if this doesn't work for you.`
 }
 
