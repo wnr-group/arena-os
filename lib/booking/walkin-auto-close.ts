@@ -1,10 +1,10 @@
 import 'server-only'
-import { and, desc, eq, gte, inArray, isNull, or, isNotNull } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, isNull, or, isNotNull } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
 import type * as schema from '@/db/schema'
 import { auditLog, bookingSettings, bookings, bookingSlots, tenants, workingHours } from '@/db/schema'
-import { checkoutWalkinCore, WALKIN_LATE_CHECKOUT_MAX_DAYS } from './walkin'
+import { checkoutWalkinCore } from './walkin'
 import { walkinCloseDeadline, type DayHours } from './walkin-auto-close-rules'
 
 type Db = NodePgDatabase<typeof schema>
@@ -27,8 +27,10 @@ const retryAfter = new Map<string, number>()
  *
  * Like a manual checkout it only prices the session; the booking stays
  * checked-in and unpaid so staff settle it in POS. It runs on the OWNER
- * connection (no user), one transaction per booking, so one failure (e.g. the
- * deadline is older than the 7-day late-checkout window) never blocks the rest.
+ * connection (no user), one transaction per booking, so one failure never
+ * blocks the rest. A tab is closed at its deadline however old it is (the 7-day
+ * late-checkout bound only guards staff-entered times), so a venue that was shut
+ * for a week still gets its forgotten tabs closed.
  * Checkout locks the booking row, so a staff checkout racing the cron simply
  * makes one of them see "already checked out" — it is skipped, not double-billed.
  */
@@ -67,9 +69,8 @@ export async function autoCloseOverdueWalkins(
         opts.tenantId ? eq(bookings.tenantId, opts.tenantId) : undefined,
       ),
     )
-    // Newest first: a tab too old to ever close (see the window filter below)
-    // must not sit at the front of the queue and crowd newer ones out.
-    .orderBy(desc(bookingSlots.startsAt))
+    // Oldest first: the longest-forgotten tabs must not be crowded out of the cap.
+    .orderBy(asc(bookingSlots.startsAt))
     .limit(1000)
   if (open.length === 0) return { closed: 0, failed: 0, candidates: 0 }
 
@@ -107,10 +108,6 @@ export async function autoCloseOverdueWalkins(
       }),
     }))
     .filter((o): o is typeof o & { deadline: Date } => o.deadline !== null && o.deadline.getTime() <= now.getTime())
-    // checkoutWalkinCore refuses an end older than the late-checkout window, so
-    // such a tab can never auto-close: leave it for staff instead of retrying it
-    // (and counting it as failed) on every sweep.
-    .filter((o) => now.getTime() - o.deadline.getTime() <= WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000)
     // A tab that just failed is parked for a while, so a few permanently failing
     // ones cannot occupy every slot of the (small) per-request limit and starve newer tabs.
     .filter((o) => (retryAfter.get(o.bookingId) ?? 0) <= now.getTime())

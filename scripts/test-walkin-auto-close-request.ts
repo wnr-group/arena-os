@@ -179,14 +179,15 @@ async function main() {
   check("tenant B's own read closes B's tab", (await endsAt(otherTenantOverdue.id)) !== null)
   check('...and still leaves the rule-off venue alone', (await endsAt(ruleOff.id)) === null)
 
-  // ── 5. a tab too old to ever close does not crowd out newer ones ──
-  console.log('\n── stale tabs (past the 7-day late-checkout window) ──')
-  const stale = await openTab(A, 6, 9 * 24 * 60) // deadline 8 days ago: checkout would refuse it
+  // ── 5. a tab older than the 7-day staff late-checkout window is still closed ──
+  console.log('\n── stale tabs (deadline older than 7 days) ──')
+  const stale = await openTab(A, 6, 9 * 24 * 60) // deadline 8 days ago
   const newer = await openTab(A, 7, 150)
-  const staleRun = await autoCloseOverdueWalkins({ tenantId: A.tenantId, limit: 1 })
-  check('the stale tab is not attempted: not counted as failed', staleRun.failed === 0)
-  check('...a limit of 1 still closes the newer overdue tab', staleRun.closed === 1 && (await endsAt(newer.id)) !== null)
-  check('...the stale tab stays open for staff, untouched', (await endsAt(stale.id)) === null && (await audits(stale.id)) === 0)
+  const staleRun = await autoCloseOverdueWalkins({ tenantId: A.tenantId })
+  check('both are closed, none failed', staleRun.closed === 2 && staleRun.failed === 0)
+  check('...the stale tab is closed at its deadline, not left occupying the station', (await endsAt(stale.id)) === stale.startsAt.getTime() + 60 * MIN)
+  check('...with its audit row', (await audits(stale.id)) === 1)
+  check('...and the newer one too', (await endsAt(newer.id)) !== null)
   const { REQUEST_SWEEP_LIMIT } = await import('../lib/booking/walkin-auto-close')
   check('a request-triggered sweep is capped (bounded read latency)', REQUEST_SWEEP_LIMIT > 0 && REQUEST_SWEEP_LIMIT <= 20)
 

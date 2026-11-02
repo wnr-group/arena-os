@@ -1052,7 +1052,13 @@ function walkinRateAndMultiplier(walkin: WalkinForCheckout, headCount: number): 
  *
  * Pure (no DB) — safe to call after either a locking or a read-only load.
  */
-function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | undefined): { endAt: Date; priceEnd: Date } {
+function resolveCheckoutWindow(
+  walkin: WalkinForCheckout,
+  endAtInput: string | undefined,
+  /** The system auto-close sweep ends a tab at a known deadline of any age: the
+   *  7-day bound is a typo guard for staff-entered times, not a cap on that. */
+  systemClose = false,
+): { endAt: Date; priceEnd: Date } {
   const now = new Date()
   const endAt = endAtInput ? new Date(endAtInput) : now
   if (Number.isNaN(endAt.getTime())) throw new BookingError('Invalid end time.')
@@ -1067,7 +1073,7 @@ function resolveCheckoutWindow(walkin: WalkinForCheckout, endAtInput: string | u
     if (endAt.getTime() - now.getTime() > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
       throw new BookingError(`End time cannot be more than ${WALKIN_CHECKOUT_WINDOW_MINUTES} minutes in the future.`)
     }
-    if (now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
+    if (!systemClose && now.getTime() - endAt.getTime() > WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000) {
       throw new BookingError(`Enter a time within the last ${WALKIN_LATE_CHECKOUT_MAX_DAYS} days.`)
     }
     if (endAt.getTime() <= walkin.startsAt.getTime()) {
@@ -1187,7 +1193,7 @@ export async function checkoutWalkinCore(
   now: Date = new Date(),
 ): Promise<{ bookingId: string; total: number }> {
   const walkin = await loadWalkinForCheckout(tx, ctx, input.bookingId, true)
-  const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt)
+  const { priceEnd } = resolveCheckoutWindow(walkin, input.endAt, ctx.autoClosed === true)
   const headCount = resolveHeadCount(walkin, input.headCount)
   // M27 #2: a holiday-priced session bills flat — no happy-hour rules to
   // even load, same "instead of" precedence priceBookingSlots gives it.
