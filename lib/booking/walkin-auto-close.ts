@@ -9,6 +9,10 @@ import { walkinCloseDeadline, type DayHours } from './walkin-auto-close-rules'
 
 type Db = NodePgDatabase<typeof schema>
 
+/** How long a tab that failed to auto-close is left alone (per server instance). */
+const FAILED_RETRY_MS = 15 * 60_000
+const retryAfter = new Map<string, number>()
+
 /**
  * Close open-tab walk-ins that were never checked out (booking_settings
  * .walkin_auto_close_minutes / walkin_auto_close_at_closing, 0167/0168).
@@ -103,6 +107,9 @@ export async function autoCloseOverdueWalkins(
     // such a tab can never auto-close: leave it for staff instead of retrying it
     // (and counting it as failed) on every sweep.
     .filter((o) => now.getTime() - o.deadline.getTime() <= WALKIN_LATE_CHECKOUT_MAX_DAYS * 24 * 60 * 60_000)
+    // A tab that just failed is parked for a while, so a few permanently failing
+    // ones cannot occupy every slot of the (small) per-request limit and starve newer tabs.
+    .filter((o) => (retryAfter.get(o.bookingId) ?? 0) <= now.getTime())
     // Oldest deadline first among the closeable ones.
     .sort((a, b) => a.deadline.getTime() - b.deadline.getTime())
     .slice(0, limit)
@@ -114,7 +121,7 @@ export async function autoCloseOverdueWalkins(
       await db.transaction(async (tx) => {
         const { total } = await checkoutWalkinCore(
           tx,
-          { tenantId: c.tenantId, timezone: c.timezone, membershipId: null },
+          { tenantId: c.tenantId, timezone: c.timezone, membershipId: null, autoClosed: true },
           { bookingId: c.bookingId, endAt: c.deadline.toISOString() },
           now,
         )
@@ -134,11 +141,16 @@ export async function autoCloseOverdueWalkins(
           },
         })
       })
+      retryAfter.delete(c.bookingId)
       closed++
     } catch (e) {
       // Already checked out meanwhile, or no longer closeable: leave it for staff.
       failed++
-      console.error('[auto-close-walkins] skipped a booking:', e instanceof Error ? e.message : 'unknown')
+      retryAfter.set(c.bookingId, now.getTime() + FAILED_RETRY_MS)
+      console.error(
+        `[auto-close-walkins] skipped booking ${c.bookingId} (tenant ${c.tenantId}):`,
+        e instanceof Error ? e.message : 'unknown',
+      )
     }
   }
   return { closed, failed, candidates: open.length }
@@ -198,5 +210,8 @@ export async function sweepOverdueWalkinsForTenant(tenantId: string, now: Date =
 /** Forget the throttle for one tenant (rules changed) or all (tests). */
 export function resetWalkinSweepThrottle(tenantId?: string): void {
   if (tenantId) nextSweepAt.delete(tenantId)
-  else nextSweepAt.clear()
+  else {
+    nextSweepAt.clear()
+    retryAfter.clear()
+  }
 }

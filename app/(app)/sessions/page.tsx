@@ -75,6 +75,7 @@ export default async function SessionsPage() {
         // gate), so the live "Partially paid" indicator is already a no-op
         // for them without needing a separate industry flag here.
         advancePaid: w.advancePaid,
+        autoClosed: w.autoClosed,
       }))}
     />
   )

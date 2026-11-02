@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlarmClock, BellRing, Clock, Loader2, ReceiptText, RefreshCw, RotateCcw, Timer } from 'lucide-react'
+import { AlarmClock, AlarmClockOff, BellRing, Clock, Loader2, ReceiptText, RefreshCw, RotateCcw, Timer } from 'lucide-react'
 import { toast } from 'sonner'
 import { previewWalkinCheckout, reopenWalkin } from '@/lib/actions/bookings'
 import { formatCountdown } from '@/lib/booking/countdown'
@@ -44,6 +44,8 @@ export type SessionRow = {
    *  collected upfront, which keeps the live "Partially paid" indicator
    *  below a no-op for both. */
   advancePaid: string
+  /** Set when the system auto-close sweep ended this tab (see walkin.auto_closed). */
+  autoClosed: { endsAt: string; limitMinutes: number | null; atClosing: boolean } | null
 }
 
 /** Heads-up fires once per session `warningMinutes` out from its committed
@@ -295,6 +297,12 @@ export function SessionsBoard({
   )
 }
 
+function formatAutoCloseLimit(minutes: number): string {
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return h === 0 ? `${m} min` : m === 0 ? `${h} h` : `${h} h ${m} min`
+}
+
 function isCheckedOut(s: SessionRow): boolean {
   return s.billingMode === 'open_tab' ? s.endsAt !== null : Number(s.slotTotal) > 0
 }
@@ -428,6 +436,21 @@ function SessionCard({
             {formatMoney(runningTotal - Number(s.advancePaid), currency)} more than collected
           </span>
         </div>
+      )}
+
+      {checkedOut && s.autoClosed && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <AlarmClockOff size={13} className="mt-0.5 shrink-0" />
+          <span>
+            Auto-closed at {timeInZone(s.autoClosed.endsAt, timeZone)} by the{' '}
+            {s.autoClosed.limitMinutes !== null && !s.autoClosed.atClosing
+              ? `"close after ${formatAutoCloseLimit(s.autoClosed.limitMinutes)}"`
+              : s.autoClosed.limitMinutes === null
+                ? '"close at closing time"'
+                : '"close after a set time / at closing time"'}{' '}
+            rule. Billed up to then — reopen the tab if the customer is still playing.
+          </span>
+        </p>
       )}
 
       {checkedOut ? (

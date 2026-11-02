@@ -343,6 +343,9 @@ export type ActiveWalkin = {
    *  startWalkinCore). Lets the Sessions board show a live "Partially paid"
    *  indicator once the running total outgrows it, before any bill exists. */
   advancePaid: string
+  /** Set when the system auto-close sweep ended this tab (walkin.auto_closed audit row), so
+   *  the board can tell staff why the bill stops where it does. */
+  autoClosed: { endsAt: string; limitMinutes: number | null; atClosing: boolean } | null
 }
 
 /**
@@ -404,10 +407,34 @@ export async function listActiveWalkins(ctx: ActiveContext, branchId: string): P
   const advance = await withUser(ctx.user.id, (tx) =>
     advancePaidTotals(tx, ctx.tenant.id, [...new Set(rows.map((r) => r.bookingId))]),
   )
+  const closedIds = rows.filter((r) => r.billingMode === 'open_tab' && r.endsAt !== null).map((r) => r.bookingId)
+  const autoClosedBy = new Map<string, ActiveWalkin['autoClosed']>()
+  if (closedIds.length > 0) {
+    const audits = await withUser(ctx.user.id, (tx) =>
+      tx
+        .select({ entityId: auditLog.entityId, after: auditLog.after })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.tenantId, ctx.tenant.id),
+            eq(auditLog.action, 'walkin.auto_closed'),
+            inArray(auditLog.entityId, closedIds),
+          ),
+        )
+        .orderBy(asc(auditLog.createdAt)),
+    )
+    for (const a of audits) {
+      const d = (a.after ?? {}) as { endsAt?: string; limitMinutes?: number | null; atClosing?: boolean }
+      if (a.entityId && d.endsAt) {
+        autoClosedBy.set(a.entityId, { endsAt: d.endsAt, limitMinutes: d.limitMinutes ?? null, atClosing: d.atClosing === true })
+      }
+    }
+  }
   return rows.map((r) => ({
     ...r,
     billingMode: (r.billingMode as WalkinMode) ?? 'open_tab',
     advancePaid: advance.get(r.bookingId) ?? '0.00',
+    autoClosed: autoClosedBy.get(r.bookingId) ?? null,
   }))
 }
 
@@ -1147,7 +1174,14 @@ export async function previewWalkinCheckout(
  */
 export async function checkoutWalkinCore(
   tx: Db,
-  ctx: { tenantId: string; timezone: string; membershipId?: string | null },
+  ctx: {
+    tenantId: string
+    timezone: string
+    membershipId?: string | null
+    /** The system auto-close sweep: it writes its own walkin.auto_closed audit row, so the
+     *  walkin.late_checkout row (always true for a sweep, which prices a past deadline) is skipped. */
+    autoClosed?: boolean
+  },
   input: CheckoutWalkinInput,
   /** Injected for tests; production always uses the real clock. */
   now: Date = new Date(),
@@ -1213,7 +1247,7 @@ export async function checkoutWalkinCore(
   // is a late checkout — a correction, not routine ops — so it is audited
   // (entered end vs when it actually happened). A routine checkout inside the
   // window writes nothing, exactly as before; a timed walk-in never does.
-  if (walkin.billingMode === 'open_tab') {
+  if (walkin.billingMode === 'open_tab' && !ctx.autoClosed) {
     const checkedOutAt = new Date()
     if (Math.abs(priceEnd.getTime() - checkedOutAt.getTime()) > WALKIN_CHECKOUT_WINDOW_MINUTES * 60_000) {
       await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId ?? null }, {
