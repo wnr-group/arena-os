@@ -125,6 +125,19 @@ async function timezoneOf(tx: Db, tenantId: string, given?: string): Promise<str
   return t?.timezone ?? 'UTC'
 }
 
+/**
+ * Non-blocking phrasing of the same finding, for seating a party at the exact
+ * table/time THEY reserved: a different reservation due soon on that table is
+ * not a new conflict this seating created (the schedule already had both), so
+ * it is a heads-up, never a wall a manager has to override.
+ */
+export function upcomingReservationNotice(b: BlockingReservation, timezone: string): string {
+  const at = formatTimeInZone(b.startsAt, timezone)
+  if (b.kind === 'event') return `Heads up: this table is held for an event at ${at}.`
+  const who = b.customerName ? ` for ${b.customerName}` : ''
+  return `Heads up: another reservation${who} is due on this table at ${at} — keep an eye on the time.`
+}
+
 function conflictMessage(b: BlockingReservation, timezone: string): string {
   const at = formatTimeInZone(b.startsAt, timezone)
   if (b.kind === 'event') {

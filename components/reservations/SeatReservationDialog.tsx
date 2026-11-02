@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { Loader2, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { seatReservation } from '@/lib/actions/reservations'
 
 const input = 'w-full rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring'
@@ -48,7 +49,10 @@ export function SeatReservationDialog({
       if (r.error) {
         setError(r.error)
         setConflict(Boolean(r.reservationConflict))
-      } else onSeated(r.tableName ?? '')
+      } else {
+        if (r.warning) toast.warning(r.warning)
+        onSeated(r.tableName ?? '')
+      }
     })
   }
 

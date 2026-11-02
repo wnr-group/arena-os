@@ -235,6 +235,21 @@ async function main() {
   const own = await attempt(() => as(A, 'receptionist', (tx) => svc.seatReservationCore(tx, ctx(A), { bookingId: rOwn.id })))
   check('a reservation never blocks its own seating', own.ok, own)
 
+  // a STILL-CONFIRMED reservation seated at its own table despite a DIFFERENT
+  // reservation due soon on that same table: never blocked (the review fix) —
+  // the schedule already had both when they were booked, so it's a heads-up,
+  // not a wall needing a manager.
+  const t6c = table()
+  const rNear = await reserve(t6c, inMin(2), 'receptionist', 'staff', { durationMinutes: 15 })
+  await reserve(t6c, inMin(20)) // a different party due soon after, same table
+  const ownSoon = await attempt(() => as(A, 'receptionist', (tx) => svc.seatReservationCore(tx, ctx(A), { bookingId: rNear.id })))
+  check('a confirmed reservation seats at its own table despite a later one due soon (no override)', ownSoon.ok, ownSoon)
+  check(
+    '…with a heads-up warning returned, not a block',
+    ownSoon.ok && typeof (ownSoon.v as { nextReservationWarning?: unknown }).nextReservationWarning === 'string',
+    ownSoon,
+  )
+
   // an event block is a hold on the table too
   const t7 = table()
   const evId = (

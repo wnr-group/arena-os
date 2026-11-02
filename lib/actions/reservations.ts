@@ -104,7 +104,9 @@ const seatInput = z.object({
 /** One tap on arrival: turn the reservation into a seated table session. */
 export async function seatReservation(
   input: z.input<typeof seatInput>,
-): Promise<Result & { bookingId?: string; tableName?: string; coverCount?: number; reservationConflict?: boolean }> {
+): Promise<
+  Result & { bookingId?: string; tableName?: string; coverCount?: number; reservationConflict?: boolean; warning?: string }
+> {
   try {
     const ctx = await requireReservationStaff()
     const v = seatInput.parse(input)
@@ -118,7 +120,7 @@ export async function seatReservation(
     )
     revalidatePath('/reservations')
     revalidatePath('/floor')
-    return { bookingId: r.bookingId, tableName: r.tableName, coverCount: r.coverCount }
+    return { bookingId: r.bookingId, tableName: r.tableName, coverCount: r.coverCount, warning: r.nextReservationWarning ?? undefined }
   } catch (e) {
     if (e instanceof ReservationConflictError) return { error: e.message, reservationConflict: true }
     return fail(e)

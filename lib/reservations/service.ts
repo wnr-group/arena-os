@@ -17,7 +17,7 @@ import { BookingError, createBookingCore, type CreatedBooking } from '@/lib/book
 import { dayWindow, type DayHours } from '@/lib/booking/availability'
 import { formatTimeInZone, todayInZone, weekdayInZone } from '@/lib/booking/time'
 import { getReservationSettingsCore } from './settings'
-import { guardTableSeating, lockTable } from './guard'
+import { findBlockingReservation, guardTableSeating, lockTable, upcomingReservationNotice } from './guard'
 import { resolveTableServer } from '@/lib/sections/resolve'
 import { normalizePhone } from '@/lib/customers/phone'
 import {
@@ -288,7 +288,7 @@ export async function seatReservationCore(
   tx: Db,
   ctx: Ctx,
   input: SeatReservationInput,
-): Promise<{ bookingId: string; resourceId: string; coverCount: number; tableName: string }> {
+): Promise<{ bookingId: string; resourceId: string; coverCount: number; tableName: string; nextReservationWarning: string | null }> {
   await requireEnabled(tx, ctx.tenantId, 'staff')
 
   // Row lock (bookings_rw carries an UPDATE policy, so FOR UPDATE matches).
@@ -321,16 +321,25 @@ export async function seatReservationCore(
   const targetId = input.resourceId ?? slot.resourceId
   const table = await loadTable(tx, ctx.tenantId, targetId)
   if (table.branchId !== b.branchId) throw new BookingError('Table belongs to a different branch.')
-  // Another party (or an event) may hold this table shortly — a different table,
-  // or the original one after a late arrival's slot was released. The
-  // reservation being seated never blocks itself. A manager's override is allowed
-  // through but audited (guardTableSeating).
   await lockTable(tx, ctx.tenantId, targetId)
-  await guardTableSeating(tx, ctx, targetId, {
-    override: input.overrideReservation,
-    excludeBookingId: b.id,
-    bookingId: b.id,
-  })
+  // Seating a STILL-CONFIRMED reservation at the EXACT table it already holds is
+  // never a new conflict for this seating to create — the schedule already had
+  // both reservations when it took them, late arrival or not — so a different
+  // reservation due soon on it is a heads-up, not a wall needing a manager.
+  // Moving them to a DIFFERENT table, or reviving a lapsed no-show (its table may
+  // have been legitimately re-let to someone else since), is a genuinely new
+  // occupancy decision, and keeps the full guard (override allowed through, audited).
+  let nextReservationWarning: string | null = null
+  if (targetId === slot.resourceId && b.status === 'confirmed') {
+    const blocking = await findBlockingReservation(tx, ctx.tenantId, targetId, undefined, b.id)
+    if (blocking) nextReservationWarning = upcomingReservationNotice(blocking, ctx.timezone)
+  } else {
+    await guardTableSeating(tx, ctx, targetId, {
+      override: input.overrideReservation,
+      excludeBookingId: b.id,
+      bookingId: b.id,
+    })
+  }
 
   const covers = input.coverCount ?? b.coverCount
   if (!covers || !Number.isInteger(covers) || covers < 1) {
@@ -369,7 +378,7 @@ export async function seatReservationCore(
     after: { status: 'checked_in', tableId: targetId, partySize: covers, lateByMinutes: Math.max(0, Math.round((now.getTime() - b.reservedFor.getTime()) / MIN)) },
   })
 
-  return { bookingId: b.id, resourceId: targetId, coverCount: covers, tableName: table.name }
+  return { bookingId: b.id, resourceId: targetId, coverCount: covers, tableName: table.name, nextReservationWarning }
 }
 
 /**
