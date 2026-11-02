@@ -428,6 +428,8 @@ export const bookings = pgTable(
     // M21 per-head #1 (0094): player count for a per_head booking. Null for
     // every per_resource booking.
     headCount: smallint('head_count'),
+    // 0181: staff reopened this walk-in tab, so the auto-close sweep leaves it alone.
+    autoCloseExempt: boolean('auto_close_exempt').notNull().default(false),
     // SUPERSEDED by advance_payments (M30 #1, 0107) — advancePaid/advanceApplied
     // are retained but no longer read; sum the ledger instead.
     // M26 #1 (0101): cash collected from the customer before this
@@ -3206,6 +3208,8 @@ export const bookingSettings = pgTable('booking_settings', {
   walkinAutoCloseMinutes: integer('walkin_auto_close_minutes'),
   /** Also auto-close an open-tab walk-in at the branch's closing time (0168). */
   walkinAutoCloseAtClosing: boolean('walkin_auto_close_at_closing').notNull().default(false),
+  /** Last time the auto-close rules changed (0181): only tabs started at/after it are auto-closed. */
+  walkinAutoCloseEnabledAt: timestamp('walkin_auto_close_enabled_at', { withTimezone: true }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })

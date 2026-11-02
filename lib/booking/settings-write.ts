@@ -91,9 +91,10 @@ export type WalkinAutoCloseValue = { minutes: number | null; atClosing: boolean 
 /**
  * Save the walk-in auto-close rules — a max session length (preset minutes, or
  * null for none) and/or closing time — and audit old → new. Manager-only at the
- * caller and again by RLS. Nothing is closed here, but nothing is grandfathered
- * either: the next request-triggered sweep (Sessions list / alarm poll, not a
- * scheduler) closes any open tab already past the new deadline, retroactively.
+ * caller and again by RLS. Nothing is closed here, and tabs that were already
+ * running when the rules last changed are never closed by them (enabled_at, 0181):
+ * only tabs started afterwards are, by the request-triggered sweep (Sessions list /
+ * alarm poll, not a scheduler).
  */
 export async function applyWalkinAutoClose(
   tx: DB,
@@ -111,7 +112,12 @@ export async function applyWalkinAutoClose(
     .limit(1)
   const old = { minutes: row?.minutes ?? null, atClosing: row?.atClosing ?? false }
   if (old.minutes === next.minutes && old.atClosing === next.atClosing) return old
-  const values = { walkinAutoCloseMinutes: next.minutes, walkinAutoCloseAtClosing: next.atClosing }
+  // enabled_at: tabs already running when the rules change are never auto-closed by them.
+  const values = {
+    walkinAutoCloseMinutes: next.minutes,
+    walkinAutoCloseAtClosing: next.atClosing,
+    walkinAutoCloseEnabledAt: new Date(),
+  }
   await tx
     .insert(bookingSettings)
     .values({ tenantId: actor.tenantId, ...values, updatedBy: actor.membershipId })

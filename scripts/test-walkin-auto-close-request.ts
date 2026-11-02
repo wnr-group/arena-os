@@ -29,7 +29,8 @@ const check = (l: string, c: boolean) => {
 
 async function main() {
   loadEnv()
-  const { startWalkin, listActiveWalkinsForAlarm } = await import('../lib/actions/bookings')
+  const { startWalkin, listActiveWalkinsForAlarm, reopenWalkin } = await import('../lib/actions/bookings')
+  const { saveWalkinAutoClose } = await import('../lib/actions/booking-settings')
   const { autoCloseOverdueWalkins, resetWalkinSweepThrottle } = await import('../lib/booking/walkin-auto-close')
   const owner = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const MIN = 60_000
@@ -94,7 +95,8 @@ async function main() {
   const A = await setup('testwalkinsweep-a', 60)
   const B = await setup('testwalkinsweep-b', 60)
   const C = await setup('testwalkinsweep-c', null)
-  const ids = [A, B, C].map((t) => t.tenantId)
+  const D = await setup('testwalkinsweep-d', 60)
+  const ids = [A, B, C, D].map((t) => t.tenantId)
   const wipe = async () => {
     await owner.query(`delete from audit_log where tenant_id = any($1) and action='walkin.auto_closed'`, [ids])
     await owner.query('delete from booking_slots where tenant_id = any($1)', [ids])
@@ -187,6 +189,35 @@ async function main() {
   check('...the stale tab stays open for staff, untouched', (await endsAt(stale.id)) === null && (await audits(stale.id)) === 0)
   const { REQUEST_SWEEP_LIMIT } = await import('../lib/booking/walkin-auto-close')
   check('a request-triggered sweep is capped (bounded read latency)', REQUEST_SWEEP_LIMIT > 0 && REQUEST_SWEEP_LIMIT <= 20)
+
+  // ── 6. a staff reopen is not undone ──
+  console.log('\n── reopen is respected ──')
+  const reopened = await openTab(D, 0, 150)
+  resetWalkinSweepThrottle()
+  await signInAs(D.userId, D.slug)
+  await listActiveWalkinsForAlarm(D.branchId)
+  check('the overdue tab is auto-closed first', (await endsAt(reopened.id)) !== null && (await audits(reopened.id)) === 1)
+  const rr = await reopenWalkin(reopened.id)
+  check('staff can reopen it', !rr.error && (await endsAt(reopened.id)) === null)
+  resetWalkinSweepThrottle()
+  await listActiveWalkinsForAlarm(D.branchId)
+  await autoCloseOverdueWalkins({ tenantId: D.tenantId })
+  check('...and the sweep does NOT close it again', (await endsAt(reopened.id)) === null)
+  check('...with no second auto_closed audit row', (await audits(reopened.id)) === 1)
+
+  // ── 7. enabling / changing a rule is not retroactive ──
+  console.log('\n── rules only apply to tabs started after they were saved ──')
+  const running = await openTab(D, 1, 150) // already running 150 min when the owner changes the rule
+  const save = await saveWalkinAutoClose({ minutes: 120, atClosing: false })
+  check('the rule change saves', !save.error)
+  const stamped = await owner.query<{ e: Date | null }>(`select walkin_auto_close_enabled_at e from booking_settings where tenant_id=$1`, [D.tenantId])
+  check('...and stamps enabled_at', stamped.rows[0].e !== null)
+  resetWalkinSweepThrottle()
+  await autoCloseOverdueWalkins({ tenantId: D.tenantId })
+  check('a tab already running past the new limit is NOT cut off', (await endsAt(running.id)) === null && (await audits(running.id)) === 0)
+  await owner.query(`update booking_settings set walkin_auto_close_enabled_at = now() - interval '300 minutes' where tenant_id=$1`, [D.tenantId])
+  await autoCloseOverdueWalkins({ tenantId: D.tenantId })
+  check('a tab that started after enabled_at is still closed at its deadline', (await endsAt(running.id)) === running.startsAt.getTime() + 120 * MIN)
 
   await wipe()
   console.log(`\n${pass} passed, ${fail} failed`)

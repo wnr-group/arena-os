@@ -1,5 +1,5 @@
 import 'server-only'
-import { and, desc, eq, inArray, isNull, or, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNull, or, isNotNull } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { ownerDb } from '@/db'
 import type * as schema from '@/db/schema'
@@ -58,7 +58,11 @@ export async function autoCloseOverdueWalkins(
         eq(bookings.channel, 'walkin'),
         eq(bookings.billingMode, 'open_tab'),
         eq(bookings.status, 'checked_in'),
+        // Staff reopened it: the customer is still playing, so leave it alone.
+        eq(bookings.autoCloseExempt, false),
         isNull(bookingSlots.endsAt),
+        // Only tabs that started after the rules last changed (null = settings predate 0181).
+        or(isNull(bookingSettings.walkinAutoCloseEnabledAt), gte(bookingSlots.startsAt, bookingSettings.walkinAutoCloseEnabledAt)),
         or(isNotNull(bookingSettings.walkinAutoCloseMinutes), eq(bookingSettings.walkinAutoCloseAtClosing, true)),
         opts.tenantId ? eq(bookings.tenantId, opts.tenantId) : undefined,
       ),

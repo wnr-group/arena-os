@@ -1498,7 +1498,9 @@ export async function reopenWalkinCore(
   await unpriceWalkinAddons(tx, ctx.tenantId, walkin.slotId)
   await tx
     .update(bookings)
-    .set({ subtotal: '0.00', total: '0.00' })
+    // autoCloseExempt: a reopened tab is a staff decision that the customer is still
+    // playing, so the auto-close sweep must not close it again at the old deadline.
+    .set({ subtotal: '0.00', total: '0.00', autoCloseExempt: true })
     .where(and(eq(bookings.id, walkin.bookingId), eq(bookings.tenantId, ctx.tenantId)))
 
   await writeAudit(tx, { tenantId: ctx.tenantId, membershipId: ctx.membershipId }, {
