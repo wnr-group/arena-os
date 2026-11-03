@@ -293,7 +293,7 @@ async function main() {
   {
     let n = 0
     // A 30-min timed walk-in on its own station, shifted so it started `startedMinAgo` ago.
-    async function overdueWalkin(startedMinAgo: number) {
+    async function overdueWalkin(startedMinAgo: number, durationMin = 30) {
       n++
       const st = (
         await owner.query<{ id: string }>(
@@ -303,7 +303,7 @@ async function main() {
           [tenantId, branchId, hourlyType.rows[0].id, `M39 Station ${n}`],
         )
       ).rows[0].id
-      const s = await startWalkin({ branchId, resourceId: st, phone: nextPhone(), startAt: new Date().toISOString(), mode: 'timed', durationMin: 30 })
+      const s = await startWalkin({ branchId, resourceId: st, phone: nextPhone(), startAt: new Date().toISOString(), mode: 'timed', durationMin })
       if (!s.bookingId) throw new Error(`startWalkin failed: ${s.error}`)
       await owner.query(`update bookings set committed_end_at = committed_end_at - ($2 || ' minutes')::interval where id = $1`, [s.bookingId, String(startedMinAgo)])
       await owner.query(
@@ -327,14 +327,15 @@ async function main() {
     const lateAudits = async (id: string) =>
       (await owner.query(`select 1 from audit_log where entity_id = $1 and action = 'walkin.late_checkout'`, [id])).rowCount ?? 0
 
-    const base = await overdueWalkin(120) // started 120 min ago, committed end 90 min ago
+    // Committed 60 min (not 30) so the 40-min entered end clears the 30-min billing floor (M21).
+    const base = await overdueWalkin(120, 60) // started 120 min ago, committed end 90 min ago
     const plain = await checkoutWalkin({ bookingId: base.id })
     const baseTotal = Number((await state(base.id)).total)
     check('overdue with no endAt: checks out, billed the committed window', !plain.error && baseTotal > 0)
     check('...and writes no late-checkout audit', (await lateAudits(base.id)) === 0)
 
-    const shorter = await overdueWalkin(120)
-    const shortEnd = new Date(shorter.start.getTime() + 15 * MIN)
+    const shorter = await overdueWalkin(120, 60)
+    const shortEnd = new Date(shorter.start.getTime() + 40 * MIN)
     const sRes = await checkoutWalkin({ bookingId: shorter.id, endAt: shortEnd.toISOString() })
     const sState = await state(shorter.id)
     check('an entered end SHORTER than the committed end is accepted', !sRes.error)
@@ -343,12 +344,12 @@ async function main() {
     check('...committed_end_at is untouched', new Date(sState.committed_end_at).getTime() === shorter.committed.getTime())
     check('...with one late-checkout audit row', (await lateAudits(shorter.id)) === 1)
 
-    const equal = await overdueWalkin(120)
+    const equal = await overdueWalkin(120, 60)
     const eRes = await checkoutWalkin({ bookingId: equal.id, endAt: equal.committed.toISOString() })
     check('an entered end EQUAL to the committed end bills the same as no endAt', !eRes.error && Number((await state(equal.id)).total) === baseTotal)
     check('...and writes no audit (nothing differs)', (await lateAudits(equal.id)) === 0)
 
-    const longer = await overdueWalkin(120)
+    const longer = await overdueWalkin(120, 60)
     const longEnd = new Date(longer.start.getTime() + 75 * MIN)
     const lRes = await checkoutWalkin({ bookingId: longer.id, endAt: longEnd.toISOString() })
     const lState = await state(longer.id)

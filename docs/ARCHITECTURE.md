@@ -165,9 +165,11 @@ bookings:release-holds` from a host crontab, or on Vercel the route
 route requires `Authorization: Bearer $CRON_SECRET` (what Vercel Cron sends when
 the `CRON_SECRET` env var is set), compares in constant time, and answers 503
 when `CRON_SECRET` is unset so it can never run unauthenticated. `vercel.json`
-deliberately declares no cron: the frequency a plan allows differs, so the owner
-adds `{ "crons": [{ "path": "/api/cron/release-holds", "schedule": "* * * * *" }] }`
-(or a slower schedule) once they have chosen. The proxy lets `/api/cron/*`
+declares it daily (`47 1 * * *`), the most the Hobby plan allows (a sub-daily
+schedule fails the deploy there). That is only a backstop for idle tenants; on
+the Pro plan change it to `* * * * *` (or `*/5 * * * *`) if holds must clear
+promptly. `CRON_SECRET` must be set in the Vercel project env or the cron gets
+503s. The proxy lets `/api/cron/*`
 through without a session, as it does `/api/webhooks/*`; the route's own secret
 is the gate.
 
