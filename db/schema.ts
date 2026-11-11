@@ -2532,7 +2532,33 @@ export const expenses = pgTable(
   ],
 )
 
-export const expenseCategoriesRelations = relations(expenseCategories, ({ one, many }) => ({
+/**
+ * Other income (migration 0182, M40). Non-sale money in: investment, interest,
+ * refunds. NOT revenue — read only by the P&L statement. No category, vendor,
+ * branch or author, matching `expenses` as it stands.
+ */
+export const income = pgTable(
+  'income',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    // A plain date, not an instant: the day is the tenant's, not a timezone's.
+    receivedOn: date('received_on').notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_income_tenant_received_on').on(t.tenantId, t.receivedOn.desc())],
+)
+
+export const incomeRelations = relations(income, ({ one }) => ({
+  tenant: one(tenants, { fields: [income.tenantId], references: [tenants.id] }),
+}))
+
+export const expenseCategoriesRelations =relations(expenseCategories, ({ one, many }) => ({
   tenant: one(tenants, { fields: [expenseCategories.tenantId], references: [tenants.id] }),
   expenses: many(expenses),
 }))
