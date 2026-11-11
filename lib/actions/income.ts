@@ -46,11 +46,17 @@ function dbCode(e: unknown): string | undefined {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 const incomeInput = z.object({
-  amount: z.coerce
-    .number({ invalid_type_error: 'Enter an amount.' })
-    .finite('Enter a valid amount.')
-    .nonnegative('An amount cannot be negative.')
-    .max(99_999_999.99, 'That amount is too large.'),
+  // A blank string must be refused, not coerced: Number('') is 0, which would
+  // silently record a ₹0.00 entry for an empty field sent straight to the action.
+  amount: z
+    .union([z.number(), z.string().trim().min(1, 'Enter an amount.')], { errorMap: () => ({ message: 'Enter an amount.' }) })
+    .pipe(
+      z.coerce
+        .number({ invalid_type_error: 'Enter an amount.' })
+        .finite('Enter a valid amount.')
+        .nonnegative('An amount cannot be negative.')
+        .max(99_999_999.99, 'That amount is too large.'),
+    ),
   receivedOn: z
     .string()
     .regex(DATE_RE, 'Enter a valid date.')
