@@ -412,8 +412,8 @@ async function main() {
   check('CSV payroll is negative', byLabel.get('Payroll') === -r.payroll.total)
   check('CSV net matches the report', byLabel.get('Net profit/loss') === r.netProfit)
   check(
-    'the first four CSV rows sum to the net',
-    money(rows.slice(0, 3).reduce((s, x) => s + x.amount, 0)) === money(r.netProfit),
+    'the four line rows (revenue, other income, expenses, payroll) sum to the net',
+    money(rows.slice(0, 4).reduce((s, x) => s + x.amount, 0)) === money(r.netProfit),
   )
   check('every category appears in the CSV', rows.filter((x) => x.label.startsWith('Expenses — ')).length === 2)
   check('…as negative amounts', rows.filter((x) => x.label.startsWith('Expenses — ')).every((x) => x.amount < 0))

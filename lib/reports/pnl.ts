@@ -1,16 +1,17 @@
 import 'server-only'
 import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { withUser } from '@/db'
-import { expenseCategories, expenses, payslips } from '@/db/schema'
+import { expenseCategories, expenses, income, payslips } from '@/db/schema'
 import type { ActiveContext } from '@/lib/tenant/context'
 import { isManager } from '@/lib/auth/roles'
 import { requireEntitlement } from '@/lib/platform/entitlement-guard'
+import { readFinancialSettings, type OpeningBalance } from './financial-settings'
 import { ReportAccessError } from './daily-revenue'
 import { cashMovements, movementForKind, movementRefundsOut, movementShareOf } from './revenue-basis'
 import type { DateRange } from './date-range'
 
 /**
- * Profit & loss: revenue − expenses − payroll.
+ * Profit & loss: revenue + other income − expenses − payroll.
  *
  * ── WHAT EACH LINE READS ────────────────────────────────────────────────────
  *
@@ -22,6 +23,11 @@ import type { DateRange } from './date-range'
  *             It no longer reads mv_daily_revenue / v_daily_revenue at all: that
  *             snapshot was never refreshed on a schedule, so anything billed
  *             since the last manual run was silently missing.
+ *
+ *   other income  public.income (M40), RLS-scoped, filtered on `received_on`.
+ *             Non-sale money in (investment, interest, refunds). Deliberately NOT
+ *             revenue: it is read by this report and nothing else, so it can
+ *             never distort the sales-performance numbers in ./revenue-basis.ts.
  *
  *   expenses  public.expenses, RLS-scoped, filtered on `spent_on`.
  *
@@ -97,6 +103,13 @@ export type PnlExpenseCategoryRow = {
   expenseCount: number
 }
 
+export type PnlIncomeRow = {
+  id: string
+  receivedOn: string
+  amount: number
+  note: string | null
+}
+
 export type PnlReport = {
   range: DateRange
   revenue: {
@@ -121,6 +134,12 @@ export type PnlReport = {
     membershipRevenue: number
     serviceChargeRevenue: number
   }
+  /** Non-sale money received in the range (public.income). Adds to netProfit. */
+  otherIncome: {
+    total: number
+    count: number
+    rows: PnlIncomeRow[]
+  }
   expenses: {
     total: number
     count: number
@@ -135,8 +154,17 @@ export type PnlReport = {
     /** True when the range is NOT exactly whole months, so payroll is wider. */
     isApproximate: boolean
   }
-  /** revenue.net − expenses.total − payroll.total */
+  /** revenue.net + otherIncome.total − expenses.total − payroll.total */
   netProfit: number
+  /**
+   * The tenant's one-time opening-balance REFERENCE, or null when not set.
+   *
+   * A snapshot, not a flow: it is context shown beside the figures above and is
+   * NOT part of `netProfit` — nothing is added to or subtracted from the formula
+   * because of it. It sits next to numbers that do feed the formula, so it must
+   * not be mistaken for one. It is also not filtered by the report range.
+   */
+  openingBalance: OpeningBalance | null
 }
 
 /**
@@ -160,7 +188,7 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
   //
   // The obvious alternative — zero the payroll and expense lines when those
   // modules are not entitled — does not degrade this report, it FALSIFIES it.
-  // netProfit is revenue − expenses − payroll, so suppressing the cost side
+  // netProfit is revenue + other income − expenses − payroll, so suppressing the cost side
   // leaves an owner reading their entire revenue as profit. A wrong profit
   // figure presented as a real one is worse than either showing the number or
   // refusing the whole report.
@@ -224,6 +252,30 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         }
       | undefined
 
+    // ── other income ──────────────────────────────────────────────────────
+    // Same predicate shape as expenses. The aggregate and the row list share one
+    // WHERE so they cannot describe different sets.
+    const incomeWhere = and(
+      eq(income.tenantId, ctx.tenant.id),
+      gte(income.receivedOn, range.start),
+      lte(income.receivedOn, range.end),
+    )
+    const [incomeRow] = await tx
+      .select({
+        total: sql<string>`coalesce(sum(${income.amount}), 0)`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(income)
+      .where(incomeWhere)
+    const incomeRows = await tx
+      .select({ id: income.id, receivedOn: income.receivedOn, amount: income.amount, note: income.note })
+      .from(income)
+      .where(incomeWhere)
+      .orderBy(desc(income.receivedOn), desc(income.createdAt))
+
+    // The opening balance is a reference snapshot — read, returned, never summed.
+    const { openingBalance } = await readFinancialSettings(tx, ctx.tenant.id)
+
     // ── expenses: the grand total ─────────────────────────────────────────
     const expenseWhere = and(
       eq(expenses.tenantId, ctx.tenant.id),
@@ -282,6 +334,7 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
     const revenueNet = round2(Number(revenueRow?.net ?? 0))
     const expenseTotal = round2(Number(expenseRow?.total ?? 0))
     const payrollTotal = round2(Number(payrollRow?.total ?? 0))
+    const incomeTotal = round2(Number(incomeRow?.total ?? 0))
 
     return {
       range,
@@ -297,6 +350,11 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         foodRevenue: round2(Number(revenueRow?.food_revenue ?? 0)),
         membershipRevenue: round2(Number(revenueRow?.membership_revenue ?? 0)),
         serviceChargeRevenue: round2(Number(revenueRow?.service_charge_revenue ?? 0)),
+      },
+      otherIncome: {
+        total: incomeTotal,
+        count: incomeRow?.count ?? 0,
+        rows: incomeRows.map((r) => ({ ...r, amount: round2(Number(r.amount)) })),
       },
       expenses: {
         total: expenseTotal,
@@ -314,9 +372,11 @@ export async function getPnlReport(ctx: ActiveContext, range: DateRange): Promis
         periods,
         isApproximate: approximate,
       },
-      // Rounded once, from three figures that are each already exact to 2dp,
-      // so the displayed total always equals the displayed lines subtracted.
-      netProfit: round2(revenueNet - expenseTotal - payrollTotal),
+      // Rounded once, from four figures that are each already exact to 2dp,
+      // so the displayed total always equals the displayed lines combined.
+      // openingBalance is deliberately absent: it is a snapshot, not a flow.
+      netProfit: round2(revenueNet + incomeTotal - expenseTotal - payrollTotal),
+      openingBalance,
     }
   })
 }
@@ -364,13 +424,14 @@ export function isWholeMonths(range: DateRange): boolean {
  * One CSV line. Money stays a NUMBER here — no currency symbol and no
  * thousands separator — so a spreadsheet reads it as a number; formatting
  * belongs on the screen, not in a data file. Expense and payroll lines are
- * negative so the four rows literally sum to the net.
+ * negative, so revenue + other income + expenses + payroll literally sum to the net.
  */
 export type PnlCsvRow = { label: string; amount: number; detail: string }
 
 /**
- * Flatten the report into CSV rows: the three P&L lines, the net, then one row
- * per expense category.
+ * Flatten the report into CSV rows: the four P&L lines, the net, then one row
+ * per expense category. The opening balance, when set, follows as a reference
+ * row (it is not part of the net).
  *
  * Built from the SAME report object the page renders, so the file and the
  * screen cannot disagree — the export is a projection of the data, never a
@@ -382,6 +443,11 @@ export function pnlCsvRows(report: PnlReport): PnlCsvRow[] {
       label: 'Revenue',
       amount: report.revenue.net,
       detail: `${report.revenue.invoiceCount} invoice(s), ${report.range.start} to ${report.range.end}`,
+    },
+    {
+      label: 'Other income',
+      amount: report.otherIncome.total,
+      detail: `${report.otherIncome.count} entr${report.otherIncome.count === 1 ? 'y' : 'ies'}, ${report.range.start} to ${report.range.end}`,
     },
     {
       label: 'Expenses',
@@ -403,6 +469,14 @@ export function pnlCsvRows(report: PnlReport): PnlCsvRow[] {
       label: `Expenses — ${c.categoryName}`,
       amount: -c.amount,
       detail: `${c.expenseCount} expense(s)`,
+    })
+  }
+
+  if (report.openingBalance) {
+    rows.push({
+      label: 'Opening balance (reference, not in net)',
+      amount: Number(report.openingBalance.amount),
+      detail: report.openingBalance.asOf ? `as of ${report.openingBalance.asOf}` : '',
     })
   }
 

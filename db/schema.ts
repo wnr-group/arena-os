@@ -3240,6 +3240,18 @@ export const bookingSettings = pgTable('booking_settings', {
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })
 
+// M40 (0183): the P&L opening-balance reference. One row per tenant; no row or a
+// null balance = not set. A snapshot, never part of Net Profit.
+export const financialSettings = pgTable('financial_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  openingBalance: numeric('opening_balance', { precision: 12, scale: 2 }),
+  openingBalanceAsOf: date('opening_balance_as_of'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
 // M20 (0150): table-reservation settings. One row per tenant; a tenant with no
 // row behaves as disabled with the defaults below (lib/reservations/settings.ts).
 export const reservationSettings = pgTable('reservation_settings', {
