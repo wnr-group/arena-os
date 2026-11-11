@@ -183,6 +183,8 @@ const NAV: NavItem[] = [
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.
   { href: '/expenses', label: 'Expenses', icon: Wallet, can: isManager },
+  // Other income ledger (M40 / AROS-359) — non-sale money in; same gate as Expenses.
+  { href: '/income', label: 'Other Income', icon: PiggyBank, can: isManager },
   // Revenue & sales analytics (AROS-64/65) — manager/owner; the pages and their
   // data readers enforce that themselves, the nav entry is convenience only.
   {

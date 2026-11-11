@@ -87,6 +87,8 @@ export async function createIncome(input: z.input<typeof incomeInput>): Promise<
     )
 
     revalidatePath('/income')
+    // The P&L reads this ledger; drop its cached render too so the new figure shows at once.
+    revalidatePath('/reports/pnl')
     return {}
   } catch (e) {
     return fail(e)
@@ -111,6 +113,8 @@ export async function updateIncome(id: string, input: z.input<typeof incomeInput
     if (updated.length === 0) return { error: 'That income entry no longer exists.' }
 
     revalidatePath('/income')
+    // The P&L reads this ledger; drop its cached render too so the new figure shows at once.
+    revalidatePath('/reports/pnl')
     return {}
   } catch (e) {
     return fail(e)
@@ -129,6 +133,8 @@ export async function deleteIncome(id: string): Promise<Result> {
     )
 
     revalidatePath('/income')
+    // The P&L reads this ledger; drop its cached render too so the new figure shows at once.
+    revalidatePath('/reports/pnl')
     return {}
   } catch (e) {
     return fail(e)

@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { Info, TrendingDown, TrendingUp } from 'lucide-react'
 import { getActiveContext } from '@/lib/tenant/context'
@@ -8,13 +9,17 @@ import { resolveDateRange } from '@/lib/reports/date-range'
 import { formatMoney } from '@/lib/format'
 import { todayInZone } from '@/lib/booking/time'
 import { DateRangeFilter } from '@/components/reports/DateRangeFilter'
+import { OpeningBalanceCard } from '@/components/reports/OpeningBalanceCard'
 import { ExportCsvButton, type CsvColumn } from '@/components/reports/ExportCsvButton'
 import { cn } from '@/lib/utils/cn'
 
 type Search = { from?: string; to?: string }
 
 /**
- * Profit & Loss (AROS-86) — revenue − expenses − payroll.
+ * Profit & Loss (AROS-86) — revenue + other income − expenses − payroll.
+ *
+ * The opening balance (M40) is shown above the statement as a reference only;
+ * it is never part of the net.
  *
  * Same shape as its siblings (/reports, /reports/sales): a server component
  * that resolves context, enforces authorization, and loads the report, with
@@ -41,12 +46,16 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
   const range = resolveDateRange({ start: sp.from, end: sp.to }, { timeZone: tz })
 
   const report = await getPnlReport(ctx, range)
+  // Editing the balance and linking to the income ledger ride the module.expenses
+  // toggle (presentation only — saveOpeningBalance() re-checks it).
+  const hasLedgers = await hasEntitlement(ctx, 'module.expenses')
   const money = (n: number) => formatMoney(n, currency)
   const profitable = report.netProfit >= 0
 
   // Exports exactly the figures rendered below — pnlCsvRows() projects the very
   // report object this page renders, so the file cannot disagree with the
   // screen. Expense and payroll rows are negative, so the four lines sum to net.
+  // The opening balance, when set, is a trailing reference row outside that sum.
   const csvRows = pnlCsvRows(report)
   const csvCols: CsvColumn<(typeof csvRows)[number]>[] = [
     { key: 'label', label: 'Line' },
@@ -74,12 +83,35 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
 
       <DateRangeFilter basePath="/reports/pnl" from={range.start} to={range.end} today={today} />
 
+      {/* ── opening balance: context, deliberately NOT part of the stack below ── */}
+      <OpeningBalanceCard
+        amount={report.openingBalance?.amount ?? null}
+        asOf={report.openingBalance?.asOf ?? null}
+        currency={currency}
+        timeZone={tz}
+        canEdit={hasLedgers}
+      />
+
       {/* ── the statement ───────────────────────────────────────────────── */}
       <section className="mt-6 overflow-hidden rounded-xl border border-border bg-card">
         <Line
           label="Revenue"
           hint={`${report.revenue.invoiceCount} invoice${report.revenue.invoiceCount === 1 ? '' : 's'} issued or paid`}
           value={money(report.revenue.net)}
+          positive
+        />
+        <Line
+          label="Other income"
+          badge="Non-sale"
+          hint={
+            report.otherIncome.count === 0
+              ? 'No other income in this period'
+              : `${report.otherIncome.count} entr${report.otherIncome.count === 1 ? 'y' : 'ies'} · investment, interest, refunds`
+          }
+          value={`+ ${money(report.otherIncome.total)}`}
+          positive
+          tinted
+          href={hasLedgers ? '/income' : undefined}
         />
         <Line
           label="Expenses"
@@ -187,8 +219,10 @@ export default async function PnlReportPage({ searchParams }: { searchParams: Pr
       <p className="mt-4 text-xs text-muted-foreground">
         Revenue counts money actually taken — captured payments, dated by when they were
         received, so a booking played on a future date counts in the period it was paid for, and
-        a bill nobody has settled counts for nothing. Revenue, expenses and payroll are all read
-        live. Expenses are dated by when they were spent. All figures are for {ctx.tenant.name}{' '}
+        a bill nobody has settled counts for nothing. Other income is money received that isn&apos;t a sale
+        (dated by when it was received) and is not part of Revenue. Revenue, other income, expenses
+        and payroll are all read live. Expenses are dated by when they were spent. The opening
+        balance above is a reference snapshot and is not included in Net profit. All figures are for {ctx.tenant.name}{' '}
         only.
       </p>
     </div>
@@ -200,20 +234,58 @@ function Line({
   hint,
   value,
   negative,
+  positive,
+  tinted,
+  badge,
+  href,
 }: {
   label: string
   hint: string
   value: string
   negative?: boolean
+  /** Cash in — green. */
+  positive?: boolean
+  /** A lighter tint, so a non-sale line never reads as sales performance. */
+  tinted?: boolean
+  badge?: string
+  /** Where to manage the entries behind this line. */
+  href?: string
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3.5">
+    <div
+      className={cn(
+        'flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3.5',
+        tinted && 'bg-emerald-500/5',
+      )}
+    >
       <div className="min-w-0">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+          {label}
+          {badge && (
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+              {badge}
+            </span>
+          )}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {hint}
+          {href && (
+            <>
+              {' · '}
+              <Link href={href} className="font-medium text-primary hover:underline">
+                Manage
+              </Link>
+            </>
+          )}
+        </p>
       </div>
       <span
-        className={cn('text-lg tabular-nums', negative ? 'text-muted-foreground' : 'font-medium')}
+        className={cn(
+          'text-lg tabular-nums',
+          negative && 'text-destructive',
+          positive && 'font-medium text-emerald-600',
+          !negative && !positive && 'font-medium',
+        )}
       >
         {value}
       </span>
