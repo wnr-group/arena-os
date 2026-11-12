@@ -52,6 +52,7 @@ function TenantMark({ tenantName, logoUrl, gradient }: { tenantName: string; log
 export function AppShell({
   industryLabel,
   industry,
+  enabledModules,
   tenantName,
   logoUrl,
   role,
@@ -65,6 +66,8 @@ export function AppShell({
 }: {
   industryLabel: string
   industry: string
+  /** Plan modules the workspace is granted, for hiding nav entries it cannot open. */
+  enabledModules: string[]
   tenantName: string
   /** The tenant's website logo, straight off the draft (Settings → Website →
    *  Branding) — shows the moment it's uploaded, with no separate Publish
@@ -125,7 +128,7 @@ export function AppShell({
           )}
         </div>
 
-        <Sidebar role={role} industry={industry} collapsed={collapsed} />
+        <Sidebar role={role} industry={industry} enabledModules={enabledModules} collapsed={collapsed} />
 
         <div className={cn('mt-auto border-t border-border p-3 bg-muted/20', collapsed && 'flex flex-col items-center')}>
           {!collapsed && (
@@ -191,7 +194,7 @@ export function AppShell({
             </div>
 
             <div className="flex-1 overflow-y-auto" onClick={() => setMobileOpen(false)}>
-              <Sidebar role={role} industry={industry} collapsed={false} />
+              <Sidebar role={role} industry={industry} enabledModules={enabledModules} collapsed={false} />
             </div>
 
             <div className="border-t border-border p-4 bg-muted/20">

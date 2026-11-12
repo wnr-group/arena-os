@@ -89,9 +89,9 @@ async function main() {
   const ctx = { tenantId, timezone: TZ, membershipId }
   let phoneSeq = 0
 
-  /** A 30-min timed walk-in that started `startedMinAgo` minutes ago (so it is overdue by
-   *  startedMinAgo - 30). Both the slot, the committed end and any add-on are shifted together. */
-  async function overdue(startedMinAgo: number, withAddon = false) {
+  /** A timed walk-in (30 min unless `durationMin`) that started `startedMinAgo` minutes ago (so it is overdue by
+   *  startedMinAgo - durationMin). Both the slot, the committed end and any add-on are shifted together. */
+  async function overdue(startedMinAgo: number, withAddon = false, durationMin = 30) {
     const resourceId = await mkResource()
     const w = await withUser(userId, (tx) =>
       startWalkinCore(tx, ctx, {
@@ -100,7 +100,7 @@ async function main() {
         phone: `98765${String(70000 + phoneSeq++).padStart(5, '0')}`,
         startAt: new Date().toISOString(),
         mode: 'timed',
-        durationMin: 30,
+        durationMin,
         ...(withAddon ? { addons: [{ addonId, quantity: 1 }] } : {}),
       }),
     )
@@ -141,9 +141,11 @@ async function main() {
       return addonHeadroom(tx, tenantId, row, from, to)
     })
 
+  // Committed 60 min (not 30) so the 40-min entered end clears the 30-min billing floor (M21):
+  // 40 rounds to 45, strictly less than the 60-min bill.
   // ── baseline: overdue, no endAt (today's bill, just unblocked) ──
   console.log('\n── equal to committed end / omitted ──')
-  const base = await overdue(120)
+  const base = await overdue(120, false, 60)
   await checkout(base.id)
   const baseS = await state(base.id)
   const baseTotal = Number(baseS.total)
@@ -151,15 +153,15 @@ async function main() {
   check('E2 ...billed for the full committed window (slot ends where it was committed)', +new Date(baseS.ends_at!) === +base.committed)
   check('E3 ...and writes no audit row', (await audits(base.id)).length === 0)
 
-  const equal = await overdue(120)
+  const equal = await overdue(120, false, 60)
   await checkout(equal.id, equal.committed)
   check('E4 entering exactly the committed end bills the same as omitting it', Number((await state(equal.id)).total) === baseTotal)
   check('E5 ...and writes no audit row (nothing differs)', (await audits(equal.id)).length === 0)
 
   // ── shorter ──
   console.log('\n── shorter than committed ──')
-  const shorter = await overdue(120)
-  const shortEnd = new Date(+shorter.start + 15 * MIN)
+  const shorter = await overdue(120, false, 60)
+  const shortEnd = new Date(+shorter.start + 40 * MIN)
   await checkout(shorter.id, shortEnd)
   const sS = await state(shorter.id)
   check('S1 an entered end BEFORE the committed end bills the shorter real duration', Number(sS.total) < baseTotal && Number(sS.total) > 0)
@@ -170,7 +172,7 @@ async function main() {
 
   // ── longer ──
   console.log('\n── longer than committed, still before now ──')
-  const longer = await overdue(120)
+  const longer = await overdue(120, false, 60)
   const longEnd = new Date(+longer.start + 75 * MIN)
   await checkout(longer.id, longEnd)
   const lS = await state(longer.id)

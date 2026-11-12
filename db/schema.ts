@@ -2532,7 +2532,33 @@ export const expenses = pgTable(
   ],
 )
 
-export const expenseCategoriesRelations = relations(expenseCategories, ({ one, many }) => ({
+/**
+ * Other income (migration 0182, M40). Non-sale money in: investment, interest,
+ * refunds. NOT revenue — read only by the P&L statement. No category, vendor,
+ * branch or author, matching `expenses` as it stands.
+ */
+export const income = pgTable(
+  'income',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    // A plain date, not an instant: the day is the tenant's, not a timezone's.
+    receivedOn: date('received_on').notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('idx_income_tenant_received_on').on(t.tenantId, t.receivedOn.desc())],
+)
+
+export const incomeRelations = relations(income, ({ one }) => ({
+  tenant: one(tenants, { fields: [income.tenantId], references: [tenants.id] }),
+}))
+
+export const expenseCategoriesRelations =relations(expenseCategories, ({ one, many }) => ({
   tenant: one(tenants, { fields: [expenseCategories.tenantId], references: [tenants.id] }),
   expenses: many(expenses),
 }))
@@ -3210,6 +3236,18 @@ export const bookingSettings = pgTable('booking_settings', {
   walkinAutoCloseAtClosing: boolean('walkin_auto_close_at_closing').notNull().default(false),
   /** Last time the auto-close rules changed (0181): only tabs started at/after it are auto-closed. */
   walkinAutoCloseEnabledAt: timestamp('walkin_auto_close_enabled_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
+})
+
+// M40 (0183): the P&L opening-balance reference. One row per tenant; no row or a
+// null balance = not set. A snapshot, never part of Net Profit.
+export const financialSettings = pgTable('financial_settings', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  openingBalance: numeric('opening_balance', { precision: 12, scale: 2 }),
+  openingBalanceAsOf: date('opening_balance_as_of'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid('updated_by').references(() => memberships.id, { onDelete: 'set null' }),
 })

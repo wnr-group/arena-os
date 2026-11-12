@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth/session'
 import { getActiveContext } from '@/lib/tenant/context'
 import { ROLE_LABELS, canManageWalkins } from '@/lib/auth/roles'
 import { signOut } from '@/lib/actions/auth'
+import { hasEntitlement } from '@/lib/platform/entitlement-guard'
 import { getWebsiteSettings } from '@/lib/website/data'
 import { AppShell } from '@/components/AppShell'
 import { withUser } from '@/db'
@@ -71,6 +72,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const websiteSettings = await getWebsiteSettings(ctx)
   const logoUrl = websiteSettings?.logoUrl ?? null
 
+  // Nav entries that need a plan module are hidden when the plan lacks it.
+  // Presentation only — each page and action still enforces the entitlement.
+  const enabledModules = (await hasEntitlement(ctx, 'module.expenses')) ? ['module.expenses'] : []
+
   return (
     // Merge note: the responsive AppShell (from main) replaced the inline
     // sidebar/header this file used to render. The `no-print` chrome-hiding that
@@ -78,6 +83,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <AppShell
       industryLabel={INDUSTRY_LABELS[tenant.industry] ?? 'Business'}
       industry={tenant.industry}
+      enabledModules={enabledModules}
       tenantName={tenant.name}
       logoUrl={logoUrl}
       role={role}

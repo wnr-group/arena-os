@@ -88,6 +88,13 @@ type NavItem = {
   // gaming-cafe/studio tenant's nav is completely unaffected by this field
   // existing at all.
   industries?: string[]
+  /**
+   * Plan module this entry needs (e.g. 'module.expenses'). Hidden unless the
+   * workspace's plan grants it. Like `can`, this is presentation only: the page
+   * and every action still call requireEntitlement() themselves, so hiding the
+   * link never replaces the real gate — it just stops it bouncing silently.
+   */
+  module?: string
   children?: NavChild[]
 }
 
@@ -182,7 +189,9 @@ const NAV: NavItem[] = [
   { href: '/kitchen', label: 'Kitchen', icon: ChefHat },
   // Expense tracker (AROS-108) — manager/owner; the page and every mutation
   // enforce that themselves, the nav entry is convenience only.
-  { href: '/expenses', label: 'Expenses', icon: Wallet, can: isManager },
+  { href: '/expenses', label: 'Expenses', icon: Wallet, can: isManager, module: 'module.expenses' },
+  // Other income ledger (M40 / AROS-359) — non-sale money in; same gate as Expenses.
+  { href: '/income', label: 'Other Income', icon: PiggyBank, can: isManager, module: 'module.expenses' },
   // Revenue & sales analytics (AROS-64/65) — manager/owner; the pages and their
   // data readers enforce that themselves, the nav entry is convenience only.
   {
@@ -291,17 +300,25 @@ function isChildActive(activeHref: string | null, children: NavChild[]) {
 export function Sidebar({
   role,
   industry,
+  enabledModules,
   collapsed,
 }: {
   role: MemberRole
   industry: string
+  /** Plan modules the workspace is granted — gates entries carrying `module`. */
+  enabledModules: string[]
   collapsed?: boolean
 }) {
   const pathname = usePathname()
   const items = useMemo(
     () =>
-      NAV.filter((n) => (!n.can || n.can(role)) && (!n.industries || n.industries.includes(industry))),
-    [role, industry],
+      NAV.filter(
+        (n) =>
+          (!n.can || n.can(role)) &&
+          (!n.industries || n.industries.includes(industry)) &&
+          (!n.module || enabledModules.includes(n.module)),
+      ),
+    [role, industry, enabledModules],
   )
   const activeHref = useMemo(
     () => resolveActiveHref(pathname, items, role),
