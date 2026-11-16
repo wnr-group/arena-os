@@ -34,7 +34,7 @@ const chipOff = 'border-border bg-background hover:bg-muted'
  */
 export function RangePresetBar({ active, todayActive }: { active: RangePreset | null; todayActive: boolean }) {
   return (
-    <nav aria-label="Date range" className="-mx-6 mt-4 overflow-x-auto px-6 pb-1">
+    <nav aria-label="Date range" className="-mx-4 mt-4 overflow-x-auto px-4 pb-1 sm:-mx-6 sm:px-6">
       <ul className="flex w-max gap-2">
         <li>
           <Link

@@ -23,7 +23,7 @@ export function OrderTypeBadge({
   const Icon = delivery ? Bike : ShoppingBag
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+      className={`inline-flex max-w-full flex-wrap items-center gap-x-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
         delivery ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
       } ${className}`}
     >

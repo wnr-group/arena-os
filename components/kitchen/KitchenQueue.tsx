@@ -121,8 +121,8 @@ export function KitchenQueue({ tickets, menuItems }: { tickets: KotTicket[]; men
           const isPending = pendingId === ticket.kotId
           return (
             <div key={ticket.kotId} className="rounded-xl border border-border bg-card p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <span className="text-base font-semibold">{ticket.kotNumber}</span>
                   <OrderTypeBadge orderType={ticket.orderType} contactName={ticket.contactName} pickupAt={ticket.pickupAt} />
                   {ticket.channel === 'online' && (
@@ -146,7 +146,7 @@ export function KitchenQueue({ tickets, menuItems }: { tickets: KotTicket[]; men
                   </span>
                 </div>
               </div>
-              <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+              <p className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-muted-foreground">
                 <Clock size={12} /> waiting {elapsedLabel(ticket.createdAt, now)} · order {ticket.orderNumber}
                 {ticket.stationName && (
                   <>

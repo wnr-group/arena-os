@@ -309,7 +309,7 @@ function TicketCard({
           {clock(elapsedMs)}
         </span>
       </div>
-      <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+      <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
         <span>order {ticket.orderNumber}</span>
         {ticket.tableName && (
           <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-medium text-foreground">
