@@ -378,13 +378,17 @@ export function TakeOrderDialog({
    *  the current breakpoint (see the two usages below). */
   const cartContent = (
     <>
+      {/* One scroll region for the header, the lines and any checkout form, so a tall
+          form (the counter sale's phone / promo / payment) can never squeeze the
+          order list out of view on a short screen. Totals and Pay stay pinned below. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="hidden shrink-0 items-center justify-between px-4 pt-4 lg:flex xl:px-5">
         <p className="inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <ShoppingCart size={14} /> Order ({cart.length})
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 xl:px-5">
+      <div className="space-y-2 p-4 xl:px-5">
         {cart.length === 0 ? (
           <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
             Tap items to add them to the order.
@@ -485,8 +489,10 @@ export function TakeOrderDialog({
         )}
       </div>
 
-      <div className="max-h-[60vh] shrink-0 overflow-y-auto border-t border-border p-4 xl:px-5">
-        {checkoutSlot}
+      {checkoutSlot && <div className="border-t border-border p-4 xl:px-5">{checkoutSlot}</div>}
+      </div>
+
+      <div className="shrink-0 border-t border-border p-4 xl:px-5">
         {!hideTotals && (
         <div className="space-y-1 text-sm">
           <div className="flex justify-between text-muted-foreground">
