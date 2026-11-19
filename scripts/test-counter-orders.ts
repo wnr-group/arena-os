@@ -105,7 +105,7 @@ async function main() {
   const R = await makeTenant('testcounterr', 'restaurant')
   const B = await makeTenant('testcounterb', 'gaming_cafe')
   const ids = [A.tenantId, R.tenantId, B.tenantId]
-  for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'loyalty_transactions', 'wallet_transactions', 'customer_memberships', 'membership_plans', 'promo_codes', 'customers', 'sequences']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
+  for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'refunds', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'loyalty_transactions', 'wallet_transactions', 'customer_memberships', 'membership_plans', 'promo_codes', 'customers', 'sequences']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
 
   // ── 1. the happy path ────────────────────────────────────────────────────
   const stock = await as(A, 'manager', (tx) => inv.createStockItemCore(tx, { tenantId: A.tenantId, membershipId: A.members.manager.membershipId }, { branchId: A.branchId, name: 'Potato', unit: 'pcs', reorderLevel: 0, openingQuantity: 50 }))
@@ -288,6 +288,107 @@ async function main() {
   check('a window of 1 day still includes today\'s sales', (await data.listCounterSales(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId, 1)).length === list.length)
   const menu = await data.loadCounterMenu(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId)
   check('counter menu offers this tenant\'s available items', menu.menuItems.some((m) => m.id === A.fries) && menu.categories.length > 0)
+
+  // ── 6d. corrections: refund → void → edit → re-bill (ticket 4) ────────────
+  const refunds = await import('../lib/billing/refunds')
+  const actor = (t: T, role: Role) => ({ tenantId: t.tenantId, membershipId: t.members[role].membershipId, role })
+  const cctx = (t: T, role: Role) => ({ tenantId: t.tenantId, timezone: TZ, membershipId: t.members[role].membershipId, role })
+  const stockQty = async () => Number((await q('select quantity from stock_items where id=$1', [stock.id]))[0].quantity)
+  const points = async (customerId: string) => Number((await q('select coalesce(sum(points),0)::int p from loyalty_transactions where customer_id=$1', [customerId]))[0].p)
+  const auditCount = async (action: string, entityId: string) => Number((await q('select count(*)::int c from audit_log where tenant_id=$1 and action=$2 and entity_id=$3', [A.tenantId, action, entityId]))[0].c)
+  await promo('FIX', 'percentage', '10.00')
+
+  const fixPhone = '9111111111'
+  const orig = await sell(A, 'cashier', { customerPhone: fixPhone, promoCode: 'FIX', method: 'cash', cashTendered: 500 })
+  check('setup: 200 - 10% promo + GST = 189, promo used once, 18 points earned', near(orig.total, 189) && (await uses('FIX')) === 1 && (await points(orig.customerId)) === 18)
+  const stockAfterSale = await stockQty()
+  const kotBefore = (await q('select status from kots where order_id=$1', [orig.orderId]))[0].status
+
+  const asCashier = await attempt(() => as(A, 'cashier', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'cashier'), { orderId: orig.orderId, reason: 'wrong bill' })))
+  check('a cashier cannot void a sale', !asCashier.ok && /manager/i.test(asCashier.msg))
+  const rawRefund = await attempt(() => as(A, 'cashier', (tx) => refunds.recordRefund(tx, { tenantId: A.tenantId, membershipId: A.members.cashier.membershipId }, { paymentId: orig.paymentId!, amount: 10, reason: 'x' })))
+  check('...and RLS refuses a cashier refund even calling the core directly', !rawRefund.ok)
+  const noReason = await attempt(() => as(A, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'manager'), { orderId: orig.orderId, reason: '  ' })))
+  check('a reason is required', !noReason.ok && /reason/i.test(noReason.msg))
+  const heldGuard = await attempt(() => as(A, 'manager', (tx) => refunds.voidInvoiceRecord(tx, { tenantId: A.tenantId, membershipId: A.members.manager.membershipId }, { invoiceId: orig.invoiceId, reason: 'x' })))
+  check('money guard: the invoice cannot be voided while its payment is still held', !heldGuard.ok && /still held/i.test(heldGuard.msg))
+  const editBilled = await attempt(async () => {
+    const line = (await q('select id from order_items where order_id=$1', [orig.orderId]))[0].id
+    return as(A, 'cashier', (tx) => counter.editCounterOrderLineCore(tx, actor(A, 'cashier'), { orderItemId: line, newQty: 1 }))
+  })
+  check('a billed sale cannot be edited (refund → void → edit → re-bill only)', !editBilled.ok && /billed/i.test(editBilled.msg))
+  check('...and the refused attempts changed nothing', (await uses('FIX')) === 1 && (await q('select status from invoices where id=$1', [orig.invoiceId]))[0].status === 'paid')
+
+  const v = await as(A, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'manager'), { orderId: orig.orderId, reason: 'rung up wrong' }))
+  const oAfter = (await q('select status, invoice_id from orders where id=$1', [orig.orderId]))[0]
+  const pAfter = (await q('select status from payments where invoice_id=$1', [orig.invoiceId]))[0]
+  check('manager void: refunded in full, invoice void, order open and detached', near(v.refunded, 189) && v.invoiceNumber === orig.invoiceNumber && (await q('select status from invoices where id=$1', [orig.invoiceId]))[0].status === 'void' && pAfter.status === 'refunded' && oAfter.status === 'open' && oAfter.invoice_id === null)
+  check('promo use given back once; loyalty earned points reversed', (await uses('FIX')) === 0 && (await points(orig.customerId)) === 0)
+  check('stock not released a second time; kitchen ticket untouched', near(await stockQty(), stockAfterSale) && (await q('select status from kots where order_id=$1', [orig.orderId]))[0].status === kotBefore)
+  check('every correction is audited (refund, void, detach, counter void)', (await q(`select 1 from audit_log where tenant_id=$1 and entity_id=$2 and action like '%refund%'`, [A.tenantId, orig.paymentId])).length >= 1 && (await auditCount('void_invoice', orig.invoiceId)) === 1 && (await auditCount('counter_order.invoice_cleared', orig.orderId)) === 1 && (await auditCount('counter_order.voided', orig.orderId)) === 1)
+  check('voiding twice is refused', !(await attempt(() => as(A, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'manager'), { orderId: orig.orderId, reason: 'again' })))).ok)
+
+  // edit the unbilled order: 2 → 1 portion; stock restores the difference, line audited
+  const lineId = (await q('select id from order_items where order_id=$1', [orig.orderId]))[0].id as string
+  await as(A, 'cashier', (tx) => counter.editCounterOrderLineCore(tx, actor(A, 'cashier'), { orderItemId: lineId, newQty: 1 }))
+  check('edit qty on the unbilled order restores stock and is audited', near(await stockQty(), stockAfterSale + 1) && (await auditCount('order_item.edit', lineId)) === 1)
+  check('a kitchen-staff role cannot edit', !(await attempt(() => as(A, 'kitchen_staff', (tx) => counter.editCounterOrderLineCore(tx, actor(A, 'kitchen_staff'), { orderItemId: lineId, newQty: 3 })))).ok)
+
+  // re-bill: preview == charge, fresh invoice number, new payment, promo re-applied once
+  const rbPreview = await (async () => {
+    try {
+      await as(A, 'cashier', (tx) => counter.previewRebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: orig.orderId, promoCode: 'FIX' }))
+    } catch (e) {
+      if (e instanceof counter.CounterPreviewResult) return e.preview
+      throw e
+    }
+    throw new Error('no preview')
+  })()
+  check('re-bill preview: 100 - 10 promo + 5% GST = 94.50, and it burns nothing', near(rbPreview.total, 94.5) && (await uses('FIX')) === 0)
+  const rbKey = `counter-rebill-${Date.now()}`
+  const rb = await as(A, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: orig.orderId, method: 'cash', cashTendered: 100, promoCode: 'FIX', idempotencyKey: rbKey }))
+  check('re-bill: new invoice number, same order, change 5.50', rb.invoiceNumber !== orig.invoiceNumber && rb.invoiceId !== orig.invoiceId && rb.orderId === orig.orderId && near(rb.total, 94.5) && near(rb.changeDue, 5.5))
+  const live = await q(`select i.id, i.status from invoices i join invoice_items ii on ii.invoice_id=i.id join order_items oi on oi.id=ii.source_id where oi.order_id=$1 and ii.kind='food' group by i.id, i.status`, [orig.orderId])
+  check('old invoice void, exactly one live invoice', live.length === 2 && live.filter((r) => r.status !== 'void').length === 1 && live.find((r) => r.id === rb.invoiceId)?.status === 'paid')
+  const net = (await q(`select coalesce(sum(p.amount) filter (where p.status='captured'),0)::float c from payments p join invoices i on i.id=p.invoice_id join invoice_items ii on ii.invoice_id=i.id join order_items oi on oi.id=ii.source_id where oi.order_id=$1`, [orig.orderId]))[0].c
+  check('payments held now net to the new total only', near(net, 94.5))
+  check('promo re-applied once; points re-earned once (9)', (await uses('FIX')) === 1 && (await points(orig.customerId)) === 9)
+  check('stock unchanged by the re-bill (no second deduction)', near(await stockQty(), stockAfterSale + 1))
+  check('order is billed and linked to the new invoice', (await q('select status, invoice_id from orders where id=$1', [orig.orderId]))[0].invoice_id === rb.invoiceId)
+  const rbAgain = await as(A, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: orig.orderId, method: 'cash', cashTendered: 100, promoCode: 'FIX', idempotencyKey: rbKey }))
+  check('retrying the re-bill replays it: no second invoice, payment or promo use', rbAgain.deduplicated && rbAgain.invoiceId === rb.invoiceId && (await uses('FIX')) === 1)
+  check('a second re-bill (new key) is refused while billed', !(await attempt(() => as(A, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: orig.orderId, method: 'upi', idempotencyKey: `other-key-${Date.now()}` })))).ok)
+  check('re-billed order is again a listed counter sale at the new total', (await data.listCounterSales(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId, 7)).some((r) => r.orderId === orig.orderId && r.invoiceNumber === rb.invoiceNumber && near(Number(r.total), 94.5)))
+
+  // a re-bill that fails (cash short) leaves the order unbilled and burns nothing
+  const sFail = await sell(A, 'cashier', { customerPhone: '9222222222' })
+  await as(A, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'manager'), { orderId: sFail.orderId, reason: 'test' }))
+  const usesBefore = await uses('FIX')
+  const failed = await attempt(() => as(A, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: sFail.orderId, method: 'cash', cashTendered: 1, promoCode: 'FIX', idempotencyKey: `fail-key-${Date.now()}` })))
+  check('failed re-bill (cash short): still unbilled, promo not burned', !failed.ok && (await q('select status, invoice_id from orders where id=$1', [sFail.orderId]))[0].invoice_id === null && (await uses('FIX')) === usesBefore)
+  const listed = await data.listCounterSales(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId, 7)
+  check('a voided, not-yet-re-billed sale stays in the list as "rebill"', listed.find((r) => r.orderId === sFail.orderId)?.status === 'rebill')
+
+  // removing the last line cancels the order (nothing left to re-bill)
+  const sGone = await sell(A, 'cashier', { customerPhone: '9333333333' })
+  await as(A, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(A, 'manager'), { orderId: sGone.orderId, reason: 'test' }))
+  const goneLine = (await q('select id from order_items where order_id=$1', [sGone.orderId]))[0].id as string
+  await as(A, 'cashier', (tx) => counter.editCounterOrderLineCore(tx, actor(A, 'cashier'), { orderItemId: goneLine, newQty: 0 }))
+  check('removing the last line cancels the order', (await q('select status from orders where id=$1', [sGone.orderId]))[0].status === 'cancelled')
+  check('...and its kitchen ticket', (await q('select status from kots where order_id=$1', [sGone.orderId]))[0].status === 'cancelled')
+  const goneRebill = await attempt(() => as(A, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(A, 'cashier'), { orderId: sGone.orderId, method: 'upi', idempotencyKey: `gone-key-${Date.now()}` })))
+  check('...and a re-bill is refused', !goneRebill.ok)
+
+  // REGRESSION: a takeaway order's void behaves exactly as before (stays linked), promo untouched
+  await q(`insert into order_settings (tenant_id, takeaway_enabled) values ($1, true) on conflict (tenant_id) do update set takeaway_enabled=true`, [R.tenantId])
+  const tk = await as(R, 'cashier', (tx) => typed.createTypedOrderCore(tx, { tenantId: R.tenantId, timezone: TZ, membershipId: R.members.cashier.membershipId }, { branchId: R.branchId, orderType: 'takeaway', contactName: 'T', contactPhone: '9876543210', items: [{ menuItemId: R.fries, qty: 1 }], idempotencyKey: `tk-reg-${Date.now()}` }))
+  const tkPaid = await as(R, 'cashier', (tx) => typed.collectTypedOrderPaymentCore(tx, { tenantId: R.tenantId, timezone: TZ, membershipId: R.members.cashier.membershipId }, { orderId: tk.id, method: 'cash' }))
+  const tkPay = (await q('select id from payments where invoice_id=$1', [tkPaid.invoiceId]))[0].id as string
+  await as(R, 'manager', (tx) => refunds.recordRefund(tx, { tenantId: R.tenantId, membershipId: R.members.manager.membershipId }, { paymentId: tkPay, amount: tkPaid.total, reason: 'reg' }))
+  await as(R, 'manager', (tx) => refunds.voidInvoiceRecord(tx, { tenantId: R.tenantId, membershipId: R.members.manager.membershipId }, { invoiceId: tkPaid.invoiceId, reason: 'reg' }))
+  const tkAfter = (await q('select status, invoice_id from orders where id=$1', [tk.id]))[0]
+  check('regression: takeaway void unchanged (order released to open, invoice link kept, no counter audit)', tkAfter.status === 'open' && tkAfter.invoice_id === tkPaid.invoiceId && (await auditCount('counter_order.invoice_cleared', tk.id)) === 0)
+  check('regression: counter code refuses to touch a takeaway order', !(await attempt(() => as(R, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(R, 'manager'), { orderId: tk.id, reason: 'x' })))).ok)
 
   // ── 7. RLS: another tenant's user cannot see these sales ─────────────────
   const seen = await as(R, 'owner', (tx) => tx.execute(sql`select id from orders where id=${s1.orderId}`))

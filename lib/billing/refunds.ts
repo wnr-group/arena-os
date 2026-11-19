@@ -24,6 +24,7 @@ import {
 } from '@/db/schema'
 import { paise } from './payments'
 import { reverseLoyaltyForVoidedInvoice } from './loyalty'
+import { releasePromoUse } from './promo'
 import { reconcileInvoiceAfterRefund } from './refund-reconciliation'
 import { restoreWalletOnRefund } from './wallet-payments'
 import { round2 } from './pricing'
@@ -328,6 +329,7 @@ export async function voidInvoiceRecord(
       status: invoices.status,
       total: invoices.total,
       bookingId: invoices.bookingId,
+      promoCodeId: invoices.promoCodeId,
     })
     .from(invoices)
     .where(and(eq(invoices.id, input.invoiceId), eq(invoices.tenantId, actor.tenantId)))
@@ -404,6 +406,32 @@ export async function voidInvoiceRecord(
           eq(orders.status, 'billed'),
         ),
       )
+  }
+
+  // M41 counter sales only: an order raised and paid in one step must be billable
+  // AGAIN after a void, but collectTypedOrderPaymentCore / the counter re-bill treat
+  // any order still pointing at an invoice as already paid. So detach it, give back
+  // the promo use the voided bill consumed, and audit both. Scoped to
+  // order_type = 'counter' on purpose: booking bills and takeaway/delivery orders
+  // keep their existing void behaviour exactly. Stock is NOT touched here — the
+  // food was made; the re-bill's reconcile finds need == done and writes nothing,
+  // and an edit that cuts a line restores only the difference.
+  const detached = await tx
+    .update(orders)
+    .set({ invoiceId: null })
+    .where(and(eq(orders.tenantId, actor.tenantId), eq(orders.invoiceId, invoice.id), eq(orders.orderType, 'counter')))
+    .returning({ id: orders.id })
+  if (detached.length > 0) {
+    if (invoice.promoCodeId) await releasePromoUse(tx, actor.tenantId, invoice.promoCodeId)
+    for (const o of detached) {
+      await writeAudit(tx, actor, {
+        action: 'counter_order.invoice_cleared',
+        entityType: 'order',
+        entityId: o.id,
+        before: { invoice_id: invoice.id, invoice_number: invoice.invoiceNumber },
+        after: { invoice_id: null, promo_use_released: Boolean(invoice.promoCodeId), reason },
+      })
+    }
   }
 
   await writeAudit(tx, actor, {

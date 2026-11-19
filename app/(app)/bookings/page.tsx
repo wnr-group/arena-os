@@ -147,7 +147,7 @@ export default async function BookingsPage({
         canToggle86={canManageKitchen(ctx.role)}
       />
     )
-    counterSales = <CounterSalesList sales={sales} timeZone={tz} currency={ctx.tenant.currency} days={COUNTER_DAYS} />
+    counterSales = <CounterSalesList sales={sales} timeZone={tz} currency={ctx.tenant.currency} days={COUNTER_DAYS} isManager={isManager(ctx.role)} />
   }
 
   // Multi-day presets skip the single-day loaders below (timeline, menu); the

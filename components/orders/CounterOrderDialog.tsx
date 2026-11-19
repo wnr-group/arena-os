@@ -276,7 +276,7 @@ function Row({ k, v }: { k: string; v: string }) {
 }
 
 /** The bill after a successful sale — summary here, the printable GST invoice one tap away. */
-function SaleDone({ sale, currency, onDone }: { sale: CounterOrderResult; currency: string; onDone: () => void }) {
+export function SaleDone({ sale, currency, onDone }: { sale: CounterOrderResult; currency: string; onDone: () => void }) {
   const money = (n: number | string) => formatMoney(n, currency)
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Sale complete">
