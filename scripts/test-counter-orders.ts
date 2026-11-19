@@ -390,6 +390,70 @@ async function main() {
   check('regression: takeaway void unchanged (order released to open, invoice link kept, no counter audit)', tkAfter.status === 'open' && tkAfter.invoice_id === tkPaid.invoiceId && (await auditCount('counter_order.invoice_cleared', tk.id)) === 0)
   check('regression: counter code refuses to touch a takeaway order', !(await attempt(() => as(R, 'manager', (tx) => counter.voidCounterSaleCore(tx, actor(R, 'manager'), { orderId: tk.id, reason: 'x' })))).ok)
 
+  // ── 6e. reports reconcile to invoices and payments (ticket 5) ─────────────
+  // A fresh tenant so every figure is exact: three live sales (plain, promo, and one
+  // that was refunded + voided + re-billed) plus one refunded + voided and never
+  // re-billed. Money in must equal what each report shows; voided invoices add nothing.
+  const C = await makeTenant('testcounterc', 'gaming_cafe')
+  for (const tbl of ['refunds', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'loyalty_transactions', 'customers', 'promo_codes', 'sequences']) await q(`delete from ${tbl} where tenant_id = $1`, [C.tenantId])
+  await q(`insert into promo_codes (tenant_id,code,discount_type,discount_value,valid_from,valid_until) values ($1,'TEN','percentage','10.00', now() - interval '1 day', now() + interval '30 days')`, [C.tenantId])
+  const payOf = async (invoiceId: string) => (await q('select id from payments where invoice_id=$1 order by created_at limit 1', [invoiceId]))[0].id as string
+  const refundAndVoid = async (invoiceId: string, total: number) => {
+    const paymentId = await payOf(invoiceId)
+    await as(C, 'manager', (tx) => refunds.recordRefund(tx, actor(C, 'manager'), { paymentId, amount: total, reason: 'rpt' }))
+    await as(C, 'manager', (tx) => refunds.voidInvoiceRecord(tx, actor(C, 'manager'), { invoiceId, reason: 'rpt' }))
+  }
+  const cPlain = await sell(C, 'cashier', { customerPhone: '9000000001', method: 'cash', cashTendered: 500 })
+  const cPromo = await sell(C, 'cashier', { customerPhone: '9000000002', method: 'upi', promoCode: 'TEN' })
+  const cFix = await sell(C, 'cashier', { customerPhone: '9000000003', method: 'card' })
+  const cGone = await sell(C, 'cashier', { customerPhone: '9000000004', method: 'upi' })
+  await refundAndVoid(cFix.invoiceId, cFix.total)
+  const cFixed = await as(C, 'cashier', (tx) => counter.rebillCounterOrderCore(tx, cctx(C, 'cashier'), { orderId: cFix.orderId, method: 'cash', cashTendered: 500, idempotencyKey: `rpt-rebill-${Date.now()}` }))
+  await refundAndVoid(cGone.invoiceId, cGone.total)
+  check('setup: plain 210 and promo 189 sales', near(cPlain.total, 210) && near(cPromo.total, 189))
+
+  // Independent truth straight from the tables (as the owner), local day in the tenant timezone.
+  const day = async (offset: number) => (await q(`select ((now() at time zone $1)::date + $2::int)::text d`, [TZ, offset]))[0].d as string
+  const today = await day(0)
+  const rptRange = { start: await day(-1), end: await day(1) } as never
+  const liveInv = await q(`select total, discount, tax_total, booking_id from invoices where tenant_id=$1 and status <> 'void'`, [C.tenantId])
+  const liveTotal = liveInv.reduce((n, r) => n + Number(r.total), 0)
+  const liveTax = liveInv.reduce((n, r) => n + Number(r.tax_total), 0)
+  const liveDisc = liveInv.reduce((n, r) => n + Number(r.discount), 0)
+  const inMoney = Number((await q(`select coalesce(sum(p.amount),0) s from payments p join invoices i on i.id=p.invoice_id where p.tenant_id=$1 and i.status<>'void' and p.status in ('captured','refunded')`, [C.tenantId]))[0].s)
+  const outMoney = Number((await q(`select coalesce(sum(r.amount),0) s from refunds r join payments p on p.id=r.payment_id join invoices i on i.id=p.invoice_id where r.tenant_id=$1 and i.status<>'void'`, [C.tenantId]))[0].s)
+  const voidedWithMoney = Number((await q(`select count(*)::int c from invoices i where i.tenant_id=$1 and i.status='void' and exists (select 1 from payments p where p.invoice_id=i.id)`, [C.tenantId]))[0].c)
+  check('setup: 3 live booking-less invoices totalling 609; 2 voided invoices that had money', liveInv.length === 3 && near(liveTotal, 609) && voidedWithMoney === 2 && liveInv.every((r) => r.booking_id === null))
+  check('sum of live invoices = sum of money held (payments net of refunds)', near(liveTotal, inMoney - outMoney))
+
+  const rctx = fakeCtx(C, 'manager', 'gaming_cafe')
+  const { getDailyRevenue } = await import('../lib/reports/daily-revenue')
+  const daily = await getDailyRevenue(rctx, { range: rptRange })
+  const sumD = (k: 'net' | 'tax' | 'discount' | 'gross' | 'serviceCharge' | 'foodRevenue' | 'bookingRevenue' | 'membershipRevenue' | 'invoiceCount') => daily.reduce((n, r) => n + r[k], 0)
+  check('Revenue & Bookings: net = invoices = payments (609)', near(sumD('net'), liveTotal) && near(sumD('net'), inMoney - outMoney))
+  check('...booking-less counter sales are all food revenue, none booking-side', near(sumD('foodRevenue'), liveTotal) && sumD('bookingRevenue') === 0 && sumD('membershipRevenue') === 0)
+  check('...tax and discount match the live invoices; voided ones drop out', near(sumD('tax'), liveTax) && near(sumD('discount'), liveDisc) && near(sumD('gross') - sumD('discount') + sumD('tax') + sumD('serviceCharge'), liveTotal))
+  check('...3 invoices counted; booking-less sales sit in the reserved channel, no third bucket', sumD('invoiceCount') === 3 && daily.every((r) => r.channel === 'reserved'))
+  check('...reported on the sale date in the tenant timezone', daily.length === 1 && daily[0].day === today)
+  check('...walk-in channel filter excludes them', (await getDailyRevenue(rctx, { range: rptRange, channel: 'walkin' })).length === 0)
+  check('...a range with no sales reports nothing', (await getDailyRevenue(rctx, { range: { start: '2000-01-01', end: '2000-01-31' } as never })).length === 0)
+
+  const { getPnlReport } = await import('../lib/reports/pnl')
+  const pnl = await getPnlReport(rctx, rptRange)
+  check('Profit & Loss: revenue is the counter food (609), same as the daily report', near(pnl.revenue.net, 609) && near(pnl.revenue.foodRevenue, 609) && near(pnl.revenue.tax, liveTax) && pnl.revenue.invoiceCount === 3)
+
+  const { getSalesReport } = await import('../lib/reports/sales')
+  const salesRpt = await getSalesReport(rctx, { range: rptRange })
+  const foodGross = salesRpt.food.reduce((n, r) => n + r.grossRevenue, 0)
+  const foodQty = salesRpt.food.reduce((n, r) => n + r.quantity, 0)
+  check('Food report: Fries gross 609 over 6 plates (voided plates not counted), equal to the revenue report', near(foodGross, 609) && foodQty === 6 && near(foodGross, sumD('foodRevenue')))
+
+  // Cash / UPI / card: what the till holds per tender, net of refunds, sums to the live total.
+  const byMethod = await q(`select p.method::text m, sum(p.amount - coalesce((select sum(r.amount) from refunds r where r.payment_id=p.id),0)) s from payments p join invoices i on i.id=p.invoice_id where p.tenant_id=$1 and i.status<>'void' and p.status in ('captured','refunded') group by 1`, [C.tenantId])
+  const m = Object.fromEntries(byMethod.map((r) => [r.m as string, Number(r.s)]))
+  check('cash / UPI / card split sums to the total: cash 420 (plain + re-bill), upi 189, no card', near(byMethod.reduce((n, r) => n + Number(r.s), 0), 609) && near(m.cash, 420) && near(m.upi, 189) && !m.card)
+  check('re-billed sale: new invoice, old one void', cFixed.invoiceId !== cFix.invoiceId && (await q('select status from invoices where id=$1', [cFix.invoiceId]))[0].status === 'void')
+
   // ── 7. RLS: another tenant's user cannot see these sales ─────────────────
   const seen = await as(R, 'owner', (tx) => tx.execute(sql`select id from orders where id=${s1.orderId}`))
   check('arena_app + RLS: other tenant sees nothing', seen.rows.length === 0)
