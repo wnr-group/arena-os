@@ -103,7 +103,8 @@ async function main() {
 
   const A = await makeTenant('testcountera', 'gaming_cafe')
   const R = await makeTenant('testcounterr', 'restaurant')
-  const ids = [A.tenantId, R.tenantId]
+  const B = await makeTenant('testcounterb', 'gaming_cafe')
+  const ids = [A.tenantId, R.tenantId, B.tenantId]
   for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'loyalty_transactions', 'wallet_transactions', 'customer_memberships', 'membership_plans', 'promo_codes', 'customers', 'sequences']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
 
   // ── 1. the happy path ────────────────────────────────────────────────────
@@ -262,6 +263,31 @@ async function main() {
   })
   const ri = (await q('select * from invoices where id=$1', [reg.invoiceId]))[0]
   check('no options: a member is NOT discounted (200 + GST = 210), snapshot columns stay default, left issued', reg.discounts === null && near(reg.pricing.total, 210) && Number(ri.discount) === 0 && Number(ri.membership_discount) === 0 && ri.customer_membership_id === null && ri.promo_code_id === null && ri.status === 'issued')
+
+  // ── 6c. Bookings page data: visibility gate + Counter sales list (ticket 3) ─
+  const data = await import('../lib/orders/counter-data')
+  const fakeCtx = (t: T, role: Role, industry: string) =>
+    ({ user: { id: t.members[role].userId }, tenant: { id: t.tenantId, industry, timezone: TZ, currency: 'INR', name: 'T' }, role, membershipId: t.members[role].membershipId }) as never
+  check('button offered: non-restaurant + walk-in role + plan', (await data.counterOrdersAvailable(fakeCtx(A, 'cashier', 'gaming_cafe'))) === true)
+  check('button hidden: restaurant tenant', (await data.counterOrdersAvailable(fakeCtx(R, 'manager', 'restaurant'))) === false)
+  check('button hidden: role without walk-in permission', (await data.counterOrdersAvailable(fakeCtx(A, 'kitchen_staff', 'gaming_cafe'))) === false)
+  await q(`delete from tenant_subscriptions where tenant_id=$1`, [A.tenantId])
+  check('button hidden: plan without the module', (await data.counterOrdersAvailable(fakeCtx(A, 'cashier', 'gaming_cafe'))) === false)
+  await entitleTenant(ownerPool, A.tenantId)
+
+  // a booking-attached order (dine_in) and another tenant's counter sale must never appear
+  const bookingOrder = await as(A, 'cashier', (tx) => createOrderCore(tx, { tenantId: A.tenantId, timezone: TZ, membershipId: A.members.cashier.membershipId }, { branchId: A.branchId, items: [{ menuItemId: A.fries, qty: 1 }] }))
+  const otherSale = await sell(B, 'cashier')
+  const list = await data.listCounterSales(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId, 7)
+  const listedOrders = new Set(list.map((r) => r.orderId))
+  const counterOrdersInDb = (await q(`select id from orders where tenant_id=$1 and order_type='counter'`, [A.tenantId])).map((r) => r.id as string)
+  check('list = exactly this tenant\'s counter sales (none booking/dine-in, none from another tenant)', list.length === counterOrdersInDb.length && counterOrdersInDb.every((id) => listedOrders.has(id)) && !listedOrders.has(bookingOrder.id) && !listedOrders.has(otherSale.orderId))
+  const row = list.find((r) => r.orderId === sm.orderId)!
+  check('row carries number, customer, total, method and status', row.invoiceNumber === sm.invoiceNumber && row.customerPhone !== null && near(Number(row.total), 189) && row.method === 'upi' && row.status === 'paid')
+  check('list is newest first', list.every((r, i) => i === 0 || list[i - 1].createdAt >= r.createdAt))
+  check('a window of 1 day still includes today\'s sales', (await data.listCounterSales(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId, 1)).length === list.length)
+  const menu = await data.loadCounterMenu(fakeCtx(A, 'cashier', 'gaming_cafe'), A.branchId)
+  check('counter menu offers this tenant\'s available items', menu.menuItems.some((m) => m.id === A.fries) && menu.categories.length > 0)
 
   // ── 7. RLS: another tenant's user cannot see these sales ─────────────────
   const seen = await as(R, 'owner', (tx) => tx.execute(sql`select id from orders where id=${s1.orderId}`))

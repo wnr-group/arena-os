@@ -16,11 +16,15 @@ export function BookingsRangeView({
   branchName,
   preset,
   summary,
+  counterButton,
+  counterSales,
   children,
 }: {
   branchName: string
   preset: RangePreset
   summary: string
+  counterButton?: ReactNode
+  counterSales?: ReactNode
   children?: ReactNode
 }) {
   const router = useRouter()
@@ -34,7 +38,7 @@ export function BookingsRangeView({
             {branchName} · {summary}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => startRefresh(() => router.refresh())}
             disabled={refreshing}
@@ -51,9 +55,11 @@ export function BookingsRangeView({
           >
             <Plus size={16} /> New booking
           </Link>
+          {counterButton}
         </div>
       </div>
       <RangePresetBar active={preset} todayActive={false} />
+      {counterSales}
       {children}
     </div>
   )

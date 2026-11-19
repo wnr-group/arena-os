@@ -8,7 +8,8 @@ import { canManageWalkins } from '@/lib/auth/roles'
 import { POS_PAYMENT_METHODS, PaymentError } from '@/lib/billing/payments'
 import { BillingError } from '@/lib/billing/invoice'
 import { EntitlementError } from '@/lib/platform/entitlement-guard'
-import { CustomerError } from '@/lib/customers/service'
+import { CustomerError, findCustomerByRawPhone } from '@/lib/customers/service'
+import { getMembershipBenefits } from '@/lib/memberships/customer-memberships'
 import { OrderError, MAX_SEAT_NO } from '@/lib/orders/service'
 import { createCounterOrderCore, previewCounterOrderCore, CounterPreviewResult, type CounterOrderResult, type CounterPreview } from '@/lib/orders/counter'
 import { isValidPhone } from '@/lib/customers/phone'
@@ -101,6 +102,28 @@ export async function previewCounterOrder(input: z.input<typeof previewInput>): 
       throw e
     }
     return { error: 'Could not price this order.' }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * Fill the dialog from the phone number: the customer's name and, if they hold a
+ * live membership, its plan name. Display only — the sale itself re-resolves the
+ * customer and membership from the phone on the server.
+ */
+export async function lookupCounterCustomer(phone: string): Promise<Result & { found?: boolean; name?: string | null; membershipPlan?: string | null }> {
+  try {
+    const ctx = await requireContext()
+    if (ctx.tenant.industry === 'restaurant' || !canManageWalkins(ctx.role)) throw new AuthError('You don’t have permission to take counter sales.')
+    const p = z.string().trim().parse(phone)
+    if (!isValidPhone(p)) return { found: false }
+    return await withUser(ctx.user.id, async (tx) => {
+      const c = await findCustomerByRawPhone(tx, ctx.tenant.id, p)
+      if (!c) return { found: false }
+      const m = await getMembershipBenefits(tx, ctx.tenant.id, c.id, new Date())
+      return { found: true, name: c.name, membershipPlan: m?.membership.planName ?? null }
+    })
   } catch (e) {
     return fail(e)
   }
