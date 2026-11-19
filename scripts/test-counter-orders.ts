@@ -34,6 +34,9 @@ async function main() {
   const counter = await import('../lib/orders/counter')
   const typed = await import('../lib/orders/typed')
   const inv = await import('../lib/inventory/service')
+  const { purchaseMembership } = await import('../lib/memberships/customer-memberships')
+  const { issueInvoiceForOrder } = await import('../lib/billing/invoice')
+  const { createOrderCore } = await import('../lib/orders/service')
 
   const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL_OWNER })
   const appPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 8 })
@@ -101,7 +104,7 @@ async function main() {
   const A = await makeTenant('testcountera', 'gaming_cafe')
   const R = await makeTenant('testcounterr', 'restaurant')
   const ids = [A.tenantId, R.tenantId]
-  for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'customers', 'sequences']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
+  for (const tbl of ['menu_item_ingredients', 'stock_movements', 'stock_items', 'payments', 'invoice_items', 'invoices', 'audit_log', 'kots', 'order_items', 'orders', 'loyalty_transactions', 'wallet_transactions', 'customer_memberships', 'membership_plans', 'promo_codes', 'customers', 'sequences']) await q(`delete from ${tbl} where tenant_id = any($1)`, [ids])
 
   // ── 1. the happy path ────────────────────────────────────────────────────
   const stock = await as(A, 'manager', (tx) => inv.createStockItemCore(tx, { tenantId: A.tenantId, membershipId: A.members.manager.membershipId }, { branchId: A.branchId, name: 'Potato', unit: 'pcs', reorderLevel: 0, openingQuantity: 50 }))
@@ -164,6 +167,101 @@ async function main() {
   const board = await as(A, 'cashier', (tx) => typed.listActiveTypedOrdersCore(tx, A.tenantId, A.branchId))
   check('counter sales never appear on the takeaway board', board.length === 0)
   check('takeaway handover refuses a counter order', !(await attempt(() => as(A, 'cashier', (tx) => typed.handoverTypedOrderCore(tx, { tenantId: A.tenantId, membershipId: A.members.cashier.membershipId }, { orderId: s1.orderId, to: 'collected' })))).ok)
+
+  // ── 6b. membership + promo discounts (ticket 2) ──────────────────────────
+  const plan = (await q(`insert into membership_plans (tenant_id,name,price,duration_months,discount_percent,free_hours,wallet_credit) values ($1,'Gold','1000.00',12,'10.00','0','0') returning id`, [A.tenantId]))[0].id
+  const promo = async (code: string, type: string, value: string, maxUses: number | null = null) =>
+    q(
+      `insert into promo_codes (tenant_id,code,discount_type,discount_value,valid_from,valid_until,max_uses) values ($1,$2,$3,$4, now() - interval '1 day', now() + interval '30 days', $5) returning id`,
+      [A.tenantId, code, type, value, maxUses],
+    )
+  const uses = async (code: string) => Number((await q('select uses from promo_codes where tenant_id=$1 and code=$2', [A.tenantId, code]))[0].uses)
+  await promo('TEN', 'percentage', '10.00')
+  await q(`insert into loyalty_settings (tenant_id, is_active, points_per_unit, unit_amount) values ($1, true, 1, '10.00') on conflict (tenant_id) do update set is_active=true, points_per_unit=1, unit_amount='10.00'`, [A.tenantId])
+
+  // a member, found by phone — the client never names a customer
+  const memberPhone = '9123456780'
+  const memberId = (await q(`insert into customers (tenant_id, phone, name) values ($1,$2,'Member') returning id`, [A.tenantId, '+91' + memberPhone]))[0].id as string
+  await as(A, 'manager', (tx) => purchaseMembership(tx, { tenantId: A.tenantId, membershipId: A.members.manager.membershipId, timezone: TZ, branchId: A.branchId }, { customerId: memberId, planId: plan, paymentMethod: 'cash' }))
+  const cnt = async () => ({ o: await count('orders', A), i: await count('invoices', A), k: await count('kots', A), c: await count('customers', A) })
+  const ctxOf = (t: T) => ({ tenantId: t.tenantId, timezone: TZ, membershipId: t.members.cashier.membershipId, role: 'cashier' as const })
+
+  const sm = await sell(A, 'cashier', { customerPhone: memberPhone })
+  check('member gets the plan discount: 200 - 10% = 180, +5% GST = 189', sm.customerId === memberId && near(sm.subtotal, 200) && near(sm.membershipDiscount, 20) && sm.membershipPlanName === 'Gold' && near(sm.total, 189))
+  const smi = (await q('select * from invoices where id=$1', [sm.invoiceId]))[0]
+  const paid = (await q('select coalesce(sum(amount),0)::float s from payments where invoice_id=$1', [sm.invoiceId]))[0].s
+  check('invoice freezes the membership snapshot and total = sum of payments', near(Number(smi.membership_discount), 20) && Number(smi.membership_discount_percent) === 10 && smi.membership_plan_name === 'Gold' && near(Number(smi.discount), 20) && near(paid, 189))
+  check('loyalty points earned on the discounted spend (counter sales earn like any paid invoice)', Number(smi.loyalty_points_earned) === 18)
+
+  const stack = await sell(A, 'cashier', { customerPhone: memberPhone, promoCode: ' ten ' })
+  const sti = (await q('select * from invoices where id=$1', [stack.invoiceId]))[0]
+  const br = (sti.tax_breakup as { cgst: string; sgst: string }[]).reduce((n, g) => n + Number(g.cgst) + Number(g.sgst), 0)
+  check('promo stacks on what remains: 200 - 20 - 18 = 162, GST 8.10, total 170.10', near(stack.promoDiscount, 18) && near(Number(sti.discount), 38) && near(Number(sti.tax_total), 8.1) && near(br, 8.1) && near(stack.total, 170.1) && sti.promo_code_id !== null)
+  check('promo use recorded once', (await uses('TEN')) === 1)
+
+  const pk = `counter-promo-${Date.now()}`
+  const p1 = await sell(A, 'cashier', { customerPhone: memberPhone, promoCode: 'TEN', idempotencyKey: pk })
+  const p2 = await sell(A, 'cashier', { customerPhone: memberPhone, promoCode: 'TEN', idempotencyKey: pk })
+  check('retry replays the sale incl. discounts and burns no second promo use', p2.deduplicated && p2.invoiceId === p1.invoiceId && near(p2.total, p1.total) && near(p2.promoDiscount, 18) && (await uses('TEN')) === 2)
+  const pk2 = `counter-promo-race-${Date.now()}`
+  await Promise.all([1, 2, 3].map(() => sell(A, 'cashier', { customerPhone: memberPhone, promoCode: 'TEN', idempotencyKey: pk2 })))
+  check('concurrent double-submit consumes the promo exactly once', (await uses('TEN')) === 3)
+
+  const plain = await sell(A, 'cashier', { customerPhone: '9000000001', promoCode: 'TEN' })
+  check('non-member (other phone) gets only the promo: 200 - 20 = 180 + GST = 189', near(plain.membershipDiscount, 0) && plain.membershipPlanName === null && near(plain.promoDiscount, 20) && near(plain.total, 189))
+
+  await promo('GONE', 'percentage', '10.00', 1)
+  await q(`update promo_codes set uses=1 where tenant_id=$1 and code='GONE'`, [A.tenantId])
+  await q(`insert into promo_codes (tenant_id,code,discount_type,discount_value,valid_from,valid_until) values ($1,'OLD','percentage','10.00', now() - interval '10 days', now() - interval '1 day')`, [A.tenantId])
+  await promo('OFF', 'percentage', '10.00')
+  await q(`update promo_codes set is_active=false where tenant_id=$1 and code='OFF'`, [A.tenantId])
+  const c0 = await cnt()
+  const bad: [string, RegExp][] = [['NOPE', /not found/i], ['GONE', /limit/i], ['OLD', /expired/i], ['OFF', /inactive/i]]
+  for (const [code, re] of bad) {
+    const r = await attempt(() => sell(A, 'cashier', { customerPhone: '9000000002', promoCode: code }))
+    check(`${code}: refused with a clear message`, !r.ok && re.test(r.msg))
+  }
+  const c1 = await cnt()
+  check('...and no order, KOT, invoice or customer was created', c1.o === c0.o && c1.i === c0.i && c1.k === c0.k && c1.c === c0.c && (await uses('GONE')) === 1)
+
+  // preview: server-computed, identical to what is then charged, writes nothing
+  await promo('PV', 'percentage', '10.00')
+  // The signal must be caught OUTSIDE the transaction (as the server action does) so it rolls back.
+  const previewOf = async (t: T, phone: string, qty: number, promoCode?: string) => {
+    try {
+      await as(t, 'cashier', (tx) => counter.previewCounterOrderCore(tx, ctxOf(t), { branchId: t.branchId, items: [{ menuItemId: t.fries, qty }], customerPhone: phone, promoCode }))
+    } catch (e) {
+      if (e instanceof counter.CounterPreviewResult) return e.preview
+      throw e
+    }
+    throw new Error('preview did not signal')
+  }
+  const before2 = await cnt()
+  const prev = await previewOf(A, memberPhone, 2, 'PV')
+  const after2 = await cnt()
+  check('preview rolls everything back (no order/KOT/invoice, promo use untouched)', after2.o === before2.o && after2.i === before2.i && after2.k === before2.k && (await uses('PV')) === 0)
+  const real = await sell(A, 'cashier', { customerPhone: memberPhone, promoCode: 'PV' })
+  check('preview total equals the total then charged', near(prev.total, real.total) && near(prev.membershipDiscount, 20) && near(prev.promoDiscount, 18))
+  const pvNew = await previewOf(A, '9000000077', 1)
+  check('preview for a new phone prices without creating the customer', near(pvNew.total, 105) && (await count('customers', A)) === after2.c)
+  check('preview is refused for a restaurant', !(await attempt(() => previewOf(R, '9000000077', 1))).ok)
+
+  // a promo that clears the whole bill: settled on issue, no payment row, still one sale
+  await promo('FREE', 'percentage', '100.00')
+  const fk = `counter-free-${Date.now()}`
+  const free = await sell(A, 'cashier', { customerPhone: '9000000003', promoCode: 'FREE', idempotencyKey: fk })
+  const fi = (await q('select * from invoices where id=$1', [free.invoiceId]))[0]
+  const free2 = await sell(A, 'cashier', { customerPhone: '9000000003', promoCode: 'FREE', idempotencyKey: fk })
+  const freePays = (await q('select count(*)::int c from payments where invoice_id=$1', [free.invoiceId]))[0].c
+  check('100% promo: total 0, invoice paid on issue, no payment row, retry replays', near(free.total, 0) && fi.status === 'paid' && free.paymentId === null && freePays === 0 && free2.deduplicated && free2.invoiceId === free.invoiceId && (await uses('FREE')) === 1)
+
+  // regression: callers that pass no options (takeaway, online pay-now) are untouched
+  const reg = await as(A, 'cashier', async (tx) => {
+    const o = await createOrderCore(tx, { tenantId: A.tenantId, timezone: TZ, membershipId: A.members.cashier.membershipId }, { branchId: A.branchId, customerId: memberId, items: [{ menuItemId: A.fries, qty: 2 }] })
+    return issueInvoiceForOrder(tx, { id: A.tenantId, timezone: TZ }, { id: o.id, branchId: A.branchId, customerId: memberId, orderNumber: o.orderNumber })
+  })
+  const ri = (await q('select * from invoices where id=$1', [reg.invoiceId]))[0]
+  check('no options: a member is NOT discounted (200 + GST = 210), snapshot columns stay default, left issued', reg.discounts === null && near(reg.pricing.total, 210) && Number(ri.discount) === 0 && Number(ri.membership_discount) === 0 && ri.customer_membership_id === null && ri.promo_code_id === null && ri.status === 'issued')
 
   // ── 7. RLS: another tenant's user cannot see these sales ─────────────────
   const seen = await as(R, 'owner', (tx) => tx.execute(sql`select id from orders where id=${s1.orderId}`))

@@ -10,7 +10,7 @@ import { BillingError } from '@/lib/billing/invoice'
 import { EntitlementError } from '@/lib/platform/entitlement-guard'
 import { CustomerError } from '@/lib/customers/service'
 import { OrderError, MAX_SEAT_NO } from '@/lib/orders/service'
-import { createCounterOrderCore, type CounterOrderResult } from '@/lib/orders/counter'
+import { createCounterOrderCore, previewCounterOrderCore, CounterPreviewResult, type CounterOrderResult, type CounterPreview } from '@/lib/orders/counter'
 import { isValidPhone } from '@/lib/customers/phone'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
@@ -32,6 +32,7 @@ const createInput = z.object({
   customerPhone: z.string().trim().refine((v) => isValidPhone(v), 'Enter a valid 10-digit phone number.'),
   customerName: z.string().trim().max(80).optional(),
   method: z.enum(POS_PAYMENT_METHODS, { errorMap: () => ({ message: 'Choose cash, card or UPI.' }) }),
+  promoCode: z.string().trim().max(64).optional(),
   cashTendered: z.coerce.number().finite().min(0).max(99_999_999.99).optional(),
   // 110 so the `counter:` payment-key prefix stays inside the payments column limit.
   idempotencyKey: z.string().trim().min(8).max(110),
@@ -75,6 +76,31 @@ export async function createCounterOrder(input: z.input<typeof createInput>): Pr
     revalidatePath('/bookings')
     revalidatePath('/kitchen')
     return { sale }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+const previewInput = createInput.pick({ branchId: true, customerPhone: true, promoCode: true, items: true })
+
+/**
+ * The server-computed bill (membership + promo, GST) for the dialog to show
+ * before payment. Writes nothing: the core rolls its own transaction back.
+ */
+export async function previewCounterOrder(input: z.input<typeof previewInput>): Promise<Result & { preview?: CounterPreview }> {
+  try {
+    const ctx = await requireContext()
+    if (!canManageWalkins(ctx.role)) throw new AuthError('You don’t have permission to take counter sales.')
+    const v = previewInput.parse(input)
+    try {
+      await withUser(ctx.user.id, (tx) =>
+        previewCounterOrderCore(tx, { tenantId: ctx.tenant.id, timezone: ctx.tenant.timezone, membershipId: ctx.membershipId, role: ctx.role }, v),
+      )
+    } catch (e) {
+      if (e instanceof CounterPreviewResult) return { preview: e.preview }
+      throw e
+    }
+    return { error: 'Could not price this order.' }
   } catch (e) {
     return fail(e)
   }

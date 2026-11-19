@@ -21,6 +21,7 @@ import type * as schema from '@/db/schema'
 import { auditLog, invoices, orders, payments, tenants } from '@/db/schema'
 import { OrderError, createOrderCore, findOrderByIdempotencyKey, type CreateOrderItemInput } from './service'
 import { issueInvoiceForOrder } from '@/lib/billing/invoice'
+import { normalizePromoCode } from '@/lib/billing/promo'
 import { POS_PAYMENT_METHODS, recordPaymentForInvoice, type PosPaymentMethod } from '@/lib/billing/payments'
 import { paise, round2 } from '@/lib/billing/pricing'
 import { deductStockForOrders } from '@/lib/inventory/deduct'
@@ -47,6 +48,8 @@ export type CreateCounterOrderInput = {
   customerPhone: string
   customerName?: string
   method: PosPaymentMethod
+  /** Optional promo code, applied after the customer's membership (booking-bill rules). */
+  promoCode?: string
   /** Cash only: what the customer handed over. Must cover the total. */
   cashTendered?: number
   /** One per attempt; a retry with the same key returns the original sale. */
@@ -60,8 +63,16 @@ export type CounterOrderResult = {
   invoiceId: string
   invoiceNumber: string
   customerId: string
+  /** Gross before discounts, what membership and promo took off, and the GST in `total`. */
+  subtotal: number
+  membershipDiscount: number
+  membershipPlanName: string | null
+  promoDiscount: number
+  promoCode: string | null
+  taxTotal: number
   total: number
-  paymentId: string
+  /** Null only for a bill discounted to nothing (no money changed hands). */
+  paymentId: string | null
   method: PosPaymentMethod
   /** Cash sales only (null otherwise): tendered and the change to hand back. */
   cashTendered: number | null
@@ -98,32 +109,13 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
   const existing = await findOrderByIdempotencyKey(tx, ctx.tenantId, key)
   if (existing) return replaySale(tx, ctx.tenantId, existing.id)
 
-  const customer = await findOrCreateCustomer(tx, ctx.tenantId, { phone: input.customerPhone, name: input.customerName })
-
-  const created = await createOrderCore(
-    tx,
-    { tenantId: ctx.tenantId, timezone: ctx.timezone, membershipId: ctx.membershipId },
-    {
-      branchId: input.branchId,
-      channel: 'staff',
-      customerId: customer.id,
-      idempotencyKey: key,
-      items: input.items,
-      typed: { orderType: 'counter', contactName: customer.name?.trim() || customer.phone, contactPhone: customer.phone },
-    },
-  )
-
-  const issued = await issueInvoiceForOrder(tx, { id: ctx.tenantId, timezone: ctx.timezone }, {
-    id: created.id,
-    branchId: input.branchId,
-    customerId: customer.id,
-    orderNumber: created.orderNumber,
-  })
+  const { created, customer, issued } = await buildSale(tx, ctx, input, key)
   const total = issued.pricing.total
+  const free = paise(total) === 0
 
   let cashTendered: number | null = null
   let changeDue: number | null = null
-  if (input.method === 'cash') {
+  if (input.method === 'cash' && !free) {
     if (input.cashTendered === undefined) throw new OrderError('Enter the cash received.')
     cashTendered = round2(input.cashTendered)
     if (!Number.isFinite(cashTendered) || paise(cashTendered) < paise(total)) {
@@ -135,13 +127,19 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
   await tx.update(orders).set({ status: 'billed', invoiceId: issued.invoiceId }).where(and(eq(orders.id, created.id), eq(orders.tenantId, ctx.tenantId)))
   await deductStockForOrders(tx, ctx.tenantId, [created.id])
 
-  const payment = await recordPaymentForInvoice(
-    tx,
-    { tenantId: ctx.tenantId, membershipId: ctx.membershipId },
-    { invoiceId: issued.invoiceId, method: input.method, amount: total, idempotencyKey: `counter:${key}` },
-  )
-  // Paid in full or nothing: anything short of settled aborts the whole sale.
-  if (!payment.settled) throw new OrderError('Payment did not settle the bill — nothing was saved.')
+  // A bill discounted to nothing was settled on issue and takes no payment row.
+  let paymentId: string | null = null
+  if (!free) {
+    const payment = await recordPaymentForInvoice(
+      tx,
+      { tenantId: ctx.tenantId, membershipId: ctx.membershipId },
+      { invoiceId: issued.invoiceId, method: input.method, amount: total, idempotencyKey: `counter:${key}` },
+    )
+    // Paid in full or nothing: anything short of settled aborts the whole sale.
+    if (!payment.settled) throw new OrderError('Payment did not settle the bill — nothing was saved.')
+    paymentId = payment.paymentId
+  }
+  const d = issued.discounts!
 
   await tx.insert(auditLog).values({
     tenantId: ctx.tenantId,
@@ -158,7 +156,13 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
       customer_id: customer.id,
       total: total.toFixed(2),
       method: input.method,
-      payment_id: payment.paymentId,
+      payment_id: paymentId,
+      subtotal: issued.pricing.subtotal.toFixed(2),
+      membership_discount: d.membershipDiscount.toFixed(2),
+      membership_plan: d.membership?.planName ?? null,
+      promo_code: d.promoCode,
+      promo_discount: d.promoDiscount.toFixed(2),
+      tax_total: issued.pricing.taxTotal.toFixed(2),
       cash_tendered: cashTendered?.toFixed(2) ?? null,
       change_due: changeDue?.toFixed(2) ?? null,
     },
@@ -171,8 +175,14 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
     invoiceId: issued.invoiceId,
     invoiceNumber: issued.invoiceNumber,
     customerId: customer.id,
+    subtotal: issued.pricing.subtotal,
+    membershipDiscount: d.membershipDiscount,
+    membershipPlanName: d.membership?.planName ?? null,
+    promoDiscount: d.promoDiscount,
+    promoCode: d.promoCode,
+    taxTotal: issued.pricing.taxTotal,
     total,
-    paymentId: payment.paymentId,
+    paymentId,
     method: input.method,
     cashTendered,
     changeDue,
@@ -205,7 +215,7 @@ async function replaySale(tx: Db, tenantId: string, orderId: string): Promise<Co
     .from(auditLog)
     .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityId, o.id), eq(auditLog.action, 'counter_order.created')))
     .limit(1)
-  if (!inv || !pay) throw new OrderError('That sale is incomplete — contact support.')
+  if (!inv || (!pay && round2(Number(inv.total)) > 0)) throw new OrderError('That sale is incomplete — contact support.')
 
   const after = (audit?.after ?? {}) as Record<string, string | null>
   const kotNumber = after.kot_number ?? ''
@@ -216,11 +226,87 @@ async function replaySale(tx: Db, tenantId: string, orderId: string): Promise<Co
     invoiceId: o.invoiceId,
     invoiceNumber: inv.number,
     customerId: o.customerId,
+    subtotal: Number(after.subtotal ?? 0),
+    membershipDiscount: Number(after.membership_discount ?? 0),
+    membershipPlanName: after.membership_plan ?? null,
+    promoDiscount: Number(after.promo_discount ?? 0),
+    promoCode: after.promo_code ?? null,
+    taxTotal: Number(after.tax_total ?? 0),
     total: round2(Number(inv.total)),
-    paymentId: pay.id,
-    method: pay.method as PosPaymentMethod,
+    paymentId: pay?.id ?? null,
+    method: (pay?.method ?? (after.method as string | undefined) ?? 'cash') as PosPaymentMethod,
     cashTendered: after.cash_tendered ? Number(after.cash_tendered) : null,
     changeDue: after.change_due ? Number(after.change_due) : null,
     deduplicated: true,
   }
+}
+
+/** The part of a sale shared with the preview: customer → order + KOT → discounted invoice. */
+async function buildSale(tx: Db, ctx: CounterOrderCtx, input: Pick<CreateCounterOrderInput, 'branchId' | 'items' | 'customerPhone' | 'customerName' | 'promoCode'>, key: string | null) {
+  const customer = await findOrCreateCustomer(tx, ctx.tenantId, { phone: input.customerPhone, name: input.customerName })
+  const created = await createOrderCore(
+    tx,
+    { tenantId: ctx.tenantId, timezone: ctx.timezone, membershipId: ctx.membershipId },
+    {
+      branchId: input.branchId,
+      channel: 'staff',
+      customerId: customer.id,
+      idempotencyKey: key ?? undefined,
+      items: input.items,
+      typed: { orderType: 'counter', contactName: customer.name?.trim() || customer.phone, contactPhone: customer.phone },
+    },
+  )
+  // The customer is the one the SERVER just resolved from the phone — membership
+  // is looked up from that, never from anything the client names.
+  const issued = await issueInvoiceForOrder(
+    tx,
+    { id: ctx.tenantId, timezone: ctx.timezone },
+    { id: created.id, branchId: input.branchId, customerId: customer.id, orderNumber: created.orderNumber },
+    { promoCode: normalizePromoCode(input.promoCode) },
+  )
+  return { created, customer, issued }
+}
+
+export type CounterPreview = {
+  subtotal: number
+  membershipDiscount: number
+  membershipPlanName: string | null
+  promoDiscount: number
+  promoCode: string | null
+  taxTotal: number
+  total: number
+}
+
+/** Thrown by previewCounterOrderCore to roll its transaction back; carries the answer. */
+export class CounterPreviewResult extends Error {
+  constructor(readonly preview: CounterPreview) {
+    super('counter preview')
+  }
+}
+
+/**
+ * Server-computed bill for the dialog, BEFORE payment. It runs the real sale
+ * path (same pricing, same discounts, same promo checks) and then throws
+ * CounterPreviewResult so the caller's transaction rolls back: no order, KOT,
+ * customer, invoice number or promo use survives. The caller must catch it.
+ */
+export async function previewCounterOrderCore(
+  tx: Db,
+  ctx: CounterOrderCtx,
+  input: Pick<CreateCounterOrderInput, 'branchId' | 'items' | 'customerPhone' | 'promoCode'>,
+): Promise<never> {
+  await assertCounterAllowed(tx, ctx)
+  if (input.items.length === 0) throw new OrderError('Add at least one item.')
+  if (!isValidPhone(input.customerPhone)) throw new OrderError('Enter a valid 10-digit customer phone number.')
+  const { issued } = await buildSale(tx, ctx, input, null)
+  const d = issued.discounts!
+  throw new CounterPreviewResult({
+    subtotal: issued.pricing.subtotal,
+    membershipDiscount: d.membershipDiscount,
+    membershipPlanName: d.membership?.planName ?? null,
+    promoDiscount: d.promoDiscount,
+    promoCode: d.promoCode,
+    taxTotal: issued.pricing.taxTotal,
+    total: issued.pricing.total,
+  })
 }
