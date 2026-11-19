@@ -55,7 +55,7 @@ function groupIntoOrders(
     orderNumber: string
     createdAt: Date
     stationName: string | null
-    orderType: 'dine_in' | 'takeaway' | 'delivery'
+    orderType: 'dine_in' | 'takeaway' | 'delivery' | 'counter'
     contactName: string | null
     pickupAt: Date | null
     itemId: string | null

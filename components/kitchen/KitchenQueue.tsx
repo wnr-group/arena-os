@@ -27,7 +27,7 @@ export type KotTicket = {
   orderNumber: string
   channel: 'staff' | 'online'
   stationName: string | null
-  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  orderType: 'dine_in' | 'takeaway' | 'delivery' | 'counter'
   contactName: string | null
   pickupAt: string | null
   items: KotTicketItem[]

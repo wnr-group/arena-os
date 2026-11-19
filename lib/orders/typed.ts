@@ -151,6 +151,7 @@ async function lockTypedOrder(tx: Db, tenantId: string, orderId: string) {
     .limit(1)
   if (!o) throw new OrderError('Order not found.')
   if (o.orderType === 'dine_in') throw new OrderError('That is a table order — it is handled from the floor.')
+  if (o.orderType === 'counter') throw new OrderError('That is a counter sale — it is corrected from Counter sales.')
   return o
 }
 
@@ -317,7 +318,7 @@ export async function listActiveTypedOrdersCore(tx: Db, tenantId: string, branch
       and(
         eq(orders.tenantId, tenantId),
         eq(orders.branchId, branchId),
-        ne(orders.orderType, 'dine_in'),
+        inArray(orders.orderType, ['takeaway', 'delivery']),
         eq(orders.acceptanceStatus, 'accepted'),
         ne(orders.status, 'cancelled'),
         or(sql`${orders.handoverStatus} is null`, eq(orders.handoverStatus, 'out_for_delivery')),

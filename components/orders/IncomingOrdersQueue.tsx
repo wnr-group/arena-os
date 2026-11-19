@@ -23,7 +23,7 @@ export type IncomingOrder = {
   createdAt: string
   stationName: string | null
   /** M20: takeaway / delivery have no table; dine-in shows no badge. */
-  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  orderType: 'dine_in' | 'takeaway' | 'delivery' | 'counter'
   contactName: string | null
   pickupAt: string | null
   items: IncomingOrderItem[]

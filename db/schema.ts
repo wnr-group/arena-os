@@ -1066,7 +1066,7 @@ export const orders = pgTable(
     createdBy: uuid('created_by').references(() => memberships.id, { onDelete: 'set null' }),
     // M20 (0157): what kind of order this is. Every pre-existing and every
     // table/booking order is 'dine_in'; takeaway and delivery have no table.
-    orderType: text('order_type').$type<'dine_in' | 'takeaway' | 'delivery'>().notNull().default('dine_in'),
+    orderType: text('order_type').$type<'dine_in' | 'takeaway' | 'delivery' | 'counter'>().notNull().default('dine_in'),
     // Post-kitchen handover only; the earlier steps are the kitchen ticket's status.
     handoverStatus: text('handover_status').$type<'out_for_delivery' | 'collected' | 'delivered'>(),
     contactName: text('contact_name'),

@@ -104,7 +104,7 @@ export type CreateOrderInput = {
    * callers (lib/orders/typed.ts); the DB's CHECK constraints are the backstop.
    */
   typed?: {
-    orderType: 'takeaway' | 'delivery'
+    orderType: 'takeaway' | 'delivery' | 'counter'
     contactName: string
     contactPhone?: string | null
     pickupAt?: Date | null

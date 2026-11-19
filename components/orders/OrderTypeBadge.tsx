@@ -12,7 +12,7 @@ export function OrderTypeBadge({
   pickupAt,
   className = '',
 }: {
-  orderType: 'dine_in' | 'takeaway' | 'delivery' | null | undefined
+  orderType: 'dine_in' | 'takeaway' | 'delivery' | 'counter' | null | undefined
   contactName?: string | null
   /** ISO instant the customer asked for, if any. */
   pickupAt?: string | null
@@ -28,7 +28,7 @@ export function OrderTypeBadge({
       } ${className}`}
     >
       <Icon size={10} aria-hidden />
-      {delivery ? 'Delivery' : 'Takeaway'}
+      {delivery ? 'Delivery' : orderType === 'counter' ? 'Counter' : 'Takeaway'}
       {contactName ? <span className="normal-case tracking-normal"> · {contactName}</span> : null}
       {pickupAt ? (
         <span className="normal-case tracking-normal" suppressHydrationWarning>
