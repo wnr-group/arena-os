@@ -39,7 +39,7 @@ export type KdsTicket = {
   channel: 'staff' | 'online'
   tableName: string | null
   /** M20 (0157): dine_in for every table order; takeaway / delivery have no table. */
-  orderType: 'dine_in' | 'takeaway' | 'delivery'
+  orderType: 'dine_in' | 'takeaway' | 'delivery' | 'counter'
   contactName: string | null
   /** ISO — the time a takeaway customer asked for. */
   pickupAt: string | null

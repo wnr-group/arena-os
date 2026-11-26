@@ -62,6 +62,7 @@ export const KNOWN_ENTITLEMENT_KEYS = [
   'module.inventory',
   'module.tips',
   'module.takeaway_delivery',
+  'module.counter_orders',
 ] as const
 
 export const DEFAULT_PLANS: readonly PlanSeed[] = [
@@ -85,6 +86,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.inventory': false,
       'module.tips': false,
       'module.takeaway_delivery': false,
+      'module.counter_orders': true,
     },
   },
   {
@@ -109,6 +111,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.inventory': true,
       'module.tips': true,
       'module.takeaway_delivery': true,
+      'module.counter_orders': true,
     },
   },
   {
@@ -134,6 +137,7 @@ export const DEFAULT_PLANS: readonly PlanSeed[] = [
       'module.inventory': true,
       'module.tips': true,
       'module.takeaway_delivery': true,
+      'module.counter_orders': true,
     },
   },
 ] as const

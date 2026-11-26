@@ -98,6 +98,20 @@ export async function validatePromo(
 }
 
 /**
+ * Give one use back (M41: a voided counter sale returns the promo it consumed so
+ * the re-bill can take it again). Never below zero. A plain UPDATE: the only
+ * caller is the manager-only void path, which the promo_write policy permits, so
+ * a cashier can neither reach nor emulate it. Called at most once per invoice
+ * because a void happens at most once (the invoice is locked and status-checked).
+ */
+export async function releasePromoUse(tx: Db, tenantId: string, promoId: string): Promise<void> {
+  await tx
+    .update(promoCodes)
+    .set({ uses: sql`greatest(${promoCodes.uses} - 1, 0)` })
+    .where(and(eq(promoCodes.id, promoId), eq(promoCodes.tenantId, tenantId)))
+}
+
+/**
  * Record one use, atomically. True if this caller got it.
  *
  * Delegates to public.consume_promo_use() (migration 0011), which is ONE

@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition, type ComponentType } from 'react'
+import { useMemo, useState, useTransition, type ComponentType, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
@@ -112,6 +112,8 @@ const BILLED_STYLE = 'bg-amber-500/85 text-white'
 type View = 'timeline' | 'bookings'
 
 export function BookingsView({
+  counterButton,
+  counterSales,
   branchId,
   branchName,
   timeZone,
@@ -205,6 +207,9 @@ export function BookingsView({
   /** M33 — shows the "Add-ons" correction button. setBookingSlotAddons re-checks the role server-side. */
   canEditAddons?: boolean
   /** Owner/manager only — shows "Reschedule". rescheduleBooking re-checks the role server-side. */
+  /** M41: the "Counter order" button and the Counter sales list, built server-side only when the venue, role and plan allow. */
+  counterButton?: ReactNode
+  counterSales?: ReactNode
   canReschedule?: boolean
 }) {
   const router = useRouter()
@@ -478,6 +483,7 @@ export function BookingsView({
               <Plus size={16} /> New booking
             </Link>
           )}
+          {counterButton}
           {canRecordBackdated && (
             <Link
               href="/bookings/backdated"
@@ -499,6 +505,7 @@ export function BookingsView({
       </div>
 
       <RangePresetBar active={activeRange} todayActive={!activeRange && !hasExplicitDate && date === today} />
+      {counterSales}
 
       {/* view tabs */}
       <div className="mt-5 flex gap-5 overflow-x-auto border-b border-border">

@@ -19,6 +19,9 @@ import { BookingsRangeList } from '@/components/bookings/BookingsRangeList'
 import { EventBlocksStrip, type EventBlockRow } from '@/components/bookings/EventBlocksStrip'
 import { Pager } from '@/components/portal/Pager'
 import { rangeSpan, rangeSummary } from '@/components/bookings/RangePresetBar'
+import { CounterOrderButton } from '@/components/orders/CounterOrderButton'
+import { CounterSalesList } from '@/components/bookings/CounterSalesList'
+import { counterOrdersAvailable, listCounterSales, loadCounterMenu } from '@/lib/orders/counter-data'
 
 /**
  * Everything the booking detail panel needs per booking id — food orders (with
@@ -125,6 +128,37 @@ export default async function BookingsPage({
   // (gaming_cafe, restaurant) is unaffected.
   const showFoodOrdering = !industryHasStudioSetups(ctx.tenant.industry)
 
+  // M41 counter sales: the button and the recent-sales list exist only for a
+  // non-restaurant venue, on a plan with the module, for a role that can manage
+  // walk-ins. Display gate only — the actions refuse everyone else regardless.
+  const COUNTER_DAYS = 7
+  let counterButton: React.ReactNode = null
+  let counterSales: React.ReactNode = null
+  if (await counterOrdersAvailable(ctx)) {
+    const [menu, first] = await Promise.all([loadCounterMenu(ctx), listCounterSales(ctx, branch.id, COUNTER_DAYS)])
+    counterButton = (
+      <CounterOrderButton
+        branchId={branch.id}
+        currency={ctx.tenant.currency}
+        categories={menu.categories}
+        menuItems={menu.menuItems}
+        happyHours={menu.happyHours}
+        timeZone={tz}
+        canToggle86={canManageKitchen(ctx.role)}
+      />
+    )
+    counterSales = (
+      <CounterSalesList
+        branchId={branch.id}
+        initial={first}
+        timeZone={tz}
+        currency={ctx.tenant.currency}
+        days={COUNTER_DAYS}
+        isManager={isManager(ctx.role)}
+      />
+    )
+  }
+
   // Multi-day presets skip the single-day loaders below (timeline, menu); the
   // list loads one page of bookings plus what the shared detail panel needs.
   const toRows = (blocks: Awaited<ReturnType<typeof listEventBlocks>>): EventBlockRow[] =>
@@ -149,7 +183,7 @@ export default async function BookingsPage({
     const pageCount = Math.max(1, Math.ceil(result.total / result.pageSize))
     const rangeHref = (n: number) => `/bookings?range=${range.preset}${n > 1 ? `&page=${n}` : ''}`
     return (
-      <BookingsRangeView branchName={branch.name} preset={range.preset} summary={rangeSummary(range)}>
+      <BookingsRangeView branchName={branch.name} preset={range.preset} summary={rangeSummary(range)} counterButton={counterButton} counterSales={counterSales}>
         <EventBlocksStrip blocks={eventBlocks} timeZone={tz} />
         <BookingsRangeList
           rows={result.rows.map((r) => ({
@@ -269,6 +303,8 @@ export default async function BookingsPage({
     <>
     <EventBlocksStrip blocks={toRows(eventBlockRows)} timeZone={tz} />
     <BookingsView
+      counterButton={counterButton}
+      counterSales={counterSales}
       branchId={branch.id}
       branchName={branch.name}
       timeZone={tz}

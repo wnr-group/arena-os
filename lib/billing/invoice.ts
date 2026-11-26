@@ -1511,6 +1511,55 @@ export async function issueWalletTopUpInvoice(
 }
 
 /**
+ * Opt-in discounts for issueInvoiceForOrder (M41 counter sales). Absent = the
+ * original behaviour, byte for byte: takeaway and online pay-now pass nothing.
+ */
+export type OrderDiscountOptions = { promoCode?: string | null }
+
+export type OrderInvoiceDiscounts = {
+  membership: AppliedMembershipBenefit | null
+  membershipDiscount: number
+  promoId: string | null
+  promoCode: string | null
+  promoDiscount: number
+}
+
+/**
+ * Same order of operations as the booking bill (issueInvoiceForBooking): base
+ * prices, then the MEMBERSHIP benefit on the subtotal, then a PROMO CODE against
+ * what REMAINS, combined into one discount that priceBill caps at the subtotal
+ * and allocates across tax rates. The customer comes from the order row the
+ * server just wrote — never from the caller — so a client cannot nominate
+ * another customer's membership. An invalid code throws: billing anyway at full
+ * price would overcharge someone promised a discount. Records nothing (the promo
+ * use is taken by issueInvoiceForOrder once the bill is certain).
+ */
+export async function resolveOrderDiscounts(
+  tx: Db,
+  tenantId: string,
+  customerId: string | null,
+  subtotal: number,
+  options: OrderDiscountOptions,
+): Promise<OrderInvoiceDiscounts> {
+  const membership = await resolveMembershipBenefit(tx, tenantId, customerId, subtotal)
+  const membershipDiscount = membership?.discountAmount ?? 0
+  const afterMembership = round2(subtotal - membershipDiscount)
+
+  let promoId: string | null = null
+  let promoCode: string | null = null
+  let promoDiscount = 0
+  const code = normalizePromoCode(options.promoCode)
+  if (code) {
+    const promo = await validatePromo(tx, tenantId, code, afterMembership)
+    if (!promo.ok) throw new BillingError(promo.reason)
+    promoId = promo.promoId
+    promoCode = promo.code
+    promoDiscount = promo.discount
+  }
+  return { membership, membershipDiscount, promoId, promoCode, promoDiscount }
+}
+
+/**
  * Raise the invoice for a PAID STANDALONE ORDER (M14 #6, v2's pay-now).
  *
  * Fourth sibling of issueInvoiceForBooking() / issueMembershipInvoice() /
@@ -1530,18 +1579,41 @@ export async function issueWalletTopUpInvoice(
  * it via recordVerifiedGatewayPayment in the same transaction, exactly like
  * issueWalletTopUpInvoice leaves the transition to its own caller — one
  * place owns "when does an invoice become paid".
+ *
+ * M41: an optional `discountOptions` opts in to the booking bill's membership +
+ * promo discounts (see resolveOrderDiscounts). Without it nothing changes.
  */
 export async function issueInvoiceForOrder(
   tx: Db,
   tenant: { id: string; timezone: string },
   order: { id: string; branchId: string; customerId: string | null; orderNumber: string },
-): Promise<{ invoiceId: string; invoiceNumber: string; pricing: PricingResult }> {
+  discountOptions?: OrderDiscountOptions,
+): Promise<{ invoiceId: string; invoiceNumber: string; pricing: PricingResult; discounts: OrderInvoiceDiscounts | null }> {
   const lines = await loadOrderFoodLines(tx, tenant.id, order.id)
   if (lines.length === 0) {
     throw new BillingError('This order has nothing to bill.')
   }
 
-  const pricing = priceBill({ lines })
+  // Opt-in only: without options this is the original undiscounted pricing.
+  let discounts: OrderInvoiceDiscounts | null = null
+  let pricing: PricingResult
+  if (discountOptions) {
+    const gross = priceBill({ lines })
+    discounts = await resolveOrderDiscounts(tx, tenant.id, order.customerId, gross.subtotal, discountOptions)
+    pricing = priceBill({
+      lines,
+      discount: Math.min(round2(discounts.membershipDiscount + discounts.promoDiscount), gross.subtotal),
+    })
+  } else {
+    pricing = priceBill({ lines })
+  }
+
+  // The use is taken only now, with the bill certain; one conditional UPDATE
+  // re-checks the limit under a row lock, and it rolls back with this transaction.
+  if (discounts?.promoId) {
+    const consumed = await consumePromoUse(tx, tenant.id, discounts.promoId)
+    if (!consumed) throw new BillingError('Promo code usage limit reached.')
+  }
 
   const period = financialYearPeriod(todayInZone(tenant.timezone))
   const prefix = await loadInvoicePrefix(tx, tenant.id)
@@ -1557,6 +1629,14 @@ export async function issueInvoiceForOrder(
       // reason it went through pay-now instead of add-to-bill.
       bookingId: null,
       customerId: order.customerId,
+      ...(discounts && {
+        // Frozen at issue, exactly like a booking bill (migration 0027).
+        promoCodeId: discounts.promoId,
+        customerMembershipId: discounts.membership?.membershipId ?? null,
+        membershipDiscount: discounts.membershipDiscount.toFixed(2),
+        membershipDiscountPercent: (discounts.membership?.discountPercent ?? 0).toFixed(2),
+        membershipPlanName: discounts.membership?.planName ?? null,
+      }),
       subtotal: pricing.subtotal.toFixed(2),
       discount: pricing.discount.toFixed(2),
       taxTotal: pricing.taxTotal.toFixed(2),
@@ -1566,7 +1646,9 @@ export async function issueInvoiceForOrder(
         sgst: g.sgst.toFixed(2),
       })),
       total: pricing.total.toFixed(2),
-      status: 'issued',
+      // A discounted bill that clears the lot owes nothing: settle on issue (as a
+      // booking bill does). Never for the undiscounted callers.
+      status: discounts && paise(pricing.total) === 0 ? 'paid' : 'issued',
       issuedAt: new Date(),
     })
     .returning({ id: invoices.id })
@@ -1585,5 +1667,5 @@ export async function issueInvoiceForOrder(
     })),
   )
 
-  return { invoiceId: invoice.id, invoiceNumber, pricing }
+  return { invoiceId: invoice.id, invoiceNumber, pricing, discounts }
 }

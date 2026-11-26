@@ -11,14 +11,15 @@
  * the food is ready are stored (orders.handover_status).
  */
 
-export type OrderType = 'dine_in' | 'takeaway' | 'delivery'
-export type TypedOrderType = Exclude<OrderType, 'dine_in'>
+export type OrderType = 'dine_in' | 'takeaway' | 'delivery' | 'counter'
+/** Takeaway / delivery — the types with a handover board. A 'counter' sale (M41) is billed in one step and never appears on it. */
+export type TypedOrderType = 'takeaway' | 'delivery'
 export type HandoverStatus = 'out_for_delivery' | 'collected' | 'delivered'
 export type KotStatus = 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled'
 
 export type OrderStage = 'received' | 'preparing' | 'ready' | 'out_for_delivery' | 'collected' | 'delivered' | 'cancelled'
 
-export const ORDER_TYPE_LABEL: Record<OrderType, string> = { dine_in: 'Dine-in', takeaway: 'Takeaway', delivery: 'Delivery' }
+export const ORDER_TYPE_LABEL: Record<OrderType, string> = { dine_in: 'Dine-in', takeaway: 'Takeaway', delivery: 'Delivery', counter: 'Counter' }
 
 export const STAGE_LABEL: Record<OrderStage, string> = {
   received: 'Received',
@@ -107,7 +108,7 @@ export function validateHandover(input: {
   to: HandoverStatus
   driverName?: string | null
 }): string | null {
-  if (input.orderType === 'dine_in') return 'Only takeaway and delivery orders have a handover.'
+  if (input.orderType === 'dine_in' || input.orderType === 'counter') return 'Only takeaway and delivery orders have a handover.'
   if (isFinalStage(input.stage)) return `This order is already ${STAGE_LABEL[input.stage].toLowerCase()}.`
   if (!nextHandovers(input.orderType, input.stage).includes(input.to)) {
     if (input.stage === 'received' || input.stage === 'preparing') return 'The kitchen hasn’t finished this order yet.'

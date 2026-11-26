@@ -223,7 +223,7 @@ export async function enqueueKitchenTicketsCore(
         // M20: a takeaway / delivery has no table, so the big header line says what it is.
         tableName:
           head.tableName ??
-          (head.orderType === 'dine_in' ? null : `${head.orderType === 'delivery' ? 'DELIVERY' : 'TAKEAWAY'}${head.contactName ? ` ${head.contactName}` : ''}`),
+          (head.orderType === 'dine_in' ? null : `${head.orderType === 'delivery' ? 'DELIVERY' : head.orderType === 'counter' ? 'COUNTER' : 'TAKEAWAY'}${head.contactName ? ` ${head.contactName}` : ''}`),
         stationName: b.stationName,
         channel: head.channel,
         time: timeIn(head.tz),

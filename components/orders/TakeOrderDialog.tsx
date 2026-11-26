@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { Plus, Minus, X, Search, Loader2, ShoppingCart, Zap, PackageCheck, PackageX } from 'lucide-react'
 import { createOrder } from '@/lib/actions/orders'
 import { setMenuItemAvailability } from '@/lib/actions/menu'
@@ -8,6 +8,15 @@ import { getCourseOptions } from '@/lib/actions/kds'
 import { formatMoney } from '@/lib/format'
 import { applyHappyHour, activeHappyHours, type HappyHourRule } from '@/lib/happy-hours/apply'
 import { newIdempotencyKey } from '@/lib/utils/idempotency-key'
+
+/** A cart line as the server takes it — also what onCartChange reports. */
+export type PlacedLine = {
+  menuItemId: string
+  qty: number
+  specialInstructions?: string
+  modifierOptionIds?: string[]
+  seatNo?: number
+}
 
 export type CategoryOption = { id: string; name: string }
 export type ModifierOptionChoice = { id: string; name: string; priceDelta: string }
@@ -82,6 +91,13 @@ export function TakeOrderDialog({
   seatCount,
   placeOrder,
   headerNote,
+  title,
+  checkoutSlot,
+  hideTotals,
+  submitLabel,
+  pendingLabel,
+  submitDisabled,
+  onCartChange,
   onClose,
   onCreated,
 }: {
@@ -122,6 +138,17 @@ export function TakeOrderDialog({
   ) => Promise<{ error?: string; orderNumber?: string }>
   /** Replaces the "Attaching to booking…" line under the title. */
   headerNote?: string
+  /** M41 counter sale: extra checkout fields (customer, promo, payment…) rendered in the
+   *  cart panel above the submit button, replacing the client-side estimate with
+   *  whatever the slot shows (the server-computed bill). All absent = unchanged. */
+  title?: string
+  checkoutSlot?: ReactNode
+  hideTotals?: boolean
+  submitLabel?: string
+  pendingLabel?: string
+  submitDisabled?: boolean
+  /** Called with the cart (server-shaped) whenever it changes. */
+  onCartChange?: (lines: PlacedLine[]) => void
   onClose: () => void
   onCreated: (orderNumber: string) => void
 }) {
@@ -308,6 +335,21 @@ export function TakeOrderDialog({
     setCart((lines) => lines.filter((l) => l.key !== key))
   }
 
+  const onCartChangeRef = useRef(onCartChange)
+  useEffect(() => {
+    onCartChangeRef.current = onCartChange
+  })
+  useEffect(() => {
+    onCartChangeRef.current?.(
+      cart.map((l) => ({
+        menuItemId: l.menuItemId,
+        qty: l.qty,
+        specialInstructions: l.specialInstructions || undefined,
+        modifierOptionIds: l.modifiers.map((m) => m.optionId),
+      })),
+    )
+  }, [cart])
+
   function submit() {
     setError(null)
     if (cart.length === 0) {
@@ -336,13 +378,17 @@ export function TakeOrderDialog({
    *  the current breakpoint (see the two usages below). */
   const cartContent = (
     <>
+      {/* One scroll region for the header, the lines and any checkout form, so a tall
+          form (the counter sale's phone / promo / payment) can never squeeze the
+          order list out of view on a short screen. Totals and Pay stay pinned below. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="hidden shrink-0 items-center justify-between px-4 pt-4 lg:flex xl:px-5">
         <p className="inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <ShoppingCart size={14} /> Order ({cart.length})
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 xl:px-5">
+      <div className="space-y-2 p-4 xl:px-5">
         {cart.length === 0 ? (
           <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
             Tap items to add them to the order.
@@ -443,7 +489,11 @@ export function TakeOrderDialog({
         )}
       </div>
 
+      {checkoutSlot && <div className="border-t border-border p-4 xl:px-5">{checkoutSlot}</div>}
+      </div>
+
       <div className="shrink-0 border-t border-border p-4 xl:px-5">
+        {!hideTotals && (
         <div className="space-y-1 text-sm">
           <div className="flex justify-between text-muted-foreground">
             <span>Subtotal</span>
@@ -458,17 +508,18 @@ export function TakeOrderDialog({
             <span>{formatMoney(totals.total, currency)}</span>
           </div>
         </div>
+        )}
 
         {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 
         <div className="mt-3 flex gap-2">
           <button
             className={`${btn} flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground shadow-sm hover:shadow-md`}
-            disabled={pending || cart.length === 0}
+            disabled={pending || cart.length === 0 || submitDisabled}
             onClick={submit}
           >
             {pending && <Loader2 size={16} className="animate-spin" />}
-            {pending ? 'Placing…' : 'Place order'}
+            {pending ? (pendingLabel ?? 'Placing…') : (submitLabel ?? 'Place order')}
           </button>
           <button className={`${btn} border`} disabled={pending} onClick={onClose}>
             Cancel
@@ -480,29 +531,36 @@ export function TakeOrderDialog({
 
   const totalQty = cart.reduce((n, l) => n + l.qty, 0)
 
+  // No dismissal path (backdrop, header X, Cancel) while a submit is in flight: closing
+  // would drop the attempt's idempotency key while the server may still commit the sale.
+  const dismiss = () => {
+    if (!pending) onClose()
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/60 backdrop-blur-sm lg:items-center lg:p-6"
-      onClick={onClose}
+      onClick={dismiss}
     >
       <div
         className="relative flex h-full w-full flex-col overflow-hidden bg-card shadow-2xl lg:h-[92vh] lg:max-w-[1360px] lg:rounded-2xl lg:border lg:border-border"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Take order"
+        aria-label={title ?? 'Take order'}
       >
         {/* Header — title, seat picker, search, and (below lg) category chips */}
         <div className="shrink-0 border-b border-border bg-card/95 px-4 py-3 backdrop-blur-sm sm:px-6 sm:py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold sm:text-xl">Take order</h2>
+              <h2 className="text-lg font-semibold sm:text-xl">{title ?? 'Take order'}</h2>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">
                 {headerNote ?? (bookingId ? `Attaching to booking ${bookingLabel ?? ''}` : 'Walk-in order — not tied to a booking.')}
               </p>
             </div>
             <button
-              onClick={onClose}
+              onClick={dismiss}
+              disabled={pending}
               aria-label="Close"
               className="shrink-0 rounded-full border border-border/60 bg-background/90 p-2 text-muted-foreground shadow-sm transition hover:text-foreground"
             >
@@ -684,7 +742,9 @@ export function TakeOrderDialog({
               <ShoppingCart size={16} />
               {totalQty} item{totalQty === 1 ? '' : 's'}
             </span>
-            <span className="text-sm font-bold">View order · {formatMoney(totals.total, currency)}</span>
+            <span className="text-sm font-bold">
+              {hideTotals ? 'View order' : `View order · ${formatMoney(totals.total, currency)}`}
+            </span>
           </button>
         )}
       </div>
