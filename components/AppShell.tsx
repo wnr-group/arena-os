@@ -193,7 +193,11 @@ export function AppShell({
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto" onClick={() => setMobileOpen(false)}>
+            <div className="flex-1 overflow-y-auto" onClick={(e) => {
+                // Close only when a link was tapped; group headers just expand.
+                if ((e.target as HTMLElement).closest('a')) setMobileOpen(false)
+              }}
+            >
               <Sidebar role={role} industry={industry} enabledModules={enabledModules} collapsed={false} />
             </div>
 

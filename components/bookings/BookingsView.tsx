@@ -206,10 +206,10 @@ export function BookingsView({
   hasExplicitDate?: boolean
   /** M33 — shows the "Add-ons" correction button. setBookingSlotAddons re-checks the role server-side. */
   canEditAddons?: boolean
+  /** Owner/manager only — shows "Reschedule". rescheduleBooking re-checks the role server-side. */
   /** M41: the "Counter order" button and the Counter sales list, built server-side only when the venue, role and plan allow. */
   counterButton?: ReactNode
   counterSales?: ReactNode
-  /** Owner/manager only — shows "Reschedule". rescheduleBooking re-checks the role server-side. */
   canReschedule?: boolean
 }) {
   const router = useRouter()
@@ -396,12 +396,49 @@ export function BookingsView({
     return `/bookings/new?${params.toString()}`
   }
 
+  function paymentCell(bookingId: string) {
+                          const p = paymentStates[bookingId]
+                          // M26 #5: only ever consulted when there is NO live
+                          // invoice — the moment one exists, `p` is truthy and
+                          // this live estimate is never even read, so the two
+                          // signals can't compete on the same booking.
+                          const advanceGap = !p ? advanceGapByBooking[bookingId] : undefined
+                          const key = p?.status ?? (advanceGap ? 'partially_paid' : 'unbilled')
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span
+                                className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-sm font-medium ${
+                                  PAYMENT_BADGE[key]
+                                }`}
+                              >
+                                {PAYMENT_LABELS[key]}
+                              </span>
+                              {/* What went back, or what is still owed — a
+                                  part-paid bill should say how much rather
+                                  than just "part paid". */}
+                              {p && p.refunded > 0 ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(p.refunded, currency)} refunded
+                                </span>
+                              ) : p && p.status !== 'paid' ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(p.balance, currency)} due
+                                </span>
+                              ) : advanceGap ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatMoney(advanceGap, currency)} due (est.)
+                                </span>
+                              ) : null}
+                            </div>
+                          )
+                          }
+
   return (
-    <div className="px-6 py-6">
+    <div className="px-4 py-4 sm:px-6 sm:py-6">
       {/* header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Bookings</h1>
+          <h1 className="text-xl font-semibold sm:text-2xl">Bookings</h1>
           <p className="text-sm text-muted-foreground">
             {branchName} · {prettyDate(date, timeZone)}
             {date === today && ' · Today'}
@@ -416,7 +453,7 @@ export function BookingsView({
             type="date"
             value={date}
             onChange={(e) => e.target.value && router.push(`/bookings?date=${e.target.value}`)}
-            className="rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring"
+            className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring sm:flex-none"
           />
           <Link href={`/bookings?date=${nextDate}`} className="rounded-md border p-2 hover:bg-muted" aria-label="Next day">
             <ChevronRight size={16} />
@@ -471,7 +508,7 @@ export function BookingsView({
       {counterSales}
 
       {/* view tabs */}
-      <div className="mt-5 flex gap-5 border-b border-border">
+      <div className="mt-5 flex gap-5 overflow-x-auto border-b border-border">
         <ViewTab active={view === 'timeline'} onClick={() => setView('timeline')}>
           Timeline
         </ViewTab>
@@ -496,7 +533,7 @@ export function BookingsView({
           <div className="min-w-[680px]">
             {/* time axis */}
             <div className="flex">
-              <div className="w-36 shrink-0" />
+              <div className="w-28 shrink-0 sm:w-36" />
               <div className="relative h-6 flex-1">
                 {hourTicks.map((h) => (
                   <span
@@ -519,7 +556,7 @@ export function BookingsView({
               const rowSlots = slots.filter((s) => s.resourceId === r.id && s.active)
               return (
                 <div key={r.id} className="flex items-stretch border-t">
-                  <div className="flex w-36 shrink-0 items-center gap-2 py-3 pr-3">
+                  <div className="flex w-28 shrink-0 items-center gap-2 py-3 pr-2 sm:w-36 sm:pr-3">
                     {r.imageUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={r.imageUrl} alt="" className="size-8 shrink-0 rounded-md border border-border object-cover" />
@@ -609,7 +646,7 @@ export function BookingsView({
       {/* bookings list */}
       {view === 'bookings' && (
         <div className="mt-6 space-y-6">
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
             <StatCard icon={CalendarDays} label="Total bookings" value={bookingStats.total} tint="rose" />
             <StatCard icon={Clock} label="Confirmed" value={bookingStats.confirmed} tint="mint" />
             <StatCard icon={UserCheck} label="Checked in" value={bookingStats.checkedIn} tint="mint" />
@@ -617,7 +654,7 @@ export function BookingsView({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[220px] flex-1">
+            <div className="relative min-w-0 flex-1 basis-full sm:basis-[220px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} />
               <input
                 className="w-full rounded-lg border border-border bg-background py-2.5 pl-10 pr-3 text-base shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/30"
@@ -640,7 +677,7 @@ export function BookingsView({
             )}
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
+          <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
             <StatusPill active={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>
               All
             </StatusPill>
@@ -651,7 +688,83 @@ export function BookingsView({
             ))}
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-border">
+          {/* phone / small tablet: one card per booking */}
+          <div className="space-y-3 md:hidden">
+            {filteredBookings.length === 0 && (
+              <p className="rounded-xl border border-border px-4 py-10 text-center text-base text-muted-foreground">
+                {bookingsList.length === 0 ? 'No bookings for this day.' : 'No bookings match your filters.'}
+              </p>
+            )}
+            {filteredBookings.map((b) => (
+              <div key={b.bookingId} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-muted-foreground">{b.bookingNumber}</p>
+                    <p className="truncate text-base font-semibold">{b.customerName || 'Walk-in'}</p>
+                    {b.customerPhone && <p className="text-sm text-muted-foreground">{b.customerPhone}</p>}
+                  </div>
+                  <p className="shrink-0 text-base font-semibold">
+                    {formatMoney(paymentStates[b.bookingId]?.total ?? Number(b.total), currency)}
+                  </p>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${
+                      STATUS_BADGE[b.status] ?? 'bg-muted text-muted-foreground'
+                    }`}
+                  >
+                    {statusText(b.status, b.representative.paymentHoldExpiresAt, timeZone)}
+                  </span>
+                  {b.representative.depositReviewRequired && (
+                    <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${REFUND_REQUIRED_BADGE}`}>
+                      {REFUND_REQUIRED_LABEL}
+                    </span>
+                  )}
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                      SOURCE_BADGE[b.source] ?? 'bg-muted text-muted-foreground'
+                    }`}
+                  >
+                    {SOURCE_LABELS[b.source] ?? b.source}
+                  </span>
+                  {b.representative.backdated && (
+                    <span className="inline-flex items-center rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white">
+                      Entered late
+                    </span>
+                  )}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {timeInZone(b.startsAt, timeZone)}–{b.endsAt ? timeInZone(b.endsAt, timeZone) : 'Ongoing'}
+                  {b.resourceNames.length > 0 && ` · ${b.resourceNames.join(', ')}`}
+                </p>
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  {paymentCell(b.bookingId)}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setSelected(b.representative)}
+                      aria-label={`View booking ${b.bookingNumber}`}
+                      title="View details"
+                      className="rounded-lg border border-blue-500/40 p-2.5 text-blue-600 transition hover:bg-blue-500/10 dark:text-blue-400"
+                    >
+                      <Eye size={18} />
+                    </button>
+                    {(b.status === 'confirmed' || b.status === 'checked_in') && (
+                      <Link
+                        href={`/pos/${b.bookingId}`}
+                        aria-label={`Bill booking ${b.bookingNumber}`}
+                        title="Bill"
+                        className="rounded-lg border border-emerald-500/40 p-2.5 text-emerald-600 transition hover:bg-emerald-500/10 dark:text-emerald-400"
+                      >
+                        <ReceiptText size={18} />
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-hidden rounded-xl border border-border md:block">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[760px] text-left text-base">
                 <thead className="bg-muted/40 text-sm uppercase tracking-wide text-muted-foreground">
@@ -718,42 +831,7 @@ export function BookingsView({
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {(() => {
-                          const p = paymentStates[b.bookingId]
-                          // M26 #5: only ever consulted when there is NO live
-                          // invoice — the moment one exists, `p` is truthy and
-                          // this live estimate is never even read, so the two
-                          // signals can't compete on the same booking.
-                          const advanceGap = !p ? advanceGapByBooking[b.bookingId] : undefined
-                          const key = p?.status ?? (advanceGap ? 'partially_paid' : 'unbilled')
-                          return (
-                            <div className="flex flex-col gap-0.5">
-                              <span
-                                className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-sm font-medium ${
-                                  PAYMENT_BADGE[key]
-                                }`}
-                              >
-                                {PAYMENT_LABELS[key]}
-                              </span>
-                              {/* What went back, or what is still owed — a
-                                  part-paid bill should say how much rather
-                                  than just "part paid". */}
-                              {p && p.refunded > 0 ? (
-                                <span className="text-xs text-muted-foreground">
-                                  {formatMoney(p.refunded, currency)} refunded
-                                </span>
-                              ) : p && p.status !== 'paid' ? (
-                                <span className="text-xs text-muted-foreground">
-                                  {formatMoney(p.balance, currency)} due
-                                </span>
-                              ) : advanceGap ? (
-                                <span className="text-xs text-muted-foreground">
-                                  {formatMoney(advanceGap, currency)} due (est.)
-                                </span>
-                              ) : null}
-                            </div>
-                          )
-                        })()}
+                        {paymentCell(b.bookingId)}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {/* Once a bill exists, the INVOICE's total is the real
@@ -888,7 +966,7 @@ function StatusPill({ active, onClick, children }: { active: boolean; onClick: (
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+      className={`shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium transition ${
         active
           ? 'border-primary bg-primary/10 text-primary'
           : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'

@@ -243,7 +243,7 @@ export function BackdatedBookingForm({
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-6">
+    <div className="mx-auto max-w-2xl px-4 py-4 sm:px-6 sm:py-6">
       <Link href="/bookings" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft size={14} /> Bookings
       </Link>

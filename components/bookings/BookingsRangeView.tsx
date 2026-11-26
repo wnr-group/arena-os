@@ -30,10 +30,10 @@ export function BookingsRangeView({
   const router = useRouter()
   const [refreshing, startRefresh] = useTransition()
   return (
-    <div className="px-6 py-6">
+    <div className="px-4 py-4 sm:px-6 sm:py-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Bookings</h1>
+          <h1 className="text-xl font-semibold sm:text-2xl">Bookings</h1>
           <p className="text-sm text-muted-foreground">
             {branchName} · {summary}
           </p>
