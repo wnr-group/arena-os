@@ -59,6 +59,8 @@ export function CounterOrderDialog({
   const [preview, setPreview] = useState<CounterPreview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [pricing, setPricing] = useState(false)
+  // Bumped when the server says the confirmed total is stale, to re-ask the price.
+  const [repriceTick, setRepriceTick] = useState(0)
   const [sale, setSale] = useState<CounterOrderResult | null>(null)
   const saleRef = useRef<CounterOrderResult | null>(null)
 
@@ -114,7 +116,7 @@ export function CounterOrderDialog({
       live = false
       clearTimeout(t)
     }
-  }, [branchId, phone, phoneOk, promo, lines])
+  }, [branchId, phone, phoneOk, promo, lines, repriceTick])
 
   const total = preview?.total ?? null
   const tenderedNum = Number(tendered)
@@ -246,6 +248,7 @@ export function CounterOrderDialog({
       // same sale on the server, never a second one.
       placeOrder={async (items, idempotencyKey) => {
         setPhoneTouched(true)
+        if (total === null) return { error: 'Wait for the total to be calculated.' }
         const r = await createCounterOrder({
           branchId,
           customerPhone: phone,
@@ -253,9 +256,12 @@ export function CounterOrderDialog({
           method,
           cashTendered: method === 'cash' && tendered.trim() !== '' ? tenderedNum : undefined,
           promoCode: promo.trim() || undefined,
+          expectedTotal: total,
           idempotencyKey,
           items,
         })
+        // The price moved under the cashier: nothing was charged. Re-price, and make them confirm the new total.
+        if (r.priceChanged !== undefined) setRepriceTick((n) => n + 1)
         if (r.error || !r.sale) return { error: r.error ?? 'Could not complete the sale.' }
         saleRef.current = r.sale
         return { orderNumber: r.sale.orderNumber }

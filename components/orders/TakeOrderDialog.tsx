@@ -531,10 +531,16 @@ export function TakeOrderDialog({
 
   const totalQty = cart.reduce((n, l) => n + l.qty, 0)
 
+  // No dismissal path (backdrop, header X, Cancel) while a submit is in flight: closing
+  // would drop the attempt's idempotency key while the server may still commit the sale.
+  const dismiss = () => {
+    if (!pending) onClose()
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/60 backdrop-blur-sm lg:items-center lg:p-6"
-      onClick={onClose}
+      onClick={dismiss}
     >
       <div
         className="relative flex h-full w-full flex-col overflow-hidden bg-card shadow-2xl lg:h-[92vh] lg:max-w-[1360px] lg:rounded-2xl lg:border lg:border-border"
@@ -553,7 +559,8 @@ export function TakeOrderDialog({
               </p>
             </div>
             <button
-              onClick={onClose}
+              onClick={dismiss}
+              disabled={pending}
               aria-label="Close"
               className="shrink-0 rounded-full border border-border/60 bg-background/90 p-2 text-muted-foreground shadow-sm transition hover:text-foreground"
             >
@@ -735,7 +742,9 @@ export function TakeOrderDialog({
               <ShoppingCart size={16} />
               {totalQty} item{totalQty === 1 ? '' : 's'}
             </span>
-            <span className="text-sm font-bold">View order · {formatMoney(totals.total, currency)}</span>
+            <span className="text-sm font-bold">
+              {hideTotals ? 'View order' : `View order · ${formatMoney(totals.total, currency)}`}
+            </span>
           </button>
         )}
       </div>

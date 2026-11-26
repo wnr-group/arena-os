@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { Loader2, Minus, Plus, Trash2, X } from 'lucide-react'
 import {
   editCounterOrderLine,
@@ -53,6 +53,8 @@ export function CounterCorrectionDialog({
   const [preview, setPreview] = useState<CounterPreview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [pricing, setPricing] = useState(false)
+  // Bumped when the server says the confirmed total is stale, to re-ask the price.
+  const [repriceTick, setRepriceTick] = useState(0)
   const [sale, setSale] = useState<CounterOrderResult | null>(null)
   // One key per dialog: a double-tap or a retry after a dropped response is the same re-bill.
   const [idempotencyKey] = useState(() => newIdempotencyKey())
@@ -78,6 +80,41 @@ export function CounterCorrectionDialog({
     }
   }, [])
 
+  // Focus management (aria-modal alone doesn't do it): move focus into the dialog on
+  // open, keep Tab inside it, and hand focus back to whatever opened it on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    dialogRef.current?.focus()
+    return () => opener?.focus()
+  }, [])
+  const trapFocus = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      if (!pending) onClose()
+      return
+    }
+    if (e.key !== 'Tab') return
+    const box = dialogRef.current
+    if (!box) return
+    const items = Array.from(
+      box.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+    ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null)
+    if (items.length === 0) {
+      e.preventDefault()
+      return
+    }
+    const first = items[0]
+    const last = items[items.length - 1]
+    const active = document.activeElement
+    if (e.shiftKey && (active === first || active === box)) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
   // Server-priced total for the re-bill, re-asked when the lines or the promo change.
   const lineKey = detail?.lines.map((l) => `${l.itemId}:${l.qty}`).join(',') ?? ''
   useEffect(() => {
@@ -102,7 +139,7 @@ export function CounterCorrectionDialog({
       clearTimeout(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderId, detail?.state, lineKey, promo])
+  }, [orderId, detail?.state, lineKey, promo, repriceTick])
 
   function doVoid() {
     setError(null)
@@ -131,6 +168,7 @@ export function CounterCorrectionDialog({
   const change = method === 'cash' && total !== null && tendered.trim() !== '' && tenderedNum >= total ? tenderedNum - total : null
 
   function doRebill() {
+    if (total === null) return
     setError(null)
     start(async () => {
       const r = await rebillCounterSale({
@@ -138,8 +176,11 @@ export function CounterCorrectionDialog({
         method,
         promoCode: (promo ?? '').trim() || undefined,
         cashTendered: method === 'cash' && tendered.trim() !== '' ? tenderedNum : undefined,
+        expectedTotal: total,
         idempotencyKey,
       })
+      // The price moved: nothing was charged. Re-price so the cashier confirms the new total.
+      if (r.priceChanged !== undefined) setRepriceTick((n) => n + 1)
       if (r.error || !r.sale) setError(r.error ?? 'Could not bill this order.')
       else setSale(r.sale)
     })
@@ -148,9 +189,12 @@ export function CounterCorrectionDialog({
   if (sale) return <SaleDone sale={sale} currency={currency} onDone={onClose} />
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4" onClick={() => !pending && onClose()}>
       <div
-        className="flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl sm:max-w-lg sm:rounded-2xl"
+        className="flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl outline-none sm:max-w-lg sm:rounded-2xl"
+        ref={dialogRef}
+        tabIndex={-1}
+        onKeyDown={trapFocus}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -163,7 +207,7 @@ export function CounterCorrectionDialog({
               {detail ? `${detail.orderNumber} · ${detail.customerName || detail.customerPhone || 'Walk-in'}` : 'Loading…'}
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-full border border-border/60 p-1.5 text-muted-foreground hover:text-foreground">
+          <button type="button" onClick={onClose} disabled={pending} aria-label="Close" className="rounded-full border border-border/60 p-1.5 text-muted-foreground hover:text-foreground disabled:opacity-50">
             <X size={16} />
           </button>
         </div>

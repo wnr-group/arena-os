@@ -1,5 +1,10 @@
+'use client'
+
+import { useState, useTransition } from 'react'
+import { Loader2 } from 'lucide-react'
 import { formatMoney } from '@/lib/format'
-import type { CounterSaleRow } from '@/lib/orders/counter-data'
+import type { CounterSaleRow, CounterSalesCursor, CounterSalesPage } from '@/lib/orders/counter-data'
+import { loadMoreCounterSales } from '@/lib/actions/counter-orders'
 import { CounterSaleActions } from '@/components/bookings/CounterSaleActions'
 
 const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', upi: 'UPI', online: 'Online', wallet: 'Wallet' }
@@ -15,12 +20,50 @@ const STATUS_LABEL: Record<CounterSaleRow['status'], string> = { paid: 'Paid', r
 /**
  * Counter sales for the last few days. Cards on a phone, a table from md up — no
  * horizontal scroll at any width. Reprint opens the printable invoice; Correct
- * opens the refund → void → edit → re-bill dialog.
+ * opens the refund → void → edit → re-bill dialog. The first page comes with the
+ * server render; "Load more" fetches older sales so none is out of reach.
  */
-export function CounterSalesList({ sales, timeZone, currency, days, isManager }: { sales: CounterSaleRow[]; timeZone: string; currency: string; days: number; isManager: boolean }) {
+export function CounterSalesList({
+  branchId,
+  initial,
+  timeZone,
+  currency,
+  days,
+  isManager,
+}: {
+  branchId: string
+  initial: CounterSalesPage
+  timeZone: string
+  currency: string
+  days: number
+  isManager: boolean
+}) {
+  const [extra, setExtra] = useState<CounterSaleRow[]>([])
+  const [next, setNext] = useState<CounterSalesCursor | null>(initial.next)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, start] = useTransition()
+
+  // The server render can refresh (after a correction); its rows win over any loaded copy of the same sale.
+  const firstIds = new Set(initial.rows.map((r) => r.orderId))
+  const sales = [...initial.rows, ...extra.filter((r) => !firstIds.has(r.orderId))]
+
   const when = (d: Date) =>
     new Intl.DateTimeFormat('en-IN', { timeZone, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(d)
   const who = (s: CounterSaleRow) => s.customerName || s.customerPhone || 'Walk-in'
+
+  function loadMore() {
+    if (!next) return
+    setError(null)
+    start(async () => {
+      const r = await loadMoreCounterSales({ branchId, days, after: next })
+      if (r.error || !r.page) {
+        setError(r.error ?? 'Could not load more sales.')
+        return
+      }
+      setExtra((prev) => [...prev, ...r.page!.rows])
+      setNext(r.page.next)
+    })
+  }
 
   return (
     <section className="mt-6" aria-labelledby="counter-sales-h">
@@ -93,6 +136,21 @@ export function CounterSalesList({ sales, timeZone, currency, days, isManager }:
               </tbody>
             </table>
           </div>
+
+          {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+          {next && (
+            <div className="mt-3 flex justify-center">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={pending}
+                className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
+              >
+                {pending && <Loader2 size={14} className="animate-spin" />}
+                Load older sales
+              </button>
+            </div>
+          )}
         </>
       )}
     </section>
@@ -102,4 +160,3 @@ export function CounterSalesList({ sales, timeZone, currency, days, isManager }:
 function StatusPill({ status }: { status: CounterSaleRow['status'] }) {
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[status]}`}>{STATUS_LABEL[status]}</span>
 }
-

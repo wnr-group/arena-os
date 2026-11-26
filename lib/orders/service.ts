@@ -964,8 +964,13 @@ async function applyVoidDecision(
   return { orderId: row.orderId, bookingId: row.bookingId, kotReady }
 }
 
-export type EditOrderItemQuantityInput = { orderItemId: string; newQty: number }
-export type RemoveOrderItemInput = { orderItemId: string }
+/**
+ * `allowServed` skips the served-ticket guard. Only a caller that has already put the
+ * correction on the record may set it — counter sales do, after a refund + void with a
+ * reason, when the order is unbilled and the only way back to billing is this edit.
+ */
+export type EditOrderItemQuantityInput = { orderItemId: string; newQty: number; allowServed?: boolean }
+export type RemoveOrderItemInput = { orderItemId: string; allowServed?: boolean }
 export type OrderLineCorrectionResult = {
   orderId: string
   bookingId: string | null
@@ -1004,11 +1009,11 @@ export async function editOrderItemQuantityCore(
     throw new OrderError('Enter a whole number, 0 or more.')
   }
   if (input.newQty === 0) {
-    return removeOrderItemCore(tx, actor, { orderItemId: input.orderItemId })
+    return removeOrderItemCore(tx, actor, { orderItemId: input.orderItemId, allowServed: input.allowServed })
   }
 
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
-  await assertKotNotServed(tx, actor.tenantId, row.orderId)
+  if (!input.allowServed) await assertKotNotServed(tx, actor.tenantId, row.orderId)
   const newLineTotal = (Number(row.unitPrice) * input.newQty).toFixed(2)
 
   await tx
@@ -1042,7 +1047,7 @@ export async function removeOrderItemCore(
   input: RemoveOrderItemInput,
 ): Promise<OrderLineCorrectionResult> {
   const row = await lockActiveOrderItem(tx, actor.tenantId, input.orderItemId)
-  await assertKotNotServed(tx, actor.tenantId, row.orderId)
+  if (!input.allowServed) await assertKotNotServed(tx, actor.tenantId, row.orderId)
 
   await tx.delete(orderItems).where(and(eq(orderItems.id, row.itemId), eq(orderItems.tenantId, actor.tenantId)))
   // The line's usage snapshot went with it, so what it consumed is restored.

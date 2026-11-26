@@ -13,6 +13,7 @@ import { getMembershipBenefits } from '@/lib/memberships/customer-memberships'
 import { OrderError, MAX_SEAT_NO } from '@/lib/orders/service'
 import {
   createCounterOrderCore,
+  PriceChangedError,
   editCounterOrderLineCore,
   previewCounterOrderCore,
   previewRebillCounterOrderCore,
@@ -22,14 +23,16 @@ import {
   type CounterOrderResult,
   type CounterPreview,
 } from '@/lib/orders/counter'
-import { loadCounterSaleDetail, type CounterSaleDetail } from '@/lib/orders/counter-data'
+import { counterOrdersAvailable, listCounterSales, loadCounterSaleDetail, type CounterSaleDetail, type CounterSalesPage } from '@/lib/orders/counter-data'
 import { RefundError } from '@/lib/billing/refunds'
 import { isValidPhone } from '@/lib/customers/phone'
 import { zodErrorMessage, pgError } from '@/lib/utils/errors'
 
-type Result = { error?: string }
+/** `priceChanged` carries the server's new total when the confirmed one no longer matched. */
+type Result = { error?: string; priceChanged?: number }
 
-function fail(e: unknown): { error: string } {
+function fail(e: unknown): { error: string; priceChanged?: number } {
+  if (e instanceof PriceChangedError) return { error: e.message, priceChanged: e.total }
   if (
     e instanceof AuthError || e instanceof OrderError || e instanceof EntitlementError || e instanceof BillingError ||
     e instanceof PaymentError || e instanceof CustomerError || e instanceof RefundError
@@ -37,7 +40,10 @@ function fail(e: unknown): { error: string } {
     return { error: e.message }
   }
   if (e instanceof z.ZodError) return { error: zodErrorMessage(e) }
-  return { error: e instanceof Error ? e.message : 'Something went wrong.' }
+  // Anything else (a failed write, say) can carry SQL and bound customer values in its
+  // message, so the browser gets a fixed line and the detail stays in the server log.
+  console.error('[counter-orders] action failed:', e)
+  return { error: 'Something went wrong. Please try again.' }
 }
 
 const createInput = z.object({
@@ -47,6 +53,8 @@ const createInput = z.object({
   method: z.enum(POS_PAYMENT_METHODS, { errorMap: () => ({ message: 'Choose cash, card or UPI.' }) }),
   promoCode: z.string().trim().max(64).optional(),
   cashTendered: z.coerce.number().finite().min(0).max(99_999_999.99).optional(),
+  // The total the cashier saw; the sale is refused (and re-priced) if the server's differs.
+  expectedTotal: z.coerce.number().finite().min(0).max(99_999_999.99),
   // 110 so the `counter:` payment-key prefix stays inside the payments column limit.
   idempotencyKey: z.string().trim().min(8).max(110),
   items: z
@@ -159,6 +167,24 @@ export async function getCounterSaleDetail(orderId: string): Promise<Result & { 
   }
 }
 
+const moreSalesInput = z.object({
+  branchId: z.string().uuid(),
+  days: z.coerce.number().int().min(1).max(31),
+  after: z.object({ createdAt: z.string().min(1).max(64), orderId: z.string().uuid() }),
+})
+
+/** The next page of the Counter sales list ("Load more"). Same gate as the list itself. */
+export async function loadMoreCounterSales(input: z.input<typeof moreSalesInput>): Promise<Result & { page?: CounterSalesPage }> {
+  try {
+    const ctx = await requireContext()
+    if (!(await counterOrdersAvailable(ctx))) throw new AuthError('You don’t have permission to view counter sales.')
+    const v = moreSalesInput.parse(input)
+    return { page: await listCounterSales(ctx, v.branchId, v.days, v.after) }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
 const voidInput = orderIdInput.extend({ reason: z.string().trim().min(1, 'A reason is required.').max(500) })
 
 /**
@@ -205,6 +231,7 @@ export async function previewRebillCounterSale(input: z.input<typeof rebillPrevi
 const rebillInput = rebillPreviewInput.extend({
   method: z.enum(POS_PAYMENT_METHODS, { errorMap: () => ({ message: 'Choose cash, card or UPI.' }) }),
   cashTendered: z.coerce.number().finite().min(0).max(99_999_999.99).optional(),
+  expectedTotal: z.coerce.number().finite().min(0).max(99_999_999.99),
   idempotencyKey: z.string().trim().min(8).max(110),
 })
 

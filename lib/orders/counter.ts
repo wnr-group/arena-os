@@ -53,6 +53,8 @@ export type CreateCounterOrderInput = {
   promoCode?: string
   /** Cash only: what the customer handed over. Must cover the total. */
   cashTendered?: number
+  /** The total the cashier saw and the customer agreed to; a different server price aborts the sale. */
+  expectedTotal: number
   /** One per attempt; a retry with the same key returns the original sale. */
   idempotencyKey: string
 }
@@ -82,6 +84,13 @@ export type CounterOrderResult = {
   deduplicated: boolean
 }
 
+/** The server priced the sale differently from what the cashier confirmed; nothing was saved. */
+export class PriceChangedError extends OrderError {
+  constructor(readonly total: number) {
+    super(`The total is now ${total.toFixed(2)} — it changed since you last looked. Check it and confirm again.`)
+  }
+}
+
 /** Gate shared by every counter-sale entry point. */
 async function assertCounterAllowed(tx: Db, ctx: CounterOrderCtx): Promise<void> {
   if (!canManageWalkins(ctx.role)) throw new OrderError('You don’t have permission to take counter sales.')
@@ -107,8 +116,11 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
   // Two submits of one key serialise here, so the second reads the first's
   // COMMITTED sale below instead of racing it to the unique index.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`counter-order:${ctx.tenantId}:${key}`}, 0))`)
-  const existing = await findOrderByIdempotencyKey(tx, ctx.tenantId, key)
-  if (existing) return replaySale(tx, ctx.tenantId, existing.id)
+  // The retry is answered from what was recorded against this attempt's key, never
+  // from the order's live invoice link, which a later void / re-bill may have moved.
+  const attempt = await findAttempt(tx, ctx.tenantId, `counter:${key}`)
+  if (attempt) return replaySale(tx, ctx.tenantId, attempt)
+  if (await findOrderByIdempotencyKey(tx, ctx.tenantId, key)) throw new OrderError(DIFFERENT_ORDER)
 
   const { created, customer, issued } = await buildSale(tx, ctx, input, key)
   const closed = await closeSale(tx, ctx, {
@@ -119,6 +131,7 @@ export async function createCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
     issued,
     method: input.method,
     cashTendered: input.cashTendered,
+    expectedTotal: input.expectedTotal,
     payKey: `counter:${key}`,
     auditAction: 'counter_order.created',
   })
@@ -165,6 +178,8 @@ async function closeSale(
     issued: IssuedForOrder
     method: PosPaymentMethod
     cashTendered?: number
+    expectedTotal: number
+    /** Also the attempt key the audit row is filed under, so a retry can find this result. */
     payKey: string
     auditAction: 'counter_order.created' | 'counter_order.rebilled'
   },
@@ -172,6 +187,10 @@ async function closeSale(
   const { issued } = a
   const total = issued.pricing.total
   const free = paise(total) === 0
+
+  // Before any money moves: the price the cashier confirmed must be the price charged.
+  // Throwing rolls the whole sale back; a same-key replay never reaches here.
+  if (!Number.isFinite(a.expectedTotal) || paise(a.expectedTotal) !== paise(total)) throw new PriceChangedError(total)
 
   let cashTendered: number | null = null
   let changeDue: number | null = null
@@ -209,6 +228,7 @@ async function closeSale(
     entityId: a.orderId,
     before: {},
     after: {
+      attempt_key: a.payKey,
       order_number: a.orderNumber,
       kot_number: a.kotNumber,
       invoice_id: issued.invoiceId,
@@ -230,47 +250,54 @@ async function closeSale(
   return { paymentId, cashTendered, changeDue }
 }
 
-/** Rebuild the original result for a retried key from what was committed. */
-async function replaySale(tx: Db, tenantId: string, orderId: string): Promise<CounterOrderResult> {
-  const [o] = await tx
-    .select({ id: orders.id, orderNumber: orders.orderNumber, orderType: orders.orderType, customerId: orders.customerId, invoiceId: orders.invoiceId })
-    .from(orders)
-    .where(and(eq(orders.id, orderId), eq(orders.tenantId, tenantId)))
-    .limit(1)
-  // The key belongs to some other kind of order — a client bug, never a replay.
-  if (!o || o.orderType !== 'counter' || !o.invoiceId || !o.customerId) throw new OrderError('That retry reference was already used for a different order.')
+const DIFFERENT_ORDER = 'That retry reference was already used for a different order.'
+const ATTEMPT_ACTIONS = ['counter_order.created', 'counter_order.rebilled']
 
+/** The audit row closeSale filed under an attempt key, if that attempt committed. */
+async function findAttempt(tx: Db, tenantId: string, attemptKey: string) {
+  const [row] = await tx
+    .select({ entityId: auditLog.entityId, after: auditLog.after })
+    .from(auditLog)
+    .where(and(eq(auditLog.tenantId, tenantId), inArray(auditLog.action, ATTEMPT_ACTIONS), sql`${auditLog.after}->>'attempt_key' = ${attemptKey}`))
+    .limit(1)
+  return row
+}
+
+/**
+ * Rebuild the result a committed attempt returned, from the invoice and payment it
+ * recorded (by id, whatever their status is now: a later refund or void must not
+ * change what a retry of the original attempt sees).
+ */
+async function replaySale(tx: Db, tenantId: string, attempt: { entityId: string | null; after: unknown }): Promise<CounterOrderResult> {
+  const after = (attempt.after ?? {}) as Record<string, string | null>
+  const invoiceId = after.invoice_id
+  if (!attempt.entityId || !invoiceId) throw new OrderError('That sale is incomplete — contact support.')
+
+  const [o] = await tx
+    .select({ id: orders.id, orderNumber: orders.orderNumber, customerId: orders.customerId })
+    .from(orders)
+    .where(and(eq(orders.id, attempt.entityId), eq(orders.tenantId, tenantId)))
+    .limit(1)
   const [inv] = await tx
     .select({ number: invoices.invoiceNumber, total: invoices.total })
     .from(invoices)
-    .where(and(eq(invoices.id, o.invoiceId), eq(invoices.tenantId, tenantId)))
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId)))
     .limit(1)
-  const [pay] = await tx
-    .select({ id: payments.id, method: payments.method })
-    .from(payments)
-    .where(and(eq(payments.tenantId, tenantId), eq(payments.invoiceId, o.invoiceId), eq(payments.status, 'captured')))
-    .limit(1)
-  const [audit] = await tx
-    .select({ after: auditLog.after })
-    .from(auditLog)
-    .where(
-      and(
-        eq(auditLog.tenantId, tenantId),
-        eq(auditLog.entityId, o.id),
-        inArray(auditLog.action, ['counter_order.created', 'counter_order.rebilled']),
-        sql`${auditLog.after}->>'invoice_id' = ${o.invoiceId}`,
-      ),
-    )
-    .limit(1)
-  if (!inv || (!pay && round2(Number(inv.total)) > 0)) throw new OrderError('That sale is incomplete — contact support.')
+  // A bill discounted to nothing recorded no payment (payment_id null); otherwise the recorded one must exist.
+  const [pay] = after.payment_id
+    ? await tx
+        .select({ id: payments.id, method: payments.method })
+        .from(payments)
+        .where(and(eq(payments.id, after.payment_id), eq(payments.tenantId, tenantId)))
+        .limit(1)
+    : []
+  if (!o || !o.customerId || !inv || (after.payment_id && !pay)) throw new OrderError('That sale is incomplete — contact support.')
 
-  const after = (audit?.after ?? {}) as Record<string, string | null>
-  const kotNumber = after.kot_number ?? ''
   return {
     orderId: o.id,
     orderNumber: o.orderNumber,
-    kotNumber,
-    invoiceId: o.invoiceId,
+    kotNumber: after.kot_number ?? '',
+    invoiceId,
     invoiceNumber: inv.number,
     customerId: o.customerId,
     subtotal: Number(after.subtotal ?? 0),
@@ -420,6 +447,8 @@ export type RebillCounterInput = {
   method: PosPaymentMethod
   cashTendered?: number
   promoCode?: string
+  /** The total the cashier confirmed; a different server price aborts the re-bill. */
+  expectedTotal: number
   idempotencyKey: string
 }
 
@@ -451,16 +480,11 @@ export async function rebillCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
   if (key.length < 8) throw new OrderError('Missing retry reference — refresh and try again.')
 
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`counter-rebill:${ctx.tenantId}:${key}`}, 0))`)
-  // A retry of this very re-bill: its payment already exists under the key.
-  const [done] = await tx
-    .select({ invoiceId: payments.invoiceId })
-    .from(payments)
-    .where(and(eq(payments.tenantId, ctx.tenantId), eq(payments.idempotencyKey, `counter-rebill:${key}`)))
-    .limit(1)
-  if (done) {
-    const [o] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.tenantId, ctx.tenantId), eq(orders.invoiceId, done.invoiceId))).limit(1)
-    if (!o || o.id !== input.orderId) throw new OrderError('That retry reference was already used for a different order.')
-    return replaySale(tx, ctx.tenantId, o.id)
+  // A retry of this very re-bill, paid or free: answered from the attempt's own record.
+  const attempt = await findAttempt(tx, ctx.tenantId, `counter-rebill:${key}`)
+  if (attempt) {
+    if (attempt.entityId !== input.orderId) throw new OrderError(DIFFERENT_ORDER)
+    return replaySale(tx, ctx.tenantId, attempt)
   }
 
   const o = await loadRebillable(tx, ctx, input.orderId)
@@ -481,6 +505,7 @@ export async function rebillCounterOrderCore(tx: Db, ctx: CounterOrderCtx, input
     issued,
     method: input.method,
     cashTendered: input.cashTendered,
+    expectedTotal: input.expectedTotal,
     payKey: `counter-rebill:${key}`,
     auditAction: 'counter_order.rebilled',
   })
@@ -555,7 +580,22 @@ export async function editCounterOrderLineCore(
   const o = await lockCounterOrder(tx, actor.tenantId, row.orderId)
   if (o.invoiceId || o.status === 'billed') throw new OrderError('This sale is billed. Refund and void it first, then edit it.')
   if (o.status === 'cancelled') throw new OrderError('This order was cancelled.')
-  const result = await editOrderItemQuantityCore(tx, { tenantId: actor.tenantId, membershipId: actor.membershipId }, input)
+  // The sale was refunded and voided (with a reason, audited) to get here, and this edit
+  // is the only way back to billing, so a served ticket must not block it. The edit is
+  // allowed past the served guard and recorded as such.
+  const [ticket] = await tx.select({ status: kots.status }).from(kots).where(and(eq(kots.orderId, o.id), eq(kots.tenantId, actor.tenantId))).limit(1)
+  const result = await editOrderItemQuantityCore(tx, { tenantId: actor.tenantId, membershipId: actor.membershipId }, { ...input, allowServed: true })
+  if (ticket?.status === 'served') {
+    await tx.insert(auditLog).values({
+      tenantId: actor.tenantId,
+      actorMembershipId: actor.membershipId,
+      action: 'counter_order.served_line_edited',
+      entityType: 'order',
+      entityId: o.id,
+      before: { kot_status: 'served' },
+      after: { order_item_id: input.orderItemId, new_qty: input.newQty },
+    })
+  }
   // Removing the last line cancels the order; its kitchen ticket must go with it, but
   // kots_update admits only kitchen roles + managers, so a cashier's own UPDATE would
   // silently match nothing. The definer function (0185) does just that one thing.

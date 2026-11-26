@@ -135,7 +135,7 @@ export default async function BookingsPage({
   let counterButton: React.ReactNode = null
   let counterSales: React.ReactNode = null
   if (await counterOrdersAvailable(ctx)) {
-    const [menu, sales] = await Promise.all([loadCounterMenu(ctx, branch.id), listCounterSales(ctx, branch.id, COUNTER_DAYS)])
+    const [menu, first] = await Promise.all([loadCounterMenu(ctx), listCounterSales(ctx, branch.id, COUNTER_DAYS)])
     counterButton = (
       <CounterOrderButton
         branchId={branch.id}
@@ -147,7 +147,16 @@ export default async function BookingsPage({
         canToggle86={canManageKitchen(ctx.role)}
       />
     )
-    counterSales = <CounterSalesList sales={sales} timeZone={tz} currency={ctx.tenant.currency} days={COUNTER_DAYS} isManager={isManager(ctx.role)} />
+    counterSales = (
+      <CounterSalesList
+        branchId={branch.id}
+        initial={first}
+        timeZone={tz}
+        currency={ctx.tenant.currency}
+        days={COUNTER_DAYS}
+        isManager={isManager(ctx.role)}
+      />
+    )
   }
 
   // Multi-day presets skip the single-day loaders below (timeline, menu); the

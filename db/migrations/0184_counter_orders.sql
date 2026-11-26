@@ -26,5 +26,9 @@ create index if not exists idx_orders_counter
 insert into public.plan_entitlements (plan_id, key, value)
 select p.id, 'module.counter_orders', 'true'::jsonb
   from public.plans p
- where lower(btrim(p.name)) in ('starter', 'pro', 'enterprise', 'grandfathered')
 on conflict (plan_id, key) do nothing;
+
+-- A retried sale / re-bill is answered from the audit row filed under its attempt key.
+create index if not exists idx_audit_counter_attempt
+  on public.audit_log (tenant_id, (after->>'attempt_key'))
+  where action in ('counter_order.created', 'counter_order.rebilled');

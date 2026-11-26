@@ -41,14 +41,23 @@ export type CounterSaleRow = {
   status: 'paid' | 'refunded' | 'void' | 'rebill' | 'cancelled'
 }
 
+export const COUNTER_SALES_PAGE = 100
+
+/** Where the next page starts: the last row of the previous one (keyset, so new sales never shift it). */
+export type CounterSalesCursor = { createdAt: string; orderId: string }
+
+/** `next` is null on the last page. */
+export type CounterSalesPage = { rows: CounterSaleRow[]; next: CounterSalesCursor | null }
+
 /**
  * Counter sales for a branch over the last `days` days (today included), newest
- * first. Only order_type = 'counter' — a booking's food is never listed here —
+ * first, one page at a time (`after` is the cursor of the last row already shown).
+ * Only order_type = 'counter' — a booking's food is never listed here —
  * and tenant-scoped by the query as well as by RLS. A voided sale is detached from
  * its invoice (so it can be billed again); it is found again through the invoice
  * lines that point at its order items.
  */
-export async function listCounterSales(ctx: ActiveContext, branchId: string, days = 7): Promise<CounterSaleRow[]> {
+export async function listCounterSales(ctx: ActiveContext, branchId: string, days = 7, after?: CounterSalesCursor): Promise<CounterSalesPage> {
   const tz = ctx.tenant.timezone
   const since = zonedTimeToUtc(addDays(todayInZone(tz), -(days - 1)), '00:00', tz)
   const lastInvoice = sql`coalesce(${orders.invoiceId}, (
@@ -64,6 +73,8 @@ export async function listCounterSales(ctx: ActiveContext, branchId: string, day
         orderNumber: orders.orderNumber,
         orderStatus: orders.status,
         createdAt: orders.createdAt,
+        // Full microsecond precision for the paging cursor; a JS Date would round it to ms.
+        createdAtRaw: sql<string>`${orders.createdAt}::text`,
         customerName: customers.name,
         customerPhone: customers.phone,
         invoiceId: sql<string | null>`inv.id`,
@@ -82,12 +93,16 @@ export async function listCounterSales(ctx: ActiveContext, branchId: string, day
           eq(orders.branchId, branchId),
           eq(orders.orderType, 'counter'),
           gte(orders.createdAt, since),
+          after ? sql`(${orders.createdAt}, ${orders.id}) < (${after.createdAt}::timestamptz, ${after.orderId}::uuid)` : undefined,
         ),
       )
-      .orderBy(desc(orders.createdAt))
-      .limit(100),
+      .orderBy(desc(orders.createdAt), desc(orders.id))
+      .limit(COUNTER_SALES_PAGE + 1),
   )
-  return rows.map((r) => ({
+  const page = rows.slice(0, COUNTER_SALES_PAGE)
+  const last = page[page.length - 1]
+  const next = rows.length > COUNTER_SALES_PAGE && last ? { createdAt: last.createdAtRaw, orderId: last.orderId } : null
+  const mapped: CounterSaleRow[] = page.map(({ createdAtRaw: _raw, ...r }) => ({
     orderId: r.orderId,
     orderNumber: r.orderNumber,
     createdAt: r.createdAt,
@@ -108,11 +123,11 @@ export async function listCounterSales(ctx: ActiveContext, branchId: string, day
               ? 'refunded'
               : 'paid',
   }))
+  return { rows: mapped, next }
 }
 
 /** The menu a counter sale can order from — same shape the Take order dialog already takes. */
-export async function loadCounterMenu(ctx: ActiveContext, branchId: string) {
-  void branchId
+export async function loadCounterMenu(ctx: ActiveContext) {
   const [menuItemRows, happyHourRows, groupRows] = await Promise.all([
     listMenuItems(ctx),
     listHappyHours(ctx),
